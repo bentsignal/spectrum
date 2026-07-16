@@ -75,6 +75,7 @@ struct LumenApp {
     preview_id: Option<u64>,
     preview_fast: bool,
     preview_adjustments: Adjustments,
+    preview_layout_size: Option<Vec2>,
     thumbnails: HashMap<u64, TextureHandle>,
     draft: Adjustments,
     draft_id: Option<u64>,
@@ -118,6 +119,7 @@ impl LumenApp {
             preview_id: None,
             preview_fast: false,
             preview_adjustments: Adjustments::default(),
+            preview_layout_size: None,
             thumbnails: HashMap::new(),
             draft: Adjustments::default(),
             draft_id: None,
@@ -174,6 +176,7 @@ impl LumenApp {
         self.preview_source = None;
         self.preview_fast_source = None;
         self.preview_id = None;
+        self.preview_layout_size = None;
         if let Some(id) = self.workspace.project.selected {
             self.thumbnails.remove(&id);
         }
@@ -410,7 +413,9 @@ impl LumenApp {
                 }
             }
         }
-        let use_fast = interacting && self.preview_id == Some(id);
+        let geometry_changed = self.preview_id == Some(id)
+            && !same_preview_geometry(&self.preview_adjustments, &preview_adjustments);
+        let use_fast = interacting && self.preview_id == Some(id) && !geometry_changed;
         let source = if use_fast {
             self.preview_fast_source.as_ref()
         } else {
@@ -422,6 +427,10 @@ impl LumenApp {
                 preview_adjustments.clone(),
                 RenderOptions::default(),
             );
+            if !use_fast || self.preview_layout_size.is_none() {
+                self.preview_layout_size =
+                    Some(Vec2::new(rendered.width() as f32, rendered.height() as f32));
+            }
             self.preview = Some(load_texture(context, format!("preview-{id}"), rendered));
             self.preview_id = Some(id);
             self.preview_fast = use_fast;
@@ -1236,7 +1245,11 @@ impl LumenApp {
                             self.zoom = (self.zoom * (scroll * 0.0018).exp()).clamp(0.25, 8.0);
                         }
                     }
-                    let base = fit_size(texture.size_vec2(), rect.size());
+                    let base = preview_fit_size(
+                        self.preview_layout_size,
+                        texture.size_vec2(),
+                        rect.size(),
+                    );
                     let size = base * self.zoom;
                     let image_rect = Rect::from_center_size(rect.center() + self.pan, size);
                     ui.painter().with_clip_rect(rect).image(
@@ -1850,6 +1863,18 @@ fn fit_size(image: Vec2, available: Vec2) -> Vec2 {
     image * (available.x / image.x).min(available.y / image.y).min(1.0)
 }
 
+fn preview_fit_size(layout: Option<Vec2>, raster: Vec2, available: Vec2) -> Vec2 {
+    fit_size(layout.unwrap_or(raster), available)
+}
+
+fn same_preview_geometry(left: &Adjustments, right: &Adjustments) -> bool {
+    left.crop == right.crop
+        && left.rotation == right.rotation
+        && left.straighten == right.straighten
+        && left.flip_horizontal == right.flip_horizontal
+        && left.flip_vertical == right.flip_vertical
+}
+
 fn shorten(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let head: String = chars.by_ref().take(max_chars).collect();
@@ -1862,3 +1887,35 @@ fn shorten(value: &str, max_chars: usize) -> String {
 
 #[allow(dead_code)]
 fn _assert_photo_is_available(_: Photo) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_preview_keeps_full_preview_fit_geometry() {
+        let layout = Some(Vec2::new(1_260.0, 720.0));
+        let available = Vec2::new(1_100.0, 700.0);
+        let full = preview_fit_size(layout, Vec2::new(1_260.0, 720.0), available);
+        let fast = preview_fit_size(layout, Vec2::new(672.0, 384.0), available);
+
+        assert_eq!(fast, full);
+    }
+
+    #[test]
+    fn geometry_changes_are_not_treated_as_pixel_only_edits() {
+        let original = Adjustments::default();
+        let mut exposure = original.clone();
+        exposure.exposure = 1.0;
+        assert!(same_preview_geometry(&original, &exposure));
+
+        let mut cropped = original.clone();
+        cropped.crop = Some(CropRect {
+            x: 0.1,
+            y: 0.1,
+            width: 0.8,
+            height: 0.7,
+        });
+        assert!(!same_preview_geometry(&original, &cropped));
+    }
+}
