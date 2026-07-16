@@ -55,14 +55,16 @@ cargo run --release --bin lumen -- benchmark
 The JSON report separates aspirational targets from conservative regression
 budgets. It measures p95 tone-curve command plus atomic catalog-save latency,
 p95 1800×1200 preview rendering, and a complete 6000×4000 (24 MP) JPEG export.
-Pass `--strict` to return a nonzero exit code if a budget is missed; Linux CI
-runs this strict form after building the release binary.
+Pass `--strict` to return a nonzero exit code if a budget is missed. The default
+`interactive` profile protects workstation feel. Linux CI uses
+`--profile hosted-ci`, calibrated to the slower shared two-core runner with
+headroom for host jitter, after building the release binary.
 
-| Workload | Excellent target | CI regression budget | UX meaning |
-| --- | ---: | ---: | --- |
-| Tone-curve catalog load + command + save (p95) | 8 ms | 20 ms | Catalog work stays below a frame |
-| 1800×1200 curve preview (p95) | 16.7 ms | 50 ms | 60 fps target; never regress below a fluid 20 fps |
-| 24 MP JPEG export | 2 s | 5 s | Fast single export; bounded batch wait |
+| Workload | Excellent target | Workstation budget | Hosted-CI budget | UX meaning |
+| --- | ---: | ---: | ---: | --- |
+| Tone-curve catalog load + command + save (p95) | 8 ms | 20 ms | 20 ms | Catalog work stays below a frame |
+| 1800×1200 curve preview (p95) | 16.7 ms | 50 ms | 125 ms | Fluid locally; CI catches relative regressions on slower shared CPUs |
+| 24 MP JPEG export | 2 s | 5 s | 5 s | Fast single export; bounded batch wait |
 
 Source generation and benchmark warm-up are excluded from measured intervals.
 The generated pixel pattern, dimensions, curve, quality, and sample counts are

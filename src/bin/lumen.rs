@@ -175,6 +175,9 @@ enum CliCommand {
         /// Return a failure when any user-experience performance budget is missed.
         #[arg(long)]
         strict: bool,
+        /// Budget calibration: workstation feel or GitHub's shared Linux runner.
+        #[arg(long, value_enum, default_value_t = BenchmarkProfile::Interactive)]
+        profile: BenchmarkProfile,
     },
     /// Print the JSON command protocol and adjustment ranges.
     Schema,
@@ -251,6 +254,31 @@ enum CliExportFormat {
     Webp,
 }
 
+#[derive(Clone, Copy, Default, ValueEnum)]
+enum BenchmarkProfile {
+    #[default]
+    Interactive,
+    HostedCi,
+}
+
+impl BenchmarkProfile {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive-workstation",
+            Self::HostedCi => "github-hosted-linux",
+        }
+    }
+
+    fn preview_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 50.0,
+            // The shared two-core Linux runner measured 97 ms p95 at the
+            // workstation-passing baseline. Keep 29% headroom for host jitter.
+            Self::HostedCi => 125.0,
+        }
+    }
+}
+
 impl From<CliExportFormat> for ExportFormat {
     fn from(value: CliExportFormat) -> Self {
         match value {
@@ -310,8 +338,8 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
     if matches!(&cli.command, CliCommand::Schema) {
         return Ok(schema());
     }
-    if let CliCommand::Benchmark { strict } = &cli.command {
-        return benchmark(*strict);
+    if let CliCommand::Benchmark { strict, profile } = &cli.command {
+        return benchmark(*strict, *profile);
     }
 
     if let CliCommand::Init { name, force } = &cli.command {
@@ -654,7 +682,7 @@ fn parse_curve(value: &str) -> Result<ToneCurve> {
     Ok(ToneCurve { points }.sanitized())
 }
 
-fn benchmark(strict: bool) -> Result<serde_json::Value> {
+fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<serde_json::Value> {
     const PREVIEW_WIDTH: u32 = 1800;
     const PREVIEW_HEIGHT: u32 = 1200;
     const EXPORT_WIDTH: u32 = 6000;
@@ -763,7 +791,7 @@ fn benchmark(strict: bool) -> Result<serde_json::Value> {
             "1800x1200 developed preview frame",
             &preview_samples,
             16.7,
-            50.0,
+            profile.preview_budget_ms(),
         );
         let export_ms = duration_ms(export_duration);
         let export_pass = export_ms <= 5000.0;
@@ -784,6 +812,7 @@ fn benchmark(strict: bool) -> Result<serde_json::Value> {
             "ok": true,
             "action": "benchmark",
             "strict": strict,
+            "profile": profile.name(),
             "passed": passed,
             "budgets": "Targets describe excellent feel; budgets are CI regression limits.",
             "metrics": [command, preview_metric, export],

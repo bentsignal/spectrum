@@ -45,7 +45,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --bins --locked
       - if: runner.os == 'Linux'
-        run: ./target/release/lumen benchmark --strict
+        run: ./target/release/lumen benchmark --strict --profile hosted-ci
       - if: runner.os == 'macOS'
         run: bash scripts/package-macos.sh
       - if: runner.os == 'Linux'

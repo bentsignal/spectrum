@@ -71,6 +71,8 @@ cargo test --release interactive_preview_benchmark -- --ignored --nocapture
 For end-to-end budgets, `lumen benchmark --strict` also measures tone-curve
 command persistence and a deterministic 24 MP JPEG export. Linux CI runs that
 command against the optimized binary so material regressions block the build.
+The CI invocation uses the documented `hosted-ci` budget profile because shared
+two-core runners are not representative of an editing workstation.
 
 ## Cross-platform choices
 
