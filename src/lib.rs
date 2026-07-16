@@ -8,4 +8,3 @@ pub mod project;
 pub use adjustments::{AdjustmentPatch, Adjustments};
 pub use command::{Command, CommandOutput, Workspace};
 pub use project::{Photo, Project};
-
