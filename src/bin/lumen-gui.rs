@@ -10,14 +10,18 @@ use eframe::egui::{
 };
 use image::{DynamicImage, imageops::FilterType};
 use lumen_core::{
-    Adjustments, Command, CropRect, CurvePoint, ExportFormat, Photo, ToneCurve, Workspace,
+    Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo, PickState,
+    SpotRemoval, ToneCurve, Workspace,
     engine::{RenderOptions, decode_photo, render_image, render_photo},
     project::is_supported_image,
 };
 
 const ACCENT: Color32 = Color32::from_rgb(232, 177, 72);
-const PANEL: Color32 = Color32::from_rgb(25, 27, 31);
-const CANVAS: Color32 = Color32::from_rgb(14, 15, 18);
+const ACCENT_COOL: Color32 = Color32::from_rgb(91, 164, 203);
+const PANEL: Color32 = Color32::from_rgb(27, 29, 33);
+const SURFACE: Color32 = Color32::from_rgb(34, 37, 42);
+const SURFACE_RAISED: Color32 = Color32::from_rgb(43, 46, 52);
+const CANVAS: Color32 = Color32::from_rgb(12, 13, 16);
 const HSL_NAMES: [&str; 8] = [
     "Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta",
 ];
@@ -52,6 +56,29 @@ struct CropDrag {
     pointer: Pos2,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CompareMode {
+    #[default]
+    Edited,
+    SideBySide,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FilmFilter {
+    #[default]
+    All,
+    Keeps,
+    Rejects,
+}
+
+#[derive(Clone)]
+struct Histogram {
+    red: [u32; 256],
+    green: [u32; 256],
+    blue: [u32; 256],
+    luma: [u32; 256],
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -76,6 +103,9 @@ struct LumenApp {
     preview_fast: bool,
     preview_adjustments: Adjustments,
     preview_layout_size: Option<Vec2>,
+    original_preview: Option<TextureHandle>,
+    original_preview_id: Option<u64>,
+    histogram: Option<Histogram>,
     thumbnails: HashMap<u64, TextureHandle>,
     draft: Adjustments,
     draft_id: Option<u64>,
@@ -83,14 +113,20 @@ struct LumenApp {
     error: bool,
     zoom: f32,
     pan: Vec2,
+    compare_mode: CompareMode,
+    film_filter: FilmFilter,
     hsl_band: usize,
     curve_channel: usize,
+    grade_range: usize,
     reset_confirmation: bool,
     selected_ids: BTreeSet<u64>,
     selection_anchor: Option<usize>,
     crop_mode: bool,
     crop_draft: CropRect,
     crop_drag: Option<CropDrag>,
+    spot_mode: bool,
+    spot_radius: f32,
+    spot_stroke_start: Option<usize>,
     export_open: bool,
     export_format: ExportFormat,
     export_quality: u8,
@@ -106,6 +142,15 @@ impl LumenApp {
         visuals.window_fill = PANEL;
         visuals.selection.bg_fill = ACCENT;
         visuals.selection.stroke.color = Color32::BLACK;
+        visuals.extreme_bg_color = CANVAS;
+        visuals.faint_bg_color = SURFACE;
+        visuals.widgets.noninteractive.bg_fill = SURFACE;
+        visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(61, 64, 71);
+        visuals.widgets.active.bg_fill = Color32::from_rgb(70, 65, 52);
+        visuals.widgets.inactive.corner_radius = 5.0.into();
+        visuals.widgets.hovered.corner_radius = 5.0.into();
+        visuals.widgets.active.corner_radius = 5.0.into();
         creation.egui_ctx.set_visuals(visuals);
         creation.egui_ctx.all_styles_mut(|style| {
             style.spacing.item_spacing = Vec2::new(8.0, 7.0);
@@ -120,6 +165,9 @@ impl LumenApp {
             preview_fast: false,
             preview_adjustments: Adjustments::default(),
             preview_layout_size: None,
+            original_preview: None,
+            original_preview_id: None,
+            histogram: None,
             thumbnails: HashMap::new(),
             draft: Adjustments::default(),
             draft_id: None,
@@ -127,14 +175,20 @@ impl LumenApp {
             error: false,
             zoom: 1.0,
             pan: Vec2::ZERO,
+            compare_mode: CompareMode::Edited,
+            film_filter: FilmFilter::All,
             hsl_band: 0,
             curve_channel: 0,
+            grade_range: 1,
             reset_confirmation: false,
             selected_ids: BTreeSet::new(),
             selection_anchor: None,
             crop_mode: false,
             crop_draft: CropRect::default(),
             crop_drag: None,
+            spot_mode: false,
+            spot_radius: 0.025,
+            spot_stroke_start: None,
             export_open: false,
             export_format: ExportFormat::Jpeg,
             export_quality: 92,
@@ -177,6 +231,9 @@ impl LumenApp {
         self.preview_fast_source = None;
         self.preview_id = None;
         self.preview_layout_size = None;
+        self.original_preview = None;
+        self.original_preview_id = None;
+        self.histogram = None;
         if let Some(id) = self.workspace.project.selected {
             self.thumbnails.remove(&id);
         }
@@ -196,6 +253,8 @@ impl LumenApp {
             self.pan = Vec2::ZERO;
             self.crop_mode = false;
             self.crop_drag = None;
+            self.spot_mode = false;
+            self.spot_stroke_start = None;
             if let Some(id) = selected
                 && self.selected_ids.is_empty()
             {
@@ -272,6 +331,26 @@ impl LumenApp {
         }
     }
 
+    fn set_pick(&mut self, ids: Vec<u64>, state: PickState) {
+        if !ids.is_empty() {
+            self.execute_and_autosave(Command::SetPick { ids, state });
+        }
+    }
+
+    fn visible_photo_ids(&self) -> Vec<u64> {
+        self.workspace
+            .project
+            .photos
+            .iter()
+            .filter(|photo| match self.film_filter {
+                FilmFilter::All => true,
+                FilmFilter::Keeps => photo.pick == PickState::Keep,
+                FilmFilter::Rejects => photo.pick == PickState::Reject,
+            })
+            .map(|photo| photo.id)
+            .collect()
+    }
+
     fn import(&mut self, paths: Vec<PathBuf>) {
         let paths: Vec<_> = paths
             .into_iter()
@@ -282,7 +361,7 @@ impl LumenApp {
             self.error = true;
             return;
         }
-        self.status = "Developing RAW previews and importing photos…".into();
+        self.status = "Reading photo metadata and importing…".into();
         if self.execute_and_autosave(Command::Import { paths }) {
             self.thumbnails.clear();
             self.selected_ids.clear();
@@ -342,6 +421,8 @@ impl LumenApp {
     fn begin_crop(&mut self) {
         self.crop_draft = self.draft.crop.unwrap_or_default();
         self.crop_mode = true;
+        self.spot_mode = false;
+        self.compare_mode = CompareMode::Edited;
         self.crop_drag = None;
         self.zoom = 1.0;
         self.pan = Vec2::ZERO;
@@ -422,11 +503,20 @@ impl LumenApp {
             self.preview_source.as_ref()
         };
         if let Some((_, source)) = source {
+            if self.original_preview_id != Some(id) {
+                self.original_preview = Some(load_texture(
+                    context,
+                    format!("original-{id}"),
+                    source.clone(),
+                ));
+                self.original_preview_id = Some(id);
+            }
             let rendered = render_image(
                 source.clone(),
                 preview_adjustments.clone(),
                 RenderOptions::default(),
             );
+            self.histogram = Some(Histogram::from_image(&rendered));
             if !use_fast || self.preview_layout_size.is_none() {
                 self.preview_layout_size =
                     Some(Vec2::new(rendered.width() as f32, rendered.height() as f32));
@@ -476,13 +566,7 @@ impl LumenApp {
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::A))
             && !context.egui_wants_keyboard_input()
         {
-            self.selected_ids = self
-                .workspace
-                .project
-                .photos
-                .iter()
-                .map(|photo| photo.id)
-                .collect();
+            self.selected_ids = self.visible_photo_ids().into_iter().collect();
             self.selection_anchor = self.workspace.project.selected.and_then(|id| {
                 self.workspace
                     .project
@@ -525,27 +609,44 @@ impl LumenApp {
         if direction != 0 && !context.egui_wants_keyboard_input() {
             self.select_relative(direction);
         }
+        if !context.egui_wants_keyboard_input() {
+            let pick = context.input(|input| {
+                if input.key_pressed(egui::Key::P) {
+                    Some(PickState::Keep)
+                } else if input.key_pressed(egui::Key::X) {
+                    Some(PickState::Reject)
+                } else if input.key_pressed(egui::Key::U) {
+                    Some(PickState::Unmarked)
+                } else {
+                    None
+                }
+            });
+            if let Some(state) = pick {
+                self.set_pick(self.selected_photo_ids(), state);
+            }
+            if context.input(|input| input.key_pressed(egui::Key::C)) {
+                self.compare_mode = if self.compare_mode == CompareMode::Edited {
+                    CompareMode::SideBySide
+                } else {
+                    CompareMode::Edited
+                };
+            }
+        }
     }
 
     fn select_relative(&mut self, direction: i32) {
-        if self.workspace.project.photos.is_empty() {
+        let visible = self.visible_photo_ids();
+        if visible.is_empty() {
             return;
         }
         let current = self
             .workspace
             .project
             .selected
-            .and_then(|id| {
-                self.workspace
-                    .project
-                    .photos
-                    .iter()
-                    .position(|photo| photo.id == id)
-            })
+            .and_then(|id| visible.iter().position(|visible| *visible == id))
             .unwrap_or(0) as i32;
-        let index =
-            (current + direction).clamp(0, self.workspace.project.photos.len() as i32 - 1) as usize;
-        self.select(self.workspace.project.photos[index].id);
+        let index = (current + direction).clamp(0, visible.len() as i32 - 1) as usize;
+        self.select(visible[index]);
     }
 
     fn toolbar(&mut self, root: &mut egui::Ui) {
@@ -553,6 +654,7 @@ impl LumenApp {
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
+                    .stroke(Stroke::new(1.0, Color32::from_gray(49)))
                     .inner_margin(egui::Margin::symmetric(14, 9)),
             )
             .show(root, |ui| {
@@ -606,6 +708,35 @@ impl LumenApp {
                     ui.label(format!("{:.0}%", self.zoom * 100.0));
                     if ui.button("+").clicked() {
                         self.zoom = (self.zoom * 1.25).min(8.0);
+                    }
+                    ui.separator();
+                    ui.selectable_value(&mut self.compare_mode, CompareMode::Edited, "Edited");
+                    ui.selectable_value(
+                        &mut self.compare_mode,
+                        CompareMode::SideBySide,
+                        "Before | After",
+                    )
+                    .on_hover_text("Compare original and edited photo (C)");
+                    ui.separator();
+                    let pick = self
+                        .workspace
+                        .project
+                        .selected_photo()
+                        .map(|photo| photo.pick)
+                        .unwrap_or_default();
+                    if ui
+                        .selectable_label(pick == PickState::Keep, "◆ Keep")
+                        .on_hover_text("Mark selected photos as keeps (P)")
+                        .clicked()
+                    {
+                        self.set_pick(self.selected_photo_ids(), PickState::Keep);
+                    }
+                    if ui
+                        .selectable_label(pick == PickState::Reject, "× Reject")
+                        .on_hover_text("Mark selected photos as rejects (X)")
+                        .clicked()
+                    {
+                        self.set_pick(self.selected_photo_ids(), PickState::Reject);
                     }
                     ui.separator();
                     if self.crop_mode {
@@ -689,40 +820,69 @@ impl LumenApp {
                         .size(9.0)
                         .color(Color32::from_gray(115)),
                 );
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.film_filter, FilmFilter::All, "All");
+                    ui.selectable_value(&mut self.film_filter, FilmFilter::Keeps, "◆ Keeps");
+                    ui.selectable_value(&mut self.film_filter, FilmFilter::Rejects, "× Rejects");
+                });
                 ui.separator();
-                let photos: Vec<_> = self
+                let mut photos: Vec<_> = self
                     .workspace
                     .project
                     .photos
                     .iter()
-                    .map(|photo| (photo.id, photo.name.clone(), photo.is_raw()))
+                    .enumerate()
+                    .filter(|(_, photo)| match self.film_filter {
+                        FilmFilter::All => true,
+                        FilmFilter::Keeps => photo.pick == PickState::Keep,
+                        FilmFilter::Rejects => photo.pick == PickState::Reject,
+                    })
+                    .map(|(index, photo)| {
+                        (
+                            index,
+                            photo.id,
+                            photo.name.clone(),
+                            photo.is_raw(),
+                            photo.pick,
+                        )
+                    })
                     .collect();
+                if self.film_filter == FilmFilter::All {
+                    photos.sort_by_key(|(index, _, _, _, pick)| {
+                        (if *pick == PickState::Keep { 0 } else { 1 }, *index)
+                    });
+                }
                 if photos.is_empty() {
-                    ui.label(RichText::new("Your photos will appear here").color(Color32::GRAY));
+                    ui.label(RichText::new("No photos in this view").color(Color32::GRAY));
                     return;
                 }
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (index, (id, name, raw)) in photos.into_iter().enumerate() {
+                        for (project_index, id, name, raw, pick) in photos {
                             self.ensure_thumbnail(&context, id);
                             let selected = self.selected_ids.contains(&id);
                             let active = self.workspace.project.selected == Some(id);
                             let frame = egui::Frame::new()
                                 .fill(if selected {
                                     Color32::from_rgb(55, 48, 33)
+                                } else if pick == PickState::Keep {
+                                    Color32::from_rgb(31, 48, 43)
+                                } else if pick == PickState::Reject {
+                                    Color32::from_rgb(45, 31, 34)
                                 } else {
-                                    CANVAS
+                                    SURFACE
                                 })
                                 .stroke(if active {
                                     Stroke::new(2.0, ACCENT)
                                 } else if selected {
-                                    Stroke::new(1.5, Color32::from_rgb(115, 151, 224))
+                                    Stroke::new(1.5, ACCENT_COOL)
                                 } else {
                                     Stroke::new(1.0, Color32::from_gray(50))
                                 })
                                 .corner_radius(5.0)
                                 .inner_margin(6);
+                            let mut pick_action = None;
                             let inner = frame.show(ui, |ui| {
                                 if let Some(texture) = self.thumbnails.get(&id) {
                                     let width = ui.available_width();
@@ -735,24 +895,56 @@ impl LumenApp {
                                 }
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new(shorten(&name, 18)).size(11.0));
-                                    if raw {
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .small_button(if pick == PickState::Keep {
+                                                    "◆"
+                                                } else {
+                                                    "◇"
+                                                })
+                                                .on_hover_text("Keep / pin photo")
+                                                .clicked()
+                                            {
+                                                pick_action = Some(if pick == PickState::Keep {
+                                                    PickState::Unmarked
+                                                } else {
+                                                    PickState::Keep
+                                                });
+                                            }
+                                            if ui
+                                                .small_button(if pick == PickState::Reject {
+                                                    "×"
+                                                } else {
+                                                    "–"
+                                                })
+                                                .on_hover_text("Reject photo")
+                                                .clicked()
+                                            {
+                                                pick_action = Some(if pick == PickState::Reject {
+                                                    PickState::Unmarked
+                                                } else {
+                                                    PickState::Reject
+                                                });
+                                            }
+                                            if raw {
                                                 ui.label(
                                                     RichText::new("RAW")
                                                         .size(9.0)
                                                         .strong()
                                                         .color(ACCENT),
                                                 );
-                                            },
-                                        );
-                                    }
+                                            }
+                                        },
+                                    );
                                 });
                             });
-                            if inner.response.interact(Sense::click()).clicked() {
+                            if let Some(state) = pick_action {
+                                self.set_pick(vec![id], state);
+                            } else if inner.response.interact(Sense::click()).clicked() {
                                 let modifiers = ui.input(|input| input.modifiers);
-                                self.select_in_filmstrip(id, index, modifiers);
+                                self.select_in_filmstrip(id, project_index, modifiers);
                             }
                             ui.add_space(5.0);
                         }
@@ -768,6 +960,7 @@ impl LumenApp {
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
+                    .stroke(Stroke::new(1.0, Color32::from_gray(48)))
                     .inner_margin(egui::Margin::same(14)),
             )
             .show(root, |ui| {
@@ -779,6 +972,9 @@ impl LumenApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        self.histogram_ui(ui);
+                        self.photo_details_ui(ui, id);
+                        ui.add_space(4.0);
                         ui.heading("Develop");
                         ui.add_space(3.0);
                         let mut draft = self.draft.clone();
@@ -867,6 +1063,74 @@ impl LumenApp {
                                     ui,
                                     "Saturation",
                                     &mut draft.saturation,
+                                    -100.0..=100.0,
+                                    &mut changed,
+                                    &mut commit,
+                                );
+                            });
+                        egui::CollapsingHeader::new("Color Grading")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    for (index, label) in
+                                        ["Shadows", "Midtones", "Highlights"].into_iter().enumerate()
+                                    {
+                                        if ui
+                                            .selectable_label(self.grade_range == index, label)
+                                            .clicked()
+                                        {
+                                            self.grade_range = index;
+                                        }
+                                    }
+                                });
+                                {
+                                    let grade = match self.grade_range {
+                                        0 => &mut draft.color_grading.shadows,
+                                        1 => &mut draft.color_grading.midtones,
+                                        _ => &mut draft.color_grading.highlights,
+                                    };
+                                    ui.horizontal(|ui| {
+                                        grade_swatch(ui, *grade);
+                                        ui.label(
+                                            RichText::new("Tonal tint")
+                                                .size(10.0)
+                                                .color(Color32::GRAY),
+                                        );
+                                        if ui.small_button("Reset range").clicked() {
+                                            *grade = ColorGrade::default();
+                                            changed = true;
+                                            commit = true;
+                                        }
+                                    });
+                                    slider(
+                                        ui,
+                                        "Hue",
+                                        &mut grade.hue,
+                                        0.0..=360.0,
+                                        &mut changed,
+                                        &mut commit,
+                                    );
+                                    slider(
+                                        ui,
+                                        "Saturation",
+                                        &mut grade.saturation,
+                                        0.0..=100.0,
+                                        &mut changed,
+                                        &mut commit,
+                                    );
+                                    slider(
+                                        ui,
+                                        "Luminance",
+                                        &mut grade.luminance,
+                                        -100.0..=100.0,
+                                        &mut changed,
+                                        &mut commit,
+                                    );
+                                }
+                                slider(
+                                    ui,
+                                    "Balance",
+                                    &mut draft.color_grading.balance,
                                     -100.0..=100.0,
                                     &mut changed,
                                     &mut commit,
@@ -1015,6 +1279,50 @@ impl LumenApp {
                                     }
                                 });
                             });
+                        egui::CollapsingHeader::new("Dust & Spot Removal")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .selectable_label(self.spot_mode, "● Repair Brush")
+                                        .on_hover_text("Paint over dust or small smudges on the photo")
+                                        .clicked()
+                                    {
+                                        self.spot_mode = !self.spot_mode;
+                                        self.crop_mode = false;
+                                        self.compare_mode = CompareMode::Edited;
+                                    }
+                                    if ui
+                                        .add_enabled(!draft.spots.is_empty(), egui::Button::new("Undo Dab"))
+                                        .clicked()
+                                    {
+                                        draft.spots.pop();
+                                        changed = true;
+                                        commit = true;
+                                    }
+                                    if ui
+                                        .add_enabled(!draft.spots.is_empty(), egui::Button::new("Clear"))
+                                        .clicked()
+                                    {
+                                        draft.spots.clear();
+                                        changed = true;
+                                        commit = true;
+                                    }
+                                });
+                                ui.add(
+                                    egui::Slider::new(&mut self.spot_radius, 0.005..=0.12)
+                                        .text("Brush size")
+                                        .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} repair dab(s) • drag on the image to paint",
+                                        draft.spots.len()
+                                    ))
+                                    .size(10.0)
+                                    .color(Color32::GRAY),
+                                );
+                            });
                         egui::CollapsingHeader::new("Color Mixer (HSL)")
                             .default_open(false)
                             .show(ui, |ui| {
@@ -1133,6 +1441,77 @@ impl LumenApp {
             });
     }
 
+    fn histogram_ui(&self, ui: &mut egui::Ui) {
+        egui::Frame::new()
+            .fill(CANVAS)
+            .stroke(Stroke::new(1.0, Color32::from_gray(55)))
+            .corner_radius(7.0)
+            .inner_margin(8)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("HISTOGRAM")
+                            .strong()
+                            .size(10.0)
+                            .color(Color32::GRAY),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new("RGB + luminance")
+                                .size(9.0)
+                                .color(Color32::from_gray(105)),
+                        );
+                    });
+                });
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 112.0), Sense::hover());
+                if let Some(histogram) = &self.histogram {
+                    paint_histogram(ui, rect, histogram);
+                }
+            });
+    }
+
+    fn photo_details_ui(&self, ui: &mut egui::Ui, id: u64) {
+        egui::CollapsingHeader::new("Photo Details")
+            .default_open(true)
+            .show(ui, |ui| {
+                let Ok(photo) = self.workspace.project.photo(id) else {
+                    return;
+                };
+                let metadata = &photo.metadata;
+                detail_row(
+                    ui,
+                    "Camera",
+                    metadata
+                        .camera_model
+                        .as_deref()
+                        .or(metadata.camera_make.as_deref())
+                        .unwrap_or("—"),
+                );
+                detail_row(ui, "Lens", metadata.lens.as_deref().unwrap_or("—"));
+                detail_row(
+                    ui,
+                    "Capture",
+                    &format!(
+                        "{}  •  {}  •  {}  •  {}",
+                        metadata
+                            .iso
+                            .map_or_else(|| "ISO —".into(), |iso| format!("ISO {iso}")),
+                        metadata
+                            .focal_length_mm
+                            .map_or_else(|| "— mm".into(), |value| format!("{value:.0} mm")),
+                        metadata
+                            .aperture
+                            .map_or_else(|| "f/—".into(), |value| format!("f/{value:.1}")),
+                        format_shutter(metadata.shutter_seconds),
+                    ),
+                );
+                if let Some(captured) = &metadata.captured_at {
+                    detail_row(ui, "Date", captured);
+                }
+            });
+    }
+
     fn presets_ui(&mut self, ui: &mut egui::Ui, id: u64) {
         egui::CollapsingHeader::new("Presets")
             .default_open(false)
@@ -1232,18 +1611,50 @@ impl LumenApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(CANVAS).inner_margin(16))
             .show(root, |ui| {
-                if let Some(texture) = &self.preview {
+                if let Some(texture) = self.preview.clone() {
                     let available = ui.available_size();
                     let (rect, response) =
                         ui.allocate_exact_size(available, Sense::click_and_drag());
-                    if response.dragged() && !self.crop_mode {
+                    if response.dragged() && !self.crop_mode && !self.spot_mode {
                         self.pan += response.drag_delta();
                     }
-                    if response.hovered() && !self.crop_mode {
+                    if response.hovered() && !self.crop_mode && !self.spot_mode {
                         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
                         if scroll.abs() > 0.1 {
                             self.zoom = (self.zoom * (scroll * 0.0018).exp()).clamp(0.25, 8.0);
                         }
+                    }
+                    if self.compare_mode == CompareMode::SideBySide
+                        && let Some(original) = self.original_preview.clone()
+                    {
+                        let gap = 10.0;
+                        let half = (rect.width() - gap) * 0.5;
+                        let before_rect =
+                            Rect::from_min_size(rect.min, Vec2::new(half, rect.height()));
+                        let after_rect = Rect::from_min_size(
+                            Pos2::new(before_rect.right() + gap, rect.top()),
+                            Vec2::new(half, rect.height()),
+                        );
+                        ui.painter()
+                            .rect_filled(before_rect, 6.0, Color32::from_rgb(18, 20, 23));
+                        ui.painter()
+                            .rect_filled(after_rect, 6.0, Color32::from_rgb(18, 20, 23));
+                        let before_size =
+                            fit_size(original.size_vec2(), before_rect.size()) * self.zoom;
+                        let after_size = preview_fit_size(
+                            self.preview_layout_size,
+                            texture.size_vec2(),
+                            after_rect.size(),
+                        ) * self.zoom;
+                        let before_image =
+                            Rect::from_center_size(before_rect.center() + self.pan, before_size);
+                        let after_image =
+                            Rect::from_center_size(after_rect.center() + self.pan, after_size);
+                        paint_texture(ui, before_rect, &original, before_image);
+                        paint_texture(ui, after_rect, &texture, after_image);
+                        compare_label(ui, before_rect, "ORIGINAL");
+                        compare_label(ui, after_rect, "EDITED");
+                        return;
                     }
                     let base = preview_fit_size(
                         self.preview_layout_size,
@@ -1267,6 +1678,31 @@ impl LumenApp {
                             &mut self.crop_drag,
                         );
                         paint_crop_overlay(ui, rect, image_rect, self.crop_draft);
+                    } else if self.spot_mode {
+                        if let Some(id) = self.workspace.project.selected {
+                            let (changed, commit) = spot_interaction(
+                                &response,
+                                image_rect,
+                                &mut self.draft.spots,
+                                self.spot_radius,
+                                &mut self.spot_stroke_start,
+                            );
+                            if changed {
+                                self.preview = None;
+                                ui.ctx().request_repaint();
+                            }
+                            if commit {
+                                self.draft = self.draft.clone().sanitized();
+                                self.finish_edit(id);
+                            }
+                        }
+                        paint_spot_overlay(
+                            ui,
+                            rect,
+                            image_rect,
+                            &self.draft.spots,
+                            self.spot_radius,
+                        );
                     } else if self.zoom > 1.01 {
                         ui.painter().text(
                             rect.left_bottom() + Vec2::new(8.0, -8.0),
@@ -1528,6 +1964,233 @@ impl eframe::App for LumenApp {
     }
 }
 
+impl Histogram {
+    fn from_image(image: &DynamicImage) -> Self {
+        let mut histogram = Self {
+            red: [0; 256],
+            green: [0; 256],
+            blue: [0; 256],
+            luma: [0; 256],
+        };
+        let rgba = image.to_rgba8();
+        for pixel in rgba.pixels().step_by(2) {
+            histogram.red[pixel[0] as usize] += 1;
+            histogram.green[pixel[1] as usize] += 1;
+            histogram.blue[pixel[2] as usize] += 1;
+            let luma =
+                (pixel[0] as f32 * 0.2126 + pixel[1] as f32 * 0.7152 + pixel[2] as f32 * 0.0722)
+                    .round() as usize;
+            histogram.luma[luma.min(255)] += 1;
+        }
+        histogram
+    }
+}
+
+fn paint_histogram(ui: &egui::Ui, rect: Rect, histogram: &Histogram) {
+    let painter = ui.painter_at(rect);
+    for fraction in [0.25, 0.5, 0.75] {
+        let x = rect.left() + rect.width() * fraction;
+        painter.line_segment(
+            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+            Stroke::new(1.0, Color32::from_gray(33)),
+        );
+    }
+    let peak = histogram
+        .luma
+        .iter()
+        .chain(histogram.red.iter())
+        .chain(histogram.green.iter())
+        .chain(histogram.blue.iter())
+        .copied()
+        .max()
+        .unwrap_or(1)
+        .max(1) as f32;
+    for (values, color, width) in [
+        (&histogram.luma, Color32::from_white_alpha(115), 1.5),
+        (
+            &histogram.red,
+            Color32::from_rgba_unmultiplied(238, 77, 72, 175),
+            1.15,
+        ),
+        (
+            &histogram.green,
+            Color32::from_rgba_unmultiplied(78, 211, 115, 175),
+            1.15,
+        ),
+        (
+            &histogram.blue,
+            Color32::from_rgba_unmultiplied(82, 137, 240, 185),
+            1.15,
+        ),
+    ] {
+        let points: Vec<_> = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                Pos2::new(
+                    rect.left() + index as f32 / 255.0 * rect.width(),
+                    rect.bottom() - (*value as f32 / peak).sqrt() * rect.height(),
+                )
+            })
+            .collect();
+        painter.add(egui::Shape::line(points, Stroke::new(width, color)));
+    }
+}
+
+fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [58.0, 16.0],
+            egui::Label::new(RichText::new(label).size(10.0).color(Color32::GRAY)),
+        );
+        ui.label(RichText::new(value).size(10.0));
+    });
+}
+
+fn format_shutter(seconds: Option<f32>) -> String {
+    let Some(seconds) = seconds.filter(|value| *value > 0.0) else {
+        return "— s".into();
+    };
+    if seconds >= 1.0 {
+        format!("{seconds:.1} s")
+    } else {
+        format!("1/{:.0} s", 1.0 / seconds)
+    }
+}
+
+fn grade_swatch(ui: &mut egui::Ui, grade: ColorGrade) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
+    ui.painter()
+        .circle_filled(rect.center(), 11.0, hue_color(grade.hue, grade.saturation));
+    ui.painter().circle_stroke(
+        rect.center(),
+        11.0,
+        Stroke::new(1.0, Color32::from_gray(110)),
+    );
+}
+
+fn hue_color(hue: f32, saturation: f32) -> Color32 {
+    let h = hue.rem_euclid(360.0) / 60.0;
+    let s = saturation.clamp(0.0, 100.0) / 100.0;
+    let x = 1.0 - (h.rem_euclid(2.0) - 1.0).abs();
+    let rgb = match h as i32 {
+        0 => [1.0, x, 0.0],
+        1 => [x, 1.0, 0.0],
+        2 => [0.0, 1.0, x],
+        3 => [0.0, x, 1.0],
+        4 => [x, 0.0, 1.0],
+        _ => [1.0, 0.0, x],
+    };
+    let mix = |channel: f32| ((0.38 + channel * 0.62) * s + 0.42 * (1.0 - s)) * 255.0;
+    Color32::from_rgb(mix(rgb[0]) as u8, mix(rgb[1]) as u8, mix(rgb[2]) as u8)
+}
+
+fn paint_texture(ui: &egui::Ui, clip: Rect, texture: &TextureHandle, image: Rect) {
+    ui.painter().with_clip_rect(clip).image(
+        texture.id(),
+        image,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        Color32::WHITE,
+    );
+}
+
+fn compare_label(ui: &egui::Ui, rect: Rect, label: &str) {
+    let badge = Rect::from_min_size(rect.min + Vec2::splat(10.0), Vec2::new(78.0, 24.0));
+    ui.painter()
+        .rect_filled(badge, 5.0, Color32::from_black_alpha(185));
+    ui.painter().text(
+        badge.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(10.0),
+        if label == "EDITED" {
+            ACCENT
+        } else {
+            Color32::LIGHT_GRAY
+        },
+    );
+}
+
+fn spot_interaction(
+    response: &egui::Response,
+    image: Rect,
+    spots: &mut Vec<SpotRemoval>,
+    radius: f32,
+    stroke_start: &mut Option<usize>,
+) -> (bool, bool) {
+    let mut changed = false;
+    let mut commit = false;
+    let point = |position: Pos2| {
+        image.contains(position).then_some(SpotRemoval {
+            x: ((position.x - image.left()) / image.width()).clamp(0.0, 1.0),
+            y: ((position.y - image.top()) / image.height()).clamp(0.0, 1.0),
+            radius,
+            opacity: 1.0,
+        })
+    };
+    let add = |spots: &mut Vec<SpotRemoval>, spot: SpotRemoval| {
+        let spaced = spots.last().is_none_or(|last| {
+            let distance = ((last.x - spot.x).powi(2) + (last.y - spot.y).powi(2)).sqrt();
+            distance >= radius * 0.55
+        });
+        if spaced && spots.len() < 512 {
+            spots.push(spot);
+            true
+        } else {
+            false
+        }
+    };
+    if response.drag_started() {
+        *stroke_start = Some(spots.len());
+    }
+    if (response.drag_started() || response.dragged())
+        && let Some(position) = response.interact_pointer_pos()
+        && let Some(spot) = point(position)
+    {
+        changed |= add(spots, spot);
+    }
+    if response.drag_stopped()
+        && let Some(start) = stroke_start.take()
+    {
+        commit = spots.len() > start;
+    }
+    if response.clicked()
+        && let Some(position) = response.interact_pointer_pos()
+        && let Some(spot) = point(position)
+    {
+        changed |= add(spots, spot);
+        commit = changed;
+    }
+    (changed, commit)
+}
+
+fn paint_spot_overlay(
+    ui: &egui::Ui,
+    canvas: Rect,
+    image: Rect,
+    spots: &[SpotRemoval],
+    brush_radius: f32,
+) {
+    let painter = ui.painter().with_clip_rect(canvas.intersect(image));
+    let scale = image.width().min(image.height());
+    for spot in spots {
+        let center = Pos2::new(
+            image.left() + spot.x * image.width(),
+            image.top() + spot.y * image.height(),
+        );
+        painter.circle_stroke(
+            center,
+            spot.radius * scale,
+            Stroke::new(1.2, Color32::from_rgba_unmultiplied(255, 255, 255, 150)),
+        );
+    }
+    if let Some(position) = ui.ctx().pointer_hover_pos()
+        && image.contains(position)
+    {
+        painter.circle_stroke(position, brush_radius * scale, Stroke::new(1.5, ACCENT));
+    }
+}
+
 fn slider(
     ui: &mut egui::Ui,
     label: &str,
@@ -1536,9 +2199,28 @@ fn slider(
     changed: &mut bool,
     commit: &mut bool,
 ) {
-    let response = ui.add(egui::Slider::new(value, range).text(label).smart_aim(false));
-    *changed |= response.changed();
-    *commit |= response.drag_stopped() || (response.changed() && !response.dragged());
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [78.0, 18.0],
+            egui::Label::new(RichText::new(label).size(10.5)),
+        );
+        let response = ui.add(
+            egui::Slider::new(value, range)
+                .show_value(true)
+                .smart_aim(false),
+        );
+        *changed |= response.changed();
+        *commit |= response.drag_stopped() || (response.changed() && !response.dragged());
+        if ui
+            .add_enabled(value.abs() > f32::EPSILON, egui::Button::new("↺").small())
+            .on_hover_text(format!("Reset {label}"))
+            .clicked()
+        {
+            *value = 0.0;
+            *changed = true;
+            *commit = true;
+        }
+    });
 }
 
 fn crop_screen_rect(image: Rect, crop: CropRect) -> Rect {

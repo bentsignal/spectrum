@@ -6,9 +6,9 @@ pub mod engine;
 pub mod project;
 
 pub use adjustments::{
-    AdjustmentPatch, Adjustments, CropRect, CurvePoint, HslAdjustments, HslBand, ToneCurve,
-    ToneCurves,
+    AdjustmentPatch, Adjustments, ColorGrade, ColorGrading, CropRect, CurvePoint, HslAdjustments,
+    HslBand, SpotRemoval, ToneCurve, ToneCurves,
 };
 pub use command::{Command, CommandOutput, Workspace};
 pub use engine::ExportFormat;
-pub use project::{HistoryEntry, Photo, Preset, Project};
+pub use project::{HistoryEntry, Photo, PhotoMetadata, PickState, Preset, Project};

@@ -112,6 +112,88 @@ impl HslAdjustments {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorGrade {
+    /// Hue angle in degrees.
+    pub hue: f32,
+    /// Color intensity from 0 to 100.
+    pub saturation: f32,
+    /// Per-range luminance offset from -100 to 100.
+    pub luminance: f32,
+}
+
+impl ColorGrade {
+    fn sanitized(mut self) -> Self {
+        self.hue = self.hue.rem_euclid(360.0);
+        self.saturation = self.saturation.clamp(0.0, 100.0);
+        self.luminance = clamp_percent(self.luminance);
+        self
+    }
+
+    pub fn is_identity(&self) -> bool {
+        self.saturation == 0.0 && self.luminance == 0.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorGrading {
+    pub shadows: ColorGrade,
+    pub midtones: ColorGrade,
+    pub highlights: ColorGrade,
+    /// Moves the tonal split toward shadows (-100) or highlights (100).
+    pub balance: f32,
+}
+
+impl ColorGrading {
+    fn sanitized(mut self) -> Self {
+        self.shadows = self.shadows.sanitized();
+        self.midtones = self.midtones.sanitized();
+        self.highlights = self.highlights.sanitized();
+        self.balance = clamp_percent(self.balance);
+        self
+    }
+
+    pub fn is_identity(&self) -> bool {
+        self.shadows.is_identity()
+            && self.midtones.is_identity()
+            && self.highlights.is_identity()
+            && self.balance == 0.0
+    }
+}
+
+/// One normalized, nondestructive dust/smudge repair dab.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpotRemoval {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    pub opacity: f32,
+}
+
+impl Default for SpotRemoval {
+    fn default() -> Self {
+        Self {
+            x: 0.5,
+            y: 0.5,
+            radius: 0.025,
+            opacity: 1.0,
+        }
+    }
+}
+
+impl SpotRemoval {
+    fn sanitized(mut self) -> Self {
+        self.x = self.x.clamp(0.0, 1.0);
+        self.y = self.y.clamp(0.0, 1.0);
+        self.radius = self.radius.clamp(0.002, 0.25);
+        self.opacity = self.opacity.clamp(0.0, 1.0);
+        self
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CurvePoint {
     pub x: f32,
@@ -219,6 +301,8 @@ pub struct Adjustments {
     pub crop: Option<CropRect>,
     pub hsl: HslAdjustments,
     pub curves: ToneCurves,
+    pub color_grading: ColorGrading,
+    pub spots: Vec<SpotRemoval>,
 }
 
 impl Default for Adjustments {
@@ -247,6 +331,8 @@ impl Default for Adjustments {
             crop: None,
             hsl: HslAdjustments::default(),
             curves: ToneCurves::default(),
+            color_grading: ColorGrading::default(),
+            spots: Vec::new(),
         }
     }
 }
@@ -277,6 +363,19 @@ impl Adjustments {
         self.curves.red = self.curves.red.sanitized();
         self.curves.green = self.curves.green.sanitized();
         self.curves.blue = self.curves.blue.sanitized();
+        self.color_grading = self.color_grading.sanitized();
+        self.spots.retain(|spot| {
+            spot.x.is_finite()
+                && spot.y.is_finite()
+                && spot.radius.is_finite()
+                && spot.opacity.is_finite()
+        });
+        self.spots = self
+            .spots
+            .into_iter()
+            .map(SpotRemoval::sanitized)
+            .take(512)
+            .collect();
         self
     }
 
@@ -293,6 +392,7 @@ impl Adjustments {
             flip_vertical: false,
             straighten: 0.0,
             crop: None,
+            spots: Vec::new(),
             ..self.clone()
         }
     }
@@ -306,6 +406,7 @@ impl Adjustments {
             self.flip_vertical,
             self.straighten,
             self.crop,
+            self.spots.clone(),
         );
         *self = preset.as_preset();
         self.rotation = geometry.0;
@@ -313,6 +414,7 @@ impl Adjustments {
         self.flip_vertical = geometry.2;
         self.straighten = geometry.3;
         self.crop = geometry.4;
+        self.spots = geometry.5;
         *self = self.clone().sanitized();
     }
 }
@@ -345,6 +447,8 @@ pub struct AdjustmentPatch {
     pub flip_vertical: Option<bool>,
     pub straighten: Option<f32>,
     pub crop: Option<Option<CropRect>>,
+    pub color_grading: Option<ColorGrading>,
+    pub spots: Option<Vec<SpotRemoval>>,
 }
 
 impl AdjustmentPatch {
@@ -377,6 +481,8 @@ impl AdjustmentPatch {
         apply!(flip_vertical);
         apply!(straighten);
         apply!(crop);
+        apply!(color_grading);
+        apply!(spots);
         *value = value.clone().sanitized();
     }
 }
@@ -437,6 +543,11 @@ mod tests {
                 width: 0.8,
                 height: 0.8,
             }),
+            spots: vec![SpotRemoval {
+                x: 0.5,
+                y: 0.5,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         target.apply_preset(&Adjustments {
@@ -447,5 +558,6 @@ mod tests {
         assert_eq!(target.exposure, 1.25);
         assert_eq!(target.rotation, 90);
         assert!(target.crop.is_some());
+        assert_eq!(target.spots.len(), 1);
     }
 }

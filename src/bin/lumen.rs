@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use image::{DynamicImage, Rgb, RgbImage};
 use lumen_core::{
-    AdjustmentPatch, Adjustments, Command, CropRect, CurvePoint, ExportFormat, Photo, Project,
-    ToneCurve, ToneCurves, Workspace,
+    AdjustmentPatch, Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo,
+    PickState, Project, SpotRemoval, ToneCurve, ToneCurves, Workspace,
     engine::{RenderOptions, render_image},
 };
 use serde::Serialize;
@@ -92,6 +92,42 @@ enum CliCommand {
         points: Option<String>,
         #[arg(long)]
         reset: bool,
+    },
+    /// Grade shadows, midtones, or highlights with hue, saturation, and luminance.
+    Grade {
+        id: u64,
+        range: GradeRange,
+        #[arg(long)]
+        hue: Option<f32>,
+        #[arg(long)]
+        saturation: Option<f32>,
+        #[arg(long, allow_hyphen_values = true)]
+        luminance: Option<f32>,
+        #[arg(long, allow_hyphen_values = true)]
+        balance: Option<f32>,
+        #[arg(long)]
+        reset: bool,
+    },
+    /// Add or clear nondestructive dust/smudge repair dabs.
+    Spot {
+        id: u64,
+        #[arg(long)]
+        x: Option<f32>,
+        #[arg(long)]
+        y: Option<f32>,
+        #[arg(long, default_value_t = 0.025)]
+        radius: f32,
+        #[arg(long, default_value_t = 1.0)]
+        opacity: f32,
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Mark photos as keeps, rejects, or unmarked for fast culling.
+    Pick {
+        #[arg(num_args = 1..)]
+        ids: Vec<u64>,
+        #[arg(long, value_enum)]
+        state: CliPickState,
     },
     /// Show the persistent edit history for a photo.
     History { id: u64 },
@@ -178,6 +214,9 @@ enum CliCommand {
         /// Budget calibration: workstation feel or GitHub's shared Linux runner.
         #[arg(long, value_enum, default_value_t = BenchmarkProfile::Interactive)]
         profile: BenchmarkProfile,
+        /// Optional real RAW file used for an import-only metadata benchmark.
+        #[arg(long)]
+        raw_import: Option<PathBuf>,
     },
     /// Print the JSON command protocol and adjustment ranges.
     Schema,
@@ -243,6 +282,30 @@ enum CurveChannel {
     Red,
     Green,
     Blue,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum GradeRange {
+    Shadows,
+    Midtones,
+    Highlights,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CliPickState {
+    Unmarked,
+    Keep,
+    Reject,
+}
+
+impl From<CliPickState> for PickState {
+    fn from(value: CliPickState) -> Self {
+        match value {
+            CliPickState::Unmarked => Self::Unmarked,
+            CliPickState::Keep => Self::Keep,
+            CliPickState::Reject => Self::Reject,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, ValueEnum)]
@@ -338,8 +401,13 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
     if matches!(&cli.command, CliCommand::Schema) {
         return Ok(schema());
     }
-    if let CliCommand::Benchmark { strict, profile } = &cli.command {
-        return benchmark(*strict, *profile);
+    if let CliCommand::Benchmark {
+        strict,
+        profile,
+        raw_import,
+    } = &cli.command
+    {
+        return benchmark(*strict, *profile, raw_import.as_deref());
     }
 
     if let CliCommand::Init { name, force } = &cli.command {
@@ -488,6 +556,81 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                 true,
             )
         }
+        CliCommand::Grade {
+            id,
+            range,
+            hue,
+            saturation,
+            luminance,
+            balance,
+            reset,
+        } => {
+            let mut adjustments = workspace.project.photo(id)?.adjustments.clone();
+            let grade = match range {
+                GradeRange::Shadows => &mut adjustments.color_grading.shadows,
+                GradeRange::Midtones => &mut adjustments.color_grading.midtones,
+                GradeRange::Highlights => &mut adjustments.color_grading.highlights,
+            };
+            if reset {
+                *grade = ColorGrade::default();
+            }
+            if let Some(value) = hue {
+                grade.hue = value;
+            }
+            if let Some(value) = saturation {
+                grade.saturation = value;
+            }
+            if let Some(value) = luminance {
+                grade.luminance = value;
+            }
+            if let Some(value) = balance {
+                adjustments.color_grading.balance = value;
+            }
+            (
+                output(&workspace_command(
+                    &mut workspace,
+                    Command::SetAdjustments { id, adjustments },
+                )?),
+                true,
+            )
+        }
+        CliCommand::Spot {
+            id,
+            x,
+            y,
+            radius,
+            opacity,
+            clear,
+        } => {
+            let mut adjustments = workspace.project.photo(id)?.adjustments.clone();
+            if clear {
+                adjustments.spots.clear();
+            } else {
+                adjustments.spots.push(SpotRemoval {
+                    x: x.context("--x is required unless --clear is used")?,
+                    y: y.context("--y is required unless --clear is used")?,
+                    radius,
+                    opacity,
+                });
+            }
+            (
+                output(&workspace_command(
+                    &mut workspace,
+                    Command::SetAdjustments { id, adjustments },
+                )?),
+                true,
+            )
+        }
+        CliCommand::Pick { ids, state } => (
+            output(&workspace_command(
+                &mut workspace,
+                Command::SetPick {
+                    ids,
+                    state: state.into(),
+                },
+            )?),
+            true,
+        ),
         CliCommand::History { id } => {
             let photo = workspace.project.photo(id)?;
             return Ok(
@@ -682,7 +825,11 @@ fn parse_curve(value: &str) -> Result<ToneCurve> {
     Ok(ToneCurve { points }.sanitized())
 }
 
-fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<serde_json::Value> {
+fn benchmark(
+    strict: bool,
+    profile: BenchmarkProfile,
+    raw_import: Option<&std::path::Path>,
+) -> Result<serde_json::Value> {
     const PREVIEW_WIDTH: u32 = 1800;
     const PREVIEW_HEIGHT: u32 = 1200;
     const EXPORT_WIDTH: u32 = 6000;
@@ -698,6 +845,24 @@ fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<serde_json::Valu
         DynamicImage::ImageRgb8(source)
             .save(&source_path)
             .context("prepare deterministic 24 MP benchmark source")?;
+
+        let import_source = directory.join("import-source.jpg");
+        DynamicImage::ImageRgb8(deterministic_rgb(2400, 1600))
+            .save(&import_source)
+            .context("prepare deterministic import benchmark source")?;
+        let mut import_paths = Vec::with_capacity(12);
+        for index in 0..12 {
+            let path = directory.join(format!("import-{index:02}.jpg"));
+            fs::copy(&import_source, &path)?;
+            import_paths.push(path);
+        }
+        let mut import_samples = Vec::with_capacity(6);
+        for _ in 0..6 {
+            let started = Instant::now();
+            let mut import_project = Project::new("Import benchmark");
+            std::hint::black_box(import_project.import(&import_paths)?);
+            import_samples.push(started.elapsed());
+        }
 
         let mut project = Project::new("Performance benchmark");
         let mut photo = Photo::new(
@@ -805,9 +970,40 @@ fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<serde_json::Valu
             "budget_ms": 5000.0,
             "pass": export_pass,
         });
+        let jpeg_import = latency_metric(
+            "jpeg_batch_import",
+            "12 deterministic 2400x1600 JPEG files: validate, dimensions, and catalog records",
+            &import_samples,
+            75.0,
+            250.0,
+        );
+        let raw_import_metric = raw_import.map(|path| -> Result<serde_json::Value> {
+            let mut samples = Vec::with_capacity(3);
+            for _ in 0..3 {
+                let started = Instant::now();
+                let mut project = Project::new("RAW import benchmark");
+                std::hint::black_box(project.import(&[path.to_owned()])?);
+                samples.push(started.elapsed());
+            }
+            Ok(latency_metric(
+                "raw_metadata_import",
+                "Supplied RAW: container validation, dimensions, EXIF, and catalog record (no development)",
+                &samples,
+                250.0,
+                1500.0,
+            ))
+        }).transpose()?;
         let passed = command["pass"].as_bool() == Some(true)
             && preview_metric["pass"].as_bool() == Some(true)
+            && jpeg_import["pass"].as_bool() == Some(true)
+            && raw_import_metric
+                .as_ref()
+                .is_none_or(|metric| metric["pass"].as_bool() == Some(true))
             && export_pass;
+        let mut metrics = vec![command, preview_metric, jpeg_import, export];
+        if let Some(metric) = raw_import_metric {
+            metrics.push(metric);
+        }
         let report = json!({
             "ok": true,
             "action": "benchmark",
@@ -815,7 +1011,7 @@ fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<serde_json::Valu
             "profile": profile.name(),
             "passed": passed,
             "budgets": "Targets describe excellent feel; budgets are CI regression limits.",
-            "metrics": [command, preview_metric, export],
+            "metrics": metrics,
         });
         if strict && !passed {
             anyhow::bail!(
@@ -901,6 +1097,8 @@ fn schema() -> serde_json::Value {
             "straighten": { "range": [-45, 45], "unit": "degrees" },
             "hsl": { "colors": ["red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"], "range": [-100, 100] },
             "curves": { "channels": ["master", "red", "green", "blue"], "points": "normalized x,y pairs" },
+            "color_grading": { "ranges": ["shadows", "midtones", "highlights"], "hue": [0, 360], "saturation": [0, 100], "luminance": [-100, 100], "balance": [-100, 100] },
+            "spots": { "type": "normalized repair dabs", "fields": ["x", "y", "radius", "opacity"] },
             "rotation": { "values": [0, 90, 180, 270], "unit": "degrees clockwise" },
             "flip_horizontal": { "type": "boolean" },
             "flip_vertical": { "type": "boolean" }
@@ -910,6 +1108,7 @@ fn schema() -> serde_json::Value {
             { "command": "copy-edits", "id": 1 },
             { "command": "paste-edits", "ids": [2, 3] },
             { "command": "history-back", "id": 1 },
+            { "command": "set-pick", "ids": [1, 2], "state": "keep" },
             { "command": "save-preset", "name": "Warm portrait", "from_id": 1 },
             { "command": "apply-preset", "preset_id": 1, "ids": [2, 3] },
             { "command": "export-batch", "ids": [1, 2], "directory": "finished", "format": "jpeg", "max_size": 3000, "quality": 90 },

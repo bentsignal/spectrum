@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AdjustmentPatch, Adjustments, Project,
+    AdjustmentPatch, Adjustments, PickState, Project,
     engine::{ExportFormat, RenderOptions, batch_destination, export_photo},
 };
 
@@ -26,6 +26,10 @@ pub enum Command {
     },
     Select {
         id: u64,
+    },
+    SetPick {
+        ids: Vec<u64>,
+        state: PickState,
     },
     Adjust {
         id: u64,
@@ -195,6 +199,18 @@ impl Workspace {
                     "select",
                     format!("selected photo {id}"),
                     vec![id],
+                ))
+            }
+            Command::SetPick { ids, state } => {
+                self.ensure_ids(&ids)?;
+                self.record_undo();
+                for id in &ids {
+                    self.project.photo_mut(*id)?.pick = state;
+                }
+                Ok(CommandOutput::success(
+                    "set-pick",
+                    format!("marked {} photo(s) as {:?}", ids.len(), state),
+                    ids,
                 ))
             }
             Command::Adjust { id, patch } => {
@@ -562,5 +578,26 @@ mod tests {
         assert_eq!(second.adjustments.exposure, 1.0);
         assert_eq!(second.adjustments.rotation, 90);
         assert_eq!(second.history.last().unwrap().label, "Preset: Bright");
+    }
+
+    #[test]
+    fn pick_state_is_a_core_catalog_command() {
+        let mut project = Project::new("test");
+        project.photos.push(crate::Photo::new(
+            1,
+            "one.jpg".into(),
+            "one.jpg".into(),
+            1,
+            1,
+        ));
+        let mut workspace = Workspace::new(project, None);
+        workspace
+            .execute(Command::SetPick {
+                ids: vec![1],
+                state: PickState::Keep,
+            })
+            .unwrap();
+        assert_eq!(workspace.project.photo(1).unwrap().pick, PickState::Keep);
+        assert!(workspace.can_undo());
     }
 }

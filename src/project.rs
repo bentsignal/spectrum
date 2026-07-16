@@ -1,15 +1,17 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
-use rawler::imgop::develop::RawDevelop;
+use rawler::{RawLoader, decoders::RawDecodeParams, formats::tiff::Rational, rawsource::RawSource};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::Adjustments;
 
-pub const CATALOG_VERSION: u32 = 3;
+pub const CATALOG_VERSION: u32 = 4;
 pub const MAX_HISTORY: usize = 200;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -24,6 +26,28 @@ pub struct Preset {
     pub id: u64,
     pub name: String,
     pub adjustments: Adjustments,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PickState {
+    #[default]
+    Unmarked,
+    Keep,
+    Reject,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PhotoMetadata {
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub lens: Option<String>,
+    pub iso: Option<u32>,
+    pub focal_length_mm: Option<f32>,
+    pub aperture: Option<f32>,
+    pub shutter_seconds: Option<f32>,
+    pub captured_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -43,6 +67,10 @@ pub struct Photo {
     pub history_cursor: usize,
     #[serde(default = "default_history_id")]
     pub next_history_id: u64,
+    #[serde(default)]
+    pub pick: PickState,
+    #[serde(default)]
+    pub metadata: PhotoMetadata,
 }
 
 fn default_history_id() -> u64 {
@@ -67,6 +95,8 @@ impl Photo {
             }],
             history_cursor: 0,
             next_history_id: 2,
+            pick: PickState::Unmarked,
+            metadata: PhotoMetadata::default(),
         }
     }
 
@@ -214,6 +244,29 @@ impl Project {
         for photo in &mut project.photos {
             photo.migrate();
         }
+        let missing_raw: Vec<_> = project
+            .photos
+            .iter()
+            .enumerate()
+            .filter(|(_, photo)| photo.is_raw() && photo.metadata == PhotoMetadata::default())
+            .map(|(index, photo)| (index, photo.path.clone()))
+            .collect();
+        if !missing_raw.is_empty() {
+            let loader = RawLoader::new();
+            let refreshed: Vec<_> = missing_raw
+                .par_iter()
+                .filter_map(|(index, path)| {
+                    source_info(path, Some(&loader))
+                        .ok()
+                        .map(|(width, height, metadata)| (*index, width, height, metadata))
+                })
+                .collect();
+            for (index, width, height, metadata) in refreshed {
+                project.photos[index].width = width;
+                project.photos[index].height = height;
+                project.photos[index].metadata = metadata;
+            }
+        }
         project.next_preset_id = project.next_preset_id.max(
             project
                 .presets
@@ -268,28 +321,38 @@ impl Project {
     }
 
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<Vec<u64>> {
+        let loader = paths
+            .iter()
+            .any(|path| is_raw_image(path))
+            .then(RawLoader::new);
+        let prepared: Vec<PreparedPhoto> = paths
+            .par_iter()
+            .map(|input| prepare_photo(input, loader.as_ref()))
+            .collect::<Result<_>>()?;
+        let mut known: HashMap<PathBuf, u64> = self
+            .photos
+            .iter()
+            .map(|photo| (photo.path.clone(), photo.id))
+            .collect();
         let mut imported = Vec::new();
-        for input in paths {
-            if !is_supported_image(input) {
-                bail!("unsupported image type: {}", input.display());
-            }
-            let path = fs::canonicalize(input)
-                .with_context(|| format!("could not find image {}", input.display()))?;
-            if let Some(existing) = self.photos.iter().find(|photo| photo.path == path) {
-                imported.push(existing.id);
+        for prepared in prepared {
+            if let Some(id) = known.get(&prepared.path).copied() {
+                imported.push(id);
                 continue;
             }
-            let dimensions = source_dimensions(&path)?;
             let id = self.next_id;
             self.next_id += 1;
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            let mut photo = Photo::new(id, path, name, dimensions.0, dimensions.1);
-            photo.format = extension(&photo.path);
+            let mut photo = Photo::new(
+                id,
+                prepared.path.clone(),
+                prepared.name,
+                prepared.width,
+                prepared.height,
+            );
+            photo.format = prepared.format;
+            photo.metadata = prepared.metadata;
             self.photos.push(photo);
+            known.insert(prepared.path, id);
             imported.push(id);
         }
         if self.selected.is_none() {
@@ -331,27 +394,96 @@ impl Project {
     }
 }
 
-fn source_dimensions(path: &Path) -> Result<(u32, u32)> {
+struct PreparedPhoto {
+    path: PathBuf,
+    name: String,
+    format: String,
+    width: u32,
+    height: u32,
+    metadata: PhotoMetadata,
+}
+
+fn prepare_photo(input: &Path, loader: Option<&RawLoader>) -> Result<PreparedPhoto> {
+    if !is_supported_image(input) {
+        bail!("unsupported image type: {}", input.display());
+    }
+    let path = fs::canonicalize(input)
+        .with_context(|| format!("could not find image {}", input.display()))?;
+    let (width, height, metadata) = source_info(&path, loader)?;
+    Ok(PreparedPhoto {
+        name: path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        format: extension(&path),
+        path,
+        width,
+        height,
+        metadata,
+    })
+}
+
+fn source_info(path: &Path, loader: Option<&RawLoader>) -> Result<(u32, u32, PhotoMetadata)> {
     if is_raw_image(path) {
-        let raw = rawler::decode_file(path)
-            .with_context(|| format!("could not decode Sony RAW {}", path.display()))?;
+        let loader = loader.expect("RAW imports initialize a metadata loader");
+        let source = RawSource::new(path)
+            .with_context(|| format!("could not open Sony RAW {}", path.display()))?;
+        let decoder = loader
+            .get_decoder(&source)
+            .with_context(|| format!("could not inspect Sony RAW {}", path.display()))?;
+        let params = RawDecodeParams::default();
+        // Dummy decode parses dimensions and validates the RAW container without
+        // allocating or demosaicing its full pixel plane.
+        let raw = decoder
+            .raw_image(&source, &params, true)
+            .with_context(|| format!("could not inspect Sony RAW {}", path.display()))?;
+        let raw_metadata = decoder
+            .raw_metadata(&source, &params)
+            .with_context(|| format!("could not read Sony RAW metadata {}", path.display()))?;
         let transpose = raw.orientation.to_flips().0;
-        let dim = RawDevelop::default()
-            .develop_intermediate(&raw)
-            .with_context(|| format!("could not develop Sony RAW {}", path.display()))?
-            .dim();
-        if transpose {
-            Ok((dim.h as u32, dim.w as u32))
+        let dimensions = raw.crop_area.or(raw.active_area).map_or_else(
+            || (raw.width as u32, raw.height as u32),
+            |area| (area.d.w as u32, area.d.h as u32),
+        );
+        let exif = raw_metadata.exif;
+        let lens = exif.lens_model.clone().or_else(|| {
+            raw_metadata
+                .lens
+                .as_ref()
+                .map(|lens| lens.lens_name.clone())
+        });
+        let metadata = PhotoMetadata {
+            camera_make: Some(raw_metadata.make),
+            camera_model: Some(raw_metadata.model),
+            lens,
+            iso: exif
+                .iso_speed
+                .or(exif.recommended_exposure_index)
+                .or(exif.iso_speed_ratings.map(u32::from)),
+            focal_length_mm: rational_value(exif.focal_length),
+            aperture: rational_value(exif.fnumber.or(exif.aperture_value)),
+            shutter_seconds: rational_value(exif.exposure_time),
+            captured_at: exif.date_time_original.or(exif.create_date),
+        };
+        let oriented = if transpose {
+            (dimensions.1, dimensions.0)
         } else {
-            Ok((dim.w as u32, dim.h as u32))
-        }
+            dimensions
+        };
+        Ok((oriented.0, oriented.1, metadata))
     } else {
-        image::ImageReader::open(path)
+        let dimensions = image::ImageReader::open(path)
             .with_context(|| format!("could not open {}", path.display()))?
             .with_guessed_format()?
             .into_dimensions()
-            .with_context(|| format!("could not read {}", path.display()))
+            .with_context(|| format!("could not read {}", path.display()))?;
+        Ok((dimensions.0, dimensions.1, PhotoMetadata::default()))
     }
+}
+
+fn rational_value(value: Option<Rational>) -> Option<f32> {
+    value.and_then(|value| (value.d != 0).then_some(value.n as f32 / value.d as f32))
 }
 
 pub fn is_raw_image(path: &Path) -> bool {

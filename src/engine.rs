@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
-use rawler::{Orientation, imgop::develop::RawDevelop};
+use rawler::{Orientation, decoders::RawDecodeParams, imgop::develop::RawDevelop};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -60,15 +60,20 @@ pub fn render_photo(photo: &Photo, options: RenderOptions) -> Result<DynamicImag
 /// Decode and optionally downsample a source. ARW development stays entirely in Rust.
 pub fn decode_photo(photo: &Photo, max_size: Option<u32>) -> Result<DynamicImage> {
     let mut decoded = if is_raw_image(&photo.path) {
-        let raw = rawler::decode_file(&photo.path)
-            .with_context(|| format!("could not decode Sony RAW {}", photo.path.display()))?;
-        let orientation = raw.orientation;
-        let developed = RawDevelop::default()
-            .develop_intermediate(&raw)
-            .with_context(|| format!("could not develop Sony RAW {}", photo.path.display()))?
-            .to_dynamic_image()
-            .with_context(|| format!("Sony RAW produced no image: {}", photo.path.display()))?;
-        apply_orientation(developed, orientation)
+        if let Some(limit) = max_size {
+            let params = RawDecodeParams::default();
+            let embedded = if limit <= 320 {
+                rawler::analyze::extract_thumbnail_pixels(&photo.path, &params)
+            } else {
+                rawler::analyze::extract_preview_pixels(&photo.path, &params)
+            };
+            match embedded {
+                Ok(preview) => orient_embedded_preview(preview, photo),
+                Err(_) => develop_raw(photo)?,
+            }
+        } else {
+            develop_raw(photo)?
+        }
     } else {
         image::ImageReader::open(&photo.path)
             .with_context(|| format!("could not open {}", photo.path.display()))?
@@ -82,6 +87,28 @@ pub fn decode_photo(photo: &Photo, max_size: Option<u32>) -> Result<DynamicImage
         decoded = decoded.resize(max_size, max_size, FilterType::Triangle);
     }
     Ok(decoded)
+}
+
+fn develop_raw(photo: &Photo) -> Result<DynamicImage> {
+    let raw = rawler::decode_file(&photo.path)
+        .with_context(|| format!("could not decode Sony RAW {}", photo.path.display()))?;
+    let orientation = raw.orientation;
+    let developed = RawDevelop::default()
+        .develop_intermediate(&raw)
+        .with_context(|| format!("could not develop Sony RAW {}", photo.path.display()))?
+        .to_dynamic_image()
+        .with_context(|| format!("Sony RAW produced no image: {}", photo.path.display()))?;
+    Ok(apply_orientation(developed, orientation))
+}
+
+fn orient_embedded_preview(image: DynamicImage, photo: &Photo) -> DynamicImage {
+    let expected_landscape = photo.width >= photo.height;
+    let actual_landscape = image.width() >= image.height();
+    if expected_landscape != actual_landscape {
+        image.rotate90()
+    } else {
+        image
+    }
 }
 
 fn apply_orientation(mut image: DynamicImage, orientation: Orientation) -> DynamicImage {
@@ -158,6 +185,9 @@ pub fn render_image(
         );
     }
     apply_color_adjustments(&mut pixels, &adjustments);
+    if !adjustments.spots.is_empty() {
+        apply_spot_removals(&mut pixels, &adjustments.spots);
+    }
     if adjustments.sharpening > 0.0 {
         let blurred = DynamicImage::ImageRgba8(pixels.clone())
             .blur(1.1)
@@ -300,6 +330,7 @@ fn apply_color_adjustments(image: &mut RgbaImage, a: &Adjustments) {
     let saturation = a.saturation / 100.0;
     let vibrance = a.vibrance / 100.0;
     let vignette = a.vignette / 100.0;
+    let grading_active = !a.color_grading.is_identity();
     let hsl_active = !a.hsl.is_identity();
     let master_curve = (!a.curves.master.is_identity()).then_some(&a.curves.master);
     let red_curve = (!a.curves.red.is_identity()).then_some(&a.curves.red);
@@ -355,6 +386,9 @@ fn apply_color_adjustments(image: &mut RgbaImage, a: &Adjustments) {
             for channel in &mut rgb {
                 *channel = luma + (*channel - luma) * saturation_factor;
             }
+            if grading_active {
+                apply_color_grading(&mut rgb, &a.color_grading);
+            }
             apply_curves(&mut rgb, master_curve, [red_curve, green_curve, blue_curve]);
             if vignette != 0.0 {
                 let nx = (x as f32 + 0.5) / width * 2.0 - 1.0;
@@ -374,7 +408,7 @@ fn apply_color_adjustments(image: &mut RgbaImage, a: &Adjustments) {
 }
 
 fn has_pixel_adjustments(a: &Adjustments) -> bool {
-    a.noise_reduction > 0.0 || a.sharpening > 0.0 || has_color_adjustments(a)
+    a.noise_reduction > 0.0 || a.sharpening > 0.0 || !a.spots.is_empty() || has_color_adjustments(a)
 }
 
 fn has_color_adjustments(a: &Adjustments) -> bool {
@@ -394,6 +428,85 @@ fn has_color_adjustments(a: &Adjustments) -> bool {
         || a.vignette != 0.0
         || !a.hsl.is_identity()
         || !a.curves.is_identity()
+        || !a.color_grading.is_identity()
+}
+
+fn apply_color_grading(rgb: &mut [f32; 3], grading: &crate::ColorGrading) {
+    let luma = luminance(*rgb).clamp(0.0, 1.0);
+    let balance = grading.balance / 100.0 * 0.3;
+    let shadow_weight = ((1.0 - luma + balance).clamp(0.0, 1.0)).powi(2);
+    let highlight_weight = ((luma - balance).clamp(0.0, 1.0)).powi(2);
+    let midtone_weight = (4.0 * luma * (1.0 - luma)).clamp(0.0, 1.0);
+    for (grade, weight) in [
+        (&grading.shadows, shadow_weight),
+        (&grading.midtones, midtone_weight),
+        (&grading.highlights, highlight_weight),
+    ] {
+        let strength = grade.saturation / 100.0 * weight * 0.42;
+        if strength > 0.0 {
+            let tint = hsl_to_rgb(grade.hue / 360.0, 1.0, 0.5);
+            for channel in 0..3 {
+                rgb[channel] += (tint[channel] - 0.5) * strength;
+            }
+        }
+        let lift = grade.luminance / 100.0 * weight * 0.24;
+        for channel in rgb.iter_mut() {
+            *channel += lift;
+        }
+    }
+}
+
+fn apply_spot_removals(image: &mut RgbaImage, spots: &[crate::SpotRemoval]) {
+    let source = image.clone();
+    let width = image.width() as i32;
+    let height = image.height() as i32;
+    let scale = width.min(height).max(1) as f32;
+    for spot in spots {
+        let cx = (spot.x * (width - 1).max(0) as f32).round() as i32;
+        let cy = (spot.y * (height - 1).max(0) as f32).round() as i32;
+        let radius = (spot.radius * scale).round().max(1.0) as i32;
+        let outer = (radius as f32 * 1.9).ceil() as i32;
+        let inner_sq = (radius as f32 * 1.2).powi(2);
+        let outer_sq = (outer as f32).powi(2);
+        let mut total = [0_u64; 3];
+        let mut count = 0_u64;
+        for y in (cy - outer).max(0)..=(cy + outer).min(height - 1) {
+            for x in (cx - outer).max(0)..=(cx + outer).min(width - 1) {
+                let distance = ((x - cx).pow(2) + (y - cy).pow(2)) as f32;
+                if distance >= inner_sq && distance <= outer_sq {
+                    let pixel = source.get_pixel(x as u32, y as u32);
+                    for channel in 0..3 {
+                        total[channel] += u64::from(pixel[channel]);
+                    }
+                    count += 1;
+                }
+            }
+        }
+        if count == 0 {
+            continue;
+        }
+        let repair = [
+            total[0] as f32 / count as f32,
+            total[1] as f32 / count as f32,
+            total[2] as f32 / count as f32,
+        ];
+        for y in (cy - radius).max(0)..=(cy + radius).min(height - 1) {
+            for x in (cx - radius).max(0)..=(cx + radius).min(width - 1) {
+                let distance = (((x - cx).pow(2) + (y - cy).pow(2)) as f32).sqrt();
+                if distance > radius as f32 {
+                    continue;
+                }
+                let feather =
+                    ((1.0 - distance / radius as f32) * 1.8).clamp(0.0, 1.0) * spot.opacity;
+                let pixel = image.get_pixel_mut(x as u32, y as u32);
+                for channel in 0..3 {
+                    pixel[channel] = (pixel[channel] as f32 * (1.0 - feather)
+                        + repair[channel] * feather
+                        + 0.5) as u8;
+                }
+            }
+        }
+    }
 }
 
 fn apply_hsl_mixer(hue: &mut f32, saturation: &mut f32, lightness: &mut f32, hsl: &HslAdjustments) {
@@ -521,6 +634,42 @@ mod tests {
         adjustments.hsl.blue.saturation = -80.0;
         let rendered = render_image(source, adjustments, RenderOptions::default()).to_rgba8();
         assert!(rendered.get_pixel(0, 0)[2] < 220);
+    }
+
+    #[test]
+    fn color_grading_tints_midtones() {
+        let source =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([110, 110, 110, 255])));
+        let mut adjustments = Adjustments::default();
+        adjustments.color_grading.midtones = crate::ColorGrade {
+            hue: 30.0,
+            saturation: 80.0,
+            luminance: 0.0,
+        };
+        let rendered = render_image(source, adjustments, RenderOptions::default()).to_rgba8();
+        let pixel = rendered.get_pixel(0, 0);
+        assert!(pixel[0] > pixel[2]);
+    }
+
+    #[test]
+    fn spot_removal_repairs_isolated_dust_pixel() {
+        let mut source = RgbaImage::from_pixel(21, 21, Rgba([30, 30, 30, 255]));
+        source.put_pixel(10, 10, Rgba([245, 245, 245, 255]));
+        let rendered = render_image(
+            DynamicImage::ImageRgba8(source),
+            Adjustments {
+                spots: vec![crate::SpotRemoval {
+                    x: 0.5,
+                    y: 0.5,
+                    radius: 0.12,
+                    opacity: 1.0,
+                }],
+                ..Default::default()
+            },
+            RenderOptions::default(),
+        )
+        .to_rgba8();
+        assert!(rendered.get_pixel(10, 10)[0] < 80);
     }
 
     #[test]

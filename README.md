@@ -11,12 +11,15 @@ capabilities.
 
 ## What works today
 
-- Drag/drop or file-picker import
-- Vertical filmstrip, arrow-key navigation, and Shift/Cmd/Ctrl multi-selection
-- Pure-Rust Sony ARW decoding and development
+- Parallel drag/drop or file-picker import with deterministic performance budgets
+- Vertical filmstrip, arrow-key navigation, multi-selection, and keep/reject culling filters
+- Pure-Rust Sony ARW metadata, embedded-preview decoding, and full-resolution development
 - Zoom, pan, direct on-image crop handles, straighten, rotation, and flips
 - Live basic, presence, detail, and vignette controls
 - Eight-color HSL mixer and point-editable master/red/green/blue tone curves
+- Shadows, midtones, and highlights color grading
+- Original/edited side-by-side comparison, RGB histogram, and camera/lens details
+- Nondestructive repair brush for dust and small blemishes
 - Rotation and horizontal/vertical flips
 - Nondestructive `.lumencatalog` sidecars; source photos are never changed
 - Persistent per-photo edit history with `Ctrl+Z` / `Cmd+Z` navigation
@@ -70,7 +73,7 @@ cargo run --release --bin lumen -- --catalog shoot.lumencatalog export-batch \
 # Discover the machine-facing protocol
 cargo run --release --bin lumen -- schema
 
-# Measure tone-curve responsiveness and full 24 MP export throughput
+# Measure imports, tone-curve responsiveness, and full 24 MP export throughput
 cargo run --release --bin lumen -- benchmark
 ```
 
@@ -81,7 +84,8 @@ See [CLI.md](docs/CLI.md) for the full surface and
 
 JPEG, PNG, TIFF, WebP, and Sony ARW are supported. ARW files are demosaiced,
 white-balanced, color-calibrated, and converted to sRGB by the pure-Rust
-`rawler` pipeline. Originals remain immutable.
+`rawler` pipeline. Imports inspect RAW metadata without a full demosaic and UI
+previews use embedded camera previews when available. Originals remain immutable.
 
 ## Packages
 

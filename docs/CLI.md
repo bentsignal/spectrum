@@ -24,6 +24,9 @@ If omitted, it defaults to `lumen.lumencatalog` in the current directory.
 | `crop <ID> [OPTIONS]` | Set/clear crop and straighten |
 | `hsl <ID> <COLOR> [OPTIONS]` | Edit one of eight HSL color ranges |
 | `curve <ID> <CHANNEL> [OPTIONS]` | Set/reset master or RGB tone-curve points |
+| `grade <ID> <RANGE> [OPTIONS]` | Color-grade shadows, midtones, or highlights |
+| `spot <ID> [OPTIONS]` | Add or clear nondestructive repair-brush dabs |
+| `pick <ID>... --state <STATE>` | Mark photos unmarked, keep, or reject |
 | `history <ID>` | Return persistent history and its cursor |
 | `history-back\|history-forward <ID>` | Navigate one persistent edit |
 | `history-jump <ID> <INDEX>` | Restore a particular history snapshot |
@@ -39,7 +42,7 @@ If omitted, it defaults to `lumen.lumencatalog` in the current directory.
 | `export <ID> <PATH>` | Render an edited file |
 | `export-batch <ID>... --directory <PATH>` | Export multiple photos as JPEG, PNG, TIFF, or WebP |
 | `run '<JSON>'` | Deserialize and execute a core command directly |
-| `benchmark [--strict]` | Measure tone-curve command/preview latency and 24 MP JPEG export |
+| `benchmark [--strict] [--raw-import PATH]` | Measure imports, tone-curve command/preview latency, and 24 MP export |
 | `schema` | Return ranges and raw-command examples |
 
 Use `lumen <command> --help` for exact flags.
@@ -54,7 +57,9 @@ cargo run --release --bin lumen -- benchmark
 
 The JSON report separates aspirational targets from conservative regression
 budgets. It measures p95 tone-curve command plus atomic catalog-save latency,
-p95 1800×1200 preview rendering, and a complete 6000×4000 (24 MP) JPEG export.
+p95 1800×1200 preview rendering, a 12-photo 2400×1600 JPEG batch import, and a
+complete 6000×4000 (24 MP) JPEG export. Pass `--raw-import` with a locally
+accessible ARW to additionally measure the metadata-only RAW import path.
 Pass `--strict` to return a nonzero exit code if a budget is missed. The default
 `interactive` profile protects workstation feel. Linux CI uses
 `--profile hosted-ci`, calibrated to the slower shared two-core runner with
@@ -64,6 +69,7 @@ headroom for host jitter, after building the release binary.
 | --- | ---: | ---: | ---: | --- |
 | Tone-curve catalog load + command + save (p95) | 8 ms | 20 ms | 20 ms | Catalog work stays below a frame |
 | 1800×1200 curve preview (p95) | 16.7 ms | 50 ms | 125 ms | Fluid locally; CI catches relative regressions on slower shared CPUs |
+| 12-photo JPEG batch import (p95) | 50 ms | 250 ms | 500 ms | Import bookkeeping remains effectively immediate |
 | 24 MP JPEG export | 2 s | 5 s | 5 s | Fast single export; bounded batch wait |
 
 Source generation and benchmark warm-up are excluded from measured intervals.
@@ -90,6 +96,11 @@ lumen --catalog shoot.lumencatalog hsl 7 blue \
   --hue -8 --saturation 18 --luminance -4
 lumen --catalog shoot.lumencatalog curve 7 master \
   --points '0,0;0.25,0.2;0.75,0.82;1,1'
+lumen --catalog shoot.lumencatalog grade 7 highlights \
+  --hue 42 --saturation 18 --luminance 4 --balance 10
+lumen --catalog shoot.lumencatalog spot 7 \
+  --x 0.51 --y 0.24 --radius 0.018 --opacity 0.9
+lumen --catalog shoot.lumencatalog pick 7 8 9 --state keep
 
 lumen --catalog shoot.lumencatalog preset-save "Soft color" --from 7
 lumen --catalog shoot.lumencatalog preset-apply 1 8 9 10

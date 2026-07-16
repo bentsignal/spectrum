@@ -32,7 +32,9 @@ daemon, local socket, embedded browser, or network requirement.
 - A multi-file import is transactional in memory: if one file is invalid, none
   of that command's files are added.
 - Adjustment values are sanitized inside the core, not only in the UI.
-- Every committed edit stores a complete snapshot and cursor in catalog v3.
+- Every committed edit stores a complete snapshot and cursor in catalog v4.
+- Camera/lens metadata and the unmarked/keep/reject culling state live beside each
+  immutable source reference. Older RAW catalogs populate missing metadata lazily.
 - Catalog-level presets store development settings while intentionally excluding crop,
   rotation, flips, and straighten so one look can be reused across different framing.
 - Reset is an ordinary history event, so stepping backward restores prior work.
@@ -49,15 +51,18 @@ order:
 4. optional chroma-preserving noise reduction
 5. temperature, tint, exposure, and tonal shaping
 6. contrast, texture, clarity, and dehaze
-7. eight-band HSL mixing and global saturation/vibrance
-8. master and per-channel point curves, vignette, and sharpening
+7. eight-band HSL mixing, global saturation/vibrance, and three-way color grading
+8. master and per-channel point curves, vignette, sharpening, and repair-brush dabs
 
 RAW development starts in a 16-bit intermediate; the interactive adjustment
 pipeline currently operates on 8-bit RGBA after sRGB conversion. A future
 high-bit-depth working buffer can keep the command and catalog APIs stable.
 
-Interactive previews cache the decoded 1800px source instead of developing a RAW
-again for every control movement. While a pointer drag is active, the GUI renders
+Import preparation is parallel and reads RAW dimensions and EXIF metadata without
+demosaicing the full sensor image. Interactive RAW previews prefer the camera's
+embedded preview, then cache the decoded 1800px source instead of developing a RAW
+again for every control movement. Full-resolution exports still develop the RAW
+sensor data. While a pointer drag is active, the GUI renders
 a 960px working preview and resolves the full cached preview on release. Pixel rows
 are processed in parallel, and identity color, HSL, and curve stages are skipped.
 This keeps the export path deterministic while avoiding work during interaction.
@@ -69,7 +74,9 @@ cargo test --release interactive_preview_benchmark -- --ignored --nocapture
 ```
 
 For end-to-end budgets, `lumen benchmark --strict` also measures tone-curve
-command persistence and a deterministic 24 MP JPEG export. Linux CI runs that
+command persistence, a deterministic 12-photo JPEG import, and a deterministic
+24 MP JPEG export. An optional `--raw-import PATH` sample measures real RAW
+metadata import on a machine with an accessible camera file. Linux CI runs that
 command against the optimized binary so material regressions block the build.
 The CI invocation uses the documented `hosted-ci` budget profile because shared
 two-core runners are not representative of an editing workstation.
