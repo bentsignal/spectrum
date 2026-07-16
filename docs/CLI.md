@@ -21,6 +21,12 @@ If omitted, it defaults to `lumen.lumencatalog` in the current directory.
 | `list` | Return the full catalog and every photo |
 | `get <ID>` | Return one photo and its edits |
 | `edit <ID> [OPTIONS]` | Patch one or more adjustment values |
+| `crop <ID> [OPTIONS]` | Set/clear crop and straighten |
+| `hsl <ID> <COLOR> [OPTIONS]` | Edit one of eight HSL color ranges |
+| `curve <ID> <CHANNEL> [OPTIONS]` | Set/reset master or RGB tone-curve points |
+| `history <ID>` | Return persistent history and its cursor |
+| `history-back\|history-forward <ID>` | Navigate one persistent edit |
+| `history-jump <ID> <INDEX>` | Restore a particular history snapshot |
 | `reset <ID>...` | Restore identity edits |
 | `copy-edits --from ID --to ID...` | Apply one photo's complete look to others |
 | `rotate <ID> [--counterclockwise]` | Rotate by 90 degrees |
@@ -35,14 +41,23 @@ Use `lumen <command> --help` for exact flags.
 ## Adjustment ranges
 
 Exposure is in stops from `-5` to `5`. Temperature, tint, contrast, highlights,
-shadows, whites, blacks, clarity, vibrance, saturation, and vignette use a
+shadows, whites, blacks, texture, clarity, dehaze, vibrance, saturation, and vignette use a
 human-readable `-100` to `100` scale. Values are clamped by the shared core.
+Sharpening and noise reduction use `0` to `100`; straighten uses `-45` to `45`
+degrees. Crop coordinates are normalized from `0` to `1`.
 
 Options that are omitted by `edit` remain unchanged:
 
 ```sh
 lumen --catalog shoot.lumencatalog edit 7 \
-  --exposure -0.35 --highlights -28 --shadows 12 --vignette -8
+  --exposure -0.35 --highlights -28 --texture 12 --dehaze 8
+
+lumen --catalog shoot.lumencatalog crop 7 \
+  --x 0.05 --y 0.05 --width 0.9 --height 0.85 --straighten 1.2
+lumen --catalog shoot.lumencatalog hsl 7 blue \
+  --hue -8 --saturation 18 --luminance -4
+lumen --catalog shoot.lumencatalog curve 7 master \
+  --points '0,0;0.25,0.2;0.75,0.82;1,1'
 ```
 
 ## Raw commands
@@ -66,4 +81,3 @@ task-oriented subcommands are preferred when shell quoting would be fragile.
   meaningful to collaborators.
 - Export to a new path. Lumen rejects unsupported output extensions.
 - The CLI persists successful mutation commands before returning success.
-

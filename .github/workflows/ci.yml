@@ -13,7 +13,7 @@ jobs:
     name: Format, lint, and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -41,14 +41,20 @@ jobs:
             cli: target/release/lumen
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --bins --locked
-      - uses: actions/upload-artifact@v4
+      - if: runner.os == 'macOS'
+        run: bash scripts/package-macos.sh
+      - if: runner.os == 'Linux'
+        run: bash scripts/package-linux.sh
+      - if: runner.os == 'Windows'
+        run: pwsh scripts/package-windows.ps1
+      - uses: actions/upload-artifact@v7
         with:
           name: lumen-${{ matrix.label }}
           path: |
             ${{ matrix.gui }}
             ${{ matrix.cli }}
+            target/dist/
           if-no-files-found: error
-

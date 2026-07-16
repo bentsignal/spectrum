@@ -15,8 +15,8 @@ same values directly or deserializes them through `lumen run '<json>'`.
 ## Crate layout
 
 - `src/adjustments.rs`: serializable nondestructive settings and sparse patches
-- `src/project.rs`: catalog model, image metadata, atomic sidecar persistence
-- `src/engine.rs`: pure-Rust transforms, color pipeline, and image encoding
+- `src/project.rs`: catalog model, persistent edit history, atomic sidecar persistence
+- `src/engine.rs`: pure-Rust ARW development, transforms, color pipeline, and encoding
 - `src/command.rs`: the complete mutation boundary, clipboard, and undo/redo
 - `src/bin/lumen.rs`: structured automation interface
 - `src/bin/lumen-gui.rs`: native egui/eframe interface
@@ -32,6 +32,8 @@ daemon, local socket, embedded browser, or network requirement.
 - A multi-file import is transactional in memory: if one file is invalid, none
   of that command's files are added.
 - Adjustment values are sanitized inside the core, not only in the UI.
+- Every committed edit stores a complete snapshot and cursor in catalog v2.
+- Reset is an ordinary history event, so stepping backward restores prior work.
 
 ## Rendering
 
@@ -39,17 +41,18 @@ Preview and export use the same `render_photo` function. Previews set a long-edg
 limit; exports default to source resolution. The current pipeline performs, in
 order:
 
-1. optional long-edge downsample (never upscale)
-2. rotation and flips
-3. temperature, tint, and exposure
-4. shadow/highlight and black/white tone shaping
-5. contrast and clarity
-6. vibrance and saturation
-7. vignette
+1. Sony ARW demosaic, white balance, camera calibration, and sRGB conversion
+2. optional long-edge downsample (never upscale)
+3. rotation, flips, filled straighten, and normalized crop
+4. optional chroma-preserving noise reduction
+5. temperature, tint, exposure, and tonal shaping
+6. contrast, texture, clarity, and dehaze
+7. eight-band HSL mixing and global saturation/vibrance
+8. master and per-channel point curves, vignette, and sharpening
 
-The renderer currently operates on 8-bit RGBA. A future high-bit-depth/RAW path
-should keep the `Command`, `Project`, and `Adjustments` API stable while replacing
-the internal working buffer and adding input color profiles.
+RAW development starts in a 16-bit intermediate; the interactive adjustment
+pipeline currently operates on 8-bit RGBA after sRGB conversion. A future
+high-bit-depth working buffer can keep the command and catalog APIs stable.
 
 ## Cross-platform choices
 

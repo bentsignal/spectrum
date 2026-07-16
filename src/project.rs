@@ -4,11 +4,20 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use rawler::imgop::develop::RawDevelop;
 use serde::{Deserialize, Serialize};
 
 use crate::Adjustments;
 
-pub const CATALOG_VERSION: u32 = 1;
+pub const CATALOG_VERSION: u32 = 2;
+pub const MAX_HISTORY: usize = 200;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub id: u64,
+    pub label: String,
+    pub adjustments: Adjustments,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Photo {
@@ -18,7 +27,132 @@ pub struct Photo {
     pub width: u32,
     pub height: u32,
     #[serde(default)]
+    pub format: String,
+    #[serde(default)]
     pub adjustments: Adjustments,
+    #[serde(default)]
+    pub history: Vec<HistoryEntry>,
+    #[serde(default)]
+    pub history_cursor: usize,
+    #[serde(default = "default_history_id")]
+    pub next_history_id: u64,
+}
+
+fn default_history_id() -> u64 {
+    1
+}
+
+impl Photo {
+    pub fn new(id: u64, path: PathBuf, name: String, width: u32, height: u32) -> Self {
+        let adjustments = Adjustments::default();
+        Self {
+            id,
+            path,
+            name,
+            width,
+            height,
+            format: String::new(),
+            adjustments: adjustments.clone(),
+            history: vec![HistoryEntry {
+                id: 1,
+                label: "Imported".into(),
+                adjustments,
+            }],
+            history_cursor: 0,
+            next_history_id: 2,
+        }
+    }
+
+    pub fn is_raw(&self) -> bool {
+        self.format.eq_ignore_ascii_case("arw") || is_raw_image(&self.path)
+    }
+
+    pub fn commit_adjustments(&mut self, label: impl Into<String>, adjustments: Adjustments) {
+        let adjustments = adjustments.sanitized();
+        if self.adjustments == adjustments {
+            return;
+        }
+        self.history.truncate(self.history_cursor.saturating_add(1));
+        self.history.push(HistoryEntry {
+            id: self.next_history_id,
+            label: label.into(),
+            adjustments: adjustments.clone(),
+        });
+        self.next_history_id += 1;
+        if self.history.len() > MAX_HISTORY {
+            self.history.remove(0);
+        }
+        self.history_cursor = self.history.len() - 1;
+        self.adjustments = adjustments;
+    }
+
+    pub fn can_history_back(&self) -> bool {
+        self.history_cursor > 0
+    }
+    pub fn can_history_forward(&self) -> bool {
+        self.history_cursor + 1 < self.history.len()
+    }
+
+    pub fn history_back(&mut self) -> bool {
+        if !self.can_history_back() {
+            return false;
+        }
+        self.history_cursor -= 1;
+        self.adjustments = self.history[self.history_cursor].adjustments.clone();
+        true
+    }
+
+    pub fn history_forward(&mut self) -> bool {
+        if !self.can_history_forward() {
+            return false;
+        }
+        self.history_cursor += 1;
+        self.adjustments = self.history[self.history_cursor].adjustments.clone();
+        true
+    }
+
+    pub fn history_jump(&mut self, index: usize) -> Result<()> {
+        let entry = self
+            .history
+            .get(index)
+            .with_context(|| format!("history entry {index} does not exist"))?;
+        self.history_cursor = index;
+        self.adjustments = entry.adjustments.clone();
+        Ok(())
+    }
+
+    fn migrate(&mut self) {
+        if self.format.is_empty() {
+            self.format = extension(&self.path);
+        }
+        if self.history.is_empty() {
+            let current = self.adjustments.clone().sanitized();
+            self.history.push(HistoryEntry {
+                id: 1,
+                label: "Imported".into(),
+                adjustments: Adjustments::default(),
+            });
+            if current != Adjustments::default() {
+                self.history.push(HistoryEntry {
+                    id: 2,
+                    label: "Migrated edits".into(),
+                    adjustments: current.clone(),
+                });
+            }
+            self.adjustments = current;
+            self.history_cursor = self.history.len() - 1;
+            self.next_history_id = self.history.last().map_or(1, |entry| entry.id + 1);
+        } else {
+            self.history_cursor = self.history_cursor.min(self.history.len() - 1);
+            self.adjustments = self.history[self.history_cursor]
+                .adjustments
+                .clone()
+                .sanitized();
+            self.next_history_id = self
+                .next_history_id
+                .max(self.history.iter().map(|entry| entry.id).max().unwrap_or(0) + 1);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,13 +185,17 @@ impl Project {
     pub fn load(path: &Path) -> Result<Self> {
         let bytes =
             fs::read(path).with_context(|| format!("could not read catalog {}", path.display()))?;
-        let project: Self = serde_json::from_slice(&bytes)
+        let mut project: Self = serde_json::from_slice(&bytes)
             .with_context(|| format!("invalid catalog {}", path.display()))?;
         if project.version > CATALOG_VERSION {
             bail!(
                 "catalog version {} is newer than this app supports ({CATALOG_VERSION})",
                 project.version
             );
+        }
+        project.version = CATALOG_VERSION;
+        for photo in &mut project.photos {
+            photo.migrate();
         }
         Ok(project)
     }
@@ -73,10 +211,8 @@ impl Project {
         let mut temporary = path.as_os_str().to_owned();
         temporary.push(".tmp");
         let temporary = PathBuf::from(temporary);
-        let json = serde_json::to_vec_pretty(self)?;
-        fs::write(&temporary, json)
+        fs::write(&temporary, serde_json::to_vec_pretty(self)?)
             .with_context(|| format!("could not write {}", temporary.display()))?;
-        // Windows does not replace an existing destination with `rename`.
         #[cfg(target_os = "windows")]
         if path.exists() {
             fs::remove_file(path)
@@ -117,11 +253,7 @@ impl Project {
                 imported.push(existing.id);
                 continue;
             }
-            let dimensions = image::ImageReader::open(&path)
-                .with_context(|| format!("could not open {}", path.display()))?
-                .with_guessed_format()?
-                .into_dimensions()
-                .with_context(|| format!("could not read {}", path.display()))?;
+            let dimensions = source_dimensions(&path)?;
             let id = self.next_id;
             self.next_id += 1;
             let name = path
@@ -129,14 +261,9 @@ impl Project {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            self.photos.push(Photo {
-                id,
-                path,
-                name,
-                width: dimensions.0,
-                height: dimensions.1,
-                adjustments: Adjustments::default(),
-            });
+            let mut photo = Photo::new(id, path, name, dimensions.0, dimensions.1);
+            photo.format = extension(&photo.path);
+            self.photos.push(photo);
             imported.push(id);
         }
         if self.selected.is_none() {
@@ -146,22 +273,75 @@ impl Project {
     }
 }
 
+fn source_dimensions(path: &Path) -> Result<(u32, u32)> {
+    if is_raw_image(path) {
+        let raw = rawler::decode_file(path)
+            .with_context(|| format!("could not decode Sony RAW {}", path.display()))?;
+        let transpose = raw.orientation.to_flips().0;
+        let dim = RawDevelop::default()
+            .develop_intermediate(&raw)
+            .with_context(|| format!("could not develop Sony RAW {}", path.display()))?
+            .dim();
+        if transpose {
+            Ok((dim.h as u32, dim.w as u32))
+        } else {
+            Ok((dim.w as u32, dim.h as u32))
+        }
+    } else {
+        image::ImageReader::open(path)
+            .with_context(|| format!("could not open {}", path.display()))?
+            .with_guessed_format()?
+            .into_dimensions()
+            .with_context(|| format!("could not read {}", path.display()))
+    }
+}
+
+pub fn is_raw_image(path: &Path) -> bool {
+    extension(path) == "arw"
+}
+
 pub fn is_supported_image(path: &Path) -> bool {
+    matches!(
+        extension(path).as_str(),
+        "jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp" | "arw"
+    )
+}
+
+fn extension(path: &Path) -> String {
     path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp"
-            )
-        })
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::*;
+    #[test]
+    fn recognizes_sony_raw_case_insensitively() {
+        assert!(is_supported_image(Path::new("portrait.ARW")));
+        assert!(is_raw_image(Path::new("portrait.arw")));
+    }
+
+    #[test]
+    fn history_is_persistent_and_navigable() {
+        let mut photo = Photo::new(1, "test.jpg".into(), "test.jpg".into(), 10, 10);
+        photo.commit_adjustments(
+            "Exposure",
+            Adjustments {
+                exposure: 1.0,
+                ..Default::default()
+            },
+        );
+        photo.commit_adjustments("Reset all edits", Adjustments::default());
+        assert_eq!(photo.history.len(), 3);
+        assert!(photo.history_back());
+        assert_eq!(photo.adjustments.exposure, 1.0);
+        assert!(photo.history_forward());
+        assert_eq!(photo.adjustments.exposure, 0.0);
+    }
 
     #[test]
     fn catalog_round_trips() {

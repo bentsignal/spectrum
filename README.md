@@ -12,13 +12,15 @@ capabilities.
 ## What works today
 
 - Drag/drop or file-picker import
-- Horizontal filmstrip and arrow-key navigation
-- Live preview for exposure, white balance, contrast, highlights, shadows,
-  whites, blacks, clarity, vibrance, saturation, and vignette
+- Vertical filmstrip and arrow-key navigation
+- Pure-Rust Sony ARW decoding and development
+- Zoom, pan, normalized crop, straighten, rotation, and flips
+- Live basic, presence, detail, and vignette controls
+- Eight-color HSL mixer and point-editable master/red/green/blue tone curves
 - Rotation and horizontal/vertical flips
 - Nondestructive `.lumencatalog` sidecars; source photos are never changed
-- Undo/redo with `Ctrl+Z` / `Cmd+Z`
-- Copy, paste, and reset edits
+- Persistent per-photo edit history with `Ctrl+Z` / `Cmd+Z` navigation
+- Copy/paste edits and confirmed, history-preserving reset
 - Full-resolution JPEG, PNG, TIFF, and WebP export
 - JSON-speaking CLI with a raw command protocol for agents
 - Native builds for Windows, macOS, and Linux
@@ -47,7 +49,7 @@ nonzero exit code.
 ```sh
 # Create a catalog and import a shoot
 cargo run --release --bin lumen -- --catalog shoot.lumencatalog init "Friday shoot"
-cargo run --release --bin lumen -- --catalog shoot.lumencatalog import photos/*.jpg
+cargo run --release --bin lumen -- --catalog shoot.lumencatalog import photos/*.{ARW,jpg}
 
 # Inspect IDs, edit photo 1, copy its look, and export it
 cargo run --release --bin lumen -- --catalog shoot.lumencatalog list
@@ -67,9 +69,22 @@ See [CLI.md](docs/CLI.md) for the full surface and
 
 ## Supported images
 
-JPEG, PNG, TIFF, and WebP are supported today. Camera RAW support is deliberately
-planned as a follow-up: it needs a high-quality, pure-Rust decoding and color
-management path instead of a large native dependency.
+JPEG, PNG, TIFF, WebP, and Sony ARW are supported. ARW files are demosaiced,
+white-balanced, color-calibrated, and converted to sRGB by the pure-Rust
+`rawler` pipeline. Originals remain immutable.
+
+## Packages
+
+Build an optimized platform package from the matching operating system:
+
+```sh
+bash scripts/package-macos.sh
+bash scripts/package-linux.sh
+pwsh scripts/package-windows.ps1
+```
+
+GitHub Actions builds and publishes artifacts for Windows, macOS, and Linux on
+every push to `main`.
 
 ## Scope of “100% Rust”
 
@@ -82,3 +97,5 @@ C++ image engine, database server, or background service.
 
 MIT
 
+See [THIRD_PARTY.md](THIRD_PARTY.md) for dependency notices, including the
+LGPL-2.1 `rawler` RAW decoder.

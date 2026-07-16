@@ -8,7 +8,7 @@ use crate::{
     engine::{RenderOptions, export_photo},
 };
 
-/// Complete application command surface shared by the GUI and CLI.
+/// Complete application command surface shared by the GUI, CLI, and agents.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case")]
 pub enum Command {
@@ -37,6 +37,16 @@ pub enum Command {
     },
     Reset {
         ids: Vec<u64>,
+    },
+    HistoryBack {
+        id: u64,
+    },
+    HistoryForward {
+        id: u64,
+    },
+    HistoryJump {
+        id: u64,
+        index: usize,
     },
     CopyEdits {
         id: u64,
@@ -87,8 +97,6 @@ impl CommandOutput {
     }
 }
 
-/// In-memory session state. Catalog snapshots make undo/redo predictable and
-/// keep mutations centralized behind [`Workspace::execute`].
 pub struct Workspace {
     pub project: Project,
     pub catalog_path: Option<PathBuf>,
@@ -113,11 +121,9 @@ impl Workspace {
             redo: Vec::new(),
         }
     }
-
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
-
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
@@ -142,10 +148,9 @@ impl Workspace {
                 Ok(CommandOutput::success("open", "opened catalog", vec![]))
             }
             Command::Save { path } => {
-                let destination = path.or_else(|| self.catalog_path.clone());
-                let Some(destination) = destination else {
-                    bail!("a destination path is required for an unsaved catalog");
-                };
+                let destination = path.or_else(|| self.catalog_path.clone()).ok_or_else(|| {
+                    anyhow::anyhow!("a destination path is required for an unsaved catalog")
+                })?;
                 self.project.save(&destination)?;
                 self.catalog_path = Some(destination.clone());
                 Ok(CommandOutput::success(
@@ -155,7 +160,6 @@ impl Workspace {
                 ))
             }
             Command::Import { paths } => {
-                // Import into a clone so one bad file cannot leave a half-imported catalog.
                 let mut updated = self.project.clone();
                 let ids = updated.import(&paths)?;
                 self.record_undo();
@@ -176,9 +180,12 @@ impl Workspace {
                 ))
             }
             Command::Adjust { id, patch } => {
-                self.project.photo(id)?;
+                let mut next = self.project.photo(id)?.adjustments.clone();
+                patch.apply_to(&mut next);
                 self.record_undo();
-                patch.apply_to(&mut self.project.photo_mut(id)?.adjustments);
+                self.project
+                    .photo_mut(id)?
+                    .commit_adjustments("Develop adjustments", next);
                 Ok(CommandOutput::success(
                     "adjust",
                     format!("adjusted photo {id}"),
@@ -188,7 +195,9 @@ impl Workspace {
             Command::SetAdjustments { id, adjustments } => {
                 self.project.photo(id)?;
                 self.record_undo();
-                self.project.photo_mut(id)?.adjustments = adjustments.sanitized();
+                self.project
+                    .photo_mut(id)?
+                    .commit_adjustments("Develop adjustments", adjustments);
                 Ok(CommandOutput::success(
                     "adjust",
                     format!("adjusted photo {id}"),
@@ -199,12 +208,46 @@ impl Workspace {
                 self.ensure_ids(&ids)?;
                 self.record_undo();
                 for id in &ids {
-                    self.project.photo_mut(*id)?.adjustments = Adjustments::default();
+                    self.project
+                        .photo_mut(*id)?
+                        .commit_adjustments("Reset all edits", Adjustments::default());
                 }
-                Ok(CommandOutput::success("reset", "reset edits", ids))
+                Ok(CommandOutput::success(
+                    "reset",
+                    "reset edits (undoable in history)",
+                    ids,
+                ))
+            }
+            Command::HistoryBack { id } => {
+                if !self.project.photo_mut(id)?.history_back() {
+                    bail!("already at the first history entry");
+                }
+                Ok(CommandOutput::success(
+                    "history-back",
+                    format!("moved photo {id} back one edit"),
+                    vec![id],
+                ))
+            }
+            Command::HistoryForward { id } => {
+                if !self.project.photo_mut(id)?.history_forward() {
+                    bail!("already at the latest history entry");
+                }
+                Ok(CommandOutput::success(
+                    "history-forward",
+                    format!("moved photo {id} forward one edit"),
+                    vec![id],
+                ))
+            }
+            Command::HistoryJump { id, index } => {
+                self.project.photo_mut(id)?.history_jump(index)?;
+                Ok(CommandOutput::success(
+                    "history-jump",
+                    format!("moved photo {id} to history entry {index}"),
+                    vec![id],
+                ))
             }
             Command::CopyEdits { id } => {
-                self.clipboard = Some(self.project.photo(id)?.adjustments);
+                self.clipboard = Some(self.project.photo(id)?.adjustments.clone());
                 Ok(CommandOutput::success(
                     "copy-edits",
                     format!("copied edits from photo {id}"),
@@ -214,11 +257,14 @@ impl Workspace {
             Command::PasteEdits { ids } => {
                 let adjustments = self
                     .clipboard
+                    .clone()
                     .ok_or_else(|| anyhow::anyhow!("edit clipboard is empty"))?;
                 self.ensure_ids(&ids)?;
                 self.record_undo();
                 for id in &ids {
-                    self.project.photo_mut(*id)?.adjustments = adjustments;
+                    self.project
+                        .photo_mut(*id)?
+                        .commit_adjustments("Paste edits", adjustments.clone());
                 }
                 Ok(CommandOutput::success("paste-edits", "pasted edits", ids))
             }
@@ -236,11 +282,12 @@ impl Workspace {
                 ))
             }
             Command::Rotate { id, clockwise } => {
-                self.project.photo(id)?;
+                let mut next = self.project.photo(id)?.adjustments.clone();
+                next.rotation = (next.rotation + if clockwise { 90 } else { -90 }).rem_euclid(360);
                 self.record_undo();
-                let adjustment = &mut self.project.photo_mut(id)?.adjustments;
-                adjustment.rotation =
-                    (adjustment.rotation + if clockwise { 90 } else { -90 }).rem_euclid(360);
+                self.project
+                    .photo_mut(id)?
+                    .commit_adjustments("Rotate", next);
                 Ok(CommandOutput::success(
                     "rotate",
                     format!("rotated photo {id}"),
@@ -248,10 +295,12 @@ impl Workspace {
                 ))
             }
             Command::FlipHorizontal { id } => {
-                self.project.photo(id)?;
+                let mut next = self.project.photo(id)?.adjustments.clone();
+                next.flip_horizontal = !next.flip_horizontal;
                 self.record_undo();
-                let adjustment = &mut self.project.photo_mut(id)?.adjustments;
-                adjustment.flip_horizontal = !adjustment.flip_horizontal;
+                self.project
+                    .photo_mut(id)?
+                    .commit_adjustments("Flip horizontal", next);
                 Ok(CommandOutput::success(
                     "flip-horizontal",
                     format!("flipped photo {id}"),
@@ -259,10 +308,12 @@ impl Workspace {
                 ))
             }
             Command::FlipVertical { id } => {
-                self.project.photo(id)?;
+                let mut next = self.project.photo(id)?.adjustments.clone();
+                next.flip_vertical = !next.flip_vertical;
                 self.record_undo();
-                let adjustment = &mut self.project.photo_mut(id)?.adjustments;
-                adjustment.flip_vertical = !adjustment.flip_vertical;
+                self.project
+                    .photo_mut(id)?
+                    .commit_adjustments("Flip vertical", next);
                 Ok(CommandOutput::success(
                     "flip-vertical",
                     format!("flipped photo {id}"),
@@ -288,25 +339,27 @@ impl Workspace {
                 ))
             }
             Command::Undo => {
-                let Some(previous) = self.undo.pop() else {
-                    bail!("nothing to undo");
-                };
+                let previous = self
+                    .undo
+                    .pop()
+                    .ok_or_else(|| anyhow::anyhow!("nothing to undo"))?;
                 self.redo
                     .push(std::mem::replace(&mut self.project, previous));
                 Ok(CommandOutput::success(
                     "undo",
-                    "undid the last change",
+                    "undid the last catalog change",
                     vec![],
                 ))
             }
             Command::Redo => {
-                let Some(next) = self.redo.pop() else {
-                    bail!("nothing to redo");
-                };
+                let next = self
+                    .redo
+                    .pop()
+                    .ok_or_else(|| anyhow::anyhow!("nothing to redo"))?;
                 self.undo.push(std::mem::replace(&mut self.project, next));
                 Ok(CommandOutput::success(
                     "redo",
-                    "redid the last change",
+                    "redid the last catalog change",
                     vec![],
                 ))
             }
@@ -334,26 +387,23 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use image::{Rgba, RgbaImage};
-
-    use super::*;
-
     #[test]
-    fn adjustment_commands_are_undoable() {
+    fn adjustment_history_survives_navigation() {
         let mut project = Project::new("test");
-        project.photos.push(crate::Photo {
-            id: 1,
-            path: "test.jpg".into(),
-            name: "test.jpg".into(),
-            width: 1,
-            height: 1,
-            adjustments: Adjustments::default(),
-        });
+        project.photos.push(crate::Photo::new(
+            1,
+            "test.jpg".into(),
+            "test.jpg".into(),
+            1,
+            1,
+        ));
         let mut workspace = Workspace::new(project, None);
         workspace
             .execute(Command::Adjust {
@@ -368,12 +418,14 @@ mod tests {
             workspace.project.photo(1).unwrap().adjustments.exposure,
             2.0
         );
-        workspace.execute(Command::Undo).unwrap();
+        workspace.execute(Command::HistoryBack { id: 1 }).unwrap();
         assert_eq!(
             workspace.project.photo(1).unwrap().adjustments.exposure,
             0.0
         );
-        workspace.execute(Command::Redo).unwrap();
+        workspace
+            .execute(Command::HistoryForward { id: 1 })
+            .unwrap();
         assert_eq!(
             workspace.project.photo(1).unwrap().adjustments.exposure,
             2.0
@@ -397,7 +449,6 @@ mod tests {
             .save(&valid)
             .unwrap();
         fs::write(&invalid, b"not an image").unwrap();
-
         let mut workspace = Workspace::default();
         let result = workspace.execute(Command::Import {
             paths: vec![valid, invalid],
