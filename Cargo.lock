@@ -1798,6 +1798,7 @@ dependencies = [
  "eframe",
  "image",
  "rawler",
+ "rayon",
  "rfd",
  "serde",
  "serde_json",

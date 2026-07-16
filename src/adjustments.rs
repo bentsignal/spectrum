@@ -61,6 +61,10 @@ pub struct HslAdjustments {
 }
 
 impl HslAdjustments {
+    pub fn is_identity(&self) -> bool {
+        *self == Self::default()
+    }
+
     pub fn band(&self, index: usize) -> HslBand {
         match index {
             0 => self.red,
@@ -177,6 +181,15 @@ pub struct ToneCurves {
     pub red: ToneCurve,
     pub green: ToneCurve,
     pub blue: ToneCurve,
+}
+
+impl ToneCurves {
+    pub fn is_identity(&self) -> bool {
+        self.master.is_identity()
+            && self.red.is_identity()
+            && self.green.is_identity()
+            && self.blue.is_identity()
+    }
 }
 
 /// Nondestructive edit settings shared by the GUI and CLI.

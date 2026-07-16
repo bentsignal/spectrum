@@ -7,9 +7,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use rawler::{Orientation, imgop::develop::RawDevelop};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{Adjustments, HslAdjustments, Photo, ToneCurves, project::is_raw_image};
+use crate::{Adjustments, HslAdjustments, Photo, ToneCurve, project::is_raw_image};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderOptions {
@@ -142,6 +143,9 @@ pub fn render_image(
         .filter(|size| *size > 0 && (image.width() > *size || image.height() > *size))
     {
         image = image.resize(max_size, max_size, FilterType::Triangle);
+    }
+    if !has_pixel_adjustments(&adjustments) {
+        return image;
     }
     let mut pixels = image.to_rgba8();
     if adjustments.noise_reduction > 0.0 {
@@ -276,7 +280,11 @@ fn apply_unsharp(image: &mut RgbaImage, blurred: &RgbaImage, amount: f32) {
 }
 
 fn apply_color_adjustments(image: &mut RgbaImage, a: &Adjustments) {
-    let width = image.width().max(1) as f32;
+    if !has_color_adjustments(a) {
+        return;
+    }
+    let width_pixels = image.width().max(1) as usize;
+    let width = width_pixels as f32;
     let height = image.height().max(1) as f32;
     let exposure = 2.0_f32.powf(a.exposure);
     let temperature = a.temperature / 100.0;
@@ -292,64 +300,100 @@ fn apply_color_adjustments(image: &mut RgbaImage, a: &Adjustments) {
     let saturation = a.saturation / 100.0;
     let vibrance = a.vibrance / 100.0;
     let vignette = a.vignette / 100.0;
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let alpha = pixel[3];
-        let mut rgb = [
-            pixel[0] as f32 / 255.0,
-            pixel[1] as f32 / 255.0,
-            pixel[2] as f32 / 255.0,
-        ];
-        rgb[0] *= (1.0 + temperature * 0.28 + tint * 0.08) * exposure;
-        rgb[1] *= (1.0 - tint * 0.16) * exposure;
-        rgb[2] *= (1.0 - temperature * 0.28 + tint * 0.08) * exposure;
-        let mut luma = luminance(rgb);
-        let tonal = shadows * 0.32 * (1.0 - luma).powi(2)
-            + highlights * 0.32 * luma.powi(2)
-            + blacks * 0.16 * (1.0 - luma)
-            + whites * 0.16 * luma;
-        for channel in &mut rgb {
-            *channel += tonal;
-        }
-        let contrast_factor = if contrast >= 0.0 {
-            1.0 + contrast * 1.5
-        } else {
-            1.0 + contrast * 0.85
-        };
-        luma = luminance(rgb).clamp(0.0, 1.0);
-        let midtones = 4.0 * luma * (1.0 - luma);
-        for channel in &mut rgb {
-            *channel = (*channel - 0.5) * contrast_factor + 0.5;
-            *channel += (*channel - luma) * texture * 0.18;
-            *channel += (*channel - 0.5) * clarity * 0.22 * midtones;
-            *channel = (*channel - 0.5) * (1.0 + dehaze * 0.55) + 0.5 - dehaze * 0.025;
-        }
-        let (mut hue, mut sat, mut light) = rgb_to_hsl(rgb);
-        apply_hsl_mixer(&mut hue, &mut sat, &mut light, &a.hsl);
-        rgb = hsl_to_rgb(hue, sat, light);
-        luma = luminance(rgb);
-        let current_saturation = rgb.iter().copied().fold(f32::MIN, f32::max)
-            - rgb.iter().copied().fold(f32::MAX, f32::min);
-        let saturation_factor =
-            (1.0 + saturation) * (1.0 + vibrance * (1.0 - current_saturation.clamp(0.0, 1.0)));
-        for channel in &mut rgb {
-            *channel = luma + (*channel - luma) * saturation_factor;
-        }
-        apply_curves(&mut rgb, &a.curves);
-        if vignette != 0.0 {
-            let nx = (x as f32 + 0.5) / width * 2.0 - 1.0;
-            let ny = (y as f32 + 0.5) / height * 2.0 - 1.0;
-            let multiplier = (1.0
-                + vignette * ((nx * nx + ny * ny) / 2.0).clamp(0.0, 1.0).powf(1.4) * 0.72)
-                .max(0.0);
+    let hsl_active = !a.hsl.is_identity();
+    let master_curve = (!a.curves.master.is_identity()).then_some(&a.curves.master);
+    let red_curve = (!a.curves.red.is_identity()).then_some(&a.curves.red);
+    let green_curve = (!a.curves.green.is_identity()).then_some(&a.curves.green);
+    let blue_curve = (!a.curves.blue.is_identity()).then_some(&a.curves.blue);
+    image
+        .as_mut()
+        .par_chunks_mut(4)
+        .enumerate()
+        .for_each(|(index, pixel)| {
+            let x = index % width_pixels;
+            let y = index / width_pixels;
+            let alpha = pixel[3];
+            let mut rgb = [
+                pixel[0] as f32 / 255.0,
+                pixel[1] as f32 / 255.0,
+                pixel[2] as f32 / 255.0,
+            ];
+            rgb[0] *= (1.0 + temperature * 0.28 + tint * 0.08) * exposure;
+            rgb[1] *= (1.0 - tint * 0.16) * exposure;
+            rgb[2] *= (1.0 - temperature * 0.28 + tint * 0.08) * exposure;
+            let mut luma = luminance(rgb);
+            let tonal = shadows * 0.32 * (1.0 - luma).powi(2)
+                + highlights * 0.32 * luma.powi(2)
+                + blacks * 0.16 * (1.0 - luma)
+                + whites * 0.16 * luma;
             for channel in &mut rgb {
-                *channel *= multiplier;
+                *channel += tonal;
             }
-        }
-        for (index, channel) in rgb.into_iter().enumerate() {
-            pixel[index] = (channel.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        }
-        pixel[3] = alpha;
-    }
+            let contrast_factor = if contrast >= 0.0 {
+                1.0 + contrast * 1.5
+            } else {
+                1.0 + contrast * 0.85
+            };
+            luma = luminance(rgb).clamp(0.0, 1.0);
+            let midtones = 4.0 * luma * (1.0 - luma);
+            for channel in &mut rgb {
+                *channel = (*channel - 0.5) * contrast_factor + 0.5;
+                *channel += (*channel - luma) * texture * 0.18;
+                *channel += (*channel - 0.5) * clarity * 0.22 * midtones;
+                *channel = (*channel - 0.5) * (1.0 + dehaze * 0.55) + 0.5 - dehaze * 0.025;
+            }
+            if hsl_active {
+                let (mut hue, mut sat, mut light) = rgb_to_hsl(rgb);
+                apply_hsl_mixer(&mut hue, &mut sat, &mut light, &a.hsl);
+                rgb = hsl_to_rgb(hue, sat, light);
+            }
+            luma = luminance(rgb);
+            let current_saturation = rgb.iter().copied().fold(f32::MIN, f32::max)
+                - rgb.iter().copied().fold(f32::MAX, f32::min);
+            let saturation_factor =
+                (1.0 + saturation) * (1.0 + vibrance * (1.0 - current_saturation.clamp(0.0, 1.0)));
+            for channel in &mut rgb {
+                *channel = luma + (*channel - luma) * saturation_factor;
+            }
+            apply_curves(&mut rgb, master_curve, [red_curve, green_curve, blue_curve]);
+            if vignette != 0.0 {
+                let nx = (x as f32 + 0.5) / width * 2.0 - 1.0;
+                let ny = (y as f32 + 0.5) / height * 2.0 - 1.0;
+                let multiplier = (1.0
+                    + vignette * ((nx * nx + ny * ny) / 2.0).clamp(0.0, 1.0).powf(1.4) * 0.72)
+                    .max(0.0);
+                for channel in &mut rgb {
+                    *channel *= multiplier;
+                }
+            }
+            for (index, channel) in rgb.into_iter().enumerate() {
+                pixel[index] = (channel.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            }
+            pixel[3] = alpha;
+        });
+}
+
+fn has_pixel_adjustments(a: &Adjustments) -> bool {
+    a.noise_reduction > 0.0 || a.sharpening > 0.0 || has_color_adjustments(a)
+}
+
+fn has_color_adjustments(a: &Adjustments) -> bool {
+    a.exposure != 0.0
+        || a.temperature != 0.0
+        || a.tint != 0.0
+        || a.contrast != 0.0
+        || a.highlights != 0.0
+        || a.shadows != 0.0
+        || a.whites != 0.0
+        || a.blacks != 0.0
+        || a.texture != 0.0
+        || a.clarity != 0.0
+        || a.dehaze != 0.0
+        || a.saturation != 0.0
+        || a.vibrance != 0.0
+        || a.vignette != 0.0
+        || !a.hsl.is_identity()
+        || !a.curves.is_identity()
 }
 
 fn apply_hsl_mixer(hue: &mut f32, saturation: &mut f32, lightness: &mut f32, hsl: &HslAdjustments) {
@@ -383,13 +427,17 @@ fn apply_hsl_mixer(hue: &mut f32, saturation: &mut f32, lightness: &mut f32, hsl
     }
 }
 
-fn apply_curves(rgb: &mut [f32; 3], curves: &ToneCurves) {
-    for channel in rgb.iter_mut() {
-        *channel = curves.master.evaluate(channel.clamp(0.0, 1.0));
+fn apply_curves(rgb: &mut [f32; 3], master: Option<&ToneCurve>, channels: [Option<&ToneCurve>; 3]) {
+    if let Some(master) = master {
+        for channel in rgb.iter_mut() {
+            *channel = master.evaluate(channel.clamp(0.0, 1.0));
+        }
     }
-    rgb[0] = curves.red.evaluate(rgb[0]);
-    rgb[1] = curves.green.evaluate(rgb[1]);
-    rgb[2] = curves.blue.evaluate(rgb[2]);
+    for (channel, curve) in rgb.iter_mut().zip(channels) {
+        if let Some(curve) = curve {
+            *channel = curve.evaluate(channel.clamp(0.0, 1.0));
+        }
+    }
 }
 
 fn rgb_to_hsl(rgb: [f32; 3]) -> (f32, f32, f32) {
@@ -434,8 +482,9 @@ fn luminance(rgb: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CropRect, CurvePoint, ToneCurve};
+    use crate::{CropRect, CurvePoint, ToneCurve, ToneCurves};
     use image::{GenericImageView, Rgba, RgbaImage};
+    use std::time::Instant;
 
     #[test]
     fn exposure_brightens_pixels() {
@@ -449,6 +498,29 @@ mod tests {
             RenderOptions::default(),
         );
         assert!(rendered.to_rgba8().get_pixel(0, 0)[0] > 32);
+    }
+
+    #[test]
+    fn identity_render_preserves_pixels() {
+        let source = RgbaImage::from_fn(16, 12, |x, y| {
+            Rgba([x as u8 * 11, y as u8 * 13, (x + y) as u8 * 7, 255])
+        });
+        let rendered = render_image(
+            DynamicImage::ImageRgba8(source.clone()),
+            Adjustments::default(),
+            RenderOptions::default(),
+        );
+        assert_eq!(rendered.to_rgba8(), source);
+    }
+
+    #[test]
+    fn hsl_mixer_still_changes_target_color() {
+        let source =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([20, 90, 220, 255])));
+        let mut adjustments = Adjustments::default();
+        adjustments.hsl.blue.saturation = -80.0;
+        let rendered = render_image(source, adjustments, RenderOptions::default()).to_rgba8();
+        assert!(rendered.get_pixel(0, 0)[2] < 220);
     }
 
     #[test]
@@ -479,6 +551,45 @@ mod tests {
         assert_ne!(
             batch_destination(&first, directory, ExportFormat::Jpeg),
             batch_destination(&second, directory, ExportFormat::Jpeg)
+        );
+    }
+
+    #[test]
+    #[ignore = "manual release-mode performance benchmark"]
+    fn interactive_preview_benchmark() {
+        let source = DynamicImage::ImageRgba8(RgbaImage::from_fn(1800, 1200, |x, y| {
+            Rgba([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255])
+        }));
+        let adjustments = Adjustments {
+            exposure: 0.35,
+            contrast: 12.0,
+            shadows: 18.0,
+            vibrance: 8.0,
+            curves: ToneCurves {
+                master: ToneCurve {
+                    points: vec![
+                        CurvePoint { x: 0.0, y: 0.0 },
+                        CurvePoint { x: 0.4, y: 0.35 },
+                        CurvePoint { x: 1.0, y: 1.0 },
+                    ],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let iterations = 4;
+        let started = Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(render_image(
+                source.clone(),
+                adjustments.clone(),
+                RenderOptions::default(),
+            ));
+        }
+        let elapsed = started.elapsed();
+        eprintln!(
+            "interactive preview: {:.1} ms/frame",
+            elapsed.as_secs_f64() * 1000.0 / iterations as f64
         );
     }
 

@@ -56,6 +56,18 @@ RAW development starts in a 16-bit intermediate; the interactive adjustment
 pipeline currently operates on 8-bit RGBA after sRGB conversion. A future
 high-bit-depth working buffer can keep the command and catalog APIs stable.
 
+Interactive previews cache the decoded 1800px source instead of developing a RAW
+again for every control movement. While a pointer drag is active, the GUI renders
+a 960px working preview and resolves the full cached preview on release. Pixel rows
+are processed in parallel, and identity color, HSL, and curve stages are skipped.
+This keeps the export path deterministic while avoiding work during interaction.
+
+The repeatable release benchmark for this path is:
+
+```sh
+cargo test --release interactive_preview_benchmark -- --ignored --nocapture
+```
+
 ## Cross-platform choices
 
 - egui/eframe with the lightweight OpenGL backend for native composition

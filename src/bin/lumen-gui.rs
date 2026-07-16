@@ -8,7 +8,7 @@ use std::{
 use eframe::egui::{
     self, Color32, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Vec2,
 };
-use image::DynamicImage;
+use image::{DynamicImage, imageops::FilterType};
 use lumen_core::{
     Adjustments, Command, CropRect, CurvePoint, ExportFormat, Photo, ToneCurve, Workspace,
     engine::{RenderOptions, decode_photo, render_image, render_photo},
@@ -71,7 +71,9 @@ struct LumenApp {
     workspace: Workspace,
     preview: Option<TextureHandle>,
     preview_source: Option<(u64, DynamicImage)>,
+    preview_fast_source: Option<(u64, DynamicImage)>,
     preview_id: Option<u64>,
+    preview_fast: bool,
     preview_adjustments: Adjustments,
     thumbnails: HashMap<u64, TextureHandle>,
     draft: Adjustments,
@@ -112,7 +114,9 @@ impl LumenApp {
             workspace: Workspace::default(),
             preview: None,
             preview_source: None,
+            preview_fast_source: None,
             preview_id: None,
+            preview_fast: false,
             preview_adjustments: Adjustments::default(),
             thumbnails: HashMap::new(),
             draft: Adjustments::default(),
@@ -168,6 +172,7 @@ impl LumenApp {
     fn invalidate_selected(&mut self) {
         self.preview = None;
         self.preview_source = None;
+        self.preview_fast_source = None;
         self.preview_id = None;
         if let Some(id) = self.workspace.project.selected {
             self.thumbnails.remove(&id);
@@ -371,9 +376,11 @@ impl LumenApp {
             return;
         };
         let preview_adjustments = self.preview_adjustments();
+        let interacting = context.input(|input| input.pointer.primary_down());
         if self.preview.is_some()
             && self.preview_id == Some(id)
             && self.preview_adjustments == preview_adjustments
+            && !(self.preview_fast && !interacting)
         {
             return;
         }
@@ -387,7 +394,15 @@ impl LumenApp {
             != Some(id)
         {
             match decode_photo(&photo, Some(1800)) {
-                Ok(source) => self.preview_source = Some((id, source)),
+                Ok(source) => {
+                    let fast = if source.width() > 960 || source.height() > 960 {
+                        source.resize(960, 960, FilterType::Triangle)
+                    } else {
+                        source.clone()
+                    };
+                    self.preview_fast_source = Some((id, fast));
+                    self.preview_source = Some((id, source));
+                }
                 Err(error) => {
                     self.status = format!("preview failed: {error:#}");
                     self.error = true;
@@ -395,7 +410,13 @@ impl LumenApp {
                 }
             }
         }
-        if let Some((_, source)) = &self.preview_source {
+        let use_fast = interacting && self.preview_id == Some(id);
+        let source = if use_fast {
+            self.preview_fast_source.as_ref()
+        } else {
+            self.preview_source.as_ref()
+        };
+        if let Some((_, source)) = source {
             let rendered = render_image(
                 source.clone(),
                 preview_adjustments.clone(),
@@ -403,6 +424,7 @@ impl LumenApp {
             );
             self.preview = Some(load_texture(context, format!("preview-{id}"), rendered));
             self.preview_id = Some(id);
+            self.preview_fast = use_fast;
             self.preview_adjustments = preview_adjustments;
         }
     }
