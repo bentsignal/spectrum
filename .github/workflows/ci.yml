@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Format, lint, and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --all-targets --locked
+
+  build:
+    name: Build ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+            gui: target/release/lumen-gui.exe
+            cli: target/release/lumen.exe
+          - os: macos-latest
+            label: macOS
+            gui: target/release/lumen-gui
+            cli: target/release/lumen
+          - os: ubuntu-latest
+            label: Linux
+            gui: target/release/lumen-gui
+            cli: target/release/lumen
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --bins --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lumen-${{ matrix.label }}
+          path: |
+            ${{ matrix.gui }}
+            ${{ matrix.cli }}
+          if-no-files-found: error
+

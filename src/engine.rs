@@ -5,25 +5,35 @@ use image::{DynamicImage, ImageEncoder, RgbaImage, imageops::FilterType};
 
 use crate::{Adjustments, Photo};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RenderOptions {
     /// Long-edge pixel limit. `None` renders at the source size.
     pub max_size: Option<u32>,
 }
 
-impl Default for RenderOptions {
-    fn default() -> Self {
-        Self { max_size: None }
-    }
+pub fn render_photo(photo: &Photo, options: RenderOptions) -> Result<DynamicImage> {
+    let decoded = decode_photo(photo, options.max_size)?;
+    Ok(render_image(
+        decoded,
+        photo.adjustments,
+        RenderOptions::default(),
+    ))
 }
 
-pub fn render_photo(photo: &Photo, options: RenderOptions) -> Result<DynamicImage> {
-    let decoded = image::ImageReader::open(&photo.path)
+/// Decode and optionally downsample a source without applying edits. The GUI
+/// caches this result so interactive slider changes never decode the file again.
+pub fn decode_photo(photo: &Photo, max_size: Option<u32>) -> Result<DynamicImage> {
+    let mut decoded = image::ImageReader::open(&photo.path)
         .with_context(|| format!("could not open {}", photo.path.display()))?
         .with_guessed_format()?
         .decode()
         .with_context(|| format!("could not decode {}", photo.path.display()))?;
-    Ok(render_image(decoded, photo.adjustments, options))
+    if let Some(max_size) =
+        max_size.filter(|size| *size > 0 && (decoded.width() > *size || decoded.height() > *size))
+    {
+        decoded = decoded.resize(max_size, max_size, FilterType::Triangle);
+    }
+    Ok(decoded)
 }
 
 pub fn render_image(
@@ -44,7 +54,10 @@ pub fn render_image(
     if adjustments.flip_vertical {
         image = image.flipv();
     }
-    if let Some(max_size) = options.max_size.filter(|size| *size > 0) {
+    if let Some(max_size) = options
+        .max_size
+        .filter(|size| *size > 0 && (image.width() > *size || image.height() > *size))
+    {
         image = image.resize(max_size, max_size, FilterType::Triangle);
     }
     let mut pixels = image.to_rgba8();
@@ -203,5 +216,18 @@ mod tests {
             RenderOptions::default(),
         );
         assert_eq!((rendered.width(), rendered.height()), (2, 4));
+    }
+
+    #[test]
+    fn maximum_size_never_upscales() {
+        let source = DynamicImage::new_rgba8(40, 20);
+        let rendered = render_image(
+            source,
+            Adjustments::default(),
+            RenderOptions {
+                max_size: Some(200),
+            },
+        );
+        assert_eq!((rendered.width(), rendered.height()), (40, 20));
     }
 }

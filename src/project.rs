@@ -4,7 +4,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 
 use crate::Adjustments;
@@ -77,6 +76,12 @@ impl Project {
         let json = serde_json::to_vec_pretty(self)?;
         fs::write(&temporary, json)
             .with_context(|| format!("could not write {}", temporary.display()))?;
+        // Windows does not replace an existing destination with `rename`.
+        #[cfg(target_os = "windows")]
+        if path.exists() {
+            fs::remove_file(path)
+                .with_context(|| format!("could not replace catalog {}", path.display()))?;
+        }
         fs::rename(&temporary, path)
             .with_context(|| format!("could not replace catalog {}", path.display()))?;
         Ok(())
@@ -115,9 +120,8 @@ impl Project {
             let dimensions = image::ImageReader::open(&path)
                 .with_context(|| format!("could not open {}", path.display()))?
                 .with_guessed_format()?
-                .decode()
-                .with_context(|| format!("could not decode {}", path.display()))?
-                .dimensions();
+                .into_dimensions()
+                .with_context(|| format!("could not read {}", path.display()))?;
             let id = self.next_id;
             self.next_id += 1;
             let name = path
@@ -151,4 +155,32 @@ pub fn is_supported_image(path: &Path) -> bool {
                 "jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp"
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn catalog_round_trips() {
+        let directory = test_directory("catalog-round-trip");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("test.lumencatalog");
+        let mut project = Project::new("Round trip");
+        project.selected = Some(42);
+        project.next_id = 43;
+        project.save(&path).unwrap();
+        assert_eq!(Project::load(&path).unwrap(), project);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn test_directory(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("lumen-{label}-{}-{unique}", std::process::id()))
+    }
 }

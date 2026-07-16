@@ -155,8 +155,11 @@ impl Workspace {
                 ))
             }
             Command::Import { paths } => {
+                // Import into a clone so one bad file cannot leave a half-imported catalog.
+                let mut updated = self.project.clone();
+                let ids = updated.import(&paths)?;
                 self.record_undo();
-                let ids = self.project.import(&paths)?;
+                self.project = updated;
                 Ok(CommandOutput::success(
                     "import",
                     format!("imported {} photo(s)", ids.len()),
@@ -173,6 +176,7 @@ impl Workspace {
                 ))
             }
             Command::Adjust { id, patch } => {
+                self.project.photo(id)?;
                 self.record_undo();
                 patch.apply_to(&mut self.project.photo_mut(id)?.adjustments);
                 Ok(CommandOutput::success(
@@ -182,6 +186,7 @@ impl Workspace {
                 ))
             }
             Command::SetAdjustments { id, adjustments } => {
+                self.project.photo(id)?;
                 self.record_undo();
                 self.project.photo_mut(id)?.adjustments = adjustments.sanitized();
                 Ok(CommandOutput::success(
@@ -231,6 +236,7 @@ impl Workspace {
                 ))
             }
             Command::Rotate { id, clockwise } => {
+                self.project.photo(id)?;
                 self.record_undo();
                 let adjustment = &mut self.project.photo_mut(id)?.adjustments;
                 adjustment.rotation =
@@ -242,6 +248,7 @@ impl Workspace {
                 ))
             }
             Command::FlipHorizontal { id } => {
+                self.project.photo(id)?;
                 self.record_undo();
                 let adjustment = &mut self.project.photo_mut(id)?.adjustments;
                 adjustment.flip_horizontal = !adjustment.flip_horizontal;
@@ -252,6 +259,7 @@ impl Workspace {
                 ))
             }
             Command::FlipVertical { id } => {
+                self.project.photo(id)?;
                 self.record_undo();
                 let adjustment = &mut self.project.photo_mut(id)?.adjustments;
                 adjustment.flip_vertical = !adjustment.flip_vertical;
@@ -326,6 +334,13 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use image::{Rgba, RgbaImage};
+
     use super::*;
 
     #[test]
@@ -363,5 +378,33 @@ mod tests {
             workspace.project.photo(1).unwrap().adjustments.exposure,
             2.0
         );
+    }
+
+    #[test]
+    fn failed_multi_import_is_transactional() {
+        let directory = std::env::temp_dir().join(format!(
+            "lumen-import-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let valid = directory.join("valid.png");
+        let invalid = directory.join("invalid.jpg");
+        RgbaImage::from_pixel(2, 2, Rgba([20, 40, 60, 255]))
+            .save(&valid)
+            .unwrap();
+        fs::write(&invalid, b"not an image").unwrap();
+
+        let mut workspace = Workspace::default();
+        let result = workspace.execute(Command::Import {
+            paths: vec![valid, invalid],
+        });
+        assert!(result.is_err());
+        assert!(workspace.project.photos.is_empty());
+        assert!(!workspace.can_undo());
+        fs::remove_dir_all(directory).unwrap();
     }
 }

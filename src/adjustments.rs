@@ -124,3 +124,33 @@ impl AdjustmentPatch {
         *value = value.sanitized();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_patch_preserves_other_values_and_clamps() {
+        let mut value = Adjustments {
+            contrast: 24.0,
+            ..Default::default()
+        };
+        AdjustmentPatch {
+            exposure: Some(99.0),
+            ..Default::default()
+        }
+        .apply_to(&mut value);
+        assert_eq!(value.exposure, 5.0);
+        assert_eq!(value.contrast, 24.0);
+    }
+
+    #[test]
+    fn rotation_is_normalized() {
+        let value = Adjustments {
+            rotation: -90,
+            ..Default::default()
+        }
+        .sanitized();
+        assert_eq!(value.rotation, 270);
+    }
+}

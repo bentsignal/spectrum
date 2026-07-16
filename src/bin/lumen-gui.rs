@@ -6,7 +6,7 @@ use eframe::egui::{self, Color32, RichText, Stroke, TextureHandle, TextureOption
 use image::DynamicImage;
 use lumen_core::{
     Adjustments, Command, Photo, Workspace,
-    engine::{RenderOptions, render_photo},
+    engine::{RenderOptions, decode_photo, render_image, render_photo},
     project::is_supported_image,
 };
 
@@ -32,6 +32,7 @@ fn main() -> eframe::Result {
 struct LumenApp {
     workspace: Workspace,
     preview: Option<TextureHandle>,
+    preview_source: Option<(u64, DynamicImage)>,
     preview_id: Option<u64>,
     preview_adjustments: Adjustments,
     thumbnails: HashMap<u64, TextureHandle>,
@@ -58,6 +59,7 @@ impl LumenApp {
         Self {
             workspace: Workspace::default(),
             preview: None,
+            preview_source: None,
             preview_id: None,
             preview_adjustments: Adjustments::default(),
             thumbnails: HashMap::new(),
@@ -85,19 +87,19 @@ impl LumenApp {
 
     fn execute_and_autosave(&mut self, command: Command) -> bool {
         let succeeded = self.execute(command);
-        if succeeded {
-            if let Some(path) = self.workspace.catalog_path.clone() {
-                if let Err(error) = self.workspace.project.save(&path) {
-                    self.status = format!("change applied, but autosave failed: {error:#}");
-                    self.error = true;
-                }
-            }
+        if succeeded
+            && let Some(path) = self.workspace.catalog_path.clone()
+            && let Err(error) = self.workspace.project.save(&path)
+        {
+            self.status = format!("change applied, but autosave failed: {error:#}");
+            self.error = true;
         }
         succeeded
     }
 
     fn invalidate_selected(&mut self) {
         self.preview = None;
+        self.preview_source = None;
         self.preview_id = None;
         if let Some(id) = self.workspace.project.selected {
             self.thumbnails.remove(&id);
@@ -155,12 +157,11 @@ impl LumenApp {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Lumen catalog", &["lumencatalog"])
             .pick_file()
+            && self.execute(Command::Open { path })
         {
-            if self.execute(Command::Open { path }) {
-                self.thumbnails.clear();
-                self.draft_id = None;
-                self.sync_draft();
-            }
+            self.thumbnails.clear();
+            self.draft_id = None;
+            self.sync_draft();
         }
     }
 
@@ -213,25 +214,29 @@ impl LumenApp {
         {
             return;
         }
-        let Some(mut photo) = self.workspace.project.selected_photo().cloned() else {
+        let Some(photo) = self.workspace.project.selected_photo().cloned() else {
             return;
         };
-        photo.adjustments = self.draft;
-        match render_photo(
-            &photo,
-            RenderOptions {
-                max_size: Some(1800),
-            },
-        ) {
-            Ok(rendered) => {
-                self.preview = Some(load_texture(context, format!("preview-{id}"), rendered));
-                self.preview_id = Some(id);
-                self.preview_adjustments = self.draft;
+        if self
+            .preview_source
+            .as_ref()
+            .map(|(source_id, _)| *source_id)
+            != Some(id)
+        {
+            match decode_photo(&photo, Some(1800)) {
+                Ok(source) => self.preview_source = Some((id, source)),
+                Err(error) => {
+                    self.status = format!("preview failed: {error:#}");
+                    self.error = true;
+                    return;
+                }
             }
-            Err(error) => {
-                self.status = format!("preview failed: {error:#}");
-                self.error = true;
-            }
+        }
+        if let Some((_, source)) = &self.preview_source {
+            let rendered = render_image(source.clone(), self.draft, RenderOptions::default());
+            self.preview = Some(load_texture(context, format!("preview-{id}"), rendered));
+            self.preview_id = Some(id);
+            self.preview_adjustments = self.draft;
         }
     }
 
@@ -279,11 +284,11 @@ impl LumenApp {
                 None
             }
         });
-        if let Some(command) = command {
-            if self.execute_and_autosave(command) {
-                self.draft_id = None;
-                self.sync_draft();
-            }
+        if let Some(command) = command
+            && self.execute_and_autosave(command)
+        {
+            self.draft_id = None;
+            self.sync_draft();
         }
 
         let save =
