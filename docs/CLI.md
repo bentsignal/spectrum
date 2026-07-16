@@ -28,11 +28,16 @@ If omitted, it defaults to `lumen.lumencatalog` in the current directory.
 | `history-back\|history-forward <ID>` | Navigate one persistent edit |
 | `history-jump <ID> <INDEX>` | Restore a particular history snapshot |
 | `reset <ID>...` | Restore identity edits |
+| `preset-list` | List reusable development presets |
+| `preset-save <NAME> --from <ID>` | Save one photo's non-geometric development settings |
+| `preset-apply <PRESET_ID> <ID>...` | Apply a preset while preserving each photo's crop/rotation |
+| `preset-delete <PRESET_ID>` | Remove a named preset |
 | `copy-edits --from ID --to ID...` | Apply one photo's complete look to others |
 | `rotate <ID> [--counterclockwise]` | Rotate by 90 degrees |
 | `flip <ID> [--horizontal\|--vertical]` | Toggle a flip transform |
 | `remove <ID>...` | Remove catalog references, never source files |
 | `export <ID> <PATH>` | Render an edited file |
+| `export-batch <ID>... --directory <PATH>` | Export multiple photos as JPEG, PNG, TIFF, or WebP |
 | `run '<JSON>'` | Deserialize and execute a core command directly |
 | `schema` | Return ranges and raw-command examples |
 
@@ -58,6 +63,11 @@ lumen --catalog shoot.lumencatalog hsl 7 blue \
   --hue -8 --saturation 18 --luminance -4
 lumen --catalog shoot.lumencatalog curve 7 master \
   --points '0,0;0.25,0.2;0.75,0.82;1,1'
+
+lumen --catalog shoot.lumencatalog preset-save "Soft color" --from 7
+lumen --catalog shoot.lumencatalog preset-apply 1 8 9 10
+lumen --catalog shoot.lumencatalog export-batch 7 8 9 10 \
+  --directory exports --format jpeg --quality 90 --max-size 3200
 ```
 
 ## Raw commands

@@ -9,13 +9,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::Adjustments;
 
-pub const CATALOG_VERSION: u32 = 2;
+pub const CATALOG_VERSION: u32 = 3;
 pub const MAX_HISTORY: usize = 200;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub id: u64,
     pub label: String,
+    pub adjustments: Adjustments,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Preset {
+    pub id: u64,
+    pub name: String,
     pub adjustments: Adjustments,
 }
 
@@ -163,6 +170,14 @@ pub struct Project {
     pub next_id: u64,
     pub selected: Option<u64>,
     pub photos: Vec<Photo>,
+    #[serde(default)]
+    pub presets: Vec<Preset>,
+    #[serde(default = "default_preset_id")]
+    pub next_preset_id: u64,
+}
+
+fn default_preset_id() -> u64 {
+    1
 }
 
 impl Default for Project {
@@ -179,6 +194,8 @@ impl Project {
             next_id: 1,
             selected: None,
             photos: Vec::new(),
+            presets: Vec::new(),
+            next_preset_id: 1,
         }
     }
 
@@ -197,6 +214,15 @@ impl Project {
         for photo in &mut project.photos {
             photo.migrate();
         }
+        project.next_preset_id = project.next_preset_id.max(
+            project
+                .presets
+                .iter()
+                .map(|preset| preset.id)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
         Ok(project)
     }
 
@@ -270,6 +296,38 @@ impl Project {
             self.selected = imported.first().copied();
         }
         Ok(imported)
+    }
+
+    pub fn preset(&self, id: u64) -> Result<&Preset> {
+        self.presets
+            .iter()
+            .find(|preset| preset.id == id)
+            .with_context(|| format!("preset {id} is not in this catalog"))
+    }
+
+    pub fn save_preset(
+        &mut self,
+        name: impl Into<String>,
+        adjustments: &Adjustments,
+    ) -> Result<u64> {
+        let name = name.into().trim().to_owned();
+        if name.is_empty() {
+            bail!("preset name cannot be empty");
+        }
+        let id = self.next_preset_id;
+        self.next_preset_id += 1;
+        self.presets.push(Preset {
+            id,
+            name,
+            adjustments: adjustments.as_preset(),
+        });
+        Ok(id)
+    }
+
+    pub fn delete_preset(&mut self, id: u64) -> Result<()> {
+        self.preset(id)?;
+        self.presets.retain(|preset| preset.id != id);
+        Ok(())
     }
 }
 
@@ -354,6 +412,33 @@ mod tests {
         project.save(&path).unwrap();
         assert_eq!(Project::load(&path).unwrap(), project);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn presets_round_trip_and_allocate_ids() {
+        let mut project = Project::new("Presets");
+        let first = project
+            .save_preset(
+                "Warm",
+                &Adjustments {
+                    temperature: 22.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let second = project
+            .save_preset(
+                "Cool",
+                &Adjustments {
+                    temperature: -18.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!((first, second), (1, 2));
+        assert_eq!(project.preset(2).unwrap().name, "Cool");
+        project.delete_preset(1).unwrap();
+        assert_eq!(project.presets.len(), 1);
     }
 
     fn test_directory(label: &str) -> PathBuf {

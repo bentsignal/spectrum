@@ -1,14 +1,50 @@
-use std::{fs::File, io::BufWriter, path::Path};
+use std::{
+    fs::File,
+    io::BufWriter,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use rawler::{Orientation, imgop::develop::RawDevelop};
+use serde::{Deserialize, Serialize};
 
 use crate::{Adjustments, HslAdjustments, Photo, ToneCurves, project::is_raw_image};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderOptions {
     pub max_size: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    #[default]
+    Jpeg,
+    Png,
+    Tiff,
+    Webp,
+}
+
+impl ExportFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Png => "png",
+            Self::Tiff => "tiff",
+            Self::Webp => "webp",
+        }
+    }
+
+    pub fn estimate_bytes(self, pixels: u64, quality: u8) -> u64 {
+        let bytes_per_pixel = match self {
+            Self::Jpeg => 0.18 + quality.clamp(1, 100) as f64 / 100.0 * 0.95,
+            Self::Png => 2.1,
+            Self::Tiff => 3.2,
+            Self::Webp => 1.35,
+        };
+        (pixels as f64 * bytes_per_pixel) as u64
+    }
 }
 
 pub fn render_photo(photo: &Photo, options: RenderOptions) -> Result<DynamicImage> {
@@ -133,6 +169,12 @@ pub fn export_photo(
     options: RenderOptions,
     jpeg_quality: u8,
 ) -> Result<()> {
+    if destination == photo.path
+        || (destination.exists()
+            && std::fs::canonicalize(destination).is_ok_and(|path| path == photo.path))
+    {
+        bail!("export destination cannot overwrite the original photo");
+    }
     let rendered = render_photo(photo, options)?;
     if let Some(parent) = destination
         .parent()
@@ -161,6 +203,12 @@ pub fn export_photo(
         bail!("export path must end in jpg, jpeg, png, tif, tiff, or webp");
     }
     Ok(())
+}
+
+pub fn batch_destination(photo: &Photo, directory: &Path, format: ExportFormat) -> PathBuf {
+    let stem = photo.path.file_stem().unwrap_or_default().to_string_lossy();
+    // Catalog IDs keep same-named originals from different folders from colliding.
+    directory.join(format!("{stem}-lumen-{}.{}", photo.id, format.extension()))
 }
 
 fn rotate_filled(image: &DynamicImage, degrees: f32) -> DynamicImage {
@@ -421,6 +469,17 @@ mod tests {
             RenderOptions::default(),
         );
         assert_eq!(rendered.dimensions(), (1, 4));
+    }
+
+    #[test]
+    fn batch_names_are_unique_for_same_named_sources() {
+        let first = Photo::new(4, "a/frame.arw".into(), "frame.arw".into(), 1, 1);
+        let second = Photo::new(9, "b/frame.arw".into(), "frame.arw".into(), 1, 1);
+        let directory = Path::new("exports");
+        assert_ne!(
+            batch_destination(&first, directory, ExportFormat::Jpeg),
+            batch_destination(&second, directory, ExportFormat::Jpeg)
+        );
     }
 
     #[test]

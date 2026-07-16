@@ -12,16 +12,16 @@ capabilities.
 ## What works today
 
 - Drag/drop or file-picker import
-- Vertical filmstrip and arrow-key navigation
+- Vertical filmstrip, arrow-key navigation, and Shift/Cmd/Ctrl multi-selection
 - Pure-Rust Sony ARW decoding and development
-- Zoom, pan, normalized crop, straighten, rotation, and flips
+- Zoom, pan, direct on-image crop handles, straighten, rotation, and flips
 - Live basic, presence, detail, and vignette controls
 - Eight-color HSL mixer and point-editable master/red/green/blue tone curves
 - Rotation and horizontal/vertical flips
 - Nondestructive `.lumencatalog` sidecars; source photos are never changed
 - Persistent per-photo edit history with `Ctrl+Z` / `Cmd+Z` navigation
-- Copy/paste edits and confirmed, history-preserving reset
-- Full-resolution JPEG, PNG, TIFF, and WebP export
+- Copy/paste edits, reusable named presets, and confirmed history-preserving reset
+- Configurable single or batch JPEG, PNG, TIFF, and WebP export with size estimates
 - JSON-speaking CLI with a raw command protocol for agents
 - Native builds for Windows, macOS, and Linux
 
@@ -59,6 +59,13 @@ cargo run --release --bin lumen -- --catalog shoot.lumencatalog copy-edits \
   --from 1 --to 2 3 4
 cargo run --release --bin lumen -- --catalog shoot.lumencatalog export \
   1 finished.jpg --quality 92
+
+# Save a reusable look, apply it without replacing crop/rotation, and batch export
+cargo run --release --bin lumen -- --catalog shoot.lumencatalog preset-save \
+  "Warm portrait" --from 1
+cargo run --release --bin lumen -- --catalog shoot.lumencatalog preset-apply 1 2 3 4
+cargo run --release --bin lumen -- --catalog shoot.lumencatalog export-batch \
+  1 2 3 4 --directory finished --format jpeg --quality 92
 
 # Discover the machine-facing protocol
 cargo run --release --bin lumen -- schema

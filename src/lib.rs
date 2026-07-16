@@ -10,4 +10,5 @@ pub use adjustments::{
     ToneCurves,
 };
 pub use command::{Command, CommandOutput, Workspace};
-pub use project::{HistoryEntry, Photo, Project};
+pub use engine::ExportFormat;
+pub use project::{HistoryEntry, Photo, Preset, Project};

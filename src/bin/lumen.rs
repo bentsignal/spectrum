@@ -3,7 +3,8 @@ use std::{path::PathBuf, process::ExitCode};
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lumen_core::{
-    AdjustmentPatch, Adjustments, Command, CropRect, CurvePoint, Project, ToneCurve, Workspace,
+    AdjustmentPatch, Adjustments, Command, CropRect, CurvePoint, ExportFormat, Project, ToneCurve,
+    Workspace,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -128,6 +129,35 @@ enum CliCommand {
         #[arg(long, default_value_t = 92, value_parser = clap::value_parser!(u8).range(1..=100))]
         quality: u8,
     },
+    /// Render multiple photos into a directory with generated filenames.
+    ExportBatch {
+        #[arg(num_args = 1..)]
+        ids: Vec<u64>,
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long, value_enum, default_value_t = CliExportFormat::Jpeg)]
+        format: CliExportFormat,
+        #[arg(long)]
+        max_size: Option<u32>,
+        #[arg(long, default_value_t = 92, value_parser = clap::value_parser!(u8).range(1..=100))]
+        quality: u8,
+    },
+    /// List saved development presets.
+    PresetList,
+    /// Save a photo's reusable development settings as a preset.
+    PresetSave {
+        name: String,
+        #[arg(long)]
+        from: u64,
+    },
+    /// Apply a saved preset to one or more photos.
+    PresetApply {
+        preset_id: u64,
+        #[arg(num_args = 1..)]
+        ids: Vec<u64>,
+    },
+    /// Delete a saved preset.
+    PresetDelete { preset_id: u64 },
     /// Execute a serialized core command. Useful for agents and integrations.
     Run {
         /// JSON object matching the tagged core Command enum.
@@ -197,6 +227,26 @@ enum CurveChannel {
     Red,
     Green,
     Blue,
+}
+
+#[derive(Clone, Copy, Default, ValueEnum)]
+enum CliExportFormat {
+    #[default]
+    Jpeg,
+    Png,
+    Tiff,
+    Webp,
+}
+
+impl From<CliExportFormat> for ExportFormat {
+    fn from(value: CliExportFormat) -> Self {
+        match value {
+            CliExportFormat::Jpeg => Self::Jpeg,
+            CliExportFormat::Png => Self::Png,
+            CliExportFormat::Tiff => Self::Tiff,
+            CliExportFormat::Webp => Self::Webp,
+        }
+    }
 }
 
 impl From<EditArgs> for AdjustmentPatch {
@@ -481,9 +531,62 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             )?),
             false,
         ),
+        CliCommand::ExportBatch {
+            ids,
+            directory,
+            format,
+            max_size,
+            quality,
+        } => (
+            output(&workspace_command(
+                &mut workspace,
+                Command::ExportBatch {
+                    ids,
+                    directory,
+                    format: format.into(),
+                    max_size,
+                    quality,
+                },
+            )?),
+            false,
+        ),
+        CliCommand::PresetList => {
+            return Ok(json!({
+                "ok": true,
+                "catalog": cli.catalog,
+                "presets": workspace.project.presets,
+            }));
+        }
+        CliCommand::PresetSave { name, from } => (
+            output(&workspace_command(
+                &mut workspace,
+                Command::SavePreset {
+                    name,
+                    from_id: from,
+                },
+            )?),
+            true,
+        ),
+        CliCommand::PresetApply { preset_id, ids } => (
+            output(&workspace_command(
+                &mut workspace,
+                Command::ApplyPreset { preset_id, ids },
+            )?),
+            true,
+        ),
+        CliCommand::PresetDelete { preset_id } => (
+            output(&workspace_command(
+                &mut workspace,
+                Command::DeletePreset { id: preset_id },
+            )?),
+            true,
+        ),
         CliCommand::Run { json } => {
             let command: Command = serde_json::from_str(&json).context("invalid command JSON")?;
-            let should_save = !matches!(command, Command::Open { .. } | Command::Export { .. });
+            let should_save = !matches!(
+                command,
+                Command::Open { .. } | Command::Export { .. } | Command::ExportBatch { .. }
+            );
             (
                 output(&workspace_command(&mut workspace, command)?),
                 should_save,
@@ -570,6 +673,9 @@ fn schema() -> serde_json::Value {
             { "command": "copy-edits", "id": 1 },
             { "command": "paste-edits", "ids": [2, 3] },
             { "command": "history-back", "id": 1 },
+            { "command": "save-preset", "name": "Warm portrait", "from_id": 1 },
+            { "command": "apply-preset", "preset_id": 1, "ids": [2, 3] },
+            { "command": "export-batch", "ids": [1, 2], "directory": "finished", "format": "jpeg", "max_size": 3000, "quality": 90 },
             { "command": "export", "id": 1, "path": "output.jpg", "max_size": 2400, "quality": 92 }
         ]
     })

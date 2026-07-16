@@ -270,6 +270,38 @@ impl Adjustments {
     pub fn is_identity(&self) -> bool {
         *self == Self::default()
     }
+
+    /// Copy only reusable development settings. Geometry is intentionally
+    /// excluded so applying a look never rotates or crops another photo.
+    pub fn as_preset(&self) -> Self {
+        Self {
+            rotation: 0,
+            flip_horizontal: false,
+            flip_vertical: false,
+            straighten: 0.0,
+            crop: None,
+            ..self.clone()
+        }
+    }
+
+    /// Apply reusable development settings while preserving this photo's
+    /// crop, straighten, rotation, and flips.
+    pub fn apply_preset(&mut self, preset: &Self) {
+        let geometry = (
+            self.rotation,
+            self.flip_horizontal,
+            self.flip_vertical,
+            self.straighten,
+            self.crop,
+        );
+        *self = preset.as_preset();
+        self.rotation = geometry.0;
+        self.flip_horizontal = geometry.1;
+        self.flip_vertical = geometry.2;
+        self.straighten = geometry.3;
+        self.crop = geometry.4;
+        *self = self.clone().sanitized();
+    }
 }
 
 fn clamp_percent(value: f32) -> f32 {
@@ -380,5 +412,27 @@ mod tests {
         .sanitized();
         assert!(crop.x + crop.width <= 1.0);
         assert!(crop.height >= 0.01);
+    }
+
+    #[test]
+    fn presets_preserve_geometry() {
+        let mut target = Adjustments {
+            rotation: 90,
+            crop: Some(CropRect {
+                x: 0.1,
+                y: 0.1,
+                width: 0.8,
+                height: 0.8,
+            }),
+            ..Default::default()
+        };
+        target.apply_preset(&Adjustments {
+            exposure: 1.25,
+            rotation: 180,
+            ..Default::default()
+        });
+        assert_eq!(target.exposure, 1.25);
+        assert_eq!(target.rotation, 90);
+        assert!(target.crop.is_some());
     }
 }

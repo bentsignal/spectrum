@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AdjustmentPatch, Adjustments, Project,
-    engine::{RenderOptions, export_photo},
+    engine::{ExportFormat, RenderOptions, batch_destination, export_photo},
 };
 
 /// Complete application command surface shared by the GUI, CLI, and agents.
@@ -48,6 +48,17 @@ pub enum Command {
         id: u64,
         index: usize,
     },
+    SavePreset {
+        name: String,
+        from_id: u64,
+    },
+    ApplyPreset {
+        preset_id: u64,
+        ids: Vec<u64>,
+    },
+    DeletePreset {
+        id: u64,
+    },
     CopyEdits {
         id: u64,
     },
@@ -70,6 +81,13 @@ pub enum Command {
     Export {
         id: u64,
         path: PathBuf,
+        max_size: Option<u32>,
+        quality: u8,
+    },
+    ExportBatch {
+        ids: Vec<u64>,
+        directory: PathBuf,
+        format: ExportFormat,
         max_size: Option<u32>,
         quality: u8,
     },
@@ -246,6 +264,42 @@ impl Workspace {
                     vec![id],
                 ))
             }
+            Command::SavePreset { name, from_id } => {
+                let adjustments = self.project.photo(from_id)?.adjustments.clone();
+                self.record_undo();
+                let id = self.project.save_preset(name, &adjustments)?;
+                Ok(CommandOutput::success(
+                    "save-preset",
+                    format!("saved preset {id}"),
+                    vec![from_id],
+                ))
+            }
+            Command::ApplyPreset { preset_id, ids } => {
+                self.ensure_ids(&ids)?;
+                let preset = self.project.preset(preset_id)?.clone();
+                self.record_undo();
+                for id in &ids {
+                    let photo = self.project.photo_mut(*id)?;
+                    let mut next = photo.adjustments.clone();
+                    next.apply_preset(&preset.adjustments);
+                    photo.commit_adjustments(format!("Preset: {}", preset.name), next);
+                }
+                Ok(CommandOutput::success(
+                    "apply-preset",
+                    format!("applied preset '{}' to {} photo(s)", preset.name, ids.len()),
+                    ids,
+                ))
+            }
+            Command::DeletePreset { id } => {
+                self.project.preset(id)?;
+                self.record_undo();
+                self.project.delete_preset(id)?;
+                Ok(CommandOutput::success(
+                    "delete-preset",
+                    format!("deleted preset {id}"),
+                    vec![],
+                ))
+            }
             Command::CopyEdits { id } => {
                 self.clipboard = Some(self.project.photo(id)?.adjustments.clone());
                 Ok(CommandOutput::success(
@@ -336,6 +390,30 @@ impl Workspace {
                     "export",
                     format!("exported {}", path.display()),
                     vec![id],
+                ))
+            }
+            Command::ExportBatch {
+                ids,
+                directory,
+                format,
+                max_size,
+                quality,
+            } => {
+                self.ensure_ids(&ids)?;
+                std::fs::create_dir_all(&directory)?;
+                for id in &ids {
+                    let photo = self.project.photo(*id)?;
+                    export_photo(
+                        photo,
+                        &batch_destination(photo, &directory, format),
+                        RenderOptions { max_size },
+                        quality,
+                    )?;
+                }
+                Ok(CommandOutput::success(
+                    "export-batch",
+                    format!("exported {} photo(s) to {}", ids.len(), directory.display()),
+                    ids,
                 ))
             }
             Command::Undo => {
@@ -457,5 +535,32 @@ mod tests {
         assert!(workspace.project.photos.is_empty());
         assert!(!workspace.can_undo());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn presets_apply_to_multiple_photos_without_geometry() {
+        let mut project = Project::new("test");
+        let mut first = crate::Photo::new(1, "one.jpg".into(), "one.jpg".into(), 1, 1);
+        first.adjustments.exposure = 1.0;
+        let mut second = crate::Photo::new(2, "two.jpg".into(), "two.jpg".into(), 1, 1);
+        second.adjustments.rotation = 90;
+        project.photos.extend([first, second]);
+        let mut workspace = Workspace::new(project, None);
+        workspace
+            .execute(Command::SavePreset {
+                name: "Bright".into(),
+                from_id: 1,
+            })
+            .unwrap();
+        workspace
+            .execute(Command::ApplyPreset {
+                preset_id: 1,
+                ids: vec![2],
+            })
+            .unwrap();
+        let second = workspace.project.photo(2).unwrap();
+        assert_eq!(second.adjustments.exposure, 1.0);
+        assert_eq!(second.adjustments.rotation, 90);
+        assert_eq!(second.history.last().unwrap().label, "Preset: Bright");
     }
 }

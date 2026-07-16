@@ -32,7 +32,9 @@ daemon, local socket, embedded browser, or network requirement.
 - A multi-file import is transactional in memory: if one file is invalid, none
   of that command's files are added.
 - Adjustment values are sanitized inside the core, not only in the UI.
-- Every committed edit stores a complete snapshot and cursor in catalog v2.
+- Every committed edit stores a complete snapshot and cursor in catalog v3.
+- Catalog-level presets store development settings while intentionally excluding crop,
+  rotation, flips, and straighten so one look can be reused across different framing.
 - Reset is an ordinary history event, so stepping backward restores prior work.
 
 ## Rendering
@@ -56,7 +58,7 @@ high-bit-depth working buffer can keep the command and catalog APIs stable.
 
 ## Cross-platform choices
 
-- egui/eframe with the lightweight OpenGL backend for the native UI
+- egui/eframe with the lightweight OpenGL backend for native composition
 - `image` with only JPEG, PNG, TIFF, and WebP codecs enabled
 - `rfd` for operating-system file dialogs
 - no application database, async runtime, telemetry, or update service
