@@ -44,6 +44,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --bins --locked
+      - if: runner.os == 'Linux'
+        run: ./target/release/lumen benchmark --strict
       - if: runner.os == 'macOS'
         run: bash scripts/package-macos.sh
       - if: runner.os == 'Linux'

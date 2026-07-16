@@ -39,9 +39,34 @@ If omitted, it defaults to `lumen.lumencatalog` in the current directory.
 | `export <ID> <PATH>` | Render an edited file |
 | `export-batch <ID>... --directory <PATH>` | Export multiple photos as JPEG, PNG, TIFF, or WebP |
 | `run '<JSON>'` | Deserialize and execute a core command directly |
+| `benchmark [--strict]` | Measure tone-curve command/preview latency and 24 MP JPEG export |
 | `schema` | Return ranges and raw-command examples |
 
 Use `lumen <command> --help` for exact flags.
+
+## Performance budgets
+
+Run the deterministic release workload on any target machine:
+
+```sh
+cargo run --release --bin lumen -- benchmark
+```
+
+The JSON report separates aspirational targets from conservative regression
+budgets. It measures p95 tone-curve command plus atomic catalog-save latency,
+p95 1800×1200 preview rendering, and a complete 6000×4000 (24 MP) JPEG export.
+Pass `--strict` to return a nonzero exit code if a budget is missed; Linux CI
+runs this strict form after building the release binary.
+
+| Workload | Excellent target | CI regression budget | UX meaning |
+| --- | ---: | ---: | --- |
+| Tone-curve catalog load + command + save (p95) | 8 ms | 20 ms | Catalog work stays below a frame |
+| 1800×1200 curve preview (p95) | 16.7 ms | 50 ms | 60 fps target; never regress below a fluid 20 fps |
+| 24 MP JPEG export | 2 s | 5 s | Fast single export; bounded batch wait |
+
+Source generation and benchmark warm-up are excluded from measured intervals.
+The generated pixel pattern, dimensions, curve, quality, and sample counts are
+fixed so results remain comparable between commits.
 
 ## Adjustment ranges
 

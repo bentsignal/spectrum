@@ -69,6 +69,9 @@ cargo run --release --bin lumen -- --catalog shoot.lumencatalog export-batch \
 
 # Discover the machine-facing protocol
 cargo run --release --bin lumen -- schema
+
+# Measure tone-curve responsiveness and full 24 MP export throughput
+cargo run --release --bin lumen -- benchmark
 ```
 
 See [CLI.md](docs/CLI.md) for the full surface and
