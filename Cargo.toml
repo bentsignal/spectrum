@@ -6,6 +6,10 @@ description = "A lean, cross-platform, CLI-first photo editor written in Rust"
 license = "MIT"
 repository = "https://github.com/bentsignal/lumen-photo"
 
+[workspace]
+members = ["apps/mica"]
+resolver = "2"
+
 [lib]
 name = "lumen_core"
 

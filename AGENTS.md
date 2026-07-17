@@ -5,25 +5,34 @@ every project-work session. Run `uav status` before implementation, keep durable
 feature work in `uav task`, record consequential decisions with `uav remember`,
 and require a successful `uav closeout` before handing work back.
 
-Use the `lumen` CLI for all photo and catalog automation. Do not edit
-`.lumencatalog` JSON manually unless recovering a damaged file; the CLI applies
-range validation, transactional import, and path checks.
+This repository is the creative-suite monorepo. Lumen is the focused photo
+developer; Mica is the layered canvas editor under `apps/mica`. Preserve each
+app's focused UI and put reusable imaging behavior in shared Rust core APIs.
+
+Use the `lumen` CLI for all photo and catalog automation and the `mica` CLI for
+all layered-document automation. Do not edit `.lumencatalog` or `.mica` JSON
+manually unless recovering a damaged file; the CLIs apply validation,
+transactional mutation, and path checks.
 
 Start with:
 
 ```sh
 cargo run --release --bin lumen -- schema
 cargo run --release --bin lumen -- --catalog <path> list
+cargo run --release -p mica --bin mica -- schema
+cargo run --release -p mica --bin mica -- --project <path> list
 ```
 
 Every GUI mutation maps to `lumen_core::Command`. When adding a new user-facing
 feature, add its core command and CLI surface before or alongside its GUI control.
 Keep originals immutable and export only to user-selected destination paths.
+Apply the same rule to `mica_core::Command`: its native GUI is a visual client of
+the same command engine used by agents.
 
 Before committing, run:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
 ```

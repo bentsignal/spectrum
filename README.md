@@ -1,4 +1,18 @@
-# Lumen
+# Lumen creative suite
+
+This repository is the Rust workspace for Lumen, a focused photo-development
+library, and Mica, a focused layered image editor. They are separate native apps
+with shared imaging primitives and the same CLI-first command architecture, so
+each interface stays clean while assets can move between them.
+
+- **Lumen** develops, organizes, culls, and batch-exports photos.
+- **Mica** creates layered compositions with raster content, text, transforms,
+  masks, clipping, and nondestructive adjustments.
+
+See [Suite direction](docs/SUITE.md) for the shared architecture and application
+handoffs, or [Mica](docs/MICA.md) for the layered editor.
+
+## Lumen
 
 Lumen is a small, native, nondestructive photo editor written in Rust. It gives
 you a focused place to import a shoot, move quickly between photos, make the
@@ -30,7 +44,7 @@ capabilities.
 - JSON-speaking CLI with a raw command protocol for agents
 - Native builds for Windows, macOS, and Linux
 
-## Run it
+## Run Lumen
 
 Install the stable [Rust toolchain](https://rustup.rs), clone this repository,
 and launch the native editor:
@@ -98,7 +112,7 @@ previews use embedded camera previews when available. Originals remain immutable
 
 ## Packages
 
-Build an optimized platform package from the matching operating system:
+Build an optimized Lumen package from the matching operating system:
 
 ```sh
 bash scripts/package-macos.sh
@@ -108,6 +122,14 @@ pwsh scripts/package-windows.ps1
 
 GitHub Actions builds and publishes artifacts for Windows, macOS, and Linux on
 every push to `main`.
+
+Mica has matching app-specific scripts that build only Cargo package `mica`:
+
+```sh
+bash scripts/package-mica-macos.sh
+bash scripts/package-mica-linux.sh
+pwsh scripts/package-mica-windows.ps1
+```
 
 ## Scope of “100% Rust”
 

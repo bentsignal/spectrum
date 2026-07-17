@@ -1,0 +1,29 @@
+[package]
+name = "mica"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, agent-first layered image editor"
+license = "MIT"
+
+[lib]
+name = "mica_core"
+
+[[bin]]
+name = "mica"
+path = "src/bin/mica.rs"
+
+[[bin]]
+name = "mica-gui"
+path = "src/bin/mica-gui.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
+epaint_default_fonts = "0.35"
+fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
+lumen-photo = { path = "../.." }
+rfd = "0.17"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

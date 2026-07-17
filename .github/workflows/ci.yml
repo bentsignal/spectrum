@@ -18,8 +18,8 @@ jobs:
         with:
           components: clippy,rustfmt
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --all-targets --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --all-targets --locked
 
   build:
     name: Build ${{ matrix.label }}
@@ -31,32 +31,44 @@ jobs:
             label: Windows
             gui: target/release/lumen-gui.exe
             cli: target/release/lumen.exe
+            mica_gui: target/release/mica-gui.exe
+            mica_cli: target/release/mica.exe
           - os: macos-latest
             label: macOS
             gui: target/release/lumen-gui
             cli: target/release/lumen
+            mica_gui: target/release/mica-gui
+            mica_cli: target/release/mica
           - os: ubuntu-latest
             label: Linux
             gui: target/release/lumen-gui
             cli: target/release/lumen
+            mica_gui: target/release/mica-gui
+            mica_cli: target/release/mica
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --bins --locked
+      - run: cargo build --release --workspace --bins --locked
       - if: runner.os == 'Linux'
         run: ./target/release/lumen benchmark --strict --profile hosted-ci
-      - if: runner.os == 'macOS'
-        run: bash scripts/package-macos.sh
       - if: runner.os == 'Linux'
-        run: bash scripts/package-linux.sh
+        run: ./target/release/mica benchmark --strict
+      - if: runner.os == 'macOS'
+        run: bash scripts/package-macos.sh && bash scripts/package-mica-macos.sh
+      - if: runner.os == 'Linux'
+        run: bash scripts/package-linux.sh && bash scripts/package-mica-linux.sh
       - if: runner.os == 'Windows'
-        run: pwsh scripts/package-windows.ps1
+        run: |
+          pwsh scripts/package-windows.ps1
+          pwsh scripts/package-mica-windows.ps1
       - uses: actions/upload-artifact@v7
         with:
-          name: lumen-${{ matrix.label }}
+          name: creative-suite-${{ matrix.label }}
           path: |
             ${{ matrix.gui }}
             ${{ matrix.cli }}
+            ${{ matrix.mica_gui }}
+            ${{ matrix.mica_cli }}
             target/dist/
           if-no-files-found: error
