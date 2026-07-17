@@ -6,8 +6,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use lumen_core::{AdjustmentPatch, Adjustments};
 use serde::{Deserialize, Serialize};
+use spectrum_imaging::{AdjustmentPatch, Adjustments};
 
 pub const PRISM_VERSION: u32 = 1;
 pub const MAX_HISTORY: usize = 100;

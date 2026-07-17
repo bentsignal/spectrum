@@ -7,16 +7,14 @@ use std::{
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use lumen_core::{
-    AdjustmentPatch, Adjustments, Project as LumenProject,
-    engine::{RenderOptions, render_photo},
-};
+use lumen_core::{Project as LumenProject, engine::render_photo};
 use prism_core::{
     BlendMode, Command, Document, LayerMask, Transform, Workspace, export_document,
     render_document, render_solid_color, save_document,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
+use spectrum_imaging::{AdjustmentPatch, Adjustments, RenderOptions};
 
 #[derive(Parser)]
 #[command(name = "prism", version, about = "Agent-first layered image editor")]

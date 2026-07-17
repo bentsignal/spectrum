@@ -3,7 +3,7 @@ use super::*;
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct LayerVisualKey {
     kind: LayerKind,
-    adjustments: lumen_core::Adjustments,
+    adjustments: spectrum_imaging::Adjustments,
 }
 
 impl LayerVisualKey {
@@ -236,10 +236,10 @@ pub(super) fn spawn_layer_render_worker(
             let source_size = source_size_before_preview(&request.layer);
             let result = base
                 .map(|image| {
-                    lumen_core::engine::render_image(
+                    spectrum_imaging::render_image(
                         image,
                         request.layer.adjustments.clone(),
-                        lumen_core::engine::RenderOptions {
+                        spectrum_imaging::RenderOptions {
                             max_size: Some(request.max_size),
                         },
                     )

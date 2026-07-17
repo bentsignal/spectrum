@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cargo build --release --bins --locked
+cargo build --release --locked -p lumen-photo --bins
 destination="target/dist/lumen-linux"
 rm -rf "$destination"
 mkdir -p "$destination"

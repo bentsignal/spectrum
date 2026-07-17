@@ -53,7 +53,7 @@ Use `lumen <command> --help` for exact flags.
 Run the deterministic release workload on any target machine:
 
 ```sh
-cargo run --release --bin lumen -- benchmark
+cargo run --release -p lumen-photo --bin lumen -- benchmark
 ```
 
 The JSON report separates aspirational targets from conservative regression

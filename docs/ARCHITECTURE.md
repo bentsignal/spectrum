@@ -14,15 +14,21 @@ same values directly or deserializes them through `lumen run '<json>'`.
 
 ## Crate layout
 
-- `src/adjustments.rs`: serializable nondestructive settings and sparse patches
-- `src/project.rs`: catalog model, persistent edit history, atomic sidecar persistence
-- `src/engine.rs`: pure-Rust ARW development, transforms, color pipeline, and encoding
-- `src/command.rs`: the complete mutation boundary, clipboard, and undo/redo
-- `src/bin/lumen.rs`: structured automation interface
-- `src/bin/lumen-gui.rs`: native egui/eframe interface
+- `crates/spectrum-imaging`: app-neutral adjustments and pixel rendering shared
+  by Spectrum tools
+- `apps/lumen/src/project.rs`: catalog model, persistent edit history, and atomic
+  sidecar persistence
+- `apps/lumen/src/engine.rs`: Lumen-specific RAW decoding and export adapters
+- `apps/lumen/src/command.rs`: the complete mutation boundary, clipboard, and
+  undo/redo
+- `apps/lumen/src/bin/lumen_cli/`: structured automation interface modules
+- `apps/lumen/src/bin/lumen_gui/`: focused native GUI modules for state, library,
+  toolbar, inspector, canvas, dialogs, and drawing helpers
 
-The library is named `lumen_core`; both binaries link it in-process. There is no
-daemon, local socket, embedded browser, or network requirement.
+The Lumen library remains named `lumen_core`; both binaries link it in-process.
+`lumen_core` re-exports the shared Spectrum adjustment types for catalog API
+compatibility. There is no daemon, local socket, embedded browser, or network
+requirement.
 
 ## Catalog guarantees
 
@@ -76,7 +82,7 @@ This keeps the export path deterministic while avoiding work during interaction.
 The repeatable release benchmark for this path is:
 
 ```sh
-cargo test --release interactive_preview_benchmark -- --ignored --nocapture
+cargo test --release -p spectrum-imaging interactive_preview_benchmark -- --ignored --nocapture
 ```
 
 For end-to-end budgets, `lumen benchmark --strict` also measures tone-curve

@@ -1,0 +1,12 @@
+[package]
+name = "spectrum-imaging"
+version = "0.1.0"
+edition.workspace = true
+description = "App-neutral imaging primitives for the Spectrum creative suite"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+image.workspace = true
+rayon.workspace = true
+serde.workspace = true

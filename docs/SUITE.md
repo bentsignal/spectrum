@@ -4,6 +4,15 @@ This repository is a Rust workspace for small, fast, agent-first creative tools.
 The suite shares rendering primitives and automation conventions while keeping
 each application's workspace focused.
 
+The repository root is a virtual Cargo workspace. Applications live under
+`apps/`, reusable Spectrum behavior under `crates/`, and repository-wide policy
+checks under `tools/`. `crates/spectrum-imaging` is the first neutral shared
+kernel; it owns adjustment models and app-independent pixel rendering rather
+than placing those concepts inside Lumen.
+
+`workspace-guardrails` recursively checks Rust sources under `apps/`, `crates/`,
+and `tools/`; files over 1,000 lines fail both local workspace tests and CI.
+
 ## Applications
 
 | App | Focus | Binaries |

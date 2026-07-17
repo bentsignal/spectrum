@@ -1855,6 +1855,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "spectrum-imaging",
 ]
 
 [[package]]
@@ -2570,6 +2571,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "spectrum-imaging",
 ]
 
 [[package]]
@@ -3063,6 +3065,15 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "spectrum-imaging"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "rayon",
  "serde",
 ]
 
@@ -4053,6 +4064,10 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "workspace-guardrails"
+version = "0.1.0"
 
 [[package]]
 name = "writeable"

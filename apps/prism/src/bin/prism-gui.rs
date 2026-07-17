@@ -10,11 +10,11 @@ use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, TextureHandle,
     TextureOptions, Vec2,
 };
-use lumen_core::AdjustmentPatch;
 use prism_core::{
     BlendMode, Command, Document, Layer, LayerKind, LayerMask, Transform, Workspace,
     export_document,
 };
+use spectrum_imaging::AdjustmentPatch;
 
 #[path = "prism_gui/canvas.rs"]
 mod canvas;

@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use fontdue::Font;
 use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
-use lumen_core::engine::{RenderOptions, render_image};
+use spectrum_imaging::{RenderOptions, render_image};
 
 use crate::{BlendMode, Document, Layer, LayerKind, Transform};
 
@@ -196,7 +196,7 @@ pub fn render_layer_base(layer: &Layer, max_size: Option<u32>) -> Result<Dynamic
 
 /// Applies development adjustments to a uniform color in constant time.
 /// This keeps vector-style shape sliders responsive without rasterizing the shape.
-pub fn render_solid_color(color: [u8; 4], adjustments: &lumen_core::Adjustments) -> [u8; 4] {
+pub fn render_solid_color(color: [u8; 4], adjustments: &spectrum_imaging::Adjustments) -> [u8; 4] {
     let image = RgbaImage::from_pixel(1, 1, Rgba(color));
     render_image(
         DynamicImage::ImageRgba8(image),
