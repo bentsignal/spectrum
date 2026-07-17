@@ -1,8 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, Sender},
 };
 
 use eframe::egui::{
@@ -12,8 +13,20 @@ use eframe::egui::{
 use lumen_core::AdjustmentPatch;
 use prism_core::{
     BlendMode, Command, Document, Layer, LayerKind, LayerMask, Transform, Workspace,
-    export_document, render_document,
+    export_document,
 };
+
+#[path = "prism_gui/canvas.rs"]
+mod canvas;
+#[path = "prism_gui/chrome.rs"]
+mod chrome;
+#[path = "prism_gui/inspector.rs"]
+mod inspector;
+#[path = "prism_gui/layers.rs"]
+mod layers;
+#[path = "prism_gui/renderer.rs"]
+mod renderer;
+use renderer::*;
 
 const INK: Color32 = Color32::from_rgb(14, 16, 20);
 const PANEL: Color32 = Color32::from_rgb(25, 28, 34);
@@ -72,6 +85,48 @@ struct DragState {
     current_canvas: Pos2,
     layer_id: Option<u64>,
     transform: Transform,
+    action: DragAction,
+    bounds: Option<Rect>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DragAction {
+    Move,
+    Resize(ResizeHandle),
+    Draw,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResizeHandle {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanvasInvalidation {
+    None,
+    Layer(u64),
+    Structure,
+    All,
+}
+
+fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
+    match command {
+        Command::UpdateText { id, .. }
+        | Command::UpdateRectangle { id, .. }
+        | Command::AdjustLayer { id, .. }
+        | Command::ResetLayerAdjustments { id } => CanvasInvalidation::Layer(*id),
+        Command::AddRaster { .. }
+        | Command::AddText { .. }
+        | Command::AddRectangle { .. }
+        | Command::DuplicateLayer { .. }
+        | Command::Undo
+        | Command::Redo => CanvasInvalidation::All,
+        Command::RemoveLayer { .. } => CanvasInvalidation::Structure,
+        _ => CanvasInvalidation::None,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -93,9 +148,16 @@ impl Default for NewDocumentDialog {
 
 struct PrismApp {
     workspace: Workspace,
-    preview: Option<TextureHandle>,
-    preview_dirty: bool,
-    preview_fast: bool,
+    tab_ids: Vec<u64>,
+    active_tab_id: u64,
+    next_tab_id: u64,
+    inactive_workspaces: HashMap<u64, Workspace>,
+    layer_visuals: HashMap<u64, LayerVisualEntry>,
+    layer_visual_dirty: HashSet<u64>,
+    layer_render_pending: HashMap<u64, LayerRenderRequest>,
+    layer_render_in_flight: bool,
+    layer_render_request_sender: Sender<LayerRenderRequest>,
+    layer_render_receiver: Receiver<LayerRenderResult>,
     preview_error: Option<String>,
     layer_thumbnails: HashMap<u64, TextureHandle>,
     status: String,
@@ -109,6 +171,8 @@ struct PrismApp {
     new_dialog: Option<NewDocumentDialog>,
     text_dialog: Option<(Pos2, String, f32)>,
     delete_confirmation: Option<u64>,
+    layer_drag: Option<u64>,
+    layer_drop_index: Option<usize>,
 }
 
 fn main() -> eframe::Result {
@@ -135,11 +199,25 @@ fn main() -> eframe::Result {
 impl PrismApp {
     fn new(creation: &eframe::CreationContext<'_>, initial_project: Option<&Path>) -> Self {
         install_style(&creation.egui_ctx);
+        let (layer_render_request_sender, layer_render_request_receiver) = mpsc::channel();
+        let (layer_render_result_sender, layer_render_receiver) = mpsc::channel();
+        spawn_layer_render_worker(
+            layer_render_request_receiver,
+            layer_render_result_sender,
+            creation.egui_ctx.clone(),
+        );
         let mut app = Self {
             workspace: Workspace::default(),
-            preview: None,
-            preview_dirty: true,
-            preview_fast: false,
+            tab_ids: vec![1],
+            active_tab_id: 1,
+            next_tab_id: 2,
+            inactive_workspaces: HashMap::new(),
+            layer_visuals: HashMap::new(),
+            layer_visual_dirty: HashSet::new(),
+            layer_render_pending: HashMap::new(),
+            layer_render_in_flight: false,
+            layer_render_request_sender,
+            layer_render_receiver,
             preview_error: None,
             layer_thumbnails: HashMap::new(),
             status: "Ready".into(),
@@ -153,6 +231,8 @@ impl PrismApp {
             new_dialog: None,
             text_dialog: None,
             delete_confirmation: None,
+            layer_drag: None,
+            layer_drop_index: None,
         };
         if let Some(path) = initial_project {
             app.open_path(path);
@@ -161,15 +241,12 @@ impl PrismApp {
     }
 
     fn execute(&mut self, command: Command) -> bool {
-        let affects_render = !matches!(
-            &command,
-            Command::SelectLayer { .. } | Command::RenameLayer { .. } | Command::SetLocked { .. }
-        );
+        let invalidation = canvas_invalidation(&command);
         match self.workspace.execute(command) {
             Ok(output) => {
+                self.apply_canvas_invalidation(invalidation);
                 self.status = output.message;
                 self.status_error = false;
-                self.preview_dirty |= affects_render;
                 true
             }
             Err(error) => {
@@ -177,6 +254,70 @@ impl PrismApp {
                 self.status_error = true;
                 false
             }
+        }
+    }
+
+    fn preview_command(&mut self, command: Command) -> bool {
+        let invalidation = canvas_invalidation(&command);
+        match self.workspace.preview(command) {
+            Ok(_) => {
+                self.apply_canvas_invalidation(invalidation);
+                true
+            }
+            Err(error) => {
+                self.status = format!("{error:#}");
+                self.status_error = true;
+                false
+            }
+        }
+    }
+
+    fn apply_canvas_invalidation(&mut self, invalidation: CanvasInvalidation) {
+        match invalidation {
+            CanvasInvalidation::None => {}
+            CanvasInvalidation::Layer(id) => {
+                self.layer_visual_dirty.insert(id);
+            }
+            CanvasInvalidation::Structure => {
+                let active: HashSet<_> = self
+                    .workspace
+                    .document
+                    .layers
+                    .iter()
+                    .map(|layer| layer.id)
+                    .collect();
+                self.layer_visuals.retain(|id, _| active.contains(id));
+                self.layer_render_pending
+                    .retain(|id, _| active.contains(id));
+                self.layer_visual_dirty.retain(|id| active.contains(id));
+            }
+            CanvasInvalidation::All => {
+                self.layer_visual_dirty
+                    .extend(self.workspace.document.layers.iter().map(|layer| layer.id));
+            }
+        }
+    }
+
+    fn finish_interaction(&mut self) {
+        if self.workspace.commit_interaction() {
+            self.status = "Finished interaction".into();
+            self.status_error = false;
+        }
+    }
+
+    fn widget_command(&mut self, response: &egui::Response, command: Command) {
+        if response.drag_started() {
+            self.workspace.begin_interaction();
+        }
+        if response.changed() {
+            if self.workspace.interaction_active() {
+                self.preview_command(command);
+            } else {
+                self.execute(command);
+            }
+        }
+        if response.drag_stopped() {
+            self.finish_interaction();
         }
     }
 
@@ -190,11 +331,7 @@ impl PrismApp {
     fn open_path(&mut self, path: &Path) {
         match Workspace::open(path) {
             Ok(workspace) => {
-                self.workspace = workspace;
-                self.preview_dirty = true;
-                self.layer_thumbnails.clear();
-                self.fit_requested = true;
-                self.pan = Vec2::ZERO;
+                self.add_workspace_tab(workspace);
                 self.status = format!("Opened {}", path.display());
                 self.status_error = false;
             }
@@ -206,13 +343,82 @@ impl PrismApp {
     }
 
     fn new_document(&mut self, draft: NewDocumentDialog) {
-        self.workspace = Workspace::new(Document::new(draft.name, draft.width, draft.height), None);
-        self.preview_dirty = true;
+        self.add_workspace_tab(Workspace::new(
+            Document::new(draft.name, draft.width, draft.height),
+            None,
+        ));
+        self.status = "Created a new Prism document".into();
+        self.status_error = false;
+    }
+
+    fn add_workspace_tab(&mut self, workspace: Workspace) {
+        self.inactive_workspaces.insert(
+            self.active_tab_id,
+            std::mem::replace(&mut self.workspace, workspace),
+        );
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        self.tab_ids.push(id);
+        self.active_tab_id = id;
+        self.reset_canvas_cache();
         self.layer_thumbnails.clear();
         self.fit_requested = true;
         self.pan = Vec2::ZERO;
-        self.status = "Created a new Prism document".into();
-        self.status_error = false;
+    }
+
+    fn activate_tab(&mut self, id: u64) {
+        if id == self.active_tab_id {
+            return;
+        }
+        let Some(workspace) = self.inactive_workspaces.remove(&id) else {
+            return;
+        };
+        let previous = std::mem::replace(&mut self.workspace, workspace);
+        self.inactive_workspaces
+            .insert(self.active_tab_id, previous);
+        self.active_tab_id = id;
+        self.reset_canvas_cache();
+        self.layer_thumbnails.clear();
+        self.fit_requested = true;
+        self.pan = Vec2::ZERO;
+        self.drag = None;
+    }
+
+    fn close_tab(&mut self, id: u64) {
+        let dirty = if id == self.active_tab_id {
+            self.workspace.is_dirty()
+        } else {
+            self.inactive_workspaces
+                .get(&id)
+                .is_some_and(Workspace::is_dirty)
+        };
+        if dirty {
+            self.activate_tab(id);
+            self.status = "Save this document before closing its tab".into();
+            self.status_error = true;
+            return;
+        }
+        if self.tab_ids.len() == 1 {
+            return;
+        }
+        let Some(position) = self.tab_ids.iter().position(|tab| *tab == id) else {
+            return;
+        };
+        self.tab_ids.remove(position);
+        if id == self.active_tab_id {
+            let replacement_id = self.tab_ids[position.min(self.tab_ids.len() - 1)];
+            if let Some(replacement) = self.inactive_workspaces.remove(&replacement_id) {
+                self.workspace = replacement;
+                self.active_tab_id = replacement_id;
+            }
+        } else {
+            self.inactive_workspaces.remove(&id);
+        }
+        self.reset_canvas_cache();
+        self.layer_thumbnails.clear();
+        self.fit_requested = true;
+        self.pan = Vec2::ZERO;
+        self.drag = None;
     }
 
     fn save(&mut self, save_as: bool) {
@@ -266,914 +472,15 @@ impl PrismApp {
         else {
             return;
         };
+        let (image_width, image_height) = image::image_dimensions(&path).unwrap_or((0, 0));
+        let x = (self.workspace.document.width as f32 - image_width as f32) * 0.5;
+        let y = (self.workspace.document.height as f32 - image_height as f32) * 0.5;
         self.execute(Command::AddRaster {
             path,
             name: None,
-            x: 0.0,
-            y: 0.0,
+            x,
+            y,
         });
-    }
-
-    fn ensure_preview(&mut self, context: &egui::Context) {
-        let interacting = context.input(|input| input.pointer.primary_down());
-        if self.preview_fast && !interacting {
-            self.preview_dirty = true;
-        }
-        if !self.preview_dirty {
-            return;
-        }
-        let max_size = if interacting { 960 } else { 2048 };
-        match render_document(&self.workspace.document, Some(max_size)) {
-            Ok(image) => {
-                let rgba = image.to_rgba8();
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-                self.preview =
-                    Some(context.load_texture("prism-composite", color, TextureOptions::LINEAR));
-                self.preview_error = None;
-                self.preview_fast = interacting;
-            }
-            Err(error) => {
-                self.preview = None;
-                self.preview_error = Some(format!("{error:#}"));
-                self.preview_fast = false;
-            }
-        }
-        self.preview_dirty = false;
-    }
-
-    fn top_bar(&mut self, root: &mut egui::Ui) {
-        egui::Panel::top("prism-top")
-            .exact_size(54.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(PANEL)
-                    .inner_margin(8)
-                    .stroke(Stroke::new(1.0, BORDER)),
-            )
-            .show(root, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(3.0);
-                    ui.label(RichText::new("PRISM").size(15.0).strong().color(ACCENT));
-                    ui.label(RichText::new("CANVAS STUDIO").size(9.0).color(MUTED));
-                    ui.separator();
-                    if ui.button("New").clicked() {
-                        self.new_dialog = Some(NewDocumentDialog::default());
-                    }
-                    if ui.button("Open").clicked()
-                        && let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Prism project", &["prism", "mica"])
-                            .pick_file()
-                    {
-                        self.open_path(&path);
-                    }
-                    if ui.button("Save").clicked() {
-                        self.save(false);
-                    }
-                    if ui.button("Save As").clicked() {
-                        self.save(true);
-                    }
-                    if ui.button(RichText::new("Export").color(ACCENT)).clicked() {
-                        self.export();
-                    }
-                    ui.separator();
-                    if ui
-                        .add_enabled(self.workspace.can_undo(), egui::Button::new("Back"))
-                        .clicked()
-                    {
-                        self.execute(Command::Undo);
-                    }
-                    if ui
-                        .add_enabled(self.workspace.can_redo(), egui::Button::new("Forward"))
-                        .clicked()
-                    {
-                        self.execute(Command::Redo);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let dirty = if self.workspace.is_dirty() {
-                            "  Modified"
-                        } else {
-                            ""
-                        };
-                        ui.label(
-                            RichText::new(format!("{}{}", self.workspace.document.name, dirty))
-                                .size(12.0)
-                                .color(if self.workspace.is_dirty() {
-                                    ACCENT_WARM
-                                } else {
-                                    MUTED
-                                }),
-                        );
-                    });
-                });
-            });
-    }
-
-    fn tools(&mut self, root: &mut egui::Ui) {
-        egui::Panel::left("prism-tools")
-            .exact_size(58.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(PANEL)
-                    .inner_margin(7)
-                    .stroke(Stroke::new(1.0, BORDER)),
-            )
-            .show(root, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("TOOLS").size(9.0).color(MUTED));
-                    ui.add_space(8.0);
-                    for (tool, key, hint) in Tool::ALL {
-                        let selected = self.tool == tool;
-                        let response = ui
-                            .add_sized(
-                                [40.0, 40.0],
-                                egui::Button::new(RichText::new(key).size(14.0).strong())
-                                    .selected(selected),
-                            )
-                            .on_hover_text(format!("{hint} ({key})"));
-                        if response.clicked() {
-                            self.tool = tool;
-                            self.drag = None;
-                        }
-                        ui.add_space(3.0);
-                    }
-                    ui.separator();
-                    if ui
-                        .add_sized([40.0, 36.0], egui::Button::new("+"))
-                        .on_hover_text("Place image")
-                        .clicked()
-                    {
-                        self.add_raster();
-                    }
-                });
-            });
-    }
-
-    fn right_panel(&mut self, root: &mut egui::Ui) {
-        egui::Panel::right("prism-inspector")
-            .default_size(300.0)
-            .min_size(260.0)
-            .max_size(380.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(PANEL)
-                    .inner_margin(10)
-                    .stroke(Stroke::new(1.0, BORDER)),
-            )
-            .show(root, |ui| {
-                self.layers_panel(ui);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-                self.inspector(ui);
-            });
-    }
-
-    fn layers_panel(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("LAYERS").size(10.0).strong().color(MUTED));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("+").on_hover_text("Place image").clicked() {
-                    self.add_raster();
-                }
-            });
-        });
-        ui.add_space(6.0);
-        let layers = self.workspace.document.layers.to_vec();
-        egui::ScrollArea::vertical()
-            .id_salt("layer-stack")
-            .max_height(270.0)
-            .show(ui, |ui| {
-                for layer in layers.iter().rev() {
-                    self.layer_row(ui, layer);
-                    ui.add_space(3.0);
-                }
-            });
-        ui.horizontal(|ui| {
-            let selected = self.workspace.document.selected;
-            let selected_index = selected.and_then(|id| {
-                self.workspace
-                    .document
-                    .layers
-                    .iter()
-                    .position(|layer| layer.id == id)
-            });
-            if ui
-                .add_enabled(
-                    selected_index
-                        .is_some_and(|index| index + 1 < self.workspace.document.layers.len()),
-                    egui::Button::new("Raise"),
-                )
-                .clicked()
-                && let (Some(id), Some(index)) = (selected, selected_index)
-            {
-                self.execute(Command::MoveLayer {
-                    id,
-                    index: index + 1,
-                });
-            }
-            if ui
-                .add_enabled(
-                    selected_index.is_some_and(|index| index > 0),
-                    egui::Button::new("Lower"),
-                )
-                .clicked()
-                && let (Some(id), Some(index)) = (selected, selected_index)
-            {
-                self.execute(Command::MoveLayer {
-                    id,
-                    index: index - 1,
-                });
-            }
-            if ui
-                .add_enabled(selected.is_some(), egui::Button::new("Duplicate"))
-                .clicked()
-                && let Some(id) = selected
-            {
-                self.execute(Command::DuplicateLayer { id });
-            }
-            if ui
-                .add_enabled(selected.is_some(), egui::Button::new("Delete"))
-                .clicked()
-            {
-                self.delete_confirmation = selected;
-            }
-        });
-    }
-
-    fn layer_row(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        let selected = self.workspace.document.selected == Some(layer.id);
-        let thumbnail = self.layer_thumbnail(ui.ctx(), layer);
-        let frame = egui::Frame::new()
-            .fill(if selected {
-                Color32::from_rgb(38, 67, 67)
-            } else {
-                SURFACE
-            })
-            .stroke(Stroke::new(1.0, if selected { ACCENT } else { BORDER }))
-            .corner_radius(6)
-            .inner_margin(6);
-        frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let visibility = if layer.visible { "ON" } else { "--" };
-                if ui
-                    .small_button(visibility)
-                    .on_hover_text("Toggle visibility")
-                    .clicked()
-                {
-                    self.execute(Command::SetVisibility {
-                        id: layer.id,
-                        visible: !layer.visible,
-                    });
-                }
-                let kind = match layer.kind {
-                    LayerKind::Raster { .. } => "IMG",
-                    LayerKind::Text { .. } => "TXT",
-                    LayerKind::Rectangle { .. } => "SHP",
-                };
-                if let Some(texture) = thumbnail {
-                    ui.add(egui::Image::new(&texture).fit_to_exact_size(Vec2::splat(30.0)));
-                } else {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-                    let fill = match layer.kind {
-                        LayerKind::Rectangle { color, .. } | LayerKind::Text { color, .. } => {
-                            Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3])
-                        }
-                        LayerKind::Raster { .. } => RAISED,
-                    };
-                    ui.painter().rect_filled(rect, 4.0, fill);
-                    ui.painter().text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        kind,
-                        FontId::monospace(8.0),
-                        contrast_text(fill),
-                    );
-                }
-                let response = ui.selectable_label(
-                    selected,
-                    RichText::new(format!("{kind}  {}", layer.name)).size(12.0),
-                );
-                if response.clicked() {
-                    self.execute(Command::SelectLayer { id: Some(layer.id) });
-                }
-                if response.double_clicked() {
-                    self.rename_layer = Some((layer.id, layer.name.clone()));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .small_button(if layer.locked { "L" } else { "U" })
-                        .clicked()
-                    {
-                        self.execute(Command::SetLocked {
-                            id: layer.id,
-                            locked: !layer.locked,
-                        });
-                    }
-                });
-            });
-        });
-    }
-
-    fn layer_thumbnail(&mut self, context: &egui::Context, layer: &Layer) -> Option<TextureHandle> {
-        if let Some(texture) = self.layer_thumbnails.get(&layer.id) {
-            return Some(texture.clone());
-        }
-        let LayerKind::Raster { path, .. } = &layer.kind else {
-            return None;
-        };
-        let image = image::open(path).ok()?.thumbnail(96, 96).to_rgba8();
-        let size = [image.width() as usize, image.height() as usize];
-        let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-        let texture = context.load_texture(
-            format!("prism-layer-{}", layer.id),
-            color,
-            TextureOptions::LINEAR,
-        );
-        self.layer_thumbnails.insert(layer.id, texture.clone());
-        Some(texture)
-    }
-
-    fn inspector(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("INSPECTOR").size(10.0).strong().color(MUTED));
-        ui.add_space(6.0);
-        let Some(layer) = self.selected_layer().cloned() else {
-            ui.add_space(18.0);
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No layer selected").color(MUTED));
-                ui.label(
-                    RichText::new("Choose a layer on the canvas or in the stack.")
-                        .size(11.0)
-                        .color(MUTED),
-                );
-            });
-            return;
-        };
-        egui::ScrollArea::vertical()
-            .id_salt("inspector-scroll")
-            .show(ui, |ui| {
-                ui.label(RichText::new(&layer.name).size(15.0).strong());
-                ui.add_space(8.0);
-                self.transform_inspector(ui, &layer);
-                ui.add_space(9.0);
-                self.content_inspector(ui, &layer);
-                ui.add_space(9.0);
-                self.appearance_inspector(ui, &layer);
-                ui.add_space(9.0);
-                self.adjustments_inspector(ui, &layer);
-            });
-    }
-
-    fn transform_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        egui::CollapsingHeader::new("Transform")
-            .default_open(true)
-            .show(ui, |ui| {
-                let mut transform = layer.transform;
-                let mut commit = false;
-                ui.horizontal(|ui| {
-                    ui.label("X");
-                    commit |= ui
-                        .add(egui::DragValue::new(&mut transform.x).speed(1.0))
-                        .changed();
-                    ui.label("Y");
-                    commit |= ui
-                        .add(egui::DragValue::new(&mut transform.y).speed(1.0))
-                        .changed();
-                });
-                ui.horizontal(|ui| {
-                    ui.label("W");
-                    commit |= ui
-                        .add(
-                            egui::DragValue::new(&mut transform.scale_x)
-                                .speed(0.01)
-                                .range(0.01..=100.0),
-                        )
-                        .changed();
-                    ui.label("H");
-                    commit |= ui
-                        .add(
-                            egui::DragValue::new(&mut transform.scale_y)
-                                .speed(0.01)
-                                .range(0.01..=100.0),
-                        )
-                        .changed();
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Angle");
-                    commit |= ui
-                        .add(
-                            egui::DragValue::new(&mut transform.rotation)
-                                .speed(0.25)
-                                .suffix(" deg"),
-                        )
-                        .changed();
-                });
-                if commit {
-                    self.execute(Command::SetTransform {
-                        id: layer.id,
-                        transform,
-                    });
-                }
-            });
-    }
-
-    fn content_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        match &layer.kind {
-            LayerKind::Text {
-                text,
-                font_size,
-                color,
-            } => {
-                egui::CollapsingHeader::new("Content")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        let mut text = text.clone();
-                        let mut font_size = *font_size;
-                        let mut color = color32(*color);
-                        let mut changed = false;
-                        ui.label(RichText::new("Text").size(11.0).color(MUTED));
-                        changed |= ui
-                            .add(
-                                egui::TextEdit::multiline(&mut text)
-                                    .desired_rows(3)
-                                    .desired_width(f32::INFINITY),
-                            )
-                            .changed();
-                        changed |= ui
-                            .add(
-                                egui::Slider::new(&mut font_size, 4.0..=1_000.0)
-                                    .text("Font size")
-                                    .suffix(" px"),
-                            )
-                            .changed();
-                        ui.horizontal(|ui| {
-                            ui.label("Color");
-                            changed |= ui.color_edit_button_srgba(&mut color).changed();
-                        });
-                        if changed && !text.trim().is_empty() {
-                            self.execute(Command::UpdateText {
-                                id: layer.id,
-                                text,
-                                font_size,
-                                color: rgba(color),
-                            });
-                        }
-                    });
-            }
-            LayerKind::Rectangle {
-                width,
-                height,
-                color,
-                corner_radius,
-            } => {
-                egui::CollapsingHeader::new("Content")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        let mut width = *width;
-                        let mut height = *height;
-                        let mut color = color32(*color);
-                        let mut corner_radius = *corner_radius;
-                        let mut changed = false;
-                        ui.horizontal(|ui| {
-                            ui.label("Width");
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut width).range(1..=32_768))
-                                .changed();
-                            ui.label("Height");
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut height).range(1..=32_768))
-                                .changed();
-                        });
-                        changed |= ui
-                            .add(
-                                egui::Slider::new(&mut corner_radius, 0.0..=512.0)
-                                    .text("Corner radius")
-                                    .suffix(" px"),
-                            )
-                            .changed();
-                        ui.horizontal(|ui| {
-                            ui.label("Fill");
-                            changed |= ui.color_edit_button_srgba(&mut color).changed();
-                        });
-                        if changed {
-                            self.execute(Command::UpdateRectangle {
-                                id: layer.id,
-                                width,
-                                height,
-                                color: rgba(color),
-                                corner_radius,
-                            });
-                        }
-                    });
-            }
-            LayerKind::Raster { path, .. } => {
-                egui::CollapsingHeader::new("Content")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("Linked image").size(11.0).color(MUTED));
-                        ui.label(
-                            RichText::new(path.display().to_string())
-                                .size(11.0)
-                                .color(TEXT),
-                        );
-                    });
-            }
-        }
-    }
-
-    fn appearance_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        egui::CollapsingHeader::new("Appearance")
-            .default_open(true)
-            .show(ui, |ui| {
-                let mut opacity = layer.opacity * 100.0;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut opacity, 0.0..=100.0)
-                            .text("Opacity")
-                            .suffix("%"),
-                    )
-                    .changed()
-                {
-                    self.execute(Command::SetOpacity {
-                        id: layer.id,
-                        opacity: opacity / 100.0,
-                    });
-                }
-                let mut blend = layer.blend_mode;
-                egui::ComboBox::from_label("Blend")
-                    .selected_text(blend_label(blend))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut blend, BlendMode::Normal, "Normal");
-                        ui.selectable_value(&mut blend, BlendMode::Multiply, "Multiply");
-                        ui.selectable_value(&mut blend, BlendMode::Screen, "Screen");
-                        ui.selectable_value(&mut blend, BlendMode::Overlay, "Overlay");
-                    });
-                if blend != layer.blend_mode {
-                    self.execute(Command::SetBlendMode {
-                        id: layer.id,
-                        blend_mode: blend,
-                    });
-                }
-                let mut clipped = layer.clip_to_below;
-                if ui.checkbox(&mut clipped, "Clip to layer below").changed() {
-                    self.execute(Command::SetClipping {
-                        id: layer.id,
-                        enabled: clipped,
-                    });
-                }
-                let mut mask = layer.mask;
-                if ui
-                    .checkbox(&mut mask.enabled, "Enable rectangular mask")
-                    .changed()
-                {
-                    self.execute(Command::SetMask { id: layer.id, mask });
-                }
-                if mask.enabled {
-                    let mut changed = false;
-                    changed |= ui
-                        .add(egui::Slider::new(&mut mask.x, 0.0..=0.99).text("Mask X"))
-                        .changed();
-                    changed |= ui
-                        .add(egui::Slider::new(&mut mask.y, 0.0..=0.99).text("Mask Y"))
-                        .changed();
-                    changed |= ui
-                        .add(egui::Slider::new(&mut mask.width, 0.01..=1.0).text("Mask width"))
-                        .changed();
-                    changed |= ui
-                        .add(egui::Slider::new(&mut mask.height, 0.01..=1.0).text("Mask height"))
-                        .changed();
-                    changed |= ui.checkbox(&mut mask.invert, "Invert mask").changed();
-                    if changed {
-                        self.execute(Command::SetMask { id: layer.id, mask });
-                    }
-                }
-            });
-    }
-
-    fn adjustments_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        egui::CollapsingHeader::new("Develop")
-            .default_open(true)
-            .show(ui, |ui| {
-                let a = &layer.adjustments;
-                self.adjustment_slider(ui, layer.id, "Exposure", a.exposure, -5.0..=5.0, |value| {
-                    AdjustmentPatch {
-                        exposure: Some(value),
-                        ..Default::default()
-                    }
-                });
-                self.adjustment_slider(
-                    ui,
-                    layer.id,
-                    "Contrast",
-                    a.contrast,
-                    -100.0..=100.0,
-                    |value| AdjustmentPatch {
-                        contrast: Some(value),
-                        ..Default::default()
-                    },
-                );
-                self.adjustment_slider(
-                    ui,
-                    layer.id,
-                    "Highlights",
-                    a.highlights,
-                    -100.0..=100.0,
-                    |value| AdjustmentPatch {
-                        highlights: Some(value),
-                        ..Default::default()
-                    },
-                );
-                self.adjustment_slider(
-                    ui,
-                    layer.id,
-                    "Shadows",
-                    a.shadows,
-                    -100.0..=100.0,
-                    |value| AdjustmentPatch {
-                        shadows: Some(value),
-                        ..Default::default()
-                    },
-                );
-                self.adjustment_slider(
-                    ui,
-                    layer.id,
-                    "Temperature",
-                    a.temperature,
-                    -100.0..=100.0,
-                    |value| AdjustmentPatch {
-                        temperature: Some(value),
-                        ..Default::default()
-                    },
-                );
-                self.adjustment_slider(
-                    ui,
-                    layer.id,
-                    "Vibrance",
-                    a.vibrance,
-                    -100.0..=100.0,
-                    |value| AdjustmentPatch {
-                        vibrance: Some(value),
-                        ..Default::default()
-                    },
-                );
-                self.adjustment_slider(
-                    ui,
-                    layer.id,
-                    "Saturation",
-                    a.saturation,
-                    -100.0..=100.0,
-                    |value| AdjustmentPatch {
-                        saturation: Some(value),
-                        ..Default::default()
-                    },
-                );
-                if ui.button("Reset layer development").clicked() {
-                    self.execute(Command::ResetLayerAdjustments { id: layer.id });
-                }
-            });
-    }
-
-    fn adjustment_slider(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: u64,
-        label: &str,
-        current: f32,
-        range: std::ops::RangeInclusive<f32>,
-        patch: impl FnOnce(f32) -> AdjustmentPatch,
-    ) {
-        let mut value = current;
-        if ui
-            .add(egui::Slider::new(&mut value, range).text(label))
-            .changed()
-        {
-            self.execute(Command::AdjustLayer {
-                id,
-                patch: patch(value),
-            });
-        }
-    }
-
-    fn canvas(&mut self, root: &mut egui::Ui) {
-        self.ensure_preview(root.ctx());
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(INK).inner_margin(20))
-            .show(root, |ui| {
-                let available = ui.available_rect_before_wrap();
-                let response = ui.allocate_rect(available, Sense::click_and_drag());
-                let geometry = canvas_geometry(
-                    available,
-                    self.workspace.document.width,
-                    self.workspace.document.height,
-                    self.zoom,
-                    self.pan,
-                );
-                if self.fit_requested {
-                    self.zoom = 1.0;
-                    self.pan = Vec2::ZERO;
-                    self.fit_requested = false;
-                }
-                paint_workspace(ui, geometry, self.preview.as_ref());
-                if let Some(layer) = self.selected_layer() {
-                    paint_layer_outline(ui, geometry, layer, Vec2::ZERO);
-                }
-                self.canvas_interaction(ui, &response, geometry);
-                if let Some(error) = &self.preview_error {
-                    ui.painter().text(
-                        available.center(),
-                        Align2::CENTER_CENTER,
-                        error,
-                        FontId::proportional(13.0),
-                        DANGER,
-                    );
-                }
-            });
-    }
-
-    fn canvas_interaction(
-        &mut self,
-        ui: &mut egui::Ui,
-        response: &egui::Response,
-        geometry: CanvasGeometry,
-    ) {
-        if response.hovered() {
-            let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-            if scroll.abs() > 0.1 {
-                self.zoom = (self.zoom * (scroll * 0.0015).exp()).clamp(0.1, 16.0);
-            }
-        }
-        if ui.input(|input| input.pointer.middle_down()) && response.dragged() {
-            self.pan += response.drag_delta();
-            return;
-        }
-        let pointer = response.interact_pointer_pos();
-        if response.drag_started()
-            && let Some(pointer) = pointer
-        {
-            let canvas = geometry.screen_to_canvas(pointer);
-            if self.tool == Tool::Move {
-                let hit = self.hit_test_layer(canvas);
-                if hit != self.workspace.document.selected {
-                    self.execute(Command::SelectLayer { id: hit });
-                }
-            }
-            let selected = self.selected_layer().cloned();
-            self.drag = Some(DragState {
-                start_canvas: canvas,
-                current_canvas: canvas,
-                layer_id: selected.as_ref().map(|layer| layer.id),
-                transform: selected.map(|layer| layer.transform).unwrap_or_default(),
-            });
-        }
-        if response.dragged()
-            && let (Some(pointer), Some(drag)) = (pointer, self.drag.as_mut())
-        {
-            drag.current_canvas = geometry.screen_to_canvas(pointer);
-        }
-        if let Some(drag) = self.drag {
-            self.paint_drag(ui, geometry, drag);
-        }
-        if response.drag_stopped()
-            && let Some(drag) = self.drag.take()
-        {
-            self.finish_canvas_drag(drag);
-        } else if response.clicked()
-            && let Some(pointer) = pointer
-        {
-            self.canvas_click(geometry.screen_to_canvas(pointer));
-        }
-    }
-
-    fn paint_drag(&self, ui: &egui::Ui, geometry: CanvasGeometry, drag: DragState) {
-        let start = geometry.canvas_to_screen(drag.start_canvas);
-        let current = geometry.canvas_to_screen(drag.current_canvas);
-        match self.tool {
-            Tool::Rectangle | Tool::Crop | Tool::Mask => {
-                let rect = Rect::from_two_pos(start, current);
-                ui.painter().rect_filled(
-                    rect,
-                    1.0,
-                    Color32::from_rgba_unmultiplied(93, 216, 199, 30),
-                );
-                ui.painter().rect_stroke(
-                    rect,
-                    1.0,
-                    Stroke::new(1.5, ACCENT),
-                    egui::StrokeKind::Inside,
-                );
-            }
-            Tool::Move => {
-                let delta = current - start;
-                if let Some(id) = drag.layer_id
-                    && let Ok(layer) = self.workspace.document.layer(id)
-                {
-                    paint_layer_outline(ui, geometry, layer, delta);
-                }
-                ui.painter().text(
-                    current,
-                    Align2::LEFT_BOTTOM,
-                    format!(
-                        "{:+.0}, {:+.0}",
-                        delta.x / geometry.pixels_per_point,
-                        delta.y / geometry.pixels_per_point
-                    ),
-                    FontId::monospace(11.0),
-                    ACCENT,
-                );
-            }
-            Tool::Text => {}
-        }
-    }
-
-    fn finish_canvas_drag(&mut self, drag: DragState) {
-        let min = drag.start_canvas.min(drag.current_canvas);
-        let max = drag.start_canvas.max(drag.current_canvas);
-        let size = max - min;
-        match self.tool {
-            Tool::Move => {
-                if let Some(id) = drag.layer_id {
-                    let delta = drag.current_canvas - drag.start_canvas;
-                    let mut transform = drag.transform;
-                    transform.x += delta.x;
-                    transform.y += delta.y;
-                    self.execute(Command::SetTransform { id, transform });
-                }
-            }
-            Tool::Rectangle if size.x > 2.0 && size.y > 2.0 => {
-                self.execute(Command::AddRectangle {
-                    name: None,
-                    width: size.x.round().max(1.0) as u32,
-                    height: size.y.round().max(1.0) as u32,
-                    color: [93, 216, 199, 255],
-                    corner_radius: 10.0,
-                    x: min.x,
-                    y: min.y,
-                });
-            }
-            Tool::Crop if size.x > 2.0 && size.y > 2.0 => {
-                self.execute(Command::CropCanvas {
-                    x: min.x.max(0.0).round() as u32,
-                    y: min.y.max(0.0).round() as u32,
-                    width: size.x.round() as u32,
-                    height: size.y.round() as u32,
-                });
-                self.fit_requested = true;
-            }
-            Tool::Mask if size.x > 2.0 && size.y > 2.0 => {
-                if let Some(id) = drag.layer_id {
-                    let width = self.workspace.document.width as f32;
-                    let height = self.workspace.document.height as f32;
-                    self.execute(Command::SetMask {
-                        id,
-                        mask: LayerMask {
-                            enabled: true,
-                            x: (min.x / width).clamp(0.0, 0.99),
-                            y: (min.y / height).clamp(0.0, 0.99),
-                            width: (size.x / width).clamp(0.001, 1.0),
-                            height: (size.y / height).clamp(0.001, 1.0),
-                            invert: false,
-                        },
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn canvas_click(&mut self, position: Pos2) {
-        match self.tool {
-            Tool::Move => {
-                let hit = self.hit_test_layer(position);
-                if hit != self.workspace.document.selected {
-                    self.execute(Command::SelectLayer { id: hit });
-                }
-            }
-            Tool::Text => self.text_dialog = Some((position, "Text".into(), 72.0)),
-            Tool::Rectangle => {
-                self.execute(Command::AddRectangle {
-                    name: None,
-                    width: 320,
-                    height: 180,
-                    color: [93, 216, 199, 255],
-                    corner_radius: 12.0,
-                    x: position.x,
-                    y: position.y,
-                });
-            }
-            _ => {}
-        }
-    }
-
-    fn hit_test_layer(&self, position: Pos2) -> Option<u64> {
-        self.workspace
-            .document
-            .layers
-            .iter()
-            .rev()
-            .filter(|layer| layer.visible)
-            .find(|layer| layer_bounds(layer).is_some_and(|rect| rect.contains(position)))
-            .map(|layer| layer.id)
     }
 
     fn status_bar(&mut self, root: &mut egui::Ui) {
@@ -1424,9 +731,6 @@ impl eframe::App for PrismApp {
         self.right_panel(root);
         self.canvas(root);
         self.dialogs(&context);
-        if self.preview_dirty {
-            context.request_repaint();
-        }
     }
 }
 
@@ -1454,138 +758,9 @@ fn install_style(context: &egui::Context) {
     });
 }
 
-fn canvas_geometry(
-    viewport: Rect,
-    width: u32,
-    height: u32,
-    zoom: f32,
-    pan: Vec2,
-) -> CanvasGeometry {
-    let image = Vec2::new(width.max(1) as f32, height.max(1) as f32);
-    let fit = (viewport.width() / image.x)
-        .min(viewport.height() / image.y)
-        .min(1.0);
-    let pixels_per_point = fit * zoom;
-    let canvas = Rect::from_center_size(viewport.center() + pan, image * pixels_per_point);
-    CanvasGeometry {
-        viewport,
-        canvas,
-        pixels_per_point,
-    }
-}
-
-fn paint_workspace(ui: &egui::Ui, geometry: CanvasGeometry, texture: Option<&TextureHandle>) {
-    ui.painter().rect_filled(geometry.viewport, 0.0, INK);
-    let clipped = geometry.canvas.intersect(geometry.viewport);
-    let checker = 14.0;
-    let cols = (clipped.width() / checker).ceil() as i32 + 1;
-    let rows = (clipped.height() / checker).ceil() as i32 + 1;
-    for row in 0..rows {
-        for col in 0..cols {
-            let min = clipped.min + Vec2::new(col as f32 * checker, row as f32 * checker);
-            let cell = Rect::from_min_size(min, Vec2::splat(checker)).intersect(clipped);
-            let color = if (row + col) % 2 == 0 {
-                Color32::from_rgb(64, 67, 73)
-            } else {
-                Color32::from_rgb(49, 52, 58)
-            };
-            ui.painter().rect_filled(cell, 0.0, color);
-        }
-    }
-    if let Some(texture) = texture {
-        ui.painter().with_clip_rect(geometry.viewport).image(
-            texture.id(),
-            geometry.canvas,
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            Color32::WHITE,
-        );
-    }
-    ui.painter().rect_stroke(
-        geometry.canvas,
-        1.0,
-        Stroke::new(1.0, Color32::from_gray(90)),
-        egui::StrokeKind::Outside,
-    );
-}
-
-fn layer_bounds(layer: &Layer) -> Option<Rect> {
-    let size = match &layer.kind {
-        LayerKind::Raster { path, .. } => {
-            let (width, height) = image::image_dimensions(path).ok()?;
-            Vec2::new(width as f32, height as f32)
-        }
-        LayerKind::Text {
-            text, font_size, ..
-        } => {
-            let longest = text.lines().map(str::len).max().unwrap_or(1) as f32;
-            let lines = text.lines().count().max(1) as f32;
-            Vec2::new(longest * font_size * 0.55, lines * font_size * 1.25)
-        }
-        LayerKind::Rectangle { width, height, .. } => Vec2::new(*width as f32, *height as f32),
-    };
-    let size = Vec2::new(
-        size.x * layer.transform.scale_x,
-        size.y * layer.transform.scale_y,
-    );
-    Some(Rect::from_min_size(
-        Pos2::new(layer.transform.x, layer.transform.y),
-        size,
-    ))
-}
-
-fn paint_layer_outline(ui: &egui::Ui, geometry: CanvasGeometry, layer: &Layer, offset: Vec2) {
-    let Some(bounds) = layer_bounds(layer) else {
-        return;
-    };
-    let rect = Rect::from_min_max(
-        geometry.canvas_to_screen(bounds.min) + offset,
-        geometry.canvas_to_screen(bounds.max) + offset,
-    );
-    ui.painter().with_clip_rect(geometry.viewport).rect_stroke(
-        rect,
-        1.0,
-        Stroke::new(1.5, ACCENT),
-        egui::StrokeKind::Outside,
-    );
-    for corner in [
-        rect.left_top(),
-        rect.right_top(),
-        rect.left_bottom(),
-        rect.right_bottom(),
-    ] {
-        ui.painter().rect_filled(
-            Rect::from_center_size(corner, Vec2::splat(7.0)),
-            1.0,
-            ACCENT,
-        );
-    }
-}
-
-fn blend_label(mode: BlendMode) -> &'static str {
-    match mode {
-        BlendMode::Normal => "Normal",
-        BlendMode::Multiply => "Multiply",
-        BlendMode::Screen => "Screen",
-        BlendMode::Overlay => "Overlay",
-    }
-}
-
-fn contrast_text(background: Color32) -> Color32 {
-    let luma = background.r() as u16 * 3 + background.g() as u16 * 6 + background.b() as u16;
-    if luma > 1_400 {
-        Color32::BLACK
-    } else {
-        Color32::WHITE
-    }
-}
-
-fn color32(value: [u8; 4]) -> Color32 {
-    Color32::from_rgba_unmultiplied(value[0], value[1], value[2], value[3])
-}
-
-fn rgba(value: Color32) -> [u8; 4] {
-    [value.r(), value.g(), value.b(), value.a()]
-}
+#[path = "prism_gui/view.rs"]
+mod view;
+use view::*;
 
 #[cfg(test)]
 mod tests {
@@ -1608,5 +783,96 @@ mod tests {
         let round_trip = geometry.screen_to_canvas(geometry.canvas_to_screen(point));
         assert!((round_trip.x - point.x).abs() < 0.001);
         assert!((round_trip.y - point.y).abs() < 0.001);
+    }
+
+    #[test]
+    fn corner_resize_preserves_aspect_ratio_by_default() {
+        let drag = DragState {
+            start_canvas: Pos2::new(110.0, 70.0),
+            current_canvas: Pos2::new(210.0, 90.0),
+            layer_id: Some(1),
+            transform: Transform {
+                x: 10.0,
+                y: 20.0,
+                ..Default::default()
+            },
+            action: DragAction::Resize(ResizeHandle::BottomRight),
+            bounds: Some(Rect::from_min_size(
+                Pos2::new(10.0, 20.0),
+                Vec2::new(100.0, 50.0),
+            )),
+        };
+        let transform = drag_transform(drag, true);
+        assert_eq!(transform.x, 10.0);
+        assert_eq!(transform.y, 20.0);
+        assert!((transform.scale_x - 2.0).abs() < 0.001);
+        assert!((transform.scale_y - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn shift_resize_allows_independent_axes() {
+        let drag = DragState {
+            start_canvas: Pos2::new(10.0, 20.0),
+            current_canvas: Pos2::new(-40.0, 0.0),
+            layer_id: Some(1),
+            transform: Transform {
+                x: 10.0,
+                y: 20.0,
+                ..Default::default()
+            },
+            action: DragAction::Resize(ResizeHandle::TopLeft),
+            bounds: Some(Rect::from_min_size(
+                Pos2::new(10.0, 20.0),
+                Vec2::new(100.0, 50.0),
+            )),
+        };
+        let transform = drag_transform(drag, false);
+        assert!((transform.scale_x - 1.5).abs() < 0.001);
+        assert!((transform.scale_y - 1.4).abs() < 0.001);
+        assert_eq!(transform.x, -40.0);
+        assert_eq!(transform.y, 0.0);
+    }
+
+    #[test]
+    fn transforms_do_not_invalidate_cached_layer_pixels() {
+        let mut layer = Layer::default();
+        let before = LayerVisualKey::new(&layer);
+        layer.transform = Transform {
+            x: 480.0,
+            y: 270.0,
+            scale_x: 2.0,
+            scale_y: 1.5,
+            rotation: 18.0,
+        };
+        assert_eq!(before, LayerVisualKey::new(&layer));
+    }
+
+    #[test]
+    fn command_invalidation_keeps_transform_and_appearance_on_the_gpu() {
+        assert_eq!(
+            canvas_invalidation(&Command::SetTransform {
+                id: 7,
+                transform: Transform::default(),
+            }),
+            CanvasInvalidation::None
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::SetOpacity {
+                id: 7,
+                opacity: 0.5,
+            }),
+            CanvasInvalidation::None
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::AdjustLayer {
+                id: 7,
+                patch: AdjustmentPatch {
+                    exposure: Some(1.0),
+                    ..Default::default()
+                },
+            }),
+            CanvasInvalidation::Layer(7)
+        );
+        assert_eq!(canvas_invalidation(&Command::Undo), CanvasInvalidation::All);
     }
 }

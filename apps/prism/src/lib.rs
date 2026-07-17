@@ -2,17 +2,11 @@
 
 use std::{
     fs,
-    io::BufWriter,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
-use fontdue::Font;
-use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
-use lumen_core::{
-    AdjustmentPatch, Adjustments,
-    engine::{RenderOptions, render_image},
-};
+use lumen_core::{AdjustmentPatch, Adjustments};
 use serde::{Deserialize, Serialize};
 
 pub const PRISM_VERSION: u32 = 1;
@@ -27,6 +21,65 @@ pub enum BlendMode {
     Multiply,
     Screen,
     Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+}
+
+impl BlendMode {
+    pub const ALL: [Self; 12] = [
+        Self::Normal,
+        Self::Multiply,
+        Self::Screen,
+        Self::Overlay,
+        Self::Darken,
+        Self::Lighten,
+        Self::ColorDodge,
+        Self::ColorBurn,
+        Self::HardLight,
+        Self::SoftLight,
+        Self::Difference,
+        Self::Exclusion,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+            Self::Multiply => "Multiply",
+            Self::Screen => "Screen",
+            Self::Overlay => "Overlay",
+            Self::Darken => "Darken",
+            Self::Lighten => "Lighten",
+            Self::ColorDodge => "Color Dodge",
+            Self::ColorBurn => "Color Burn",
+            Self::HardLight => "Hard Light",
+            Self::SoftLight => "Soft Light",
+            Self::Difference => "Difference",
+            Self::Exclusion => "Exclusion",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Normal => "Uses the layer color without blending it with layers below.",
+            Self::Multiply => "Darkens by multiplying colors; white has no effect.",
+            Self::Screen => "Lightens like projected light; black has no effect.",
+            Self::Overlay => "Boosts contrast using Multiply on shadows and Screen on highlights.",
+            Self::Darken => "Keeps the darker value from this layer or the layers below.",
+            Self::Lighten => "Keeps the lighter value from this layer or the layers below.",
+            Self::ColorDodge => "Brightens the layers below and can create intense highlights.",
+            Self::ColorBurn => "Darkens the layers below and increases shadow contrast.",
+            Self::HardLight => "Uses a strong light based on this layer's brightness.",
+            Self::SoftLight => "Adds a gentle contrast and lighting effect.",
+            Self::Difference => "Shows the absolute difference between the two colors.",
+            Self::Exclusion => "Creates a softer, lower-contrast Difference effect.",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -365,6 +418,7 @@ pub struct Workspace {
     undo: Vec<Document>,
     redo: Vec<Document>,
     dirty: bool,
+    interaction_before: Option<Document>,
 }
 
 impl Default for Workspace {
@@ -381,6 +435,7 @@ impl Workspace {
             undo: Vec::new(),
             redo: Vec::new(),
             dirty: false,
+            interaction_before: None,
         }
     }
 
@@ -413,6 +468,9 @@ impl Workspace {
     }
 
     pub fn execute(&mut self, command: Command) -> Result<CommandOutput> {
+        if self.interaction_before.is_some() {
+            bail!("finish the active interaction before executing another command");
+        }
         match command {
             Command::Undo => self.undo(),
             Command::Redo => self.redo(),
@@ -421,16 +479,67 @@ impl Workspace {
                 let before = self.document.clone();
                 let output = apply_command(&mut self.document, command)?;
                 if self.document != before {
-                    self.undo.push(before);
-                    if self.undo.len() > MAX_HISTORY {
-                        self.undo.remove(0);
-                    }
-                    self.redo.clear();
-                    self.dirty = true;
+                    self.record_edit(before);
                 }
                 Ok(output)
             }
         }
+    }
+
+    /// Starts a gesture whose many preview commands should become one undo step.
+    pub fn begin_interaction(&mut self) {
+        if self.interaction_before.is_none() {
+            self.interaction_before = Some(self.document.clone());
+        }
+    }
+
+    /// Applies a command without cloning the document or adding an undo entry.
+    /// Call [`Workspace::commit_interaction`] when the gesture ends.
+    pub fn preview(&mut self, command: Command) -> Result<CommandOutput> {
+        if self.interaction_before.is_none() {
+            bail!("begin an interaction before applying preview commands");
+        }
+        if matches!(
+            command,
+            Command::Undo | Command::Redo | Command::SelectLayer { .. }
+        ) {
+            bail!("history and selection commands cannot preview an interaction");
+        }
+        apply_command(&mut self.document, command)
+    }
+
+    /// Commits the current gesture as a single history entry.
+    pub fn commit_interaction(&mut self) -> bool {
+        let Some(before) = self.interaction_before.take() else {
+            return false;
+        };
+        if self.document == before {
+            return false;
+        }
+        self.record_edit(before);
+        true
+    }
+
+    /// Restores the document from before the current gesture.
+    pub fn cancel_interaction(&mut self) -> bool {
+        let Some(before) = self.interaction_before.take() else {
+            return false;
+        };
+        self.document = before;
+        true
+    }
+
+    pub fn interaction_active(&self) -> bool {
+        self.interaction_before.is_some()
+    }
+
+    fn record_edit(&mut self, before: Document) {
+        self.undo.push(before);
+        if self.undo.len() > MAX_HISTORY {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.dirty = true;
     }
 
     fn undo(&mut self) -> Result<CommandOutput> {
@@ -849,707 +958,13 @@ fn validate_adjustments(value: &Adjustments) -> Result<()> {
     Ok(())
 }
 
-pub fn save_document(document: &Document, path: &Path) -> Result<()> {
-    let extension = path.extension().and_then(|value| value.to_str());
-    if !matches!(extension, Some("prism" | "mica")) {
-        bail!("Prism projects must use the .prism extension");
-    }
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("could not create {}", parent.display()))?;
-    }
-    let directory = fs::canonicalize(
-        path.parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new(".")),
-    )?;
-    let project_stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("prism");
-    let asset_directory = directory.join(format!("{project_stem}-assets"));
-    let mut portable = document.clone();
-    for layer in &mut portable.layers {
-        if let LayerKind::Raster {
-            path: source,
-            original_path,
-        } = &mut layer.kind
-        {
-            let canonical = fs::canonicalize(&*source)
-                .with_context(|| format!("could not read layer source {}", source.display()))?;
-            if original_path.is_none() {
-                *original_path = Some(canonical.clone());
-            }
-            if let Ok(relative) = canonical.strip_prefix(&directory) {
-                *source = relative.to_owned();
-            } else {
-                fs::create_dir_all(&asset_directory)?;
-                let file_name = canonical
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("image");
-                let destination = asset_directory.join(format!("layer-{}-{file_name}", layer.id));
-                fs::copy(&canonical, &destination).with_context(|| {
-                    format!(
-                        "could not copy {} into portable Prism assets",
-                        canonical.display()
-                    )
-                })?;
-                *source = destination.strip_prefix(&directory)?.to_owned();
-            }
-        }
-    }
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    fs::write(&temporary, serde_json::to_vec_pretty(&portable)?)
-        .with_context(|| format!("could not write {}", temporary.display()))?;
-    #[cfg(not(target_os = "windows"))]
-    fs::rename(&temporary, path)
-        .with_context(|| format!("could not replace {}", path.display()))?;
-    #[cfg(target_os = "windows")]
-    replace_file_windows_safe(&temporary, path)?;
-    Ok(())
-}
+mod render;
 
-#[cfg(target_os = "windows")]
-fn replace_file_windows_safe(temporary: &Path, destination: &Path) -> Result<()> {
-    if !destination.exists() {
-        fs::rename(temporary, destination)?;
-        return Ok(());
-    }
-    let mut backup = destination.as_os_str().to_owned();
-    backup.push(".backup");
-    let backup = PathBuf::from(backup);
-    if backup.exists() {
-        fs::remove_file(&backup)?;
-    }
-    fs::rename(destination, &backup)?;
-    match fs::rename(temporary, destination) {
-        Ok(()) => {
-            fs::remove_file(backup)?;
-            Ok(())
-        }
-        Err(error) => {
-            let _ = fs::rename(&backup, destination);
-            Err(error).with_context(|| format!("could not replace {}", destination.display()))
-        }
-    }
-}
-
-pub fn load_document(path: &Path) -> Result<Document> {
-    let bytes = fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
-    let mut document: Document = serde_json::from_slice(&bytes)
-        .with_context(|| format!("invalid Prism project {}", path.display()))?;
-    document.migrate()?;
-    let directory = path.parent().unwrap_or_else(|| Path::new("."));
-    for layer in &mut document.layers {
-        if let LayerKind::Raster { path, .. } = &mut layer.kind
-            && path.is_relative()
-        {
-            *path = directory.join(&*path);
-            if let Ok(canonical) = fs::canonicalize(&*path) {
-                *path = canonical;
-            }
-        }
-    }
-    Ok(document)
-}
-
-pub fn render_document(document: &Document, max_size: Option<u32>) -> Result<DynamicImage> {
-    let longest = document.width.max(document.height) as f32;
-    let scale = max_size
-        .filter(|size| *size > 0)
-        .map_or(1.0, |size| (size as f32 / longest).min(1.0));
-    let canvas_width = (document.width as f32 * scale).round().max(1.0) as u32;
-    let canvas_height = (document.height as f32 * scale).round().max(1.0) as u32;
-    let mut canvas = RgbaImage::from_pixel(canvas_width, canvas_height, Rgba(document.background));
-    let mut previous_coverage: Option<RgbaImage> = None;
-    for layer in &document.layers {
-        if !layer.visible || layer.opacity <= 0.0 {
-            continue;
-        }
-        let source = render_layer_source(layer)?;
-        let mut scaled_layer = layer.clone();
-        scaled_layer.transform.x *= scale;
-        scaled_layer.transform.y *= scale;
-        scaled_layer.transform.scale_x *= scale;
-        scaled_layer.transform.scale_y *= scale;
-        let source = transform_layer(source, scaled_layer.transform);
-        let mut coverage = RgbaImage::new(canvas_width, canvas_height);
-        composite_layer(
-            &mut canvas,
-            &mut coverage,
-            &source,
-            &scaled_layer,
-            previous_coverage.as_ref(),
-        );
-        previous_coverage = Some(coverage);
-    }
-    Ok(DynamicImage::ImageRgba8(canvas))
-}
-
-fn render_layer_source(layer: &Layer) -> Result<DynamicImage> {
-    let image = match &layer.kind {
-        LayerKind::Raster { path, .. } => image::ImageReader::open(path)
-            .with_context(|| format!("could not open {}", path.display()))?
-            .with_guessed_format()?
-            .decode()
-            .with_context(|| format!("could not decode {}", path.display()))?,
-        LayerKind::Text {
-            text,
-            font_size,
-            color,
-        } => DynamicImage::ImageRgba8(render_text(text, *font_size, *color)?),
-        LayerKind::Rectangle {
-            width,
-            height,
-            color,
-            corner_radius,
-        } => DynamicImage::ImageRgba8(render_rectangle(*width, *height, *color, *corner_radius)),
-    };
-    Ok(render_image(
-        image,
-        layer.adjustments.clone(),
-        RenderOptions::default(),
-    ))
-}
-
-fn render_text(text: &str, font_size: f32, color: [u8; 4]) -> Result<RgbaImage> {
-    let font = Font::from_bytes(
-        epaint_default_fonts::UBUNTU_LIGHT,
-        fontdue::FontSettings::default(),
-    )
-    .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?;
-    let line_height = (font_size * 1.25).ceil() as u32;
-    let lines: Vec<_> = text.lines().collect();
-    let width = lines
-        .iter()
-        .map(|line| {
-            line.chars()
-                .map(|character| font.metrics(character, font_size).advance_width)
-                .sum::<f32>()
-                .ceil() as u32
-        })
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let height = (line_height * lines.len().max(1) as u32).max(1);
-    let mut output = RgbaImage::new(width, height);
-    for (line_index, line) in lines.iter().enumerate() {
-        let mut cursor_x: f32 = 0.0;
-        for character in line.chars() {
-            let (metrics, bitmap) = font.rasterize(character, font_size);
-            let origin_y = line_index as i32 * line_height as i32
-                + (line_height as i32 - metrics.height as i32)
-                + metrics.ymin.min(0).abs();
-            for row in 0..metrics.height {
-                for column in 0..metrics.width {
-                    let x = cursor_x.round() as i32 + metrics.xmin + column as i32;
-                    let y = origin_y + row as i32;
-                    if x >= 0 && y >= 0 && (x as u32) < width && (y as u32) < height {
-                        let alpha =
-                            bitmap[row * metrics.width + column] as u16 * color[3] as u16 / 255;
-                        output.put_pixel(
-                            x as u32,
-                            y as u32,
-                            Rgba([color[0], color[1], color[2], alpha as u8]),
-                        );
-                    }
-                }
-            }
-            cursor_x += metrics.advance_width;
-        }
-    }
-    Ok(output)
-}
-
-fn render_rectangle(width: u32, height: u32, color: [u8; 4], radius: f32) -> RgbaImage {
-    let mut output = RgbaImage::new(width, height);
-    let radius = radius.clamp(0.0, width.min(height) as f32 * 0.5);
-    for y in 0..height {
-        for x in 0..width {
-            let dx = if x as f32 <= radius {
-                radius - x as f32
-            } else if x as f32 >= width as f32 - radius {
-                x as f32 - (width as f32 - radius)
-            } else {
-                0.0
-            };
-            let dy = if y as f32 <= radius {
-                radius - y as f32
-            } else if y as f32 >= height as f32 - radius {
-                y as f32 - (height as f32 - radius)
-            } else {
-                0.0
-            };
-            if radius == 0.0 || dx * dx + dy * dy <= radius * radius {
-                output.put_pixel(x, y, Rgba(color));
-            }
-        }
-    }
-    output
-}
-
-fn transform_layer(image: DynamicImage, transform: Transform) -> RgbaImage {
-    let width = (image.width() as f32 * transform.scale_x).round().max(1.0) as u32;
-    let height = (image.height() as f32 * transform.scale_y).round().max(1.0) as u32;
-    let scaled = image
-        .resize_exact(width, height, FilterType::Triangle)
-        .to_rgba8();
-    if transform.rotation.abs() < 0.01 {
-        return scaled;
-    }
-    rotate_rgba(&scaled, transform.rotation)
-}
-
-fn rotate_rgba(source: &RgbaImage, degrees: f32) -> RgbaImage {
-    let radians = degrees.to_radians();
-    let (sin, cos) = radians.sin_cos();
-    let width = source.width() as f32;
-    let height = source.height() as f32;
-    let output_width = (width * cos.abs() + height * sin.abs()).ceil().max(1.0) as u32;
-    let output_height = (width * sin.abs() + height * cos.abs()).ceil().max(1.0) as u32;
-    let source_center = ((width - 1.0) * 0.5, (height - 1.0) * 0.5);
-    let output_center = (
-        (output_width - 1) as f32 * 0.5,
-        (output_height - 1) as f32 * 0.5,
-    );
-    let mut output = RgbaImage::new(output_width, output_height);
-    for y in 0..output_height {
-        for x in 0..output_width {
-            let dx = x as f32 - output_center.0;
-            let dy = y as f32 - output_center.1;
-            let source_x = cos * dx + sin * dy + source_center.0;
-            let source_y = -sin * dx + cos * dy + source_center.1;
-            if source_x >= 0.0 && source_y >= 0.0 && source_x < width && source_y < height {
-                let sample_x = source_x.round().clamp(0.0, width - 1.0) as u32;
-                let sample_y = source_y.round().clamp(0.0, height - 1.0) as u32;
-                output.put_pixel(x, y, *source.get_pixel(sample_x, sample_y));
-            }
-        }
-    }
-    output
-}
-
-fn composite_layer(
-    canvas: &mut RgbaImage,
-    coverage: &mut RgbaImage,
-    source: &RgbaImage,
-    layer: &Layer,
-    clip: Option<&RgbaImage>,
-) {
-    let origin_x = layer.transform.x.round() as i32;
-    let origin_y = layer.transform.y.round() as i32;
-    for (source_x, source_y, source_pixel) in source.enumerate_pixels() {
-        let canvas_x = origin_x + source_x as i32;
-        let canvas_y = origin_y + source_y as i32;
-        if canvas_x < 0
-            || canvas_y < 0
-            || canvas_x >= canvas.width() as i32
-            || canvas_y >= canvas.height() as i32
-        {
-            continue;
-        }
-        let normalized_x = source_x as f32 / source.width().max(1) as f32;
-        let normalized_y = source_y as f32 / source.height().max(1) as f32;
-        let in_mask = normalized_x >= layer.mask.x
-            && normalized_x <= layer.mask.x + layer.mask.width
-            && normalized_y >= layer.mask.y
-            && normalized_y <= layer.mask.y + layer.mask.height;
-        let mask_alpha = if !layer.mask.enabled || in_mask != layer.mask.invert {
-            1.0
-        } else {
-            0.0
-        };
-        let x = canvas_x as u32;
-        let y = canvas_y as u32;
-        let clip_alpha = if layer.clip_to_below {
-            clip.map_or(0.0, |image| image.get_pixel(x, y)[3] as f32 / 255.0)
-        } else {
-            1.0
-        };
-        let alpha = source_pixel[3] as f32 / 255.0 * layer.opacity * mask_alpha * clip_alpha;
-        if alpha <= 0.0 {
-            continue;
-        }
-        let destination = *canvas.get_pixel(x, y);
-        let blended = blend_rgb(source_pixel.0, destination.0, layer.blend_mode);
-        let destination_alpha = destination[3] as f32 / 255.0;
-        let output_alpha = alpha + destination_alpha * (1.0 - alpha);
-        let mut output = [0; 4];
-        for channel in 0..3 {
-            let value = if output_alpha > 0.0 {
-                (blended[channel] as f32 * alpha
-                    + destination[channel] as f32 * destination_alpha * (1.0 - alpha))
-                    / output_alpha
-            } else {
-                0.0
-            };
-            output[channel] = value.round().clamp(0.0, 255.0) as u8;
-        }
-        output[3] = (output_alpha * 255.0).round() as u8;
-        canvas.put_pixel(x, y, Rgba(output));
-        coverage.put_pixel(x, y, Rgba([255, 255, 255, (alpha * 255.0) as u8]));
-    }
-}
-
-fn blend_rgb(source: [u8; 4], destination: [u8; 4], mode: BlendMode) -> [u8; 3] {
-    let blend = |source: u8, destination: u8| -> u8 {
-        let s = source as f32 / 255.0;
-        let d = destination as f32 / 255.0;
-        let value = match mode {
-            BlendMode::Normal => s,
-            BlendMode::Multiply => s * d,
-            BlendMode::Screen => 1.0 - (1.0 - s) * (1.0 - d),
-            BlendMode::Overlay => {
-                if d <= 0.5 {
-                    2.0 * s * d
-                } else {
-                    1.0 - 2.0 * (1.0 - s) * (1.0 - d)
-                }
-            }
-        };
-        (value * 255.0).round().clamp(0.0, 255.0) as u8
-    };
-    [
-        blend(source[0], destination[0]),
-        blend(source[1], destination[1]),
-        blend(source[2], destination[2]),
-    ]
-}
-
-pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
-    }
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if !matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
-        bail!("export path must end in .png, .jpg, or .jpeg");
-    }
-    let destination = if path.exists() {
-        fs::canonicalize(path)?
-    } else {
-        let parent = fs::canonicalize(
-            path.parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new(".")),
-        )?;
-        parent.join(path.file_name().context("export path needs a file name")?)
-    };
-    for layer in &document.layers {
-        if let LayerKind::Raster {
-            path: source,
-            original_path,
-        } = &layer.kind
-        {
-            let overwrites_source = fs::canonicalize(source).ok().as_ref() == Some(&destination);
-            let overwrites_original = original_path.as_ref().is_some_and(|original| {
-                fs::canonicalize(original).ok().as_ref() == Some(&destination)
-            });
-            if overwrites_source || overwrites_original {
-                bail!(
-                    "refusing to overwrite raster source {}; choose a new export path",
-                    if overwrites_original {
-                        original_path.as_ref().unwrap_or(source)
-                    } else {
-                        source
-                    }
-                    .display()
-                );
-            }
-        }
-    }
-    let image = render_document(document, None)?;
-    let file =
-        fs::File::create(path).with_context(|| format!("could not create {}", path.display()))?;
-    let writer = BufWriter::new(file);
-    match extension.as_str() {
-        "jpg" | "jpeg" => {
-            let rgb = image.to_rgb8();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(writer, quality.clamp(1, 100))
-                .write_image(
-                    &rgb,
-                    rgb.width(),
-                    rgb.height(),
-                    image::ExtendedColorType::Rgb8,
-                )?;
-        }
-        "png" => {
-            let rgba = image.to_rgba8();
-            image::codecs::png::PngEncoder::new(writer).write_image(
-                &rgba,
-                rgba.width(),
-                rgba.height(),
-                image::ExtendedColorType::Rgba8,
-            )?;
-        }
-        _ => unreachable!("extension was validated before rendering"),
-    }
-    Ok(())
-}
+pub use render::{
+    export_document, load_document, render_document, render_layer_base, render_layer_preview,
+    render_solid_color, save_document,
+};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn test_directory(label: &str) -> PathBuf {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("prism-{label}-{stamp}"))
-    }
-
-    #[test]
-    fn command_history_restores_layers() {
-        let mut workspace = Workspace::default();
-        workspace
-            .execute(Command::AddRectangle {
-                name: Some("Card".into()),
-                width: 100,
-                height: 80,
-                color: [255, 0, 0, 255],
-                corner_radius: 8.0,
-                x: 20.0,
-                y: 30.0,
-            })
-            .unwrap();
-        assert_eq!(workspace.document.layers.len(), 1);
-        workspace.execute(Command::Undo).unwrap();
-        assert!(workspace.document.layers.is_empty());
-        workspace.execute(Command::Redo).unwrap();
-        assert_eq!(workspace.document.layers.len(), 1);
-    }
-
-    #[test]
-    fn clipping_uses_layer_below_alpha() {
-        let mut document = Document::new("Clip", 20, 20);
-        let mut workspace = Workspace::new(document.clone(), None);
-        workspace
-            .execute(Command::AddRectangle {
-                name: None,
-                width: 5,
-                height: 5,
-                color: [255, 255, 255, 255],
-                corner_radius: 0.0,
-                x: 2.0,
-                y: 2.0,
-            })
-            .unwrap();
-        workspace
-            .execute(Command::AddRectangle {
-                name: None,
-                width: 20,
-                height: 20,
-                color: [255, 0, 0, 255],
-                corner_radius: 0.0,
-                x: 0.0,
-                y: 0.0,
-            })
-            .unwrap();
-        let top = workspace.document.selected.unwrap();
-        workspace
-            .execute(Command::SetClipping {
-                id: top,
-                enabled: true,
-            })
-            .unwrap();
-        document = workspace.document;
-        document.background = [0, 0, 0, 0];
-        let rendered = render_document(&document, None).unwrap().to_rgba8();
-        assert_eq!(rendered.get_pixel(3, 3)[0], 255);
-        assert_eq!(rendered.get_pixel(10, 10)[3], 0);
-    }
-
-    #[test]
-    fn text_and_shapes_render() {
-        let mut workspace = Workspace::new(Document::new("Poster", 400, 200), None);
-        workspace
-            .execute(Command::AddText {
-                text: "Prism".into(),
-                name: None,
-                font_size: 48.0,
-                color: [255, 255, 255, 255],
-                x: 30.0,
-                y: 40.0,
-            })
-            .unwrap();
-        let rendered = render_document(&workspace.document, None).unwrap();
-        assert_eq!((rendered.width(), rendered.height()), (400, 200));
-    }
-
-    #[test]
-    fn arbitrary_rotation_never_samples_outside_source() {
-        let mut workspace = Workspace::new(Document::new("Rotate", 100, 100), None);
-        workspace
-            .execute(Command::AddRectangle {
-                name: None,
-                width: 37,
-                height: 23,
-                color: [255, 0, 0, 255],
-                corner_radius: 0.0,
-                x: 10.0,
-                y: 10.0,
-            })
-            .unwrap();
-        workspace
-            .execute(Command::SetTransform {
-                id: 1,
-                transform: Transform {
-                    x: 10.0,
-                    y: 10.0,
-                    rotation: 13.0,
-                    ..Default::default()
-                },
-            })
-            .unwrap();
-        assert!(render_document(&workspace.document, None).is_ok());
-    }
-
-    #[test]
-    fn export_refuses_to_overwrite_a_raster_source() {
-        let directory = test_directory("immutable-source");
-        fs::create_dir_all(&directory).unwrap();
-        let source = directory.join("original.png");
-        RgbaImage::from_pixel(4, 4, Rgba([20, 40, 60, 255]))
-            .save(&source)
-            .unwrap();
-        let original = fs::read(&source).unwrap();
-        let mut workspace = Workspace::new(Document::new("Safety", 4, 4), None);
-        workspace
-            .execute(Command::AddRaster {
-                path: source.clone(),
-                name: None,
-                x: 0.0,
-                y: 0.0,
-            })
-            .unwrap();
-        assert!(export_document(&workspace.document, &source, 92).is_err());
-        assert_eq!(fs::read(&source).unwrap(), original);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn non_finite_commands_are_rejected_before_serialization() {
-        let mut workspace = Workspace::new(Document::new("Finite", 20, 20), None);
-        workspace
-            .execute(Command::AddRectangle {
-                name: None,
-                width: 10,
-                height: 10,
-                color: [255, 255, 255, 255],
-                corner_radius: 0.0,
-                x: 0.0,
-                y: 0.0,
-            })
-            .unwrap();
-        assert!(
-            workspace
-                .execute(Command::SetOpacity {
-                    id: 1,
-                    opacity: f32::NAN,
-                })
-                .is_err()
-        );
-        assert!(workspace.document.layer(1).unwrap().opacity.is_finite());
-        assert!(
-            !serde_json::to_string(&workspace.document)
-                .unwrap()
-                .contains("\"opacity\":null")
-        );
-    }
-
-    #[test]
-    fn preview_renders_at_target_size_without_full_canvas_allocation() {
-        let document = Document::new("Large", MAX_CANVAS_DIMENSION, MAX_CANVAS_DIMENSION);
-        let preview = render_document(&document, Some(512)).unwrap();
-        assert_eq!((preview.width(), preview.height()), (512, 512));
-    }
-
-    #[test]
-    fn selection_is_command_driven_but_not_an_undo_step() {
-        let mut workspace = Workspace::new(Document::new("Selection", 20, 20), None);
-        workspace
-            .execute(Command::AddRectangle {
-                name: None,
-                width: 10,
-                height: 10,
-                color: [255, 255, 255, 255],
-                corner_radius: 0.0,
-                x: 0.0,
-                y: 0.0,
-            })
-            .unwrap();
-        workspace
-            .execute(Command::SelectLayer { id: None })
-            .unwrap();
-        workspace.execute(Command::Undo).unwrap();
-        assert!(workspace.document.layers.is_empty());
-    }
-
-    #[test]
-    fn saving_copies_external_sources_into_portable_assets() {
-        let root = test_directory("portable");
-        let source_directory = root.join("external");
-        let project_directory = root.join("project");
-        fs::create_dir_all(&source_directory).unwrap();
-        fs::create_dir_all(&project_directory).unwrap();
-        let source = source_directory.join("source.png");
-        RgbaImage::from_pixel(2, 2, Rgba([1, 2, 3, 255]))
-            .save(&source)
-            .unwrap();
-        let project = project_directory.join("portable.prism");
-        let mut workspace = Workspace::new(Document::new("Portable", 2, 2), Some(project.clone()));
-        workspace
-            .execute(Command::AddRaster {
-                path: source.clone(),
-                name: None,
-                x: 0.0,
-                y: 0.0,
-            })
-            .unwrap();
-        workspace.save(None).unwrap();
-        let LayerKind::Raster {
-            path,
-            original_path,
-        } = &workspace.document.layers[0].kind
-        else {
-            panic!("expected raster layer");
-        };
-        assert!(path.starts_with(fs::canonicalize(&project_directory).unwrap()));
-        assert!(path.exists());
-        assert_eq!(
-            original_path.as_ref(),
-            Some(&fs::canonicalize(&source).unwrap())
-        );
-        assert!(export_document(&workspace.document, &source, 90).is_err());
-        let serialized = fs::read_to_string(project).unwrap();
-        assert!(serialized.contains("portable-assets"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn legacy_mica_projects_remain_readable_and_writable() {
-        let root = test_directory("legacy-mica");
-        fs::create_dir_all(&root).unwrap();
-        let project = root.join("legacy.mica");
-        let document = Document::new("Legacy", 320, 240);
-        save_document(&document, &project).unwrap();
-        let loaded = load_document(&project).unwrap();
-        assert_eq!(loaded.name, "Legacy");
-        assert_eq!((loaded.width, loaded.height), (320, 240));
-        fs::remove_dir_all(root).unwrap();
-    }
-}
+#[path = "core_tests.rs"]
+mod tests;
