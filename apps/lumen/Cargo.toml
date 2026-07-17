@@ -1,0 +1,31 @@
+[package]
+name = "lumen-photo"
+version = "0.5.0"
+edition.workspace = true
+description = "A lean, cross-platform, CLI-first photo editor written in Rust"
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "lumen_core"
+
+[[bin]]
+name = "lumen"
+path = "src/bin/lumen.rs"
+
+[[bin]]
+name = "lumen-gui"
+path = "src/bin/lumen-gui.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+eframe.workspace = true
+image.workspace = true
+rawler.workspace = true
+rayon.workspace = true
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+spectrum-imaging = { path = "../../crates/spectrum-imaging" }

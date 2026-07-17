@@ -1,0 +1,31 @@
+[package]
+name = "prism"
+version = "0.1.0"
+edition.workspace = true
+description = "A fast, agent-first layered image editor"
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "prism_core"
+
+[[bin]]
+name = "prism"
+path = "src/bin/prism.rs"
+
+[[bin]]
+name = "prism-gui"
+path = "src/bin/prism-gui.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+eframe.workspace = true
+epaint_default_fonts.workspace = true
+fontdue.workspace = true
+image.workspace = true
+lumen-photo = { path = "../lumen" }
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+spectrum-imaging = { path = "../../crates/spectrum-imaging" }

@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-cargo build --release --bins --locked
+cargo build --release --locked -p lumen-photo --bins
 $destination = "target/dist/Lumen-Windows"
 Remove-Item $destination -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $destination -ItemType Directory -Force | Out-Null

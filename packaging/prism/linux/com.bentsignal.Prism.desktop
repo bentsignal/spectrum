@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Prism
+Comment=Fast native layered image editor
+Exec=prism-gui %F
+Icon=applications-graphics
+Terminal=false
+Categories=Graphics;RasterGraphics;Photography;
+StartupNotify=true

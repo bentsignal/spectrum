@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cargo build --release --bins --locked
+cargo build --release --locked -p lumen-photo --bins
 bundle="target/dist/Lumen.app"
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"

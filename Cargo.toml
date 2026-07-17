@@ -1,27 +1,24 @@
-[package]
-name = "lumen-photo"
-version = "0.5.0"
+[workspace]
+members = [
+    "apps/lumen",
+    "apps/prism",
+    "crates/spectrum-imaging",
+    "tools/workspace-guardrails",
+]
+resolver = "2"
+
+[workspace.package]
 edition = "2024"
-description = "A lean, cross-platform, CLI-first photo editor written in Rust"
 license = "MIT"
-repository = "https://github.com/bentsignal/lumen-photo"
+repository = "https://github.com/bentsignal/spectrum"
 
-[lib]
-name = "lumen_core"
-
-[[bin]]
-name = "lumen"
-path = "src/bin/lumen.rs"
-
-[[bin]]
-name = "lumen-gui"
-path = "src/bin/lumen-gui.rs"
-
-[dependencies]
+[workspace.dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6", features = ["derive"] }
 eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
+epaint_default_fonts = "0.35"
+fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
 rawler = "0.7.2"
 rayon = "1.12"
