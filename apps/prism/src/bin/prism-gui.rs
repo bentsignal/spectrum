@@ -10,7 +10,7 @@ use eframe::egui::{
     TextureOptions, Vec2,
 };
 use lumen_core::AdjustmentPatch;
-use mica_core::{
+use prism_core::{
     BlendMode, Command, Document, Layer, LayerKind, LayerMask, Transform, Workspace,
     export_document, render_document,
 };
@@ -91,7 +91,7 @@ impl Default for NewDocumentDialog {
     }
 }
 
-struct MicaApp {
+struct PrismApp {
     workspace: Workspace,
     preview: Option<TextureHandle>,
     preview_dirty: bool,
@@ -121,13 +121,18 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "Mica",
+        "Prism",
         options,
-        Box::new(move |creation| Ok(Box::new(MicaApp::new(creation, initial_project.as_deref())))),
+        Box::new(move |creation| {
+            Ok(Box::new(PrismApp::new(
+                creation,
+                initial_project.as_deref(),
+            )))
+        }),
     )
 }
 
-impl MicaApp {
+impl PrismApp {
     fn new(creation: &eframe::CreationContext<'_>, initial_project: Option<&Path>) -> Self {
         install_style(&creation.egui_ctx);
         let mut app = Self {
@@ -206,15 +211,15 @@ impl MicaApp {
         self.layer_thumbnails.clear();
         self.fit_requested = true;
         self.pan = Vec2::ZERO;
-        self.status = "Created a new Mica document".into();
+        self.status = "Created a new Prism document".into();
         self.status_error = false;
     }
 
     fn save(&mut self, save_as: bool) {
         let path = if save_as || self.workspace.project_path.is_none() {
             rfd::FileDialog::new()
-                .add_filter("Mica project", &["mica"])
-                .set_file_name(format!("{}.mica", self.workspace.document.name))
+                .add_filter("Prism project", &["prism"])
+                .set_file_name(format!("{}.prism", self.workspace.document.name))
                 .save_file()
         } else {
             None
@@ -284,7 +289,7 @@ impl MicaApp {
                 let size = [rgba.width() as usize, rgba.height() as usize];
                 let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
                 self.preview =
-                    Some(context.load_texture("mica-composite", color, TextureOptions::LINEAR));
+                    Some(context.load_texture("prism-composite", color, TextureOptions::LINEAR));
                 self.preview_error = None;
                 self.preview_fast = interacting;
             }
@@ -298,7 +303,7 @@ impl MicaApp {
     }
 
     fn top_bar(&mut self, root: &mut egui::Ui) {
-        egui::Panel::top("mica-top")
+        egui::Panel::top("prism-top")
             .exact_size(54.0)
             .frame(
                 egui::Frame::new()
@@ -309,7 +314,7 @@ impl MicaApp {
             .show(root, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(3.0);
-                    ui.label(RichText::new("MICA").size(15.0).strong().color(ACCENT));
+                    ui.label(RichText::new("PRISM").size(15.0).strong().color(ACCENT));
                     ui.label(RichText::new("CANVAS STUDIO").size(9.0).color(MUTED));
                     ui.separator();
                     if ui.button("New").clicked() {
@@ -317,7 +322,7 @@ impl MicaApp {
                     }
                     if ui.button("Open").clicked()
                         && let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Mica project", &["mica"])
+                            .add_filter("Prism project", &["prism", "mica"])
                             .pick_file()
                     {
                         self.open_path(&path);
@@ -365,7 +370,7 @@ impl MicaApp {
     }
 
     fn tools(&mut self, root: &mut egui::Ui) {
-        egui::Panel::left("mica-tools")
+        egui::Panel::left("prism-tools")
             .exact_size(58.0)
             .resizable(false)
             .frame(
@@ -406,7 +411,7 @@ impl MicaApp {
     }
 
     fn right_panel(&mut self, root: &mut egui::Ui) {
-        egui::Panel::right("mica-inspector")
+        egui::Panel::right("prism-inspector")
             .default_size(300.0)
             .min_size(260.0)
             .max_size(380.0)
@@ -582,7 +587,7 @@ impl MicaApp {
         let size = [image.width() as usize, image.height() as usize];
         let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
         let texture = context.load_texture(
-            format!("mica-layer-{}", layer.id),
+            format!("prism-layer-{}", layer.id),
             color,
             TextureOptions::LINEAR,
         );
@@ -1172,7 +1177,7 @@ impl MicaApp {
     }
 
     fn status_bar(&mut self, root: &mut egui::Ui) {
-        egui::Panel::bottom("mica-status")
+        egui::Panel::bottom("prism-status")
             .exact_size(30.0)
             .frame(
                 egui::Frame::new()
@@ -1230,7 +1235,7 @@ impl MicaApp {
         };
         let mut create = false;
         let mut keep_open = true;
-        egui::Window::new("New Mica document")
+        egui::Window::new("New Prism document")
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
@@ -1346,7 +1351,7 @@ impl MicaApp {
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(context, |ui| {
-                ui.label("This removes the layer from the Mica document.");
+                ui.label("This removes the layer from the Prism document.");
                 ui.label(
                     RichText::new("Linked source image files are never deleted.").color(ACCENT),
                 );
@@ -1408,7 +1413,7 @@ impl MicaApp {
     }
 }
 
-impl eframe::App for MicaApp {
+impl eframe::App for PrismApp {
     fn ui(&mut self, root: &mut egui::Ui, frame: &mut eframe::Frame) {
         let _ = frame;
         let context = root.ctx().clone();

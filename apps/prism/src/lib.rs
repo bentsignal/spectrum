@@ -1,4 +1,4 @@
-//! Mica's command-driven layered document engine.
+//! Prism's command-driven layered document engine.
 
 use std::{
     fs,
@@ -15,7 +15,7 @@ use lumen_core::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const MICA_VERSION: u32 = 1;
+pub const PRISM_VERSION: u32 = 1;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 
@@ -185,7 +185,7 @@ impl Default for Document {
 impl Document {
     pub fn new(name: impl Into<String>, width: u32, height: u32) -> Self {
         Self {
-            version: MICA_VERSION,
+            version: PRISM_VERSION,
             name: name.into(),
             width: width.clamp(1, MAX_CANVAS_DIMENSION),
             height: height.clamp(1, MAX_CANVAS_DIMENSION),
@@ -217,13 +217,13 @@ impl Document {
     }
 
     fn migrate(&mut self) -> Result<()> {
-        if self.version > MICA_VERSION {
+        if self.version > PRISM_VERSION {
             bail!(
-                "project version {} is newer than this app supports ({MICA_VERSION})",
+                "project version {} is newer than this app supports ({PRISM_VERSION})",
                 self.version
             );
         }
-        self.version = MICA_VERSION;
+        self.version = PRISM_VERSION;
         self.width = self.width.clamp(1, MAX_CANVAS_DIMENSION);
         self.height = self.height.clamp(1, MAX_CANVAS_DIMENSION);
         for layer in &mut self.layers {
@@ -404,7 +404,7 @@ impl Workspace {
         let path = path
             .map(Path::to_owned)
             .or_else(|| self.project_path.clone())
-            .context("choose a .mica project path first")?;
+            .context("choose a .prism project path first")?;
         save_document(&self.document, &path)?;
         self.document = load_document(&path)?;
         self.project_path = Some(path.clone());
@@ -850,8 +850,9 @@ fn validate_adjustments(value: &Adjustments) -> Result<()> {
 }
 
 pub fn save_document(document: &Document, path: &Path) -> Result<()> {
-    if path.extension().and_then(|value| value.to_str()) != Some("mica") {
-        bail!("Mica projects must use the .mica extension");
+    let extension = path.extension().and_then(|value| value.to_str());
+    if !matches!(extension, Some("prism" | "mica")) {
+        bail!("Prism projects must use the .prism extension");
     }
     if let Some(parent) = path
         .parent()
@@ -868,7 +869,7 @@ pub fn save_document(document: &Document, path: &Path) -> Result<()> {
     let project_stem = path
         .file_stem()
         .and_then(|value| value.to_str())
-        .unwrap_or("mica");
+        .unwrap_or("prism");
     let asset_directory = directory.join(format!("{project_stem}-assets"));
     let mut portable = document.clone();
     for layer in &mut portable.layers {
@@ -893,7 +894,7 @@ pub fn save_document(document: &Document, path: &Path) -> Result<()> {
                 let destination = asset_directory.join(format!("layer-{}-{file_name}", layer.id));
                 fs::copy(&canonical, &destination).with_context(|| {
                     format!(
-                        "could not copy {} into portable Mica assets",
+                        "could not copy {} into portable Prism assets",
                         canonical.display()
                     )
                 })?;
@@ -942,7 +943,7 @@ fn replace_file_windows_safe(temporary: &Path, destination: &Path) -> Result<()>
 pub fn load_document(path: &Path) -> Result<Document> {
     let bytes = fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
     let mut document: Document = serde_json::from_slice(&bytes)
-        .with_context(|| format!("invalid Mica project {}", path.display()))?;
+        .with_context(|| format!("invalid Prism project {}", path.display()))?;
     document.migrate()?;
     let directory = path.parent().unwrap_or_else(|| Path::new("."));
     for layer in &mut document.layers {
@@ -1308,7 +1309,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("mica-{label}-{stamp}"))
+        std::env::temp_dir().join(format!("prism-{label}-{stamp}"))
     }
 
     #[test]
@@ -1377,7 +1378,7 @@ mod tests {
         let mut workspace = Workspace::new(Document::new("Poster", 400, 200), None);
         workspace
             .execute(Command::AddText {
-                text: "Mica".into(),
+                text: "Prism".into(),
                 name: None,
                 font_size: 48.0,
                 color: [255, 255, 255, 255],
@@ -1509,7 +1510,7 @@ mod tests {
         RgbaImage::from_pixel(2, 2, Rgba([1, 2, 3, 255]))
             .save(&source)
             .unwrap();
-        let project = project_directory.join("portable.mica");
+        let project = project_directory.join("portable.prism");
         let mut workspace = Workspace::new(Document::new("Portable", 2, 2), Some(project.clone()));
         workspace
             .execute(Command::AddRaster {
@@ -1536,6 +1537,19 @@ mod tests {
         assert!(export_document(&workspace.document, &source, 90).is_err());
         let serialized = fs::read_to_string(project).unwrap();
         assert!(serialized.contains("portable-assets"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_mica_projects_remain_readable_and_writable() {
+        let root = test_directory("legacy-mica");
+        fs::create_dir_all(&root).unwrap();
+        let project = root.join("legacy.mica");
+        let document = Document::new("Legacy", 320, 240);
+        save_document(&document, &project).unwrap();
+        let loaded = load_document(&project).unwrap();
+        assert_eq!(loaded.name, "Legacy");
+        assert_eq!((loaded.width, loaded.height), (320, 240));
         fs::remove_dir_all(root).unwrap();
     }
 }

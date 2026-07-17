@@ -31,20 +31,20 @@ jobs:
             label: Windows
             gui: target/release/lumen-gui.exe
             cli: target/release/lumen.exe
-            mica_gui: target/release/mica-gui.exe
-            mica_cli: target/release/mica.exe
+            prism_gui: target/release/prism-gui.exe
+            prism_cli: target/release/prism.exe
           - os: macos-latest
             label: macOS
             gui: target/release/lumen-gui
             cli: target/release/lumen
-            mica_gui: target/release/mica-gui
-            mica_cli: target/release/mica
+            prism_gui: target/release/prism-gui
+            prism_cli: target/release/prism
           - os: ubuntu-latest
             label: Linux
             gui: target/release/lumen-gui
             cli: target/release/lumen
-            mica_gui: target/release/mica-gui
-            mica_cli: target/release/mica
+            prism_gui: target/release/prism-gui
+            prism_cli: target/release/prism
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -53,22 +53,22 @@ jobs:
       - if: runner.os == 'Linux'
         run: ./target/release/lumen benchmark --strict --profile hosted-ci
       - if: runner.os == 'Linux'
-        run: ./target/release/mica benchmark --strict
+        run: ./target/release/prism benchmark --strict
       - if: runner.os == 'macOS'
-        run: bash scripts/package-macos.sh && bash scripts/package-mica-macos.sh
+        run: bash scripts/package-macos.sh && bash scripts/package-prism-macos.sh
       - if: runner.os == 'Linux'
-        run: bash scripts/package-linux.sh && bash scripts/package-mica-linux.sh
+        run: bash scripts/package-linux.sh && bash scripts/package-prism-linux.sh
       - if: runner.os == 'Windows'
         run: |
           pwsh scripts/package-windows.ps1
-          pwsh scripts/package-mica-windows.ps1
+          pwsh scripts/package-prism-windows.ps1
       - uses: actions/upload-artifact@v7
         with:
-          name: creative-suite-${{ matrix.label }}
+          name: spectrum-${{ matrix.label }}
           path: |
             ${{ matrix.gui }}
             ${{ matrix.cli }}
-            ${{ matrix.mica_gui }}
-            ${{ matrix.mica_cli }}
+            ${{ matrix.prism_gui }}
+            ${{ matrix.prism_cli }}
             target/dist/
           if-no-files-found: error

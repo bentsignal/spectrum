@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Mica
+Name=Prism
 Comment=Fast native layered image editor
-Exec=mica-gui %F
+Exec=prism-gui %F
 Icon=applications-graphics
 Terminal=false
 Categories=Graphics;RasterGraphics;Photography;

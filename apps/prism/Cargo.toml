@@ -1,20 +1,20 @@
 [package]
-name = "mica"
+name = "prism"
 version = "0.1.0"
 edition = "2024"
 description = "A fast, agent-first layered image editor"
 license = "MIT"
 
 [lib]
-name = "mica_core"
+name = "prism_core"
 
 [[bin]]
-name = "mica"
-path = "src/bin/mica.rs"
+name = "prism"
+path = "src/bin/prism.rs"
 
 [[bin]]
-name = "mica-gui"
-path = "src/bin/mica-gui.rs"
+name = "prism-gui"
+path = "src/bin/prism-gui.rs"
 
 [dependencies]
 anyhow = "1.0"

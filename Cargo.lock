@@ -1888,22 +1888,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mica"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "eframe",
- "epaint_default_fonts",
- "fontdue",
- "image",
- "lumen-photo",
- "rfd",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2570,6 +2554,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
 dependencies = [
  "zerovec",
+]
+
+[[package]]
+name = "prism"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "eframe",
+ "epaint_default_fonts",
+ "fontdue",
+ "image",
+ "lumen-photo",
+ "rfd",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

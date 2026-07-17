@@ -11,7 +11,7 @@ use lumen_core::{
     AdjustmentPatch, Project as LumenProject,
     engine::{RenderOptions, render_photo},
 };
-use mica_core::{
+use prism_core::{
     BlendMode, Command, Document, LayerMask, Transform, Workspace, export_document,
     render_document, save_document,
 };
@@ -19,9 +19,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 #[derive(Parser)]
-#[command(name = "mica", version, about = "Agent-first layered image editor")]
+#[command(name = "prism", version, about = "Agent-first layered image editor")]
 struct Cli {
-    #[arg(short, long, global = true, default_value = "untitled.mica")]
+    #[arg(short, long, global = true, default_value = "untitled.prism")]
     project: PathBuf,
     #[command(subcommand)]
     command: CliCommand,
@@ -51,7 +51,7 @@ enum CliCommand {
         #[arg(long, default_value_t = 0.0)]
         y: f32,
     },
-    /// Add editable text using Mica's bundled portable font.
+    /// Add editable text using Prism's bundled portable font.
     AddText {
         text: String,
         #[arg(long)]
@@ -214,7 +214,7 @@ enum CliCommand {
         #[arg(long, default_value_t = 92)]
         quality: u8,
     },
-    /// Create a Mica project from a developed Lumen catalog photo.
+    /// Create a Prism project from a developed Lumen catalog photo.
     FromLumen {
         #[arg(long)]
         catalog: PathBuf,
@@ -501,7 +501,7 @@ fn run(cli: Cli) -> Result<Value> {
     }
 }
 
-fn run_commands(workspace: &mut Workspace, value: &str) -> Result<Vec<mica_core::CommandOutput>> {
+fn run_commands(workspace: &mut Workspace, value: &str) -> Result<Vec<prism_core::CommandOutput>> {
     if value.trim_start().starts_with('[') {
         serde_json::from_str::<Vec<Command>>(value)?
             .into_iter()
@@ -517,7 +517,7 @@ fn from_lumen(catalog: &Path, photo_id: u64, output: &Path) -> Result<Value> {
     let photo = project.photo(photo_id)?;
     let rendered = render_photo(photo, RenderOptions::default())?;
     let directory = output.parent().unwrap_or_else(|| Path::new("."));
-    let assets = directory.join("mica-assets");
+    let assets = directory.join("prism-assets");
     std::fs::create_dir_all(&assets)?;
     let mut source_hash = DefaultHasher::new();
     std::fs::canonicalize(catalog)
@@ -572,8 +572,9 @@ fn parse_color(value: &str) -> Result<[u8; 4]> {
 fn schema() -> Value {
     json!({
         "ok": true,
-        "application": "Mica",
-        "project_extension": ".mica",
+        "application": "Prism",
+        "project_extension": ".prism",
+        "legacy_project_extensions": [".mica"],
         "command_protocol": {
             "encoding": "serde tagged JSON",
             "tag": "command",
@@ -648,7 +649,7 @@ fn benchmark(strict: bool) -> Result<Value> {
     ];
     let passed = metrics.iter().all(|metric| metric.pass);
     if strict && !passed {
-        bail!("Mica benchmark exceeded a strict regression budget");
+        bail!("Prism benchmark exceeded a strict regression budget");
     }
     Ok(json!({
         "ok": true,

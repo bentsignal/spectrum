@@ -1,4 +1,4 @@
-# Creative suite
+# Spectrum
 
 This repository is a Rust workspace for small, fast, agent-first creative tools.
 The suite shares rendering primitives and automation conventions while keeping
@@ -9,13 +9,14 @@ each application's workspace focused.
 | App | Focus | Binaries |
 | --- | --- | --- |
 | Lumen | Photo library, RAW development, culling, presets, and batch export | `lumen`, `lumen-gui` |
-| Mica | Layered canvas composition, text, masks, transforms, and image export | `mica`, `mica-gui` |
+| Prism | Layered canvas composition, text, masks, transforms, and image export | `prism`, `prism-gui` |
 
-Lumen is intentionally not a layer editor, and Mica is intentionally not a
-photo catalog. Opening a photo from Lumen in Mica is an explicit handoff rather
+Lumen is intentionally not a layer editor, and Prism is intentionally not a
+photo catalog. Opening a photo from Lumen in Prism is an explicit handoff rather
 than a reason to crowd either interface.
 
-Mica's editable document format uses the `.mica` extension. It is an exchange
+Prism's editable document format uses the `.prism` extension. Legacy `.mica`
+projects remain readable and writable. The format is an exchange
 boundary for layered work, not a replacement for source photographs or finished
 image/video exports.
 
@@ -37,10 +38,10 @@ crop, encoding, and related behavior do not fork into subtly different engines.
 Application dependencies point toward that shared kernel, never sideways in a
 cycle.
 
-Mica's `from-lumen` flow is the first explicit exchange boundary: it asks the
-Lumen side to develop a catalog photo, then creates a Mica project with that
-result as a layer. Mica can reuse the shared imaging kernel, while Lumen remains
-independent of Mica. Future handoffs should follow the same rule: exchange a
+Prism's `from-lumen` flow is the first explicit exchange boundary: it asks the
+Lumen side to develop a catalog photo, then creates a Prism project with that
+result as a layer. Prism can reuse the shared imaging kernel, while Lumen remains
+independent of Prism. Future handoffs should follow the same rule: exchange a
 documented asset or project representation, keep originals immutable, and make
 the operation available from both CLI and GUI.
 
@@ -62,4 +63,4 @@ cargo build --release --workspace --bins --locked
 ```
 
 Build only one application package by using its platform script. Lumen's scripts
-are named `package-<platform>`; Mica's are named `package-mica-<platform>`.
+are named `package-<platform>`; Prism's are named `package-prism-<platform>`.

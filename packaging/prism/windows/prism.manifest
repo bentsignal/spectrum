@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity name="BentSignal.Mica" version="0.1.0.0" processorArchitecture="*" type="win32" />
-  <description>Mica layered image editor</description>
+  <assemblyIdentity name="BentSignal.Prism" version="0.1.0.0" processorArchitecture="*" type="win32" />
+  <description>Prism layered image editor</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

@@ -4,10 +4,10 @@ version = "0.5.0"
 edition = "2024"
 description = "A lean, cross-platform, CLI-first photo editor written in Rust"
 license = "MIT"
-repository = "https://github.com/bentsignal/lumen-photo"
+repository = "https://github.com/bentsignal/spectrum"
 
 [workspace]
-members = ["apps/mica"]
+members = ["apps/prism"]
 resolver = "2"
 
 [lib]
