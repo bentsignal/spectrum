@@ -1,6 +1,6 @@
 [package]
 name = "lumen-photo"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "A lean, cross-platform, CLI-first photo editor written in Rust"
 license = "MIT"
@@ -20,7 +20,7 @@ path = "src/bin/lumen-gui.rs"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
-eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
 rawler = "0.7.2"
 rayon = "1.12"

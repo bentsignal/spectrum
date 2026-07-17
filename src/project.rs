@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Adjustments;
 
-pub const CATALOG_VERSION: u32 = 4;
+pub const CATALOG_VERSION: u32 = 5;
 pub const MAX_HISTORY: usize = 200;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,6 +51,13 @@ pub struct PhotoMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhotoBatch {
+    pub id: u64,
+    pub name: String,
+    pub captured_date: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Photo {
     pub id: u64,
     pub path: PathBuf,
@@ -71,6 +78,8 @@ pub struct Photo {
     pub pick: PickState,
     #[serde(default)]
     pub metadata: PhotoMetadata,
+    #[serde(default)]
+    pub batch_id: Option<u64>,
 }
 
 fn default_history_id() -> u64 {
@@ -97,6 +106,7 @@ impl Photo {
             next_history_id: 2,
             pick: PickState::Unmarked,
             metadata: PhotoMetadata::default(),
+            batch_id: None,
         }
     }
 
@@ -204,9 +214,17 @@ pub struct Project {
     pub presets: Vec<Preset>,
     #[serde(default = "default_preset_id")]
     pub next_preset_id: u64,
+    #[serde(default)]
+    pub batches: Vec<PhotoBatch>,
+    #[serde(default = "default_batch_id")]
+    pub next_batch_id: u64,
 }
 
 fn default_preset_id() -> u64 {
+    1
+}
+
+fn default_batch_id() -> u64 {
     1
 }
 
@@ -226,6 +244,8 @@ impl Project {
             photos: Vec::new(),
             presets: Vec::new(),
             next_preset_id: 1,
+            batches: Vec::new(),
+            next_batch_id: 1,
         }
     }
 
@@ -239,6 +259,15 @@ impl Project {
                 "catalog version {} is newer than this app supports ({CATALOG_VERSION})",
                 project.version
             );
+        }
+        let catalog_directory = path.parent().unwrap_or_else(|| Path::new("."));
+        for photo in &mut project.photos {
+            if photo.path.is_relative() {
+                photo.path = catalog_directory.join(&photo.path);
+                if let Ok(canonical) = fs::canonicalize(&photo.path) {
+                    photo.path = canonical;
+                }
+            }
         }
         project.version = CATALOG_VERSION;
         for photo in &mut project.photos {
@@ -276,6 +305,7 @@ impl Project {
                 .unwrap_or(0)
                 + 1,
         );
+        project.migrate_batches();
         Ok(project)
     }
 
@@ -290,7 +320,18 @@ impl Project {
         let mut temporary = path.as_os_str().to_owned();
         temporary.push(".tmp");
         let temporary = PathBuf::from(temporary);
-        fs::write(&temporary, serde_json::to_vec_pretty(self)?)
+        let catalog_directory = fs::canonicalize(
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new(".")),
+        )?;
+        let mut portable = self.clone();
+        for photo in &mut portable.photos {
+            if let Ok(relative) = photo.path.strip_prefix(&catalog_directory) {
+                photo.path = relative.to_owned();
+            }
+        }
+        fs::write(&temporary, serde_json::to_vec_pretty(&portable)?)
             .with_context(|| format!("could not write {}", temporary.display()))?;
         #[cfg(target_os = "windows")]
         if path.exists() {
@@ -320,6 +361,36 @@ impl Project {
         self.selected.and_then(|id| self.photo(id).ok())
     }
 
+    pub fn batch(&self, id: u64) -> Result<&PhotoBatch> {
+        self.batches
+            .iter()
+            .find(|batch| batch.id == id)
+            .with_context(|| format!("batch {id} is not in this catalog"))
+    }
+
+    pub fn rename_batch(&mut self, id: u64, name: impl Into<String>) -> Result<()> {
+        let name = name.into().trim().to_owned();
+        if name.is_empty() {
+            bail!("batch name cannot be empty");
+        }
+        let batch = self
+            .batches
+            .iter_mut()
+            .find(|batch| batch.id == id)
+            .with_context(|| format!("batch {id} is not in this catalog"))?;
+        batch.name = name;
+        Ok(())
+    }
+
+    pub fn prune_empty_batches(&mut self) {
+        let used: HashSet<u64> = self
+            .photos
+            .iter()
+            .filter_map(|photo| photo.batch_id)
+            .collect();
+        self.batches.retain(|batch| used.contains(&batch.id));
+    }
+
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<Vec<u64>> {
         let loader = paths
             .iter()
@@ -335,6 +406,7 @@ impl Project {
             .map(|photo| (photo.path.clone(), photo.id))
             .collect();
         let mut imported = Vec::new();
+        let mut newly_imported = Vec::new();
         for prepared in prepared {
             if let Some(id) = known.get(&prepared.path).copied() {
                 imported.push(id);
@@ -354,11 +426,66 @@ impl Project {
             self.photos.push(photo);
             known.insert(prepared.path, id);
             imported.push(id);
+            newly_imported.push(id);
+        }
+        if !newly_imported.is_empty() {
+            let captured_date = newly_imported
+                .iter()
+                .filter_map(|id| self.photo(*id).ok())
+                .filter_map(|photo| photo.metadata.captured_at.as_deref())
+                .filter_map(capture_date)
+                .min();
+            let id = self.next_batch_id;
+            self.next_batch_id += 1;
+            let name = captured_date
+                .clone()
+                .unwrap_or_else(|| format!("Shoot {id}"));
+            self.batches.push(PhotoBatch {
+                id,
+                name,
+                captured_date,
+            });
+            for photo_id in newly_imported {
+                self.photo_mut(photo_id)?.batch_id = Some(id);
+            }
         }
         if self.selected.is_none() {
             self.selected = imported.first().copied();
         }
         Ok(imported)
+    }
+
+    fn migrate_batches(&mut self) {
+        let known: HashSet<u64> = self.batches.iter().map(|batch| batch.id).collect();
+        for photo in &mut self.photos {
+            if photo.batch_id.is_some_and(|id| !known.contains(&id)) {
+                photo.batch_id = None;
+            }
+        }
+        let mut unassigned: BTreeMap<Option<String>, Vec<u64>> = BTreeMap::new();
+        for photo in &self.photos {
+            if photo.batch_id.is_none() {
+                let date = photo.metadata.captured_at.as_deref().and_then(capture_date);
+                unassigned.entry(date).or_default().push(photo.id);
+            }
+        }
+        for (date, photo_ids) in unassigned {
+            let id = self.next_batch_id;
+            self.next_batch_id += 1;
+            self.batches.push(PhotoBatch {
+                id,
+                name: date.clone().unwrap_or_else(|| "Imported Photos".into()),
+                captured_date: date,
+            });
+            for photo_id in photo_ids {
+                if let Ok(photo) = self.photo_mut(photo_id) {
+                    photo.batch_id = Some(id);
+                }
+            }
+        }
+        self.next_batch_id = self
+            .next_batch_id
+            .max(self.batches.iter().map(|batch| batch.id).max().unwrap_or(0) + 1);
     }
 
     pub fn preset(&self, id: u64) -> Result<&Preset> {
@@ -486,6 +613,27 @@ fn rational_value(value: Option<Rational>) -> Option<f32> {
     value.and_then(|value| (value.d != 0).then_some(value.n as f32 / value.d as f32))
 }
 
+fn capture_date(value: &str) -> Option<String> {
+    let value = value.trim();
+    let date = value.get(..10)?;
+    let mut chars = date.chars();
+    let year: String = chars.by_ref().take(4).collect();
+    let first = chars.next()?;
+    let month: String = chars.by_ref().take(2).collect();
+    let second = chars.next()?;
+    let day: String = chars.by_ref().take(2).collect();
+    if year.chars().all(|value| value.is_ascii_digit())
+        && month.chars().all(|value| value.is_ascii_digit())
+        && day.chars().all(|value| value.is_ascii_digit())
+        && matches!(first, ':' | '-')
+        && matches!(second, ':' | '-')
+    {
+        Some(format!("{year}-{month}-{day}"))
+    } else {
+        None
+    }
+}
+
 pub fn is_raw_image(path: &Path) -> bool {
     extension(path) == "arw"
 }
@@ -544,6 +692,69 @@ mod tests {
         project.save(&path).unwrap();
         assert_eq!(Project::load(&path).unwrap(), project);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn catalog_stores_library_local_photos_as_portable_paths() {
+        let directory = test_directory("portable-catalog");
+        let photos = directory.join("photos");
+        fs::create_dir_all(&photos).unwrap();
+        let source = photos.join("frame.jpg");
+        fs::write(&source, b"source placeholder").unwrap();
+        let source = fs::canonicalize(source).unwrap();
+        let path = directory.join("library.lumencatalog");
+
+        let mut project = Project::new("Portable");
+        let mut photo = Photo::new(1, source.clone(), "frame.jpg".into(), 10, 10);
+        photo.batch_id = Some(1);
+        project.photos.push(photo);
+        project.batches.push(PhotoBatch {
+            id: 1,
+            name: "2026-07-16".into(),
+            captured_date: Some("2026-07-16".into()),
+        });
+        project.next_batch_id = 2;
+        project.save(&path).unwrap();
+
+        let serialized = fs::read_to_string(&path).unwrap();
+        assert!(!serialized.contains(&source.display().to_string()));
+        assert!(serialized.contains("photos"));
+        let loaded = Project::load(&path).unwrap();
+        assert_eq!(loaded.photo(1).unwrap().path, source);
+        assert_eq!(loaded.batch(1).unwrap().name, "2026-07-16");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn old_catalog_photos_migrate_into_chronological_batches() {
+        let directory = test_directory("batch-migration");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("library.lumencatalog");
+        let mut project = Project::new("Migration");
+        project.version = 4;
+        let mut photo = Photo::new(1, "frame.jpg".into(), "frame.jpg".into(), 10, 10);
+        photo.metadata.captured_at = Some("2019:06:05 04:58:33".into());
+        project.photos.push(photo);
+        project.save(&path).unwrap();
+
+        let loaded = Project::load(&path).unwrap();
+        assert_eq!(loaded.batches.len(), 1);
+        assert_eq!(loaded.batches[0].name, "2019-06-05");
+        assert_eq!(loaded.photos[0].batch_id, Some(loaded.batches[0].id));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn capture_dates_normalize_exif_and_iso_formats() {
+        assert_eq!(
+            capture_date("2019:06:05 04:58:33").as_deref(),
+            Some("2019-06-05")
+        );
+        assert_eq!(
+            capture_date("2026-07-16T12:00:00").as_deref(),
+            Some("2026-07-16")
+        );
+        assert_eq!(capture_date("unknown"), None);
     }
 
     #[test]

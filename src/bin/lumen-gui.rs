@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use eframe::egui::{
@@ -16,12 +16,13 @@ use lumen_core::{
     project::is_supported_image,
 };
 
-const ACCENT: Color32 = Color32::from_rgb(232, 177, 72);
-const ACCENT_COOL: Color32 = Color32::from_rgb(91, 164, 203);
+const ACCENT: Color32 = Color32::from_rgb(174, 123, 255);
+const ACCENT_COOL: Color32 = Color32::from_rgb(121, 161, 255);
 const PANEL: Color32 = Color32::from_rgb(27, 29, 33);
 const SURFACE: Color32 = Color32::from_rgb(34, 37, 42);
 const SURFACE_RAISED: Color32 = Color32::from_rgb(43, 46, 52);
 const CANVAS: Color32 = Color32::from_rgb(12, 13, 16);
+const RECENT_CATALOGS_KEY: &str = "recent-catalogs-v1";
 const HSL_NAMES: [&str; 8] = [
     "Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta",
 ];
@@ -72,6 +73,12 @@ enum FilmFilter {
 }
 
 #[derive(Clone)]
+enum CatalogSwitch {
+    New(PathBuf),
+    Open(PathBuf),
+}
+
+#[derive(Clone)]
 struct Histogram {
     red: [u32; 256],
     green: [u32; 256],
@@ -115,10 +122,16 @@ struct LumenApp {
     pan: Vec2,
     compare_mode: CompareMode,
     film_filter: FilmFilter,
+    library_mode: bool,
+    active_batch: Option<u64>,
+    rename_batch: Option<(u64, String)>,
     hsl_band: usize,
     curve_channel: usize,
     grade_range: usize,
     reset_confirmation: bool,
+    remove_confirmation: bool,
+    pending_catalog_switch: Option<CatalogSwitch>,
+    recent_catalogs: Vec<PathBuf>,
     selected_ids: BTreeSet<u64>,
     selection_anchor: Option<usize>,
     crop_mode: bool,
@@ -147,7 +160,7 @@ impl LumenApp {
         visuals.widgets.noninteractive.bg_fill = SURFACE;
         visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
         visuals.widgets.hovered.bg_fill = Color32::from_rgb(61, 64, 71);
-        visuals.widgets.active.bg_fill = Color32::from_rgb(70, 65, 52);
+        visuals.widgets.active.bg_fill = Color32::from_rgb(61, 49, 82);
         visuals.widgets.inactive.corner_radius = 5.0.into();
         visuals.widgets.hovered.corner_radius = 5.0.into();
         visuals.widgets.active.corner_radius = 5.0.into();
@@ -156,6 +169,11 @@ impl LumenApp {
             style.spacing.item_spacing = Vec2::new(8.0, 7.0);
             style.spacing.button_padding = Vec2::new(10.0, 6.0);
         });
+        let recent_catalogs = creation
+            .storage
+            .and_then(|storage| storage.get_string(RECENT_CATALOGS_KEY))
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
         Self {
             workspace: Workspace::default(),
             preview: None,
@@ -177,10 +195,16 @@ impl LumenApp {
             pan: Vec2::ZERO,
             compare_mode: CompareMode::Edited,
             film_filter: FilmFilter::All,
+            library_mode: true,
+            active_batch: None,
+            rename_batch: None,
             hsl_band: 0,
             curve_channel: 0,
             grade_range: 1,
             reset_confirmation: false,
+            remove_confirmation: false,
+            pending_catalog_switch: None,
+            recent_catalogs,
             selected_ids: BTreeSet::new(),
             selection_anchor: None,
             crop_mode: false,
@@ -342,6 +366,10 @@ impl LumenApp {
             .project
             .photos
             .iter()
+            .filter(|photo| {
+                self.active_batch
+                    .is_none_or(|batch_id| photo.batch_id == Some(batch_id))
+            })
             .filter(|photo| match self.film_filter {
                 FilmFilter::All => true,
                 FilmFilter::Keeps => photo.pick == PickState::Keep,
@@ -361,6 +389,7 @@ impl LumenApp {
             self.error = true;
             return;
         }
+        let batch_count = self.workspace.project.batches.len();
         self.status = "Reading photo metadata and importing...".into();
         if self.execute_and_autosave(Command::Import { paths }) {
             self.thumbnails.clear();
@@ -368,6 +397,29 @@ impl LumenApp {
             self.selection_anchor = None;
             self.draft_id = None;
             self.sync_draft();
+            let imported_batch = if self.workspace.project.batches.len() > batch_count {
+                self.workspace.project.batches.last().map(|batch| batch.id)
+            } else {
+                None
+            };
+            self.active_batch = imported_batch.or_else(|| {
+                self.workspace
+                    .project
+                    .selected_photo()
+                    .and_then(|photo| photo.batch_id)
+            });
+            if let Some(batch_id) = imported_batch
+                && let Some(photo_id) = self
+                    .workspace
+                    .project
+                    .photos
+                    .iter()
+                    .find(|photo| photo.batch_id == Some(batch_id))
+                    .map(|photo| photo.id)
+            {
+                self.select(photo_id);
+            }
+            self.library_mode = false;
         }
     }
 
@@ -383,22 +435,86 @@ impl LumenApp {
         }
     }
 
+    fn reset_catalog_view(&mut self, library_mode: bool) {
+        self.thumbnails.clear();
+        self.selected_ids.clear();
+        self.selection_anchor = None;
+        self.draft_id = None;
+        self.preview = None;
+        self.preview_source = None;
+        self.preview_fast_source = None;
+        self.original_preview = None;
+        self.histogram = None;
+        self.film_filter = FilmFilter::All;
+        self.active_batch = None;
+        self.library_mode = library_mode;
+        self.sync_draft();
+    }
+
+    fn remember_catalog(&mut self, path: PathBuf) {
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        self.recent_catalogs.retain(|recent| recent != &path);
+        self.recent_catalogs.insert(0, path);
+        self.recent_catalogs.truncate(8);
+    }
+
+    fn request_catalog_switch(&mut self, action: CatalogSwitch) {
+        if self.workspace.catalog_path.is_none() && !self.workspace.project.photos.is_empty() {
+            self.pending_catalog_switch = Some(action);
+        } else {
+            self.apply_catalog_switch(action);
+        }
+    }
+
+    fn apply_catalog_switch(&mut self, action: CatalogSwitch) {
+        match action {
+            CatalogSwitch::New(path) => {
+                let name = path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("Untitled catalog")
+                    .to_owned();
+                if self.execute(Command::New { name })
+                    && self.execute(Command::Save {
+                        path: Some(path.clone()),
+                    })
+                {
+                    self.remember_catalog(path);
+                    self.reset_catalog_view(true);
+                }
+            }
+            CatalogSwitch::Open(path) => {
+                if self.execute(Command::Open { path: path.clone() }) {
+                    self.remember_catalog(path);
+                    self.reset_catalog_view(true);
+                }
+            }
+        }
+    }
+
+    fn new_catalog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Lumen catalog", &["lumencatalog"])
+            .set_file_name("New shoot.lumencatalog")
+            .save_file()
+        {
+            self.request_catalog_switch(CatalogSwitch::New(path));
+        }
+    }
+
     fn open_catalog(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Lumen catalog", &["lumencatalog"])
             .pick_file()
-            && self.execute(Command::Open { path })
         {
-            self.thumbnails.clear();
-            self.selected_ids.clear();
-            self.selection_anchor = None;
-            self.draft_id = None;
-            self.sync_draft();
+            self.request_catalog_switch(CatalogSwitch::Open(path));
         }
     }
 
     fn save_catalog(&mut self, save_as: bool) {
-        let path = if save_as || self.workspace.catalog_path.is_none() {
+        let needs_picker = save_as || self.workspace.catalog_path.is_none();
+        let path = if needs_picker {
             rfd::FileDialog::new()
                 .add_filter("Lumen catalog", &["lumencatalog"])
                 .set_file_name(format!("{}.lumencatalog", self.workspace.project.name))
@@ -406,10 +522,14 @@ impl LumenApp {
         } else {
             None
         };
-        if save_as && path.is_none() {
+        if needs_picker && path.is_none() {
             return;
         }
-        self.execute(Command::Save { path });
+        if self.execute(Command::Save { path })
+            && let Some(path) = self.workspace.catalog_path.clone()
+        {
+            self.remember_catalog(path);
+        }
     }
 
     fn open_export(&mut self) {
@@ -631,6 +751,11 @@ impl LumenApp {
                     CompareMode::Edited
                 };
             }
+            if context.input(|input| input.key_pressed(egui::Key::Delete))
+                && self.workspace.project.selected.is_some()
+            {
+                self.remove_confirmation = true;
+            }
         }
     }
 
@@ -650,6 +775,7 @@ impl LumenApp {
     }
 
     fn toolbar(&mut self, root: &mut egui::Ui) {
+        let recent_catalogs = self.recent_catalogs.clone();
         egui::Panel::top("toolbar")
             .frame(
                 egui::Frame::new()
@@ -664,11 +790,60 @@ impl LumenApp {
                     if ui.button("Import Photos").clicked() {
                         self.import_dialog();
                     }
-                    if ui.button("Open Catalog").clicked() {
-                        self.open_catalog();
+                    ui.menu_button("Catalog", |ui| {
+                        if ui.button("New Catalog...").clicked() {
+                            ui.close();
+                            self.new_catalog();
+                        }
+                        if ui.button("Open Catalog...").clicked() {
+                            ui.close();
+                            self.open_catalog();
+                        }
+                        if ui.button("Save").clicked() {
+                            ui.close();
+                            self.save_catalog(false);
+                        }
+                        if ui.button("Save As...").clicked() {
+                            ui.close();
+                            self.save_catalog(true);
+                        }
+                        ui.separator();
+                        ui.label(
+                            RichText::new("RECENT CATALOGS")
+                                .size(10.0)
+                                .color(Color32::GRAY),
+                        );
+                        if recent_catalogs.is_empty() {
+                            ui.label(RichText::new("None yet").color(Color32::GRAY));
+                        } else {
+                            for path in &recent_catalogs {
+                                if ui
+                                    .add_enabled(
+                                        path.exists(),
+                                        egui::Button::new(catalog_label(path)),
+                                    )
+                                    .on_hover_text(path.display().to_string())
+                                    .clicked()
+                                {
+                                    self.request_catalog_switch(CatalogSwitch::Open(path.clone()));
+                                    ui.close();
+                                }
+                            }
+                        }
+                    });
+                    if self.library_mode {
+                        ui.separator();
+                        ui.label(RichText::new("LIBRARY").strong().color(ACCENT));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(current_catalog_name(&self.workspace))
+                                    .color(Color32::GRAY),
+                            );
+                        });
+                        return;
                     }
-                    if ui.button("Save").clicked() {
-                        self.save_catalog(false);
+                    if ui.button("Library").clicked() {
+                        self.library_mode = true;
                     }
                     ui.separator();
                     let (can_back, can_forward) = self
@@ -678,8 +853,8 @@ impl LumenApp {
                         .map(|photo| (photo.can_history_back(), photo.can_history_forward()))
                         .unwrap_or_default();
                     if ui
-                        .add_enabled(can_back, egui::Button::new("< Edit"))
-                        .on_hover_text("Step backward in persistent edit history (Cmd/Ctrl+Z)")
+                        .add_enabled(can_back, egui::Button::new("Back"))
+                        .on_hover_text("Go back one edit (Cmd/Ctrl+Z)")
                         .clicked()
                         && let Some(id) = self.workspace.project.selected
                         && self.execute_and_autosave(Command::HistoryBack { id })
@@ -688,8 +863,8 @@ impl LumenApp {
                         self.sync_draft();
                     }
                     if ui
-                        .add_enabled(can_forward, egui::Button::new("Edit >"))
-                        .on_hover_text("Step forward in persistent edit history (Cmd/Ctrl+Shift+Z)")
+                        .add_enabled(can_forward, egui::Button::new("Forward"))
+                        .on_hover_text("Go forward one edit (Cmd/Ctrl+Shift+Z)")
                         .clicked()
                         && let Some(id) = self.workspace.project.selected
                         && self.execute_and_autosave(Command::HistoryForward { id })
@@ -738,6 +913,16 @@ impl LumenApp {
                     {
                         self.set_pick(self.selected_photo_ids(), PickState::Reject);
                     }
+                    if ui
+                        .add_enabled(
+                            self.workspace.project.selected.is_some(),
+                            egui::Button::new("Remove"),
+                        )
+                        .on_hover_text("Remove selected photos from this catalog")
+                        .clicked()
+                    {
+                        self.remove_confirmation = true;
+                    }
                     ui.separator();
                     if self.crop_mode {
                         if ui
@@ -774,14 +959,10 @@ impl LumenApp {
                         self.open_export();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let catalog = self
-                            .workspace
-                            .catalog_path
-                            .as_ref()
-                            .and_then(|path| path.file_name())
-                            .map(|name| name.to_string_lossy())
-                            .unwrap_or_else(|| "Unsaved catalog".into());
-                        ui.label(RichText::new(catalog).color(Color32::GRAY));
+                        ui.label(
+                            RichText::new(current_catalog_name(&self.workspace))
+                                .color(Color32::GRAY),
+                        );
                     });
                 });
             });
@@ -799,6 +980,16 @@ impl LumenApp {
                     .inner_margin(egui::Margin::symmetric(10, 10)),
             )
             .show(root, |ui| {
+                let batch_photo_count = self
+                    .workspace
+                    .project
+                    .photos
+                    .iter()
+                    .filter(|photo| {
+                        self.active_batch
+                            .is_none_or(|batch_id| photo.batch_id == Some(batch_id))
+                    })
+                    .count();
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("PHOTOS")
@@ -811,7 +1002,7 @@ impl LumenApp {
                         ui.label(if selected > 1 {
                             format!("{selected} selected")
                         } else {
-                            self.workspace.project.photos.len().to_string()
+                            batch_photo_count.to_string()
                         });
                     });
                 });
@@ -820,6 +1011,12 @@ impl LumenApp {
                         .size(9.0)
                         .color(Color32::from_gray(115)),
                 );
+                if let Some(batch) = self
+                    .active_batch
+                    .and_then(|id| self.workspace.project.batch(id).ok())
+                {
+                    ui.label(RichText::new(&batch.name).size(11.0).strong().color(ACCENT));
+                }
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.film_filter, FilmFilter::All, "All");
                     ui.selectable_value(&mut self.film_filter, FilmFilter::Keeps, "Keeps");
@@ -832,23 +1029,19 @@ impl LumenApp {
                     .photos
                     .iter()
                     .enumerate()
+                    .filter(|(_, photo)| {
+                        self.active_batch
+                            .is_none_or(|batch_id| photo.batch_id == Some(batch_id))
+                    })
                     .filter(|(_, photo)| match self.film_filter {
                         FilmFilter::All => true,
                         FilmFilter::Keeps => photo.pick == PickState::Keep,
                         FilmFilter::Rejects => photo.pick == PickState::Reject,
                     })
-                    .map(|(index, photo)| {
-                        (
-                            index,
-                            photo.id,
-                            photo.name.clone(),
-                            photo.is_raw(),
-                            photo.pick,
-                        )
-                    })
+                    .map(|(index, photo)| (index, photo.id, photo.name.clone(), photo.pick))
                     .collect();
                 if self.film_filter == FilmFilter::All {
-                    photos.sort_by_key(|(index, _, _, _, pick)| {
+                    photos.sort_by_key(|(index, _, _, pick)| {
                         (if *pick == PickState::Keep { 0 } else { 1 }, *index)
                     });
                 }
@@ -859,13 +1052,13 @@ impl LumenApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (project_index, id, name, raw, pick) in photos {
+                        for (project_index, id, name, pick) in photos {
                             self.ensure_thumbnail(&context, id);
                             let selected = self.selected_ids.contains(&id);
                             let active = self.workspace.project.selected == Some(id);
                             let frame = egui::Frame::new()
                                 .fill(if selected {
-                                    Color32::from_rgb(55, 48, 33)
+                                    Color32::from_rgb(50, 41, 67)
                                 } else if pick == PickState::Keep {
                                     Color32::from_rgb(31, 48, 43)
                                 } else if pick == PickState::Reject {
@@ -897,37 +1090,26 @@ impl LumenApp {
                                     ui.label(RichText::new(shorten(&name, 18)).size(11.0));
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .selectable_label(pick == PickState::Keep, "+")
-                                                .on_hover_text("Keep / pin photo")
-                                                .clicked()
-                                            {
-                                                pick_action = Some(if pick == PickState::Keep {
-                                                    PickState::Unmarked
-                                                } else {
-                                                    PickState::Keep
-                                                });
+                                        |ui| match pick {
+                                            PickState::Keep => {
+                                                if ui
+                                                    .selectable_label(true, "+")
+                                                    .on_hover_text("Kept - click to unmark")
+                                                    .clicked()
+                                                {
+                                                    pick_action = Some(PickState::Unmarked);
+                                                }
                                             }
-                                            if ui
-                                                .selectable_label(pick == PickState::Reject, "x")
-                                                .on_hover_text("Reject photo")
-                                                .clicked()
-                                            {
-                                                pick_action = Some(if pick == PickState::Reject {
-                                                    PickState::Unmarked
-                                                } else {
-                                                    PickState::Reject
-                                                });
+                                            PickState::Reject => {
+                                                if ui
+                                                    .selectable_label(true, "x")
+                                                    .on_hover_text("Rejected - click to unmark")
+                                                    .clicked()
+                                                {
+                                                    pick_action = Some(PickState::Unmarked);
+                                                }
                                             }
-                                            if raw {
-                                                ui.label(
-                                                    RichText::new("RAW")
-                                                        .size(9.0)
-                                                        .strong()
-                                                        .color(ACCENT),
-                                                );
-                                            }
+                                            PickState::Unmarked => {}
                                         },
                                     );
                                 });
@@ -941,6 +1123,258 @@ impl LumenApp {
                             ui.add_space(5.0);
                         }
                     });
+            });
+    }
+
+    fn open_batch(&mut self, batch_id: u64) {
+        let first = self
+            .workspace
+            .project
+            .photos
+            .iter()
+            .find(|photo| photo.batch_id == Some(batch_id))
+            .map(|photo| photo.id);
+        self.active_batch = Some(batch_id);
+        self.library_mode = false;
+        self.film_filter = FilmFilter::All;
+        if let Some(id) = first {
+            self.select(id);
+        }
+    }
+
+    fn library_canvas(&mut self, root: &mut egui::Ui) {
+        let context = root.ctx().clone();
+        let mut batches: Vec<_> = self
+            .workspace
+            .project
+            .batches
+            .iter()
+            .map(|batch| {
+                let photos = self
+                    .workspace
+                    .project
+                    .photos
+                    .iter()
+                    .filter(|photo| photo.batch_id == Some(batch.id))
+                    .map(|photo| (photo.id, photo.name.clone(), photo.pick))
+                    .collect::<Vec<_>>();
+                (
+                    batch.id,
+                    batch.name.clone(),
+                    batch.captured_date.clone(),
+                    photos,
+                )
+            })
+            .filter(|(_, _, _, photos)| !photos.is_empty())
+            .collect();
+        batches.sort_by_key(|(id, _, date, _)| {
+            (date.clone().unwrap_or_else(|| "9999-99-99".into()), *id)
+        });
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(CANVAS).inner_margin(24))
+            .show(root, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new(&self.workspace.project.name)
+                                .size(24.0)
+                                .color(Color32::from_gray(230)),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "{} shoots  |  {} photos",
+                                batches.len(),
+                                self.workspace.project.photos.len()
+                            ))
+                            .size(12.0)
+                            .color(Color32::GRAY),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Import a Shoot").clicked() {
+                            self.import_dialog();
+                        }
+                    });
+                });
+                ui.add_space(12.0);
+
+                if batches.is_empty() {
+                    let available = ui.available_rect_before_wrap();
+                    ui.allocate_rect(available, Sense::hover());
+                    let content = Rect::from_center_size(
+                        available.center(),
+                        Vec2::new(available.width().min(520.0), 150.0),
+                    );
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(content)
+                            .layout(egui::Layout::top_down(egui::Align::Center)),
+                        |ui| {
+                            ui.label(
+                                RichText::new("Your timeline starts here")
+                                    .size(24.0)
+                                    .color(Color32::from_gray(225)),
+                            );
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new(
+                                    "Import a shoot and Lumen will place it on the timeline.",
+                                )
+                                .size(13.0)
+                                .color(Color32::GRAY),
+                            );
+                            ui.add_space(14.0);
+                            if ui.button("Choose Photos").clicked() {
+                                self.import_dialog();
+                            }
+                        },
+                    );
+                    return;
+                }
+
+                ui.label(
+                    RichText::new("EARLIER   <   SHOOT TIMELINE   >   LATER")
+                        .size(10.0)
+                        .strong()
+                        .color(ACCENT),
+                );
+                ui.add_space(8.0);
+
+                let column_height = ui.available_height().max(280.0);
+                let mut open_batch = None;
+                let mut rename_batch = None;
+                egui::ScrollArea::horizontal()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            for (batch_id, name, date, photos) in &batches {
+                                for (photo_id, _, _) in photos {
+                                    self.ensure_thumbnail(&context, *photo_id);
+                                }
+                                egui::Frame::new()
+                                    .fill(SURFACE)
+                                    .stroke(Stroke::new(1.0, Color32::from_gray(54)))
+                                    .corner_radius(8.0)
+                                    .inner_margin(10)
+                                    .show(ui, |ui| {
+                                        ui.vertical(|ui| {
+                                            ui.set_width(190.0);
+                                            ui.set_height(column_height - 24.0);
+                                            if ui
+                                                .add_sized(
+                                                    [190.0, 28.0],
+                                                    egui::Button::new(
+                                                        RichText::new(name).strong().color(ACCENT),
+                                                    ),
+                                                )
+                                                .on_hover_text("Open this shoot")
+                                                .clicked()
+                                            {
+                                                open_batch = Some(*batch_id);
+                                            }
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new(
+                                                        date.as_deref().unwrap_or("Date unknown"),
+                                                    )
+                                                    .size(10.0)
+                                                    .color(Color32::GRAY),
+                                                );
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        if ui.small_button("Rename").clicked() {
+                                                            rename_batch =
+                                                                Some((*batch_id, name.clone()));
+                                                        }
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "{} photos",
+                                                                photos.len()
+                                                            ))
+                                                            .size(10.0)
+                                                            .color(Color32::GRAY),
+                                                        );
+                                                    },
+                                                );
+                                            });
+                                            ui.separator();
+                                            egui::ScrollArea::vertical()
+                                                .id_salt(("batch-column", batch_id))
+                                                .max_height((column_height - 100.0).max(160.0))
+                                                .auto_shrink([false, false])
+                                                .show(ui, |ui| {
+                                                    for (photo_id, photo_name, pick) in photos {
+                                                        if let Some(texture) =
+                                                            self.thumbnails.get(photo_id)
+                                                        {
+                                                            let size = fit_size(
+                                                                texture.size_vec2(),
+                                                                Vec2::new(180.0, 112.0),
+                                                            );
+                                                            if ui
+                                                                .add(
+                                                                    egui::Image::new(texture)
+                                                                        .fit_to_exact_size(size)
+                                                                        .sense(Sense::click()),
+                                                                )
+                                                                .on_hover_text("Open this shoot")
+                                                                .clicked()
+                                                            {
+                                                                open_batch = Some(*batch_id);
+                                                            }
+                                                        }
+                                                        ui.horizontal(|ui| {
+                                                            ui.label(
+                                                                RichText::new(shorten(
+                                                                    photo_name, 20,
+                                                                ))
+                                                                .size(10.0),
+                                                            );
+                                                            ui.with_layout(
+                                                                egui::Layout::right_to_left(
+                                                                    egui::Align::Center,
+                                                                ),
+                                                                |ui| match pick {
+                                                                    PickState::Keep => {
+                                                                        ui.label(
+                                                                            RichText::new("+")
+                                                                                .strong()
+                                                                                .color(ACCENT),
+                                                                        );
+                                                                    }
+                                                                    PickState::Reject => {
+                                                                        ui.label(
+                                                                            RichText::new("x")
+                                                                                .color(
+                                                                                Color32::from_rgb(
+                                                                                    225, 112, 120,
+                                                                                ),
+                                                                            ),
+                                                                        );
+                                                                    }
+                                                                    PickState::Unmarked => {}
+                                                                },
+                                                            );
+                                                        });
+                                                        ui.add_space(8.0);
+                                                    }
+                                                });
+                                        });
+                                    });
+                                ui.add_space(8.0);
+                            }
+                        });
+                    });
+                if let Some(batch_id) = open_batch {
+                    self.open_batch(batch_id);
+                }
+                if let Some(batch) = rename_batch {
+                    self.rename_batch = Some(batch);
+                }
             });
     }
 
@@ -1705,22 +2139,42 @@ impl LumenApp {
                         );
                     }
                 } else {
-                    ui.centered_and_justified(|ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.label(RichText::new("LUMEN").size(34.0).strong().color(ACCENT));
-                            ui.label(
-                                RichText::new(
-                                    "Drop JPEG, PNG, TIFF, WebP, or Sony ARW photos here",
-                                )
-                                .size(16.0)
-                                .color(Color32::GRAY),
-                            );
+                    let available = ui.available_rect_before_wrap();
+                    ui.allocate_rect(available, Sense::hover());
+                    let content = Rect::from_center_size(
+                        available.center(),
+                        Vec2::new(available.width().min(560.0), 190.0),
+                    );
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(content)
+                            .layout(egui::Layout::top_down(egui::Align::Center)),
+                        |ui| {
                             ui.add_space(10.0);
-                            if ui.button("Choose Photos").clicked() {
-                                self.import_dialog();
-                            }
-                        });
-                    });
+                            ui.label(RichText::new("L U M E N").size(12.0).strong().color(ACCENT));
+                            ui.add_space(14.0);
+                            ui.label(
+                                RichText::new("Bring a shoot into focus")
+                                    .size(26.0)
+                                    .color(Color32::from_gray(226)),
+                            );
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new("Drop photos here, or start by choosing a shoot.")
+                                    .size(13.0)
+                                    .color(Color32::from_gray(145)),
+                            );
+                            ui.add_space(16.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Choose Photos").clicked() {
+                                    self.import_dialog();
+                                }
+                                if ui.button("Open Catalog").clicked() {
+                                    self.open_catalog();
+                                }
+                            });
+                        },
+                    );
                 }
             });
     }
@@ -1802,6 +2256,154 @@ impl LumenApp {
                 self.draft_id = None;
                 self.sync_draft();
             }
+        }
+    }
+
+    fn remove_confirmation_window(&mut self, context: &egui::Context) {
+        if !self.remove_confirmation {
+            return;
+        }
+        let ids = self.selected_photo_ids();
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new("Remove from catalog?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(context, |ui| {
+                ui.label(format!(
+                    "Remove {} selected photo(s) from this catalog?",
+                    ids.len()
+                ));
+                ui.label(
+                    RichText::new("Original photo files will not be deleted.")
+                        .strong()
+                        .color(ACCENT),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    if ui
+                        .button(
+                            RichText::new("Remove Photos").color(Color32::from_rgb(245, 150, 130)),
+                        )
+                        .clicked()
+                    {
+                        confirm = true;
+                    }
+                });
+            });
+        if cancel {
+            self.remove_confirmation = false;
+        }
+        if confirm {
+            self.remove_confirmation = false;
+            let active_batch = self.active_batch;
+            if !ids.is_empty() && self.execute_and_autosave(Command::Remove { ids }) {
+                let active_batch =
+                    active_batch.filter(|batch_id| self.workspace.project.batch(*batch_id).is_ok());
+                self.reset_catalog_view(active_batch.is_none());
+                self.active_batch = active_batch;
+            }
+        }
+    }
+
+    fn catalog_switch_confirmation_window(&mut self, context: &egui::Context) {
+        let Some(action) = self.pending_catalog_switch.clone() else {
+            return;
+        };
+        let mut confirm = false;
+        let mut cancel = false;
+        egui::Window::new("Leave unsaved catalog?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(context, |ui| {
+                ui.label(format!(
+                    "This catalog contains {} photo(s) and has not been saved.",
+                    self.workspace.project.photos.len()
+                ));
+                ui.label("Save it first, or continue and leave this catalog behind.");
+                ui.label(
+                    RichText::new("Original photo files will not be deleted.").color(Color32::GRAY),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    if ui.button("Save Current...").clicked() {
+                        self.save_catalog(true);
+                        if self.workspace.catalog_path.is_some() {
+                            confirm = true;
+                        }
+                    }
+                    if ui
+                        .button(
+                            RichText::new("Continue Without Saving")
+                                .color(Color32::from_rgb(245, 150, 130)),
+                        )
+                        .clicked()
+                    {
+                        confirm = true;
+                    }
+                });
+            });
+        if cancel {
+            self.pending_catalog_switch = None;
+        }
+        if confirm {
+            self.pending_catalog_switch = None;
+            self.apply_catalog_switch(action);
+        }
+    }
+
+    fn rename_batch_window(&mut self, context: &egui::Context) {
+        if self.rename_batch.is_none() {
+            return;
+        }
+        let mut save = false;
+        let mut cancel = false;
+        egui::Window::new("Rename Shoot")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(context, |ui| {
+                if let Some((_, name)) = self.rename_batch.as_mut() {
+                    ui.label("Shoot name");
+                    let response = ui.text_edit_singleline(name);
+                    if response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                    {
+                        save = true;
+                    }
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    if ui
+                        .button(RichText::new("Save Name").color(ACCENT))
+                        .clicked()
+                    {
+                        save = true;
+                    }
+                });
+            });
+        if cancel {
+            self.rename_batch = None;
+        }
+        if save
+            && let Some((id, name)) = self.rename_batch.take()
+            && !self.execute_and_autosave(Command::RenameBatch {
+                id,
+                name: name.clone(),
+            })
+        {
+            self.rename_batch = Some((id, name));
         }
     }
 
@@ -1927,10 +2529,17 @@ impl eframe::App for LumenApp {
         self.handle_drop_and_shortcuts(&context);
         self.toolbar(ui);
         self.status_bar(ui);
-        self.filmstrip(ui);
-        self.inspector(ui);
-        self.canvas(ui);
+        if self.library_mode {
+            self.library_canvas(ui);
+        } else {
+            self.filmstrip(ui);
+            self.inspector(ui);
+            self.canvas(ui);
+        }
         self.confirmation_window(&context);
+        self.remove_confirmation_window(&context);
+        self.catalog_switch_confirmation_window(&context);
+        self.rename_batch_window(&context);
         self.export_window(&context);
         if !context.input(|input| input.raw.hovered_files.is_empty()) {
             let painter = context.layer_painter(egui::LayerId::new(
@@ -1952,6 +2561,12 @@ impl eframe::App for LumenApp {
                 egui::FontId::proportional(28.0),
                 Color32::WHITE,
             );
+        }
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Ok(value) = serde_json::to_string(&self.recent_catalogs) {
+            storage.set_string(RECENT_CATALOGS_KEY, value);
         }
     }
 }
@@ -2557,6 +3172,27 @@ fn shorten(value: &str, max_chars: usize) -> String {
     } else {
         head
     }
+}
+
+fn catalog_label(path: &Path) -> String {
+    let name = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Catalog");
+    let parent = path
+        .parent()
+        .and_then(|value| value.file_name())
+        .and_then(|value| value.to_str());
+    parent.map_or_else(|| name.to_owned(), |parent| format!("{name}  /  {parent}"))
+}
+
+fn current_catalog_name(workspace: &Workspace) -> String {
+    workspace
+        .catalog_path
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Unsaved catalog".into())
 }
 
 #[allow(dead_code)]

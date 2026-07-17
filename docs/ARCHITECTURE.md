@@ -32,9 +32,13 @@ daemon, local socket, embedded browser, or network requirement.
 - A multi-file import is transactional in memory: if one file is invalid, none
   of that command's files are added.
 - Adjustment values are sanitized inside the core, not only in the UI.
-- Every committed edit stores a complete snapshot and cursor in catalog v4.
+- Every committed edit stores a complete snapshot and cursor in catalog v5.
 - Camera/lens metadata and the unmarked/keep/reject culling state live beside each
   immutable source reference. Older RAW catalogs populate missing metadata lazily.
+- Imports form lightweight chronological shoot batches. Existing catalogs migrate
+  into batches using capture dates, and the Library renders them left-to-right.
+- Sources underneath the catalog directory serialize as relative paths, allowing an
+  iCloud/shared library folder to move between devices without path repair.
 - Catalog-level presets store development settings while intentionally excluding crop,
   rotation, flips, and straighten so one look can be reused across different framing.
 - Reset is an ordinary history event, so stepping backward restores prior work.

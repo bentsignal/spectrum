@@ -27,6 +27,7 @@ If omitted, it defaults to `lumen.lumencatalog` in the current directory.
 | `grade <ID> <RANGE> [OPTIONS]` | Color-grade shadows, midtones, or highlights |
 | `spot <ID> [OPTIONS]` | Add or clear nondestructive repair-brush dabs |
 | `pick <ID>... --state <STATE>` | Mark photos unmarked, keep, or reject |
+| `batch-rename <ID> <NAME>` | Rename a chronological shoot batch |
 | `history <ID>` | Return persistent history and its cursor |
 | `history-back\|history-forward <ID>` | Navigate one persistent edit |
 | `history-jump <ID> <INDEX>` | Restore a particular history snapshot |
@@ -101,6 +102,7 @@ lumen --catalog shoot.lumencatalog grade 7 highlights \
 lumen --catalog shoot.lumencatalog spot 7 \
   --x 0.51 --y 0.24 --radius 0.018 --opacity 0.9
 lumen --catalog shoot.lumencatalog pick 7 8 9 --state keep
+lumen --catalog shoot.lumencatalog batch-rename 1 "Night walk"
 
 lumen --catalog shoot.lumencatalog preset-save "Soft color" --from 7
 lumen --catalog shoot.lumencatalog preset-apply 1 8 9 10
@@ -125,7 +127,8 @@ task-oriented subcommands are preferred when shell quoting would be fragile.
 
 - Treat photo IDs as catalog-local unsigned integers.
 - Read a photo with `get` before choosing relative edits.
-- Keep the catalog under source control only if its absolute source paths are
-  meaningful to collaborators.
+- Put a catalog and its photo folders under one shared/iCloud library directory
+  for portable relative source references. Photos outside that tree retain their
+  absolute paths.
 - Export to a new path. Lumen rejects unsupported output extensions.
 - The CLI persists successful mutation commands before returning success.

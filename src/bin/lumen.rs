@@ -129,6 +129,8 @@ enum CliCommand {
         #[arg(long, value_enum)]
         state: CliPickState,
     },
+    /// Rename a chronological shoot batch in the catalog library.
+    BatchRename { id: u64, name: String },
     /// Show the persistent edit history for a photo.
     History { id: u64 },
     /// Move one step backward in a photo's persistent history.
@@ -631,6 +633,13 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             )?),
             true,
         ),
+        CliCommand::BatchRename { id, name } => (
+            output(&workspace_command(
+                &mut workspace,
+                Command::RenameBatch { id, name },
+            )?),
+            true,
+        ),
         CliCommand::History { id } => {
             let photo = workspace.project.photo(id)?;
             return Ok(
@@ -1109,6 +1118,7 @@ fn schema() -> serde_json::Value {
             { "command": "paste-edits", "ids": [2, 3] },
             { "command": "history-back", "id": 1 },
             { "command": "set-pick", "ids": [1, 2], "state": "keep" },
+            { "command": "rename-batch", "id": 1, "name": "Night walk" },
             { "command": "save-preset", "name": "Warm portrait", "from_id": 1 },
             { "command": "apply-preset", "preset_id": 1, "ids": [2, 3] },
             { "command": "export-batch", "ids": [1, 2], "directory": "finished", "format": "jpeg", "max_size": 3000, "quality": 90 },

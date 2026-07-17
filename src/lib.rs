@@ -11,4 +11,4 @@ pub use adjustments::{
 };
 pub use command::{Command, CommandOutput, Workspace};
 pub use engine::ExportFormat;
-pub use project::{HistoryEntry, Photo, PhotoMetadata, PickState, Preset, Project};
+pub use project::{HistoryEntry, Photo, PhotoBatch, PhotoMetadata, PickState, Preset, Project};

@@ -12,6 +12,7 @@ capabilities.
 ## What works today
 
 - Parallel drag/drop or file-picker import with deterministic performance budgets
+- Chronological Library timeline with lightweight shoot batches inside one catalog
 - Vertical filmstrip, arrow-key navigation, multi-selection, and keep/reject culling filters
 - Pure-Rust Sony ARW metadata, embedded-preview decoding, and full-resolution development
 - Zoom, pan, direct on-image crop handles, straighten, rotation, and flips
@@ -21,7 +22,8 @@ capabilities.
 - Original/edited side-by-side comparison, RGB histogram, and camera/lens details
 - Nondestructive repair brush for dust and small blemishes
 - Rotation and horizontal/vertical flips
-- Nondestructive `.lumencatalog` sidecars; source photos are never changed
+- Portable `.lumencatalog` libraries with relative iCloud-friendly source references
+- Nondestructive edits and removal; source photos are never changed or deleted
 - Persistent per-photo edit history with `Ctrl+Z` / `Cmd+Z` navigation
 - Copy/paste edits, reusable named presets, and confirmed history-preserving reset
 - Configurable single or batch JPEG, PNG, TIFF, and WebP export with size estimates
@@ -53,6 +55,7 @@ nonzero exit code.
 # Create a catalog and import a shoot
 cargo run --release --bin lumen -- --catalog shoot.lumencatalog init "Friday shoot"
 cargo run --release --bin lumen -- --catalog shoot.lumencatalog import photos/*.{ARW,jpg}
+cargo run --release --bin lumen -- --catalog shoot.lumencatalog batch-rename 1 "Friday portraits"
 
 # Inspect IDs, edit photo 1, copy its look, and export it
 cargo run --release --bin lumen -- --catalog shoot.lumencatalog list

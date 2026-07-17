@@ -31,6 +31,10 @@ pub enum Command {
         ids: Vec<u64>,
         state: PickState,
     },
+    RenameBatch {
+        id: u64,
+        name: String,
+    },
     Adjust {
         id: u64,
         patch: AdjustmentPatch,
@@ -213,6 +217,16 @@ impl Workspace {
                     ids,
                 ))
             }
+            Command::RenameBatch { id, name } => {
+                self.project.batch(id)?;
+                self.record_undo();
+                self.project.rename_batch(id, name)?;
+                Ok(CommandOutput::success(
+                    "rename-batch",
+                    format!("renamed batch {id}"),
+                    vec![],
+                ))
+            }
             Command::Adjust { id, patch } => {
                 let mut next = self.project.photo(id)?.adjustments.clone();
                 patch.apply_to(&mut next);
@@ -342,12 +356,13 @@ impl Workspace {
                 self.ensure_ids(&ids)?;
                 self.record_undo();
                 self.project.photos.retain(|photo| !ids.contains(&photo.id));
+                self.project.prune_empty_batches();
                 if self.project.selected.is_some_and(|id| ids.contains(&id)) {
                     self.project.selected = self.project.photos.first().map(|photo| photo.id);
                 }
                 Ok(CommandOutput::success(
                     "remove",
-                    "removed photos from catalog",
+                    "removed photos from catalog; original files were not changed",
                     ids,
                 ))
             }
@@ -549,7 +564,45 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(workspace.project.photos.is_empty());
+        assert!(workspace.project.batches.is_empty());
         assert!(!workspace.can_undo());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn successful_import_creates_a_shoot_batch() {
+        let directory = std::env::temp_dir().join(format!(
+            "lumen-batch-import-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let first = directory.join("one.png");
+        let second = directory.join("two.png");
+        RgbaImage::from_pixel(2, 2, Rgba([20, 40, 60, 255]))
+            .save(&first)
+            .unwrap();
+        RgbaImage::from_pixel(2, 2, Rgba([60, 40, 20, 255]))
+            .save(&second)
+            .unwrap();
+        let mut workspace = Workspace::default();
+        workspace
+            .execute(Command::Import {
+                paths: vec![first, second],
+            })
+            .unwrap();
+        assert_eq!(workspace.project.batches.len(), 1);
+        let batch_id = workspace.project.batches[0].id;
+        assert!(
+            workspace
+                .project
+                .photos
+                .iter()
+                .all(|photo| photo.batch_id == Some(batch_id))
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -599,5 +652,28 @@ mod tests {
             .unwrap();
         assert_eq!(workspace.project.photo(1).unwrap().pick, PickState::Keep);
         assert!(workspace.can_undo());
+    }
+
+    #[test]
+    fn batches_can_be_renamed_and_are_pruned_when_empty() {
+        let mut project = Project::new("test");
+        let mut photo = crate::Photo::new(1, "one.jpg".into(), "one.jpg".into(), 1, 1);
+        photo.batch_id = Some(1);
+        project.photos.push(photo);
+        project.batches.push(crate::PhotoBatch {
+            id: 1,
+            name: "Shoot 1".into(),
+            captured_date: None,
+        });
+        let mut workspace = Workspace::new(project, None);
+        workspace
+            .execute(Command::RenameBatch {
+                id: 1,
+                name: "Night walk".into(),
+            })
+            .unwrap();
+        assert_eq!(workspace.project.batch(1).unwrap().name, "Night walk");
+        workspace.execute(Command::Remove { ids: vec![1] }).unwrap();
+        assert!(workspace.project.batches.is_empty());
     }
 }
