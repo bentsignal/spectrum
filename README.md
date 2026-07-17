@@ -39,6 +39,12 @@ and launch the native editor:
 cargo run --release --bin lumen-gui
 ```
 
+Open a catalog directly by passing its path after `--`:
+
+```sh
+cargo run --release --bin lumen-gui -- path/to/library.lumencatalog
+```
+
 The first release build takes a few minutes because it compiles the native UI
 stack. Later builds are incremental. For smaller, optimized distributable
 binaries, always use `--release`.

@@ -87,6 +87,7 @@ struct Histogram {
 }
 
 fn main() -> eframe::Result {
+    let initial_catalog = std::env::args_os().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 920.0])
@@ -97,7 +98,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Lumen",
         options,
-        Box::new(|creation| Ok(Box::new(LumenApp::new(creation)))),
+        Box::new(move |creation| Ok(Box::new(LumenApp::new(creation, initial_catalog.clone())))),
     )
 }
 
@@ -149,7 +150,7 @@ struct LumenApp {
 }
 
 impl LumenApp {
-    fn new(creation: &eframe::CreationContext<'_>) -> Self {
+    fn new(creation: &eframe::CreationContext<'_>, initial_catalog: Option<PathBuf>) -> Self {
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = PANEL;
         visuals.window_fill = PANEL;
@@ -174,7 +175,7 @@ impl LumenApp {
             .and_then(|storage| storage.get_string(RECENT_CATALOGS_KEY))
             .and_then(|value| serde_json::from_str(&value).ok())
             .unwrap_or_default();
-        Self {
+        let mut app = Self {
             workspace: Workspace::default(),
             preview: None,
             preview_source: None,
@@ -219,7 +220,14 @@ impl LumenApp {
             export_max_size: 0,
             export_directory: None,
             preset_name: String::new(),
+        };
+        if let Some(path) = initial_catalog
+            && app.execute(Command::Open { path: path.clone() })
+        {
+            app.remember_catalog(path);
+            app.reset_catalog_view(true);
         }
+        app
     }
 
     fn execute(&mut self, command: Command) -> bool {
