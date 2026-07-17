@@ -2,16 +2,18 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Local};
 use rawler::{RawLoader, decoders::RawDecodeParams, formats::tiff::Rational, rawsource::RawSource};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::Adjustments;
 
-pub const CATALOG_VERSION: u32 = 5;
+pub const CATALOG_VERSION: u32 = 6;
 pub const MAX_HISTORY: usize = 200;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,7 +56,12 @@ pub struct PhotoMetadata {
 pub struct PhotoBatch {
     pub id: u64,
     pub name: String,
+    #[serde(default)]
     pub captured_date: Option<String>,
+    #[serde(default)]
+    pub captured_end_date: Option<String>,
+    #[serde(default)]
+    pub imported_date: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -250,6 +257,10 @@ impl Project {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
+        let catalog_date = fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .map(date_from_system_time)
+            .unwrap_or_else(|_| current_date());
         let bytes =
             fs::read(path).with_context(|| format!("could not read catalog {}", path.display()))?;
         let mut project: Self = serde_json::from_slice(&bytes)
@@ -305,7 +316,7 @@ impl Project {
                 .unwrap_or(0)
                 + 1,
         );
-        project.migrate_batches();
+        project.migrate_batches(&catalog_date);
         Ok(project)
     }
 
@@ -429,12 +440,15 @@ impl Project {
             newly_imported.push(id);
         }
         if !newly_imported.is_empty() {
-            let captured_date = newly_imported
+            let mut captured_dates = newly_imported
                 .iter()
                 .filter_map(|id| self.photo(*id).ok())
                 .filter_map(|photo| photo.metadata.captured_at.as_deref())
                 .filter_map(capture_date)
-                .min();
+                .collect::<Vec<_>>();
+            captured_dates.sort();
+            let captured_date = captured_dates.first().cloned();
+            let captured_end_date = captured_dates.last().cloned();
             let id = self.next_batch_id;
             self.next_batch_id += 1;
             let name = captured_date
@@ -444,6 +458,8 @@ impl Project {
                 id,
                 name,
                 captured_date,
+                captured_end_date,
+                imported_date: current_date(),
             });
             for photo_id in newly_imported {
                 self.photo_mut(photo_id)?.batch_id = Some(id);
@@ -455,7 +471,28 @@ impl Project {
         Ok(imported)
     }
 
-    fn migrate_batches(&mut self) {
+    fn migrate_batches(&mut self, catalog_date: &str) {
+        let mut dates_by_batch: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+        for photo in &self.photos {
+            if let (Some(batch_id), Some(date)) = (
+                photo.batch_id,
+                photo.metadata.captured_at.as_deref().and_then(capture_date),
+            ) {
+                dates_by_batch.entry(batch_id).or_default().push(date);
+            }
+        }
+        for batch in &mut self.batches {
+            if batch.imported_date.is_empty() {
+                batch.imported_date = catalog_date.to_owned();
+            }
+            if let Some(dates) = dates_by_batch.get_mut(&batch.id) {
+                dates.sort();
+                batch.captured_date = dates.first().cloned();
+                batch.captured_end_date = dates.last().cloned();
+            } else if batch.captured_end_date.is_none() {
+                batch.captured_end_date = batch.captured_date.clone();
+            }
+        }
         let known: HashSet<u64> = self.batches.iter().map(|batch| batch.id).collect();
         for photo in &mut self.photos {
             if photo.batch_id.is_some_and(|id| !known.contains(&id)) {
@@ -475,7 +512,9 @@ impl Project {
             self.batches.push(PhotoBatch {
                 id,
                 name: date.clone().unwrap_or_else(|| "Imported Photos".into()),
+                captured_end_date: date.clone(),
                 captured_date: date,
+                imported_date: catalog_date.to_owned(),
             });
             for photo_id in photo_ids {
                 if let Ok(photo) = self.photo_mut(photo_id) {
@@ -634,6 +673,14 @@ fn capture_date(value: &str) -> Option<String> {
     }
 }
 
+fn current_date() -> String {
+    date_from_system_time(SystemTime::now())
+}
+
+fn date_from_system_time(time: SystemTime) -> String {
+    DateTime::<Local>::from(time).format("%Y-%m-%d").to_string()
+}
+
 pub fn is_raw_image(path: &Path) -> bool {
     extension(path) == "arw"
 }
@@ -712,6 +759,8 @@ mod tests {
             id: 1,
             name: "2026-07-16".into(),
             captured_date: Some("2026-07-16".into()),
+            captured_end_date: Some("2026-07-16".into()),
+            imported_date: "2026-07-16".into(),
         });
         project.next_batch_id = 2;
         project.save(&path).unwrap();
@@ -741,6 +790,36 @@ mod tests {
         assert_eq!(loaded.batches.len(), 1);
         assert_eq!(loaded.batches[0].name, "2019-06-05");
         assert_eq!(loaded.photos[0].batch_id, Some(loaded.batches[0].id));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn existing_batches_gain_capture_ranges_and_import_dates() {
+        let directory = test_directory("batch-date-migration");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("library.lumencatalog");
+        let mut project = Project::new("Migration");
+        project.version = 5;
+        project.batches.push(PhotoBatch {
+            id: 1,
+            name: "Road trip".into(),
+            captured_date: Some("2026-07-14".into()),
+            captured_end_date: None,
+            imported_date: String::new(),
+        });
+        for (id, date) in [(1, "2026:07:14 09:00:00"), (2, "2026:07:16 18:00:00")] {
+            let mut photo = Photo::new(id, format!("{id}.jpg").into(), format!("{id}.jpg"), 1, 1);
+            photo.batch_id = Some(1);
+            photo.metadata.captured_at = Some(date.into());
+            project.photos.push(photo);
+        }
+        project.save(&path).unwrap();
+
+        let loaded = Project::load(&path).unwrap();
+        let batch = loaded.batch(1).unwrap();
+        assert_eq!(batch.captured_date.as_deref(), Some("2026-07-14"));
+        assert_eq!(batch.captured_end_date.as_deref(), Some("2026-07-16"));
+        assert!(!batch.imported_date.is_empty());
         fs::remove_dir_all(directory).unwrap();
     }
 

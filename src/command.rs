@@ -664,6 +664,8 @@ mod tests {
             id: 1,
             name: "Shoot 1".into(),
             captured_date: None,
+            captured_end_date: None,
+            imported_date: "2026-07-16".into(),
         });
         let mut workspace = Workspace::new(project, None);
         workspace

@@ -37,6 +37,8 @@ daemon, local socket, embedded browser, or network requirement.
   immutable source reference. Older RAW catalogs populate missing metadata lazily.
 - Imports form lightweight chronological shoot batches. Existing catalogs migrate
   into batches using capture dates, and the Library renders them left-to-right.
+  Batches retain their first/last capture dates plus the local catalog-import date,
+  which provides a stable timeline label when camera metadata is unavailable.
 - Sources underneath the catalog directory serialize as relative paths, allowing an
   iCloud/shared library folder to move between devices without path repair.
 - Catalog-level presets store development settings while intentionally excluding crop,

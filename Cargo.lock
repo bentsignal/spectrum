@@ -1819,6 +1819,7 @@ name = "lumen-photo"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "eframe",
  "image",

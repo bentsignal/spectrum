@@ -19,6 +19,7 @@ path = "src/bin/lumen-gui.rs"
 
 [dependencies]
 anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6", features = ["derive"] }
 eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }

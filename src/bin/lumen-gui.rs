@@ -792,9 +792,26 @@ impl LumenApp {
                     .inner_margin(egui::Margin::symmetric(14, 9)),
             )
             .show(root, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("LUMEN").strong().size(17.0).color(ACCENT));
-                    ui.separator();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let (brand_rect, _) =
+                        ui.allocate_exact_size(Vec2::new(54.0, 28.0), Sense::hover());
+                    ui.painter().text(
+                        brand_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "LUMEN",
+                        egui::FontId::proportional(15.0),
+                        ACCENT,
+                    );
+                    let (divider_rect, _) =
+                        ui.allocate_exact_size(Vec2::new(1.0, 28.0), Sense::hover());
+                    ui.painter().line_segment(
+                        [
+                            divider_rect.center() - Vec2::new(0.0, 9.0),
+                            divider_rect.center() + Vec2::new(0.0, 9.0),
+                        ],
+                        Stroke::new(1.0, Color32::from_gray(58)),
+                    );
+                    ui.add_space(2.0);
                     if ui.button("Import Photos").clicked() {
                         self.import_dialog();
                     }
@@ -1085,41 +1102,38 @@ impl LumenApp {
                                 .inner_margin(6);
                             let mut pick_action = None;
                             let inner = frame.show(ui, |ui| {
-                                if let Some(texture) = self.thumbnails.get(&id) {
-                                    let width = ui.available_width();
-                                    ui.add(egui::Image::new(texture).fit_to_exact_size(fit_size(
-                                        texture.size_vec2(),
-                                        Vec2::new(width, 108.0),
-                                    )));
-                                } else {
-                                    ui.allocate_space(Vec2::new(ui.available_width(), 84.0));
-                                }
-                                ui.horizontal(|ui| {
+                                let width = ui.available_width();
+                                ui.set_min_width(width);
+                                ui.vertical_centered(|ui| {
+                                    if let Some(texture) = self.thumbnails.get(&id) {
+                                        ui.add(egui::Image::new(texture).fit_to_exact_size(
+                                            fit_size(texture.size_vec2(), Vec2::new(width, 108.0)),
+                                        ));
+                                    } else {
+                                        ui.allocate_space(Vec2::new(width, 84.0));
+                                    }
                                     ui.label(RichText::new(shorten(&name, 18)).size(11.0));
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| match pick {
-                                            PickState::Keep => {
-                                                if ui
-                                                    .selectable_label(true, "+")
-                                                    .on_hover_text("Kept - click to unmark")
-                                                    .clicked()
-                                                {
-                                                    pick_action = Some(PickState::Unmarked);
-                                                }
+                                    match pick {
+                                        PickState::Keep => {
+                                            if ui
+                                                .selectable_label(true, "+")
+                                                .on_hover_text("Kept - click to unmark")
+                                                .clicked()
+                                            {
+                                                pick_action = Some(PickState::Unmarked);
                                             }
-                                            PickState::Reject => {
-                                                if ui
-                                                    .selectable_label(true, "x")
-                                                    .on_hover_text("Rejected - click to unmark")
-                                                    .clicked()
-                                                {
-                                                    pick_action = Some(PickState::Unmarked);
-                                                }
+                                        }
+                                        PickState::Reject => {
+                                            if ui
+                                                .selectable_label(true, "x")
+                                                .on_hover_text("Rejected - click to unmark")
+                                                .clicked()
+                                            {
+                                                pick_action = Some(PickState::Unmarked);
                                             }
-                                            PickState::Unmarked => {}
-                                        },
-                                    );
+                                        }
+                                        PickState::Unmarked => {}
+                                    }
                                 });
                             });
                             if let Some(state) = pick_action {
@@ -1170,13 +1184,15 @@ impl LumenApp {
                     batch.id,
                     batch.name.clone(),
                     batch.captured_date.clone(),
+                    batch.captured_end_date.clone(),
+                    batch.imported_date.clone(),
                     photos,
                 )
             })
-            .filter(|(_, _, _, photos)| !photos.is_empty())
+            .filter(|(_, _, _, _, _, photos)| !photos.is_empty())
             .collect();
-        batches.sort_by_key(|(id, _, date, _)| {
-            (date.clone().unwrap_or_else(|| "9999-99-99".into()), *id)
+        batches.sort_by_key(|(id, _, start, _, imported, _)| {
+            (start.clone().unwrap_or_else(|| imported.clone()), *id)
         });
 
         egui::CentralPanel::default()
@@ -1241,14 +1257,6 @@ impl LumenApp {
                     return;
                 }
 
-                ui.label(
-                    RichText::new("EARLIER   <   SHOOT TIMELINE   >   LATER")
-                        .size(10.0)
-                        .strong()
-                        .color(ACCENT),
-                );
-                ui.add_space(8.0);
-
                 let column_height = ui.available_height().max(280.0);
                 let mut open_batch = None;
                 let mut rename_batch = None;
@@ -1256,106 +1264,137 @@ impl LumenApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
-                            for (batch_id, name, date, photos) in &batches {
+                            for (batch_id, name, start, end, imported, photos) in &batches {
                                 for (photo_id, _, _) in photos {
                                     self.ensure_thumbnail(&context, *photo_id);
                                 }
-                                egui::Frame::new()
-                                    .fill(SURFACE)
-                                    .stroke(Stroke::new(1.0, Color32::from_gray(54)))
-                                    .corner_radius(8.0)
-                                    .inner_margin(10)
-                                    .show(ui, |ui| {
-                                        ui.vertical(|ui| {
-                                            ui.set_width(190.0);
-                                            ui.set_height(column_height - 24.0);
-                                            if ui
-                                                .add_sized(
-                                                    [190.0, 28.0],
-                                                    egui::Button::new(
-                                                        RichText::new(name).strong().color(ACCENT),
-                                                    ),
-                                                )
-                                                .on_hover_text("Open this shoot")
-                                                .clicked()
-                                            {
-                                                open_batch = Some(*batch_id);
-                                            }
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    RichText::new(
-                                                        date.as_deref().unwrap_or("Date unknown"),
-                                                    )
-                                                    .size(10.0)
-                                                    .color(Color32::GRAY),
-                                                );
-                                                ui.with_layout(
-                                                    egui::Layout::right_to_left(
-                                                        egui::Align::Center,
-                                                    ),
-                                                    |ui| {
-                                                        if ui.small_button("Rename").clicked() {
-                                                            rename_batch =
-                                                                Some((*batch_id, name.clone()));
-                                                        }
+                                ui.allocate_ui_with_layout(
+                                    Vec2::new(210.0, column_height),
+                                    egui::Layout::top_down(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            RichText::new(shoot_date_label(
+                                                start.as_deref(),
+                                                end.as_deref(),
+                                                imported,
+                                            ))
+                                            .size(11.0)
+                                            .strong()
+                                            .color(Color32::from_gray(165)),
+                                        );
+                                        ui.add_space(5.0);
+                                        egui::Frame::new()
+                                            .fill(SURFACE)
+                                            .stroke(Stroke::new(1.0, Color32::from_gray(54)))
+                                            .corner_radius(8.0)
+                                            .inner_margin(10)
+                                            .show(ui, |ui| {
+                                                ui.vertical(|ui| {
+                                                    ui.set_width(190.0);
+                                                    ui.set_height(column_height - 48.0);
+                                                    if ui
+                                                        .add_sized(
+                                                            [190.0, 28.0],
+                                                            egui::Button::new(
+                                                                RichText::new(name)
+                                                                    .strong()
+                                                                    .color(ACCENT),
+                                                            ),
+                                                        )
+                                                        .on_hover_text("Open this shoot")
+                                                        .clicked()
+                                                    {
+                                                        open_batch = Some(*batch_id);
+                                                    }
+                                                    ui.horizontal(|ui| {
                                                         ui.label(
                                                             RichText::new(format!(
-                                                                "{} photos",
-                                                                photos.len()
+                                                                "{} photo{}",
+                                                                photos.len(),
+                                                                if photos.len() == 1 {
+                                                                    ""
+                                                                } else {
+                                                                    "s"
+                                                                }
                                                             ))
                                                             .size(10.0)
                                                             .color(Color32::GRAY),
                                                         );
-                                                    },
-                                                );
-                                            });
-                                            ui.separator();
-                                            egui::ScrollArea::vertical()
-                                                .id_salt(("batch-column", batch_id))
-                                                .max_height((column_height - 100.0).max(160.0))
-                                                .auto_shrink([false, false])
-                                                .show(ui, |ui| {
-                                                    for (photo_id, photo_name, pick) in photos {
-                                                        if let Some(texture) =
-                                                            self.thumbnails.get(photo_id)
-                                                        {
-                                                            let size = fit_size(
-                                                                texture.size_vec2(),
-                                                                Vec2::new(180.0, 112.0),
-                                                            );
-                                                            if ui
-                                                                .add(
-                                                                    egui::Image::new(texture)
-                                                                        .fit_to_exact_size(size)
-                                                                        .sense(Sense::click()),
-                                                                )
-                                                                .on_hover_text("Open this shoot")
-                                                                .clicked()
+                                                        ui.with_layout(
+                                                            egui::Layout::right_to_left(
+                                                                egui::Align::Center,
+                                                            ),
+                                                            |ui| {
+                                                                if ui
+                                                                    .small_button("Rename")
+                                                                    .clicked()
+                                                                {
+                                                                    rename_batch = Some((
+                                                                        *batch_id,
+                                                                        name.clone(),
+                                                                    ));
+                                                                }
+                                                            },
+                                                        );
+                                                    });
+                                                    ui.separator();
+                                                    egui::ScrollArea::vertical()
+                                                        .id_salt(("batch-column", batch_id))
+                                                        .max_height(
+                                                            (column_height - 124.0).max(160.0),
+                                                        )
+                                                        .auto_shrink([false, false])
+                                                        .show(ui, |ui| {
+                                                            ui.set_width(190.0);
+                                                            for (photo_id, photo_name, pick) in
+                                                                photos
                                                             {
-                                                                open_batch = Some(*batch_id);
-                                                            }
-                                                        }
-                                                        ui.horizontal(|ui| {
-                                                            ui.label(
-                                                                RichText::new(shorten(
-                                                                    photo_name, 20,
-                                                                ))
-                                                                .size(10.0),
-                                                            );
-                                                            ui.with_layout(
-                                                                egui::Layout::right_to_left(
-                                                                    egui::Align::Center,
-                                                                ),
-                                                                |ui| match pick {
-                                                                    PickState::Keep => {
-                                                                        ui.label(
-                                                                            RichText::new("+")
-                                                                                .strong()
-                                                                                .color(ACCENT),
+                                                                ui.vertical_centered(|ui| {
+                                                                    if let Some(texture) = self
+                                                                        .thumbnails
+                                                                        .get(photo_id)
+                                                                    {
+                                                                        let size = fit_size(
+                                                                            texture.size_vec2(),
+                                                                            Vec2::new(180.0, 112.0),
                                                                         );
+                                                                        if ui
+                                                                            .add(
+                                                                                egui::Image::new(
+                                                                                    texture,
+                                                                                )
+                                                                                .fit_to_exact_size(
+                                                                                    size,
+                                                                                )
+                                                                                .sense(
+                                                                                    Sense::click(),
+                                                                                ),
+                                                                            )
+                                                                            .on_hover_text(
+                                                                                "Open this shoot",
+                                                                            )
+                                                                            .clicked()
+                                                                        {
+                                                                            open_batch =
+                                                                                Some(*batch_id);
+                                                                        }
                                                                     }
-                                                                    PickState::Reject => {
-                                                                        ui.label(
+                                                                    ui.label(
+                                                                        RichText::new(shorten(
+                                                                            photo_name, 24,
+                                                                        ))
+                                                                        .size(10.0),
+                                                                    );
+                                                                    match pick {
+                                                                        PickState::Keep => {
+                                                                            ui.label(
+                                                                                RichText::new("+")
+                                                                                    .strong()
+                                                                                    .color(ACCENT),
+                                                                            );
+                                                                        }
+                                                                        PickState::Reject => {
+                                                                            ui.label(
                                                                             RichText::new("x")
                                                                                 .color(
                                                                                 Color32::from_rgb(
@@ -1363,16 +1402,17 @@ impl LumenApp {
                                                                                 ),
                                                                             ),
                                                                         );
+                                                                        }
+                                                                        PickState::Unmarked => {}
                                                                     }
-                                                                    PickState::Unmarked => {}
-                                                                },
-                                                            );
+                                                                    ui.add_space(8.0);
+                                                                });
+                                                            }
                                                         });
-                                                        ui.add_space(8.0);
-                                                    }
                                                 });
-                                        });
-                                    });
+                                            });
+                                    },
+                                );
                                 ui.add_space(8.0);
                             }
                         });
@@ -3164,6 +3204,46 @@ fn preview_fit_size(layout: Option<Vec2>, raster: Vec2, available: Vec2) -> Vec2
     fit_size(layout.unwrap_or(raster), available)
 }
 
+fn shoot_date_label(start: Option<&str>, end: Option<&str>, imported: &str) -> String {
+    match (start, end) {
+        (Some(start), Some(end)) if start != end => {
+            format!("Shot {} – {}", friendly_date(start), friendly_date(end))
+        }
+        (Some(date), _) => format!("Shot {}", friendly_date(date)),
+        _ if !imported.is_empty() => format!("Added {}", friendly_date(imported)),
+        _ => "Added to catalog".into(),
+    }
+}
+
+fn friendly_date(date: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let mut parts = date.split('-');
+    let parsed = parts
+        .next()
+        .and_then(|year| year.parse::<u32>().ok())
+        .zip(parts.next().and_then(|month| month.parse::<usize>().ok()))
+        .zip(parts.next().and_then(|day| day.parse::<u32>().ok()));
+    if let Some(((year, month), day)) = parsed
+        && let Some(month) = month.checked_sub(1).and_then(|index| MONTHS.get(index))
+    {
+        return format!("{month} {day}, {year}");
+    }
+    date.to_owned()
+}
+
 fn same_preview_geometry(left: &Adjustments, right: &Adjustments) -> bool {
     left.crop == right.crop
         && left.rotation == right.rotation
@@ -3218,6 +3298,18 @@ mod tests {
         let fast = preview_fit_size(layout, Vec2::new(672.0, 384.0), available);
 
         assert_eq!(fast, full);
+    }
+
+    #[test]
+    fn shoot_dates_prefer_capture_range_and_fall_back_to_import() {
+        assert_eq!(
+            shoot_date_label(Some("2026-07-14"), Some("2026-07-16"), "2026-07-20"),
+            "Shot July 14, 2026 – July 16, 2026"
+        );
+        assert_eq!(
+            shoot_date_label(None, None, "2026-07-20"),
+            "Added July 20, 2026"
+        );
     }
 
     #[test]
