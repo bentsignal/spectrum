@@ -361,7 +361,7 @@ impl LumenApp {
             self.error = true;
             return;
         }
-        self.status = "Reading photo metadata and importing…".into();
+        self.status = "Reading photo metadata and importing...".into();
         if self.execute_and_autosave(Command::Import { paths }) {
             self.thumbnails.clear();
             self.selected_ids.clear();
@@ -678,7 +678,7 @@ impl LumenApp {
                         .map(|photo| (photo.can_history_back(), photo.can_history_forward()))
                         .unwrap_or_default();
                     if ui
-                        .add_enabled(can_back, egui::Button::new("← Edit"))
+                        .add_enabled(can_back, egui::Button::new("< Edit"))
                         .on_hover_text("Step backward in persistent edit history (Cmd/Ctrl+Z)")
                         .clicked()
                         && let Some(id) = self.workspace.project.selected
@@ -688,7 +688,7 @@ impl LumenApp {
                         self.sync_draft();
                     }
                     if ui
-                        .add_enabled(can_forward, egui::Button::new("Edit →"))
+                        .add_enabled(can_forward, egui::Button::new("Edit >"))
                         .on_hover_text("Step forward in persistent edit history (Cmd/Ctrl+Shift+Z)")
                         .clicked()
                         && let Some(id) = self.workspace.project.selected
@@ -702,7 +702,7 @@ impl LumenApp {
                         self.zoom = 1.0;
                         self.pan = Vec2::ZERO;
                     }
-                    if ui.button("−").clicked() {
+                    if ui.button("-").clicked() {
                         self.zoom = (self.zoom / 1.25).max(0.25);
                     }
                     ui.label(format!("{:.0}%", self.zoom * 100.0));
@@ -725,14 +725,14 @@ impl LumenApp {
                         .map(|photo| photo.pick)
                         .unwrap_or_default();
                     if ui
-                        .selectable_label(pick == PickState::Keep, "◆ Keep")
+                        .selectable_label(pick == PickState::Keep, "+ Keep")
                         .on_hover_text("Mark selected photos as keeps (P)")
                         .clicked()
                     {
                         self.set_pick(self.selected_photo_ids(), PickState::Keep);
                     }
                     if ui
-                        .selectable_label(pick == PickState::Reject, "× Reject")
+                        .selectable_label(pick == PickState::Reject, "x Reject")
                         .on_hover_text("Mark selected photos as rejects (X)")
                         .clicked()
                     {
@@ -816,14 +816,14 @@ impl LumenApp {
                     });
                 });
                 ui.label(
-                    RichText::new("Shift for range • Cmd/Ctrl to toggle")
+                    RichText::new("Shift for range | Cmd/Ctrl to toggle")
                         .size(9.0)
                         .color(Color32::from_gray(115)),
                 );
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.film_filter, FilmFilter::All, "All");
-                    ui.selectable_value(&mut self.film_filter, FilmFilter::Keeps, "◆ Keeps");
-                    ui.selectable_value(&mut self.film_filter, FilmFilter::Rejects, "× Rejects");
+                    ui.selectable_value(&mut self.film_filter, FilmFilter::Keeps, "Keeps");
+                    ui.selectable_value(&mut self.film_filter, FilmFilter::Rejects, "Rejects");
                 });
                 ui.separator();
                 let mut photos: Vec<_> = self
@@ -899,11 +899,7 @@ impl LumenApp {
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             if ui
-                                                .small_button(if pick == PickState::Keep {
-                                                    "◆"
-                                                } else {
-                                                    "◇"
-                                                })
+                                                .selectable_label(pick == PickState::Keep, "+")
                                                 .on_hover_text("Keep / pin photo")
                                                 .clicked()
                                             {
@@ -914,11 +910,7 @@ impl LumenApp {
                                                 });
                                             }
                                             if ui
-                                                .small_button(if pick == PickState::Reject {
-                                                    "×"
-                                                } else {
-                                                    "–"
-                                                })
+                                                .selectable_label(pick == PickState::Reject, "x")
                                                 .on_hover_text("Reject photo")
                                                 .clicked()
                                             {
@@ -1262,17 +1254,17 @@ impl LumenApp {
                                     &mut commit,
                                 );
                                 ui.horizontal(|ui| {
-                                    if ui.button("↺ 90°").clicked() {
+                                    if ui.button("90 CCW").clicked() {
                                         draft.rotation = (draft.rotation - 90).rem_euclid(360);
                                         changed = true;
                                         commit = true;
                                     }
-                                    if ui.button("90° ↻").clicked() {
+                                    if ui.button("90 CW").clicked() {
                                         draft.rotation = (draft.rotation + 90).rem_euclid(360);
                                         changed = true;
                                         commit = true;
                                     }
-                                    if ui.button("Flip ↔").clicked() {
+                                    if ui.button("Flip H").clicked() {
                                         draft.flip_horizontal = !draft.flip_horizontal;
                                         changed = true;
                                         commit = true;
@@ -1284,7 +1276,7 @@ impl LumenApp {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     if ui
-                                        .selectable_label(self.spot_mode, "● Repair Brush")
+                                        .selectable_label(self.spot_mode, "Repair Brush")
                                         .on_hover_text("Paint over dust or small smudges on the photo")
                                         .clicked()
                                     {
@@ -1316,7 +1308,7 @@ impl LumenApp {
                                 );
                                 ui.label(
                                     RichText::new(format!(
-                                        "{} repair dab(s) • drag on the image to paint",
+                                        "{} repair dab(s) | drag on the image to paint",
                                         draft.spots.len()
                                     ))
                                     .size(10.0)
@@ -1427,7 +1419,7 @@ impl LumenApp {
                             }
                             if ui
                                 .button(
-                                    RichText::new("Reset…").color(Color32::from_rgb(245, 150, 130)),
+                                    RichText::new("Reset...").color(Color32::from_rgb(245, 150, 130)),
                                 )
                                 .clicked()
                             {
@@ -1486,23 +1478,23 @@ impl LumenApp {
                         .camera_model
                         .as_deref()
                         .or(metadata.camera_make.as_deref())
-                        .unwrap_or("—"),
+                        .unwrap_or("--"),
                 );
-                detail_row(ui, "Lens", metadata.lens.as_deref().unwrap_or("—"));
+                detail_row(ui, "Lens", metadata.lens.as_deref().unwrap_or("--"));
                 detail_row(
                     ui,
                     "Capture",
                     &format!(
-                        "{}  •  {}  •  {}  •  {}",
+                        "{}  |  {}  |  {}  |  {}",
                         metadata
                             .iso
-                            .map_or_else(|| "ISO —".into(), |iso| format!("ISO {iso}")),
+                            .map_or_else(|| "ISO --".into(), |iso| format!("ISO {iso}")),
                         metadata
                             .focal_length_mm
-                            .map_or_else(|| "— mm".into(), |value| format!("{value:.0} mm")),
+                            .map_or_else(|| "-- mm".into(), |value| format!("{value:.0} mm")),
                         metadata
                             .aperture
-                            .map_or_else(|| "f/—".into(), |value| format!("f/{value:.1}")),
+                            .map_or_else(|| "f/--".into(), |value| format!("f/{value:.1}")),
                         format_shutter(metadata.shutter_seconds),
                     ),
                 );
@@ -1563,7 +1555,7 @@ impl LumenApp {
                             self.sync_draft();
                         }
                         if ui
-                            .small_button("×")
+                            .small_button("x")
                             .on_hover_text("Delete preset")
                             .clicked()
                         {
@@ -1592,7 +1584,7 @@ impl LumenApp {
                     .map(|(index, entry)| (index, entry.label.clone()))
                     .collect();
                 for (index, label) in entries.into_iter().rev().take(20) {
-                    let marker = if index == cursor { "●" } else { "○" };
+                    let marker = if index == cursor { ">" } else { " " };
                     if ui
                         .selectable_label(index == cursor, format!("{marker}  {label}"))
                         .clicked()
@@ -1707,7 +1699,7 @@ impl LumenApp {
                         ui.painter().text(
                             rect.left_bottom() + Vec2::new(8.0, -8.0),
                             egui::Align2::LEFT_BOTTOM,
-                            "Drag to pan • Scroll to zoom",
+                            "Drag to pan | Scroll to zoom",
                             egui::FontId::proportional(11.0),
                             Color32::from_gray(150),
                         );
@@ -1752,7 +1744,7 @@ impl LumenApp {
                         if let Some(photo) = self.workspace.project.selected_photo() {
                             ui.label(
                                 RichText::new(format!(
-                                    "{} × {}  •  {}",
+                                    "{} x {}  |  {}",
                                     photo.width,
                                     photo.height,
                                     photo.format.to_uppercase()
@@ -1867,7 +1859,7 @@ impl LumenApp {
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Choose Export Folder…").clicked() {
+                    if ui.button("Choose Export Folder...").clicked() {
                         self.export_directory = rfd::FileDialog::new().pick_folder();
                     }
                     if let Some(directory) = &self.export_directory {
@@ -1885,7 +1877,7 @@ impl LumenApp {
                 );
                 ui.add_space(4.0);
                 ui.label(format!(
-                    "Estimated output: {} total • about {} per photo",
+                    "Estimated output: {} total | about {} per photo",
                     format_bytes(estimate),
                     format_bytes(estimate / ids.len().max(1) as u64)
                 ));
@@ -2049,7 +2041,7 @@ fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
 
 fn format_shutter(seconds: Option<f32>) -> String {
     let Some(seconds) = seconds.filter(|value| *value > 0.0) else {
-        return "— s".into();
+        return "-- s".into();
     };
     if seconds >= 1.0 {
         format!("{seconds:.1} s")
@@ -2212,7 +2204,7 @@ fn slider(
         *changed |= response.changed();
         *commit |= response.drag_stopped() || (response.changed() && !response.dragged());
         if ui
-            .add_enabled(value.abs() > f32::EPSILON, egui::Button::new("↺").small())
+            .add_enabled(value.abs() > f32::EPSILON, egui::Button::new("0").small())
             .on_hover_text(format!("Reset {label}"))
             .clicked()
         {
@@ -2561,7 +2553,7 @@ fn shorten(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let head: String = chars.by_ref().take(max_chars).collect();
     if chars.next().is_some() {
-        format!("{head}…")
+        format!("{head}...")
     } else {
         head
     }
