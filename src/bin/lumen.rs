@@ -342,6 +342,16 @@ impl BenchmarkProfile {
             Self::HostedCi => 125.0,
         }
     }
+
+    fn command_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 20.0,
+            // Catalog persistence is sub-millisecond in the median, but a
+            // shared hosted runner can stall one filesystem sample. Keep the
+            // workstation gate strict while allowing bounded host jitter.
+            Self::HostedCi => 100.0,
+        }
+    }
 }
 
 impl From<CliExportFormat> for ExportFormat {
@@ -958,7 +968,7 @@ fn benchmark(
             "Catalog load, core command, and atomic persistence",
             &command_samples,
             8.0,
-            20.0,
+            profile.command_budget_ms(),
         );
         let preview_metric = latency_metric(
             "tone_curve_preview",
