@@ -29,6 +29,7 @@ mod layers;
 #[path = "prism_gui/renderer.rs"]
 mod renderer;
 use dialogs::*;
+use inspector::InspectorLens;
 use renderer::*;
 
 const INK: Color32 = Color32::from_rgb(14, 16, 20);
@@ -201,6 +202,9 @@ struct PrismApp {
     status_error: bool,
     tool: Tool,
     tool_palette: Option<String>,
+    composition_query: String,
+    composition_search_focus: bool,
+    inspector_lens: InspectorLens,
     zoom: f32,
     pan: Vec2,
     fit_requested: bool,
@@ -262,6 +266,9 @@ impl PrismApp {
             status_error: false,
             tool: Tool::Move,
             tool_palette: None,
+            composition_query: String::new(),
+            composition_search_focus: false,
+            inspector_lens: InspectorLens::Object,
             zoom: 1.0,
             pan: Vec2::ZERO,
             fit_requested: true,
@@ -594,6 +601,9 @@ impl PrismApp {
         }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::K)) {
             self.tool_palette = Some(String::new());
+        }
+        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::J)) {
+            self.composition_search_focus = true;
         }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Z)) {
             if context.input(|input| input.modifiers.shift) {

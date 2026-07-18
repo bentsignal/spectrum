@@ -1,38 +1,95 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) enum InspectorLens {
+    #[default]
+    Object,
+    Look,
+    Develop,
+}
+
+impl InspectorLens {
+    const ALL: [Self; 3] = [Self::Object, Self::Look, Self::Develop];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Object => "Object",
+            Self::Look => "Look",
+            Self::Develop => "Develop",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Object => "Geometry and intrinsic content",
+            Self::Look => "Compositing, opacity, and masks",
+            Self::Develop => "Nondestructive image treatment",
+        }
+    }
+}
+
 impl PrismApp {
     pub(super) fn inspector(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("DETAILS").size(10.0).strong().color(MUTED));
-        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new("INSPECTOR").size(11.0).strong());
+                ui.label(
+                    RichText::new("Controls for the current lens")
+                        .size(9.0)
+                        .color(MUTED),
+                );
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new("⌘J  jump").monospace().size(9.0).color(MUTED));
+            });
+        });
+        ui.add_space(8.0);
         let Some(layer) = self.selected_layer().cloned() else {
             ui.add_space(18.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("Nothing in focus").color(MUTED));
+                ui.label(RichText::new("No object in focus").strong().color(MUTED));
                 ui.label(
-                    RichText::new("Choose an element on the canvas or in the composition.")
+                    RichText::new("Choose one on canvas or jump to it with ⌘J.")
                         .size(11.0)
                         .color(MUTED),
                 );
             });
             return;
         };
+        ui.horizontal(|ui| {
+            for lens in InspectorLens::ALL {
+                if ui
+                    .selectable_label(
+                        self.inspector_lens == lens,
+                        RichText::new(lens.label()).strong(),
+                    )
+                    .clicked()
+                {
+                    self.inspector_lens = lens;
+                }
+            }
+        });
+        ui.label(
+            RichText::new(self.inspector_lens.description())
+                .size(10.0)
+                .color(MUTED),
+        );
+        ui.add_space(6.0);
         egui::ScrollArea::vertical()
-            .id_salt("inspector-scroll")
-            .show(ui, |ui| {
-                ui.label(RichText::new(&layer.name).size(15.0).strong());
-                ui.add_space(8.0);
-                self.transform_inspector(ui, &layer);
-                ui.add_space(9.0);
-                self.content_inspector(ui, &layer);
-                ui.add_space(9.0);
-                self.appearance_inspector(ui, &layer);
-                ui.add_space(9.0);
-                self.adjustments_inspector(ui, &layer);
+            .id_salt(("capability-inspector", self.inspector_lens))
+            .show(ui, |ui| match self.inspector_lens {
+                InspectorLens::Object => {
+                    self.transform_inspector(ui, &layer);
+                    ui.add_space(10.0);
+                    self.content_inspector(ui, &layer);
+                }
+                InspectorLens::Look => self.appearance_inspector(ui, &layer),
+                InspectorLens::Develop => self.adjustments_inspector(ui, &layer),
             });
     }
 
     pub(super) fn transform_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        egui::CollapsingHeader::new("Transform")
+        egui::CollapsingHeader::new("Geometry")
             .default_open(true)
             .show(ui, |ui| {
                 let mut transform = layer.transform;
@@ -57,7 +114,7 @@ impl PrismApp {
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.label("W");
+                    ui.label("Scale X");
                     let response = ui.add(
                         egui::DragValue::new(&mut transform.scale_x)
                             .speed(0.01)
@@ -70,7 +127,7 @@ impl PrismApp {
                             transform,
                         },
                     );
-                    ui.label("H");
+                    ui.label("Scale Y");
                     let response = ui.add(
                         egui::DragValue::new(&mut transform.scale_y)
                             .speed(0.01)
@@ -207,7 +264,7 @@ impl PrismApp {
     }
 
     pub(super) fn appearance_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        egui::CollapsingHeader::new("Appearance")
+        egui::CollapsingHeader::new("Compositing")
             .default_open(true)
             .show(ui, |ui| {
                 let mut opacity = layer.opacity * 100.0;
@@ -276,7 +333,7 @@ impl PrismApp {
     }
 
     pub(super) fn adjustments_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        egui::CollapsingHeader::new("Develop")
+        egui::CollapsingHeader::new("Adjustments")
             .default_open(true)
             .show(ui, |ui| {
                 let a = &layer.adjustments;

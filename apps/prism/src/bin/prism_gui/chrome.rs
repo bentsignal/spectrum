@@ -279,9 +279,9 @@ impl PrismApp {
 
     pub(super) fn right_panel(&mut self, root: &mut egui::Ui) {
         egui::Panel::right("prism-inspector")
-            .default_size(320.0)
-            .min_size(280.0)
-            .max_size(410.0)
+            .default_size(370.0)
+            .min_size(330.0)
+            .max_size(460.0)
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
