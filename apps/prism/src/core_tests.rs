@@ -89,6 +89,24 @@ fn text_and_shapes_render() {
 }
 
 #[test]
+fn text_metrics_match_the_rendered_layout() {
+    let layer = Layer {
+        kind: LayerKind::Text {
+            text: "testing\ngy".into(),
+            font_size: 72.0,
+            color: [255, 255, 255, 255],
+        },
+        ..Default::default()
+    };
+    let rendered = render_layer_base(&layer, None).unwrap().to_rgba8();
+    assert_eq!(
+        (rendered.width(), rendered.height()),
+        measure_text("testing\ngy", 72.0).unwrap()
+    );
+    assert!(rendered.pixels().any(|pixel| pixel[3] > 0));
+}
+
+#[test]
 fn solid_color_preview_matches_a_uniform_layer_adjustment() {
     let adjustments = Adjustments {
         exposure: 1.25,

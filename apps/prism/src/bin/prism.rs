@@ -659,6 +659,31 @@ fn benchmark(strict: bool) -> Result<Value> {
         interaction_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
     interaction_workspace.commit_interaction();
+    let mut text_workspace = Workspace::new(Document::new("Text benchmark", 1600, 1200), None);
+    text_workspace.execute(Command::AddText {
+        text: "Prism interaction benchmark".into(),
+        name: Some("Text".into()),
+        font_size: 144.0,
+        color: [255, 255, 255, 255],
+        x: 100.0,
+        y: 100.0,
+    })?;
+    let text_layer = text_workspace.document.selected.unwrap();
+    text_workspace.begin_interaction();
+    let mut text_interaction_samples = Vec::new();
+    for frame in 0..240 {
+        let started = Instant::now();
+        text_workspace.preview(Command::SetTransform {
+            id: text_layer,
+            transform: Transform {
+                x: 100.0 + frame as f32 * 2.0,
+                y: 100.0 + frame as f32,
+                ..Default::default()
+            },
+        })?;
+        text_interaction_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
+    text_workspace.commit_interaction();
     let mut shape_preview_samples = Vec::new();
     for frame in 0..240 {
         let adjustments = Adjustments {
@@ -679,6 +704,8 @@ fn benchmark(strict: bool) -> Result<Value> {
     }
     let (command_median, command_p95) = sample_summary(&mut command_samples);
     let (interaction_median, interaction_p95) = sample_summary(&mut interaction_samples);
+    let (text_interaction_median, text_interaction_p95) =
+        sample_summary(&mut text_interaction_samples);
     let (shape_median, shape_p95) = sample_summary(&mut shape_preview_samples);
     let (render_median, render_p95) = sample_summary(&mut render_samples);
     let metrics = [
@@ -695,6 +722,13 @@ fn benchmark(strict: bool) -> Result<Value> {
             p95_ms: interaction_p95,
             budget_ms: 8.0,
             pass: interaction_p95 <= 8.0,
+        },
+        BenchmarkMetric {
+            name: "live_text_move_preview",
+            median_ms: text_interaction_median,
+            p95_ms: text_interaction_p95,
+            budget_ms: 1.0,
+            pass: text_interaction_p95 <= 1.0,
         },
         BenchmarkMetric {
             name: "24_layer_command_batch",

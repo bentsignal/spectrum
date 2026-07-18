@@ -68,13 +68,44 @@ impl PrismApp {
             return;
         }
         let pointer = response.interact_pointer_pos();
+        let hover_pointer = ui
+            .input(|input| input.pointer.hover_pos())
+            .filter(|pointer| response.rect.contains(*pointer));
+        let resize_hover = if self.tool == Tool::Move {
+            if let Some(DragState {
+                action: DragAction::Resize(handle),
+                ..
+            }) = self.drag
+            {
+                Some(handle)
+            } else {
+                hover_pointer.and_then(|pointer| {
+                    self.selected_layer().and_then(|layer| {
+                        resize_handle_at(geometry, layer, self.layer_source_size(layer), pointer)
+                    })
+                })
+            }
+        } else {
+            None
+        };
+        if let Some(handle) = resize_hover {
+            ui.ctx().set_cursor_icon(resize_cursor(handle));
+        }
         if response.drag_started()
             && let Some(pointer) = pointer
         {
-            let canvas = geometry.screen_to_canvas(pointer);
+            let press_pointer = ui
+                .input(|input| input.pointer.press_origin())
+                .unwrap_or(pointer);
+            let canvas = geometry.screen_to_canvas(press_pointer);
             let resize = if self.tool == Tool::Move {
                 self.selected_layer().and_then(|layer| {
-                    resize_handle_at(geometry, layer, self.layer_source_size(layer), pointer)
+                    resize_handle_at(
+                        geometry,
+                        layer,
+                        self.layer_source_size(layer),
+                        press_pointer,
+                    )
                 })
             } else {
                 None
@@ -98,7 +129,7 @@ impl PrismApp {
             }
             self.drag = Some(DragState {
                 start_canvas: canvas,
-                current_canvas: canvas,
+                current_canvas: geometry.screen_to_canvas(pointer),
                 layer_id: selected
                     .as_ref()
                     .filter(|layer| !layer.locked)
@@ -221,6 +252,7 @@ impl PrismApp {
                         x: min.x,
                         y: min.y,
                     });
+                    self.tool = Tool::Move;
                 }
                 Tool::Crop if size.x > 2.0 && size.y > 2.0 => {
                     self.execute(Command::CropCanvas {
@@ -230,6 +262,7 @@ impl PrismApp {
                         height: size.y.round() as u32,
                     });
                     self.fit_requested = true;
+                    self.tool = Tool::Move;
                 }
                 Tool::Mask if size.x > 2.0 && size.y > 2.0 => {
                     if let Some(id) = drag.layer_id {
@@ -246,6 +279,7 @@ impl PrismApp {
                                 invert: false,
                             },
                         });
+                        self.tool = Tool::Move;
                     }
                 }
                 _ => {}
@@ -272,6 +306,7 @@ impl PrismApp {
                     x: position.x,
                     y: position.y,
                 });
+                self.tool = Tool::Move;
             }
             _ => {}
         }
