@@ -358,7 +358,7 @@ pub(super) fn paint_interactive_document(
     ui.painter().rect_stroke(
         geometry.canvas,
         1.0,
-        Stroke::new(1.0, Color32::from_gray(90)),
+        Stroke::new(1.0, CANVAS_EDGE),
         egui::StrokeKind::Outside,
     );
 }
@@ -379,9 +379,9 @@ fn paint_canvas_background(ui: &egui::Ui, geometry: CanvasGeometry, background: 
             let min = clipped.min + Vec2::new(col as f32 * checker, row as f32 * checker);
             let cell = Rect::from_min_size(min, Vec2::splat(checker)).intersect(clipped);
             let color = if (row + col) % 2 == 0 {
-                Color32::from_rgb(64, 67, 73)
+                CHECKER_LIGHT
             } else {
-                Color32::from_rgb(49, 52, 58)
+                CHECKER_DARK
             };
             ui.painter().rect_filled(cell, 0.0, color);
         }

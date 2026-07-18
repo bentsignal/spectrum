@@ -28,19 +28,30 @@ mod inspector;
 mod layers;
 #[path = "prism_gui/renderer.rs"]
 mod renderer;
+#[path = "prism_gui/shortcuts.rs"]
+mod shortcuts;
 use dialogs::*;
+use inspector::InspectorLens;
 use renderer::*;
+use shortcuts::*;
 
 const INK: Color32 = Color32::from_rgb(14, 16, 20);
 const PANEL: Color32 = Color32::from_rgb(25, 28, 34);
 const SURFACE: Color32 = Color32::from_rgb(34, 38, 46);
 const RAISED: Color32 = Color32::from_rgb(45, 50, 60);
+const HOVER_SURFACE: Color32 = Color32::from_rgb(57, 63, 74);
+const ACTIVE_SURFACE: Color32 = Color32::from_rgb(39, 91, 85);
+const FOCUS_SURFACE: Color32 = Color32::from_rgb(31, 56, 57);
+const SELECTED_SURFACE: Color32 = Color32::from_rgb(36, 58, 60);
 const BORDER: Color32 = Color32::from_rgb(62, 68, 80);
 const TEXT: Color32 = Color32::from_rgb(226, 230, 238);
 const MUTED: Color32 = Color32::from_rgb(145, 153, 169);
 const ACCENT: Color32 = Color32::from_rgb(93, 216, 199);
 const ACCENT_WARM: Color32 = Color32::from_rgb(247, 178, 102);
 const DANGER: Color32 = Color32::from_rgb(242, 115, 121);
+const CANVAS_EDGE: Color32 = Color32::from_gray(90);
+const CHECKER_LIGHT: Color32 = Color32::from_rgb(64, 67, 73);
+const CHECKER_DARK: Color32 = Color32::from_rgb(49, 52, 58);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tool {
@@ -50,6 +61,12 @@ enum Tool {
     Text,
     Rectangle,
     Mask,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolActivation {
+    ImmediateDialog,
+    CanvasGesture,
 }
 
 impl Tool {
@@ -82,9 +99,16 @@ impl Tool {
         match self {
             Self::Move => "Select on the canvas, drag to move, or pull a corner to resize.",
             Self::Crop => "Draw the new canvas boundary.",
-            Self::Text => "Click where the text should begin.",
+            Self::Text => "Type the text now, then move it into place.",
             Self::Rectangle => "Drag a shape, or click for a standard size.",
             Self::Mask => "Draw the visible region of the focused element.",
+        }
+    }
+
+    fn activation(self) -> ToolActivation {
+        match self {
+            Self::Text => ToolActivation::ImmediateDialog,
+            _ => ToolActivation::CanvasGesture,
         }
     }
 
@@ -173,6 +197,20 @@ struct NewDocumentDialog {
     height: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum TextDialogTarget {
+    New { position: Pos2 },
+    Existing { id: u64 },
+}
+
+#[derive(Clone, Debug)]
+struct TextDialogDraft {
+    target: TextDialogTarget,
+    text: String,
+    font_size: f32,
+    color: [u8; 4],
+}
+
 impl Default for NewDocumentDialog {
     fn default() -> Self {
         Self {
@@ -201,13 +239,17 @@ struct PrismApp {
     status_error: bool,
     tool: Tool,
     tool_palette: Option<String>,
+    composition_query: String,
+    composition_search_focus: bool,
+    composition_result_index: usize,
+    inspector_lens: InspectorLens,
     zoom: f32,
     pan: Vec2,
     fit_requested: bool,
     drag: Option<DragState>,
     rename_layer: Option<(u64, String)>,
     new_dialog: Option<NewDocumentDialog>,
-    text_dialog: Option<(Pos2, String, f32)>,
+    text_dialog: Option<TextDialogDraft>,
     delete_confirmation: Option<u64>,
     layer_drag: Option<u64>,
     layer_drop_index: Option<usize>,
@@ -262,6 +304,10 @@ impl PrismApp {
             status_error: false,
             tool: Tool::Move,
             tool_palette: None,
+            composition_query: String::new(),
+            composition_search_focus: false,
+            composition_result_index: 0,
+            inspector_lens: InspectorLens::Object,
             zoom: 1.0,
             pan: Vec2::ZERO,
             fit_requested: true,
@@ -572,28 +618,38 @@ impl PrismApp {
         if context.egui_wants_keyboard_input() {
             return;
         }
-        context.input(|input| {
+        let chosen_tool = context.input(|input| {
+            if shortcut_domain(input.modifiers) != Some(ShortcutDomain::Tool) {
+                return None;
+            }
             if input.key_pressed(egui::Key::V) {
-                self.tool = Tool::Move;
-            }
-            if input.key_pressed(egui::Key::C) {
-                self.tool = Tool::Crop;
-            }
-            if input.key_pressed(egui::Key::T) {
-                self.tool = Tool::Text;
-            }
-            if input.key_pressed(egui::Key::R) {
-                self.tool = Tool::Rectangle;
-            }
-            if input.key_pressed(egui::Key::M) {
-                self.tool = Tool::Mask;
+                Some(Tool::Move)
+            } else if input.key_pressed(egui::Key::C) {
+                Some(Tool::Crop)
+            } else if input.key_pressed(egui::Key::T) {
+                Some(Tool::Text)
+            } else if input.key_pressed(egui::Key::R) {
+                Some(Tool::Rectangle)
+            } else if input.key_pressed(egui::Key::M) {
+                Some(Tool::Mask)
+            } else {
+                None
             }
         });
+        if let Some(tool) = chosen_tool {
+            self.choose_tool(tool);
+        }
+        if context.input(|input| focused_shortcut_pressed(input, egui::Key::E)) {
+            self.edit_focused();
+        }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
             self.save(false);
         }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::K)) {
             self.tool_palette = Some(String::new());
+        }
+        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::J)) {
+            self.composition_search_focus = true;
         }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Z)) {
             if context.input(|input| input.modifiers.shift) {
@@ -637,8 +693,8 @@ fn install_style(context: &egui::Context) {
     visuals.selection.stroke.color = Color32::BLACK;
     visuals.widgets.noninteractive.bg_fill = SURFACE;
     visuals.widgets.inactive.bg_fill = RAISED;
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(57, 63, 74);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(39, 91, 85);
+    visuals.widgets.hovered.bg_fill = HOVER_SURFACE;
+    visuals.widgets.active.bg_fill = ACTIVE_SURFACE;
     visuals.widgets.inactive.corner_radius = 5.into();
     visuals.widgets.hovered.corner_radius = 5.into();
     visuals.widgets.active.corner_radius = 5.into();
@@ -888,5 +944,12 @@ mod tests {
         assert!(Tool::Move.matches("resize"));
         assert!(Tool::Mask.matches("visible region"));
         assert!(!Tool::Text.matches("crop"));
+    }
+
+    #[test]
+    fn tools_declare_whether_selection_opens_ui_or_arms_the_canvas() {
+        assert_eq!(Tool::Text.activation(), ToolActivation::ImmediateDialog);
+        assert_eq!(Tool::Rectangle.activation(), ToolActivation::CanvasGesture);
+        assert_eq!(Tool::Crop.activation(), ToolActivation::CanvasGesture);
     }
 }

@@ -9,6 +9,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use spectrum_imaging::{AdjustmentPatch, Adjustments};
 
+mod text;
+use text::default_text_layer_name;
+
 pub const PRISM_VERSION: u32 = 1;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
@@ -638,7 +641,7 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
             let id = document.allocate_id();
             document.layers.push(Layer {
                 id,
-                name: name.unwrap_or_else(|| text.chars().take(24).collect()),
+                name: name.unwrap_or_else(|| default_text_layer_name(&text)),
                 transform: Transform {
                     x,
                     y,
@@ -697,17 +700,27 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
                 bail!("text cannot be empty");
             }
             let layer = document.layer_mut(id)?;
-            let LayerKind::Text {
-                text: layer_text,
-                font_size: layer_size,
-                color: layer_color,
-            } = &mut layer.kind
-            else {
+            let auto_named = if let LayerKind::Text { text, .. } = &layer.kind {
+                layer.name == default_text_layer_name(text)
+            } else {
                 bail!("layer {id} is not a text layer");
             };
-            *layer_text = text;
-            *layer_size = font_size.clamp(4.0, 1_000.0);
-            *layer_color = color;
+            {
+                let LayerKind::Text {
+                    text: layer_text,
+                    font_size: layer_size,
+                    color: layer_color,
+                } = &mut layer.kind
+                else {
+                    unreachable!("text kind was checked above");
+                };
+                *layer_text = text;
+                *layer_size = font_size.clamp(4.0, 1_000.0);
+                *layer_color = color;
+            }
+            if auto_named && let LayerKind::Text { text, .. } = &layer.kind {
+                layer.name = default_text_layer_name(text);
+            }
             Ok(output("update_text", "updated text layer", vec![id]))
         }
         Command::UpdateRectangle {

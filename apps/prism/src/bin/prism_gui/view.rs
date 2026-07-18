@@ -238,3 +238,102 @@ pub(super) fn color32(value: [u8; 4]) -> Color32 {
 pub(super) fn rgba(value: Color32) -> [u8; 4] {
     [value.r(), value.g(), value.b(), value.a()]
 }
+
+pub(super) fn with_alpha(value: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(value.r(), value.g(), value.b(), alpha)
+}
+
+fn paint_shortcut_key_background(ui: &egui::Ui, rect: Rect) {
+    ui.painter().rect(
+        rect,
+        4.0,
+        SURFACE,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
+}
+
+fn paint_shortcut_key(ui: &egui::Ui, rect: Rect, key: &str) {
+    paint_shortcut_key_background(ui, rect);
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        key,
+        FontId::monospace(9.5),
+        MUTED,
+    );
+}
+
+fn paint_option_key(ui: &egui::Ui, rect: Rect) {
+    paint_shortcut_key_background(ui, rect);
+    let left = rect.left() + 5.5;
+    let right = rect.right() - 5.5;
+    let top = rect.top() + 6.4;
+    let bottom = rect.bottom() - 6.4;
+    let bend = rect.center().x - 0.8;
+    let stroke = Stroke::new(1.35, MUTED);
+    ui.painter()
+        .line_segment([Pos2::new(left, top), Pos2::new(bend, top)], stroke);
+    ui.painter().line_segment(
+        [Pos2::new(bend, top), Pos2::new(bend + 3.6, bottom)],
+        stroke,
+    );
+    ui.painter().line_segment(
+        [Pos2::new(bend + 3.6, bottom), Pos2::new(right, bottom)],
+        stroke,
+    );
+    ui.painter()
+        .line_segment([Pos2::new(bend + 2.7, top), Pos2::new(right, top)], stroke);
+}
+
+pub(super) fn shortcut_key(ui: &mut egui::Ui, key: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
+    paint_shortcut_key(ui, rect, key);
+    response
+}
+
+fn paint_modified_shortcut(
+    ui: &egui::Ui,
+    rect: Rect,
+    modifier: &str,
+    modifier_width: f32,
+    key: &str,
+) {
+    let modifier_rect = Rect::from_min_size(rect.min, Vec2::new(modifier_width, 20.0));
+    let key_rect = Rect::from_min_size(
+        Pos2::new(modifier_rect.right() + 3.0, rect.top()),
+        Vec2::splat(20.0),
+    );
+    paint_shortcut_key(ui, modifier_rect, modifier);
+    paint_shortcut_key(ui, key_rect, key);
+}
+
+pub(super) fn paint_command_shortcut(ui: &egui::Ui, rect: Rect, key: &str) {
+    paint_modified_shortcut(ui, rect, "⌘", 20.0, key);
+}
+
+pub(super) fn command_shortcut(ui: &mut egui::Ui, key: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(43.0, 20.0), Sense::hover());
+    paint_command_shortcut(ui, rect, key);
+    response
+}
+
+pub(super) fn alternate_shortcut(ui: &mut egui::Ui, key: &str) -> egui::Response {
+    if cfg!(target_os = "macos") {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(43.0, 20.0), Sense::hover());
+        let modifier_rect = Rect::from_min_size(rect.min, Vec2::splat(20.0));
+        let key_rect = Rect::from_min_size(
+            Pos2::new(modifier_rect.right() + 3.0, rect.top()),
+            Vec2::splat(20.0),
+        );
+        paint_option_key(ui, modifier_rect);
+        paint_shortcut_key(ui, key_rect, key);
+        response
+    } else {
+        let modifier_width = 28.0;
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(modifier_width + 23.0, 20.0), Sense::hover());
+        paint_modified_shortcut(ui, rect, "Alt", modifier_width, key);
+        response
+    }
+}

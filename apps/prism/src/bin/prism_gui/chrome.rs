@@ -142,18 +142,12 @@ impl PrismApp {
                         .corner_radius(5.0)
                         .inner_margin(egui::Margin::symmetric(10, 6))
                         .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "{}   {}",
-                                    self.tool.label(),
-                                    self.tool.shortcut()
-                                ))
-                                .strong()
-                                .color(ACCENT),
-                            );
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(self.tool.label()).strong().color(ACCENT));
+                                shortcut_key(ui, self.tool.shortcut());
+                            });
                         });
-                    if ui
-                        .button("Tools & Actions   ⌘K")
+                    if workbench_action_button(ui, "Tools & Actions", "K")
                         .on_hover_text("Search every canvas tool and one-step action")
                         .clicked()
                     {
@@ -169,11 +163,14 @@ impl PrismApp {
             });
     }
 
-    fn choose_tool(&mut self, tool: Tool) {
+    pub(super) fn choose_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.drag = None;
         self.status = tool.description().into();
         self.status_error = false;
+        if tool.activation() == ToolActivation::ImmediateDialog {
+            self.open_new_text_dialog();
+        }
     }
 
     pub(super) fn tool_palette_dialog(&mut self, context: &egui::Context) {
@@ -279,9 +276,9 @@ impl PrismApp {
 
     pub(super) fn right_panel(&mut self, root: &mut egui::Ui) {
         egui::Panel::right("prism-inspector")
-            .default_size(320.0)
-            .min_size(280.0)
-            .max_size(410.0)
+            .default_size(370.0)
+            .min_size(330.0)
+            .max_size(460.0)
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
@@ -296,6 +293,42 @@ impl PrismApp {
                 self.inspector(ui);
             });
     }
+}
+
+const WORKBENCH_ACTION_SIZE: Vec2 = Vec2::new(154.0, 32.0);
+
+fn workbench_shortcut_rect(rect: Rect) -> Rect {
+    Rect::from_center_size(
+        Pos2::new(rect.right() - 31.5, rect.center().y),
+        Vec2::new(43.0, 20.0),
+    )
+}
+
+fn workbench_action_button(ui: &mut egui::Ui, label: &str, key: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(WORKBENCH_ACTION_SIZE, Sense::click());
+    let visuals = if response.is_pointer_button_down_on() {
+        &ui.style().visuals.widgets.active
+    } else if response.hovered() {
+        &ui.style().visuals.widgets.hovered
+    } else {
+        &ui.style().visuals.widgets.inactive
+    };
+    ui.painter().rect(
+        rect,
+        5.0,
+        visuals.bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        Pos2::new(rect.left() + 10.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(12.0),
+        TEXT,
+    );
+    paint_command_shortcut(ui, workbench_shortcut_rect(rect), key);
+    response
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -414,7 +447,7 @@ fn palette_row(
                 });
                 if !item.shortcut().is_empty() || default {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let suffix = if default { "   ↵" } else { "" };
+                        let suffix = if default { "   Enter" } else { "" };
                         ui.label(
                             RichText::new(format!("{}{suffix}", item.shortcut()))
                                 .monospace()
@@ -444,5 +477,14 @@ mod tests {
             Some(&PaletteItem::PlaceImage)
         );
         assert!(palette_results("not a real command").is_empty());
+    }
+
+    #[test]
+    fn workbench_shortcut_is_centered_inside_the_complete_control() {
+        let control = Rect::from_min_size(Pos2::new(10.0, 20.0), WORKBENCH_ACTION_SIZE);
+        let shortcut = workbench_shortcut_rect(control);
+        assert_eq!(shortcut.center().y, control.center().y);
+        assert_eq!(shortcut.height(), 20.0);
+        assert_eq!(control.height(), 32.0);
     }
 }

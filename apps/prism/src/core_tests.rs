@@ -89,6 +89,47 @@ fn text_and_shapes_render() {
 }
 
 #[test]
+fn automatic_text_names_follow_content_without_overwriting_manual_names() {
+    let mut workspace = Workspace::new(Document::new("Names", 400, 200), None);
+    workspace
+        .execute(Command::AddText {
+            text: "Title\n".into(),
+            name: None,
+            font_size: 48.0,
+            color: [255, 255, 255, 255],
+            x: 30.0,
+            y: 40.0,
+        })
+        .unwrap();
+    let id = workspace.document.selected.unwrap();
+    assert_eq!(workspace.document.layer(id).unwrap().name, "Title");
+    workspace
+        .execute(Command::UpdateText {
+            id,
+            text: "Updated title\nSubtitle".into(),
+            font_size: 48.0,
+            color: [255, 255, 255, 255],
+        })
+        .unwrap();
+    assert_eq!(workspace.document.layer(id).unwrap().name, "Updated title");
+    workspace
+        .execute(Command::RenameLayer {
+            id,
+            name: "Cover heading".into(),
+        })
+        .unwrap();
+    workspace
+        .execute(Command::UpdateText {
+            id,
+            text: "Final title".into(),
+            font_size: 48.0,
+            color: [255, 255, 255, 255],
+        })
+        .unwrap();
+    assert_eq!(workspace.document.layer(id).unwrap().name, "Cover heading");
+}
+
+#[test]
 fn text_metrics_match_the_rendered_layout() {
     let layer = Layer {
         kind: LayerKind::Text {
