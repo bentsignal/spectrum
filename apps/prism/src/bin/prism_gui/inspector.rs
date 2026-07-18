@@ -30,26 +30,19 @@ impl InspectorLens {
 
 impl PrismApp {
     pub(super) fn inspector(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new("INSPECTOR").size(11.0).strong());
-                ui.label(
-                    RichText::new("Controls for the current lens")
-                        .size(9.0)
-                        .color(MUTED),
-                );
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new("⌘J  jump").monospace().size(9.0).color(MUTED));
-            });
-        });
+        ui.label(RichText::new("INSPECTOR").size(11.0).strong());
+        ui.label(
+            RichText::new("Controls for the current lens")
+                .size(9.0)
+                .color(MUTED),
+        );
         ui.add_space(8.0);
         let Some(layer) = self.selected_layer().cloned() else {
             ui.add_space(18.0);
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("No object in focus").strong().color(MUTED));
                 ui.label(
-                    RichText::new("Choose one on canvas or jump to it with ⌘J.")
+                    RichText::new("Choose one on canvas or use Jump to Object.")
                         .size(11.0)
                         .color(MUTED),
                 );

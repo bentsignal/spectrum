@@ -69,7 +69,65 @@ fn reset_modal_text_input(context: &egui::Context, id_source: &'static str) {
     context.data_mut(|data| data.remove_temp::<bool>(initialized_id));
 }
 
+fn normalized_text_submission(text: &str) -> String {
+    text.trim_end_matches(['\r', '\n']).to_owned()
+}
+
 impl PrismApp {
+    pub(super) fn open_new_text_dialog(&mut self) {
+        let width = self.workspace.document.width as f32;
+        let height = self.workspace.document.height as f32;
+        self.text_dialog = Some(TextDialogDraft {
+            target: TextDialogTarget::New {
+                position: Pos2::new(width * 0.15, height * 0.42),
+            },
+            text: "Text".into(),
+            font_size: 72.0,
+            color: [245, 246, 250, 255],
+        });
+    }
+
+    pub(super) fn open_text_editor(&mut self, id: u64) -> bool {
+        let Ok(layer) = self.workspace.document.layer(id) else {
+            return false;
+        };
+        if layer.locked {
+            self.status = "Unlock the focused text before editing it.".into();
+            self.status_error = true;
+            return false;
+        }
+        let LayerKind::Text {
+            text,
+            font_size,
+            color,
+        } = &layer.kind
+        else {
+            return false;
+        };
+        self.text_dialog = Some(TextDialogDraft {
+            target: TextDialogTarget::Existing { id },
+            text: text.clone(),
+            font_size: *font_size,
+            color: *color,
+        });
+        true
+    }
+
+    pub(super) fn edit_focused(&mut self) {
+        let Some(layer) = self.selected_layer().cloned() else {
+            self.status = "Focus an object before editing it.".into();
+            self.status_error = true;
+            return;
+        };
+        if matches!(layer.kind, LayerKind::Text { .. }) {
+            self.open_text_editor(layer.id);
+        } else {
+            self.inspector_lens = InspectorLens::Object;
+            self.status = "Object controls are ready in the Inspector.".into();
+            self.status_error = false;
+        }
+    }
+
     pub(super) fn dialogs(&mut self, context: &egui::Context) {
         if self.delete_confirmation.is_some() {
             self.delete_dialog(context);
@@ -136,22 +194,34 @@ impl PrismApp {
     }
 
     fn text_dialog(&mut self, context: &egui::Context) {
-        let Some((position, mut text, mut size)) = self.text_dialog.take() else {
+        let Some(mut draft) = self.text_dialog.take() else {
             return;
         };
-        let mut insert = false;
+        let editing = matches!(draft.target, TextDialogTarget::Existing { .. });
+        let mut save = false;
         let mut keep_open = true;
-        egui::Window::new("Add text")
+        egui::Window::new(if editing { "Edit text" } else { "Add text" })
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(context, |ui| {
-                modal_text_input(ui, &mut text, ADD_TEXT_CONTENT_ID, true);
-                ui.add(egui::Slider::new(&mut size, 8.0..=400.0).text("Size"));
+                modal_text_input(ui, &mut draft.text, ADD_TEXT_CONTENT_ID, true);
+                ui.add(
+                    egui::Slider::new(&mut draft.font_size, 8.0..=400.0)
+                        .text("Size")
+                        .suffix(" px"),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Color");
+                    let mut color = color32(draft.color);
+                    if ui.color_edit_button_srgba(&mut color).changed() {
+                        draft.color = rgba(color);
+                    }
+                });
                 match modal_action(ui) {
                     ModalAction::Cancel => keep_open = false,
                     ModalAction::Confirm => {
-                        insert = true;
+                        save = true;
                         keep_open = false;
                     }
                     ModalAction::None => {}
@@ -160,8 +230,9 @@ impl PrismApp {
                     if ui.button("Cancel").clicked() {
                         keep_open = false;
                     }
-                    if ui.button(RichText::new("Add text").color(ACCENT)).clicked() {
-                        insert = true;
+                    let label = if editing { "Update text" } else { "Add text" };
+                    if ui.button(RichText::new(label).color(ACCENT)).clicked() {
+                        save = true;
                         keep_open = false;
                     }
                 });
@@ -169,18 +240,33 @@ impl PrismApp {
         if !keep_open {
             reset_modal_text_input(context, ADD_TEXT_CONTENT_ID);
         }
-        if insert {
-            self.execute(Command::AddText {
-                text,
-                name: None,
-                font_size: size,
-                color: [245, 246, 250, 255],
-                x: position.x,
-                y: position.y,
-            });
-            self.tool = Tool::Move;
+        if save {
+            draft.text = normalized_text_submission(&draft.text);
+            match draft.target {
+                TextDialogTarget::New { position } => {
+                    self.execute(Command::AddText {
+                        text: draft.text,
+                        name: None,
+                        font_size: draft.font_size,
+                        color: draft.color,
+                        x: position.x,
+                        y: position.y,
+                    });
+                    self.tool = Tool::Move;
+                }
+                TextDialogTarget::Existing { id } => {
+                    self.execute(Command::UpdateText {
+                        id,
+                        text: draft.text,
+                        font_size: draft.font_size,
+                        color: draft.color,
+                    });
+                }
+            }
         } else if keep_open {
-            self.text_dialog = Some((position, text, size));
+            self.text_dialog = Some(draft);
+        } else if !editing {
+            self.tool = Tool::Move;
         }
     }
 
@@ -284,6 +370,16 @@ mod tests {
         assert_eq!(
             modal_action_from_keys(true, true, false),
             ModalAction::Cancel
+        );
+    }
+
+    #[test]
+    fn confirming_text_drops_only_trailing_line_breaks() {
+        assert_eq!(normalized_text_submission("Title\n"), "Title");
+        assert_eq!(normalized_text_submission("Title\n\n"), "Title");
+        assert_eq!(
+            normalized_text_submission("Title\nSubtitle\n"),
+            "Title\nSubtitle"
         );
     }
 }

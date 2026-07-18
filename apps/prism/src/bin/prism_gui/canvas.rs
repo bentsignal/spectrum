@@ -159,6 +159,10 @@ impl PrismApp {
             && let Some(drag) = self.drag.take()
         {
             self.finish_canvas_drag(drag);
+        } else if response.double_clicked()
+            && let Some(pointer) = pointer
+        {
+            self.canvas_double_click(geometry.screen_to_canvas(pointer));
         } else if response.clicked()
             && let Some(pointer) = pointer
         {
@@ -197,11 +201,7 @@ impl PrismApp {
             DragAction::Draw => match self.tool {
                 Tool::Rectangle | Tool::Crop | Tool::Mask => {
                     let rect = Rect::from_two_pos(start, current);
-                    ui.painter().rect_filled(
-                        rect,
-                        1.0,
-                        Color32::from_rgba_unmultiplied(93, 216, 199, 30),
-                    );
+                    ui.painter().rect_filled(rect, 1.0, with_alpha(ACCENT, 30));
                     ui.painter().rect_stroke(
                         rect,
                         1.0,
@@ -295,7 +295,14 @@ impl PrismApp {
                     self.execute(Command::SelectLayer { id: hit });
                 }
             }
-            Tool::Text => self.text_dialog = Some((position, "Text".into(), 72.0)),
+            Tool::Text => {
+                self.text_dialog = Some(TextDialogDraft {
+                    target: TextDialogTarget::New { position },
+                    text: "Text".into(),
+                    font_size: 72.0,
+                    color: [245, 246, 250, 255],
+                });
+            }
             Tool::Rectangle => {
                 self.execute(Command::AddRectangle {
                     name: None,
@@ -309,6 +316,16 @@ impl PrismApp {
                 self.tool = Tool::Move;
             }
             _ => {}
+        }
+    }
+
+    fn canvas_double_click(&mut self, position: Pos2) {
+        let hit = self.hit_test_layer(position);
+        if hit != self.workspace.document.selected {
+            self.execute(Command::SelectLayer { id: hit });
+        }
+        if let Some(id) = hit {
+            self.open_text_editor(id);
         }
     }
 
