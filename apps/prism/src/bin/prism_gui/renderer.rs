@@ -4,15 +4,33 @@ use super::*;
 pub(super) struct LayerVisualKey {
     kind: LayerKind,
     adjustments: spectrum_imaging::Adjustments,
+    pub(super) text_raster_scale: u32,
 }
 
 impl LayerVisualKey {
-    pub(super) fn new(layer: &Layer) -> Self {
+    pub(super) fn new(layer: &Layer, zoom: f32) -> Self {
         Self {
             kind: layer.kind.clone(),
             adjustments: layer.adjustments.clone(),
+            text_raster_scale: preview_text_scale(layer, zoom),
         }
     }
+}
+
+pub(super) fn desired_layer_visual_key(
+    layer: &Layer,
+    zoom: f32,
+    interaction_active: bool,
+    cached: Option<&LayerVisualKey>,
+) -> LayerVisualKey {
+    let mut key = LayerVisualKey::new(layer, zoom);
+    if interaction_active
+        && matches!(layer.kind, LayerKind::Text { .. })
+        && let Some(cached) = cached
+    {
+        key.text_raster_scale = cached.text_raster_scale;
+    }
+    key
 }
 
 pub(super) enum LayerVisual {
@@ -42,6 +60,17 @@ pub(super) struct LayerRenderResult {
     result: Result<(image::DynamicImage, Vec2), String>,
 }
 
+pub(super) fn reuse_cached_visual_during_interaction(
+    cached_max_size: Option<u32>,
+    required_max_size: u32,
+    dirty: bool,
+    interaction_active: bool,
+) -> bool {
+    interaction_active
+        && !dirty
+        && cached_max_size.is_some_and(|max_size| max_size >= required_max_size)
+}
+
 impl PrismApp {
     pub(super) fn reset_canvas_cache(&mut self) {
         self.layer_visuals.clear();
@@ -62,7 +91,16 @@ impl PrismApp {
                 .layers
                 .iter()
                 .find(|layer| layer.id == result.layer_id)
-                .map(LayerVisualKey::new);
+                .map(|layer| {
+                    desired_layer_visual_key(
+                        layer,
+                        self.zoom,
+                        self.workspace.interaction_active(),
+                        self.layer_visuals
+                            .get(&result.layer_id)
+                            .map(|entry| &entry.key),
+                    )
+                });
             if current_key.as_ref() != Some(&result.key) {
                 continue;
             }
@@ -111,11 +149,8 @@ impl PrismApp {
         self.layer_render_pending
             .retain(|id, _| visible_ids.contains(id));
 
-        let required_max_size = if self.workspace.interaction_active() {
-            1024
-        } else {
-            2048
-        };
+        let interaction_active = self.workspace.interaction_active();
+        let required_max_size = if interaction_active { 1024 } else { 2048 };
         for layer in self
             .workspace
             .document
@@ -123,15 +158,23 @@ impl PrismApp {
             .iter()
             .filter(|layer| layer.visible)
         {
-            let cached_at_quality = self
-                .layer_visuals
-                .get(&layer.id)
-                .is_some_and(|entry| entry.max_size >= required_max_size);
-            if cached_at_quality && !self.layer_visual_dirty.contains(&layer.id) {
+            if reuse_cached_visual_during_interaction(
+                self.layer_visuals
+                    .get(&layer.id)
+                    .map(|entry| entry.max_size),
+                required_max_size,
+                self.layer_visual_dirty.contains(&layer.id),
+                interaction_active,
+            ) {
                 self.layer_render_pending.remove(&layer.id);
                 continue;
             }
-            let key = LayerVisualKey::new(layer);
+            let key = desired_layer_visual_key(
+                layer,
+                self.zoom,
+                interaction_active,
+                self.layer_visuals.get(&layer.id).map(|entry| &entry.key),
+            );
             let current = self
                 .layer_visuals
                 .get(&layer.id)
@@ -214,18 +257,22 @@ pub(super) fn spawn_layer_render_worker(
         let mut bases: HashMap<(u64, u64), CachedLayerBase> = HashMap::new();
         while let Ok(request) = receiver.recv() {
             let cache_id = (request.tab_id, request.layer.id);
+            let mut render_layer = request.layer.clone();
+            if let LayerKind::Text { font_size, .. } = &mut render_layer.kind {
+                *font_size *= request.key.text_raster_scale as f32;
+            }
             let cached = bases.get(&cache_id).filter(|cached| {
-                cached.kind == request.layer.kind && cached.max_size >= request.max_size
+                cached.kind == render_layer.kind && cached.max_size >= request.max_size
             });
             let base = if let Some(cached) = cached {
                 Ok(cached.image.clone())
             } else {
-                prism_core::render_layer_base(&request.layer, Some(request.max_size)).inspect(
+                prism_core::render_layer_base(&render_layer, Some(request.max_size)).inspect(
                     |image| {
                         bases.insert(
                             cache_id,
                             CachedLayerBase {
-                                kind: request.layer.kind.clone(),
+                                kind: render_layer.kind.clone(),
                                 max_size: request.max_size,
                                 image: image.clone(),
                             },
@@ -269,18 +316,26 @@ fn source_size_before_preview(layer: &Layer) -> Option<Vec2> {
             .map(|(width, height)| Vec2::new(width as f32, height as f32)),
         LayerKind::Text {
             text, font_size, ..
-        } => {
-            let longest = text.lines().map(str::len).max().unwrap_or(1) as f32;
-            let lines = text.lines().count().max(1) as f32;
-            Some(Vec2::new(
-                longest * font_size * 0.55,
-                lines * font_size * 1.25,
-            ))
-        }
+        } => prism_core::measure_text(text, *font_size)
+            .ok()
+            .map(|(width, height)| Vec2::new(width as f32, height as f32)),
         LayerKind::Rectangle { width, height, .. } => {
             Some(Vec2::new(*width as f32, *height as f32))
         }
     }
+}
+
+fn preview_text_scale(layer: &Layer, zoom: f32) -> u32 {
+    if !matches!(layer.kind, LayerKind::Text { .. }) {
+        return 1;
+    }
+    let target = layer
+        .transform
+        .scale_x
+        .abs()
+        .max(layer.transform.scale_y.abs())
+        * zoom.max(0.1);
+    (target.max(1.0).ceil() as u32).next_power_of_two().min(16)
 }
 
 pub(super) fn paint_interactive_document(

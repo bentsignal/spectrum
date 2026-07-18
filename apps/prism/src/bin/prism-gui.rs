@@ -20,12 +20,15 @@ use spectrum_imaging::AdjustmentPatch;
 mod canvas;
 #[path = "prism_gui/chrome.rs"]
 mod chrome;
+#[path = "prism_gui/dialogs.rs"]
+mod dialogs;
 #[path = "prism_gui/inspector.rs"]
 mod inspector;
 #[path = "prism_gui/layers.rs"]
 mod layers;
 #[path = "prism_gui/renderer.rs"]
 mod renderer;
+use dialogs::*;
 use renderer::*;
 
 const INK: Color32 = Color32::from_rgb(14, 16, 20);
@@ -57,6 +60,40 @@ impl Tool {
         (Self::Rectangle, "R", "Rectangle"),
         (Self::Mask, "M", "Layer mask"),
     ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Move => "Move",
+            Self::Crop => "Crop canvas",
+            Self::Text => "Add text",
+            Self::Rectangle => "Draw shape",
+            Self::Mask => "Draw mask",
+        }
+    }
+
+    fn shortcut(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find_map(|(tool, key, _)| (*tool == self).then_some(*key))
+            .unwrap_or_default()
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Move => "Select on the canvas, drag to move, or pull a corner to resize.",
+            Self::Crop => "Draw the new canvas boundary.",
+            Self::Text => "Click where the text should begin.",
+            Self::Rectangle => "Drag a shape, or click for a standard size.",
+            Self::Mask => "Draw the visible region of the focused element.",
+        }
+    }
+
+    fn matches(self, query: &str) -> bool {
+        let query = query.trim().to_ascii_lowercase();
+        query.is_empty()
+            || self.label().to_ascii_lowercase().contains(&query)
+            || self.description().to_ascii_lowercase().contains(&query)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -163,6 +200,7 @@ struct PrismApp {
     status: String,
     status_error: bool,
     tool: Tool,
+    tool_palette: Option<String>,
     zoom: f32,
     pan: Vec2,
     fit_requested: bool,
@@ -223,6 +261,7 @@ impl PrismApp {
             status: "Ready".into(),
             status_error: false,
             tool: Tool::Move,
+            tool_palette: None,
             zoom: 1.0,
             pan: Vec2::ZERO,
             fit_requested: true,
@@ -529,160 +568,6 @@ impl PrismApp {
             });
     }
 
-    fn dialogs(&mut self, context: &egui::Context) {
-        self.new_document_dialog(context);
-        self.text_dialog(context);
-        self.rename_dialog(context);
-        self.delete_dialog(context);
-    }
-
-    fn new_document_dialog(&mut self, context: &egui::Context) {
-        let Some(mut draft) = self.new_dialog.take() else {
-            return;
-        };
-        let mut create = false;
-        let mut keep_open = true;
-        egui::Window::new("New Prism document")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(context, |ui| {
-                ui.label("Name");
-                ui.text_edit_singleline(&mut draft.name);
-                ui.horizontal(|ui| {
-                    ui.label("Width");
-                    ui.add(egui::DragValue::new(&mut draft.width).range(1..=32_768));
-                    ui.label("Height");
-                    ui.add(egui::DragValue::new(&mut draft.height).range(1..=32_768));
-                });
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        keep_open = false;
-                    }
-                    if ui
-                        .button(RichText::new("Create canvas").color(ACCENT))
-                        .clicked()
-                    {
-                        create = true;
-                        keep_open = false;
-                    }
-                });
-            });
-        if create {
-            self.new_document(draft);
-        } else if keep_open {
-            self.new_dialog = Some(draft);
-        }
-    }
-
-    fn text_dialog(&mut self, context: &egui::Context) {
-        let Some((position, mut text, mut size)) = self.text_dialog.take() else {
-            return;
-        };
-        let mut insert = false;
-        let mut keep_open = true;
-        egui::Window::new("Add text")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(context, |ui| {
-                ui.text_edit_multiline(&mut text);
-                ui.add(egui::Slider::new(&mut size, 8.0..=400.0).text("Size"));
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        keep_open = false;
-                    }
-                    if ui.button(RichText::new("Add text").color(ACCENT)).clicked() {
-                        insert = true;
-                        keep_open = false;
-                    }
-                });
-            });
-        if insert {
-            self.execute(Command::AddText {
-                text,
-                name: None,
-                font_size: size,
-                color: [245, 246, 250, 255],
-                x: position.x,
-                y: position.y,
-            });
-        } else if keep_open {
-            self.text_dialog = Some((position, text, size));
-        }
-    }
-
-    fn rename_dialog(&mut self, context: &egui::Context) {
-        let Some((id, mut name)) = self.rename_layer.take() else {
-            return;
-        };
-        let mut save = false;
-        let mut keep_open = true;
-        egui::Window::new("Rename layer")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(context, |ui| {
-                let response = ui.text_edit_singleline(&mut name);
-                response.request_focus();
-                if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                    save = true;
-                    keep_open = false;
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        keep_open = false;
-                    }
-                    if ui.button("Rename").clicked() {
-                        save = true;
-                        keep_open = false;
-                    }
-                });
-            });
-        if save {
-            self.execute(Command::RenameLayer { id, name });
-        } else if keep_open {
-            self.rename_layer = Some((id, name));
-        }
-    }
-
-    fn delete_dialog(&mut self, context: &egui::Context) {
-        let Some(id) = self.delete_confirmation else {
-            return;
-        };
-        let mut delete = false;
-        let mut cancel = false;
-        egui::Window::new("Delete layer?")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(context, |ui| {
-                ui.label("This removes the layer from the Prism document.");
-                ui.label(
-                    RichText::new("Linked source image files are never deleted.").color(ACCENT),
-                );
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                    if ui
-                        .button(RichText::new("Delete layer").color(DANGER))
-                        .clicked()
-                    {
-                        delete = true;
-                    }
-                });
-            });
-        if delete {
-            self.delete_confirmation = None;
-            self.execute(Command::RemoveLayer { id });
-        }
-        if cancel {
-            self.delete_confirmation = None;
-        }
-    }
-
     fn keyboard(&mut self, context: &egui::Context) {
         if context.egui_wants_keyboard_input() {
             return;
@@ -707,6 +592,9 @@ impl PrismApp {
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
             self.save(false);
         }
+        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::K)) {
+            self.tool_palette = Some(String::new());
+        }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Z)) {
             if context.input(|input| input.modifiers.shift) {
                 self.execute(Command::Redo);
@@ -717,6 +605,11 @@ impl PrismApp {
         if context.input(|input| input.key_pressed(egui::Key::Delete)) {
             self.delete_confirmation = self.workspace.document.selected;
         }
+        if context.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.tool_palette = None;
+            self.tool = Tool::Move;
+            self.drag = None;
+        }
     }
 }
 
@@ -726,8 +619,8 @@ impl eframe::App for PrismApp {
         let context = root.ctx().clone();
         self.keyboard(&context);
         self.top_bar(root);
+        self.workbench_bar(root);
         self.status_bar(root);
-        self.tools(root);
         self.right_panel(root);
         self.canvas(root);
         self.dialogs(&context);
@@ -789,7 +682,7 @@ mod tests {
     fn corner_resize_preserves_aspect_ratio_by_default() {
         let drag = DragState {
             start_canvas: Pos2::new(110.0, 70.0),
-            current_canvas: Pos2::new(210.0, 90.0),
+            current_canvas: Pos2::new(210.0, 120.0),
             layer_id: Some(1),
             transform: Transform {
                 x: 10.0,
@@ -807,6 +700,29 @@ mod tests {
         assert_eq!(transform.y, 20.0);
         assert!((transform.scale_x - 2.0).abs() < 0.001);
         assert!((transform.scale_y - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn proportional_resize_changes_smoothly_across_axis_dominance() {
+        let make_drag = |current_canvas| DragState {
+            start_canvas: Pos2::new(110.0, 70.0),
+            current_canvas,
+            layer_id: Some(1),
+            transform: Transform {
+                x: 10.0,
+                y: 20.0,
+                ..Default::default()
+            },
+            action: DragAction::Resize(ResizeHandle::BottomRight),
+            bounds: Some(Rect::from_min_size(
+                Pos2::new(10.0, 20.0),
+                Vec2::new(500.0, 100.0),
+            )),
+        };
+        let before = drag_transform(make_drag(Pos2::new(560.0, 129.0)), true);
+        let after = drag_transform(make_drag(Pos2::new(560.0, 131.0)), true);
+        assert!(after.scale_x > before.scale_x);
+        assert!((after.scale_x - before.scale_x - 0.01).abs() < 0.001);
     }
 
     #[test]
@@ -834,9 +750,9 @@ mod tests {
     }
 
     #[test]
-    fn transforms_do_not_invalidate_cached_layer_pixels() {
+    fn non_text_transforms_do_not_invalidate_cached_layer_pixels() {
         let mut layer = Layer::default();
-        let before = LayerVisualKey::new(&layer);
+        let before = LayerVisualKey::new(&layer, 1.0);
         layer.transform = Transform {
             x: 480.0,
             y: 270.0,
@@ -844,7 +760,98 @@ mod tests {
             scale_y: 1.5,
             rotation: 18.0,
         };
-        assert_eq!(before, LayerVisualKey::new(&layer));
+        assert_eq!(before, LayerVisualKey::new(&layer, 1.0));
+    }
+
+    #[test]
+    fn scaled_text_requests_a_higher_resolution_preview() {
+        let mut layer = Layer {
+            kind: LayerKind::Text {
+                text: "testing".into(),
+                font_size: 72.0,
+                color: [255, 255, 255, 255],
+            },
+            ..Default::default()
+        };
+        let before = LayerVisualKey::new(&layer, 1.0);
+        layer.transform.scale_x = 3.0;
+        layer.transform.scale_y = 3.0;
+        let scaled = LayerVisualKey::new(&layer, 1.0);
+        assert_ne!(before, scaled);
+        assert_eq!(scaled.text_raster_scale, 4);
+    }
+
+    #[test]
+    fn active_text_resize_reuses_the_cached_raster_scale() {
+        let mut layer = Layer {
+            kind: LayerKind::Text {
+                text: "testing".into(),
+                font_size: 72.0,
+                color: [255, 255, 255, 255],
+            },
+            ..Default::default()
+        };
+        let cached = LayerVisualKey::new(&layer, 1.0);
+        layer.transform.scale_x = 3.0;
+        layer.transform.scale_y = 3.0;
+        let interactive = desired_layer_visual_key(&layer, 1.0, true, Some(&cached));
+        let settled = desired_layer_visual_key(&layer, 1.0, false, Some(&cached));
+        assert_eq!(interactive.text_raster_scale, 1);
+        assert_eq!(settled.text_raster_scale, 4);
+    }
+
+    #[test]
+    fn active_transform_reuses_clean_cached_text_without_key_work() {
+        assert!(reuse_cached_visual_during_interaction(
+            Some(2048),
+            1024,
+            false,
+            true
+        ));
+        assert!(!reuse_cached_visual_during_interaction(
+            Some(2048),
+            1024,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn every_corner_has_a_generous_resize_target() {
+        let geometry = CanvasGeometry {
+            viewport: Rect::from_min_size(Pos2::ZERO, Vec2::splat(500.0)),
+            canvas: Rect::from_min_size(Pos2::ZERO, Vec2::splat(500.0)),
+            pixels_per_point: 1.0,
+        };
+        let layer = Layer {
+            kind: LayerKind::Rectangle {
+                width: 100,
+                height: 60,
+                color: [255, 255, 255, 255],
+                corner_radius: 0.0,
+            },
+            transform: Transform {
+                x: 100.0,
+                y: 80.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for (pointer, expected) in [
+            (Pos2::new(112.0, 92.0), ResizeHandle::TopLeft),
+            (Pos2::new(188.0, 92.0), ResizeHandle::TopRight),
+            (Pos2::new(112.0, 128.0), ResizeHandle::BottomLeft),
+            (Pos2::new(188.0, 128.0), ResizeHandle::BottomRight),
+        ] {
+            assert_eq!(
+                resize_handle_at(geometry, &layer, None, pointer),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            resize_cursor(ResizeHandle::TopLeft),
+            egui::CursorIcon::ResizeNwSe
+        );
     }
 
     #[test]
@@ -874,5 +881,12 @@ mod tests {
             CanvasInvalidation::Layer(7)
         );
         assert_eq!(canvas_invalidation(&Command::Undo), CanvasInvalidation::All);
+    }
+
+    #[test]
+    fn action_search_matches_intent_not_just_tool_names() {
+        assert!(Tool::Move.matches("resize"));
+        assert!(Tool::Mask.matches("visible region"));
+        assert!(!Tool::Text.matches("crop"));
     }
 }

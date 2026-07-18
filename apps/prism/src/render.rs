@@ -134,12 +134,17 @@ pub fn render_document(document: &Document, max_size: Option<u32>) -> Result<Dyn
         if !layer.visible || layer.opacity <= 0.0 {
             continue;
         }
-        let source = render_layer_preview(layer, None)?;
+        let text_scale = text_raster_scale(layer, scale);
+        let mut render_layer = layer.clone();
+        if let LayerKind::Text { font_size, .. } = &mut render_layer.kind {
+            *font_size *= text_scale;
+        }
+        let source = render_layer_preview(&render_layer, None)?;
         let mut scaled_layer = layer.clone();
         scaled_layer.transform.x *= scale;
         scaled_layer.transform.y *= scale;
-        scaled_layer.transform.scale_x *= scale;
-        scaled_layer.transform.scale_y *= scale;
+        scaled_layer.transform.scale_x *= scale / text_scale;
+        scaled_layer.transform.scale_y *= scale / text_scale;
         let source = transform_layer(source, scaled_layer.transform);
         let mut coverage = RgbaImage::new(canvas_width, canvas_height);
         composite_layer(
@@ -208,53 +213,105 @@ pub fn render_solid_color(color: [u8; 4], adjustments: &spectrum_imaging::Adjust
     .0
 }
 
+pub fn measure_text(text: &str, font_size: f32) -> Result<(u32, u32)> {
+    let font = Font::from_bytes(
+        epaint_default_fonts::UBUNTU_LIGHT,
+        fontdue::FontSettings::default(),
+    )
+    .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?;
+    let layout = layout_text(&font, text, font_size);
+    Ok((layout.width, layout.height))
+}
+
 fn render_text(text: &str, font_size: f32, color: [u8; 4]) -> Result<RgbaImage> {
     let font = Font::from_bytes(
         epaint_default_fonts::UBUNTU_LIGHT,
         fontdue::FontSettings::default(),
     )
     .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?;
-    let line_height = (font_size * 1.25).ceil() as u32;
-    let lines: Vec<_> = text.lines().collect();
-    let width = lines
-        .iter()
-        .map(|line| {
-            line.chars()
-                .map(|character| font.metrics(character, font_size).advance_width)
-                .sum::<f32>()
-                .ceil() as u32
-        })
-        .max()
-        .unwrap_or(1)
-        .max(1);
-    let height = (line_height * lines.len().max(1) as u32).max(1);
-    let mut output = RgbaImage::new(width, height);
-    for (line_index, line) in lines.iter().enumerate() {
-        let mut cursor_x: f32 = 0.0;
-        for character in line.chars() {
-            let (metrics, bitmap) = font.rasterize(character, font_size);
-            let origin_y = line_index as i32 * line_height as i32
-                + (line_height as i32 - metrics.height as i32)
-                + metrics.ymin.min(0).abs();
-            for row in 0..metrics.height {
-                for column in 0..metrics.width {
-                    let x = cursor_x.round() as i32 + metrics.xmin + column as i32;
-                    let y = origin_y + row as i32;
-                    if x >= 0 && y >= 0 && (x as u32) < width && (y as u32) < height {
-                        let alpha =
-                            bitmap[row * metrics.width + column] as u16 * color[3] as u16 / 255;
-                        output.put_pixel(
-                            x as u32,
-                            y as u32,
-                            Rgba([color[0], color[1], color[2], alpha as u8]),
-                        );
-                    }
+    let layout = layout_text(&font, text, font_size);
+    let mut output = RgbaImage::new(layout.width, layout.height);
+    for glyph in layout.glyphs {
+        let (metrics, bitmap) = font.rasterize(glyph.character, font_size);
+        for row in 0..metrics.height {
+            for column in 0..metrics.width {
+                let x = glyph.x + column as i32 - layout.min_x;
+                let y = glyph.y + row as i32 - layout.min_y;
+                if x >= 0 && y >= 0 && (x as u32) < layout.width && (y as u32) < layout.height {
+                    let alpha = bitmap[row * metrics.width + column] as u16 * color[3] as u16 / 255;
+                    output.put_pixel(
+                        x as u32,
+                        y as u32,
+                        Rgba([color[0], color[1], color[2], alpha as u8]),
+                    );
                 }
             }
-            cursor_x += metrics.advance_width;
         }
     }
     Ok(output)
+}
+
+struct PositionedGlyph {
+    character: char,
+    x: i32,
+    y: i32,
+}
+
+struct TextLayout {
+    glyphs: Vec<PositionedGlyph>,
+    min_x: i32,
+    min_y: i32,
+    width: u32,
+    height: u32,
+}
+
+fn layout_text(font: &Font, text: &str, font_size: f32) -> TextLayout {
+    let line_metrics = font.horizontal_line_metrics(font_size);
+    let ascent = line_metrics.map_or(font_size, |metrics| metrics.ascent);
+    let natural_height = line_metrics.map_or(font_size, |metrics| metrics.new_line_size);
+    let line_height = natural_height.max(font_size * 1.25).ceil().max(1.0);
+    let lines: Vec<_> = text.split('\n').collect();
+    let mut glyphs = Vec::new();
+    let mut min_x = 0;
+    let mut min_y = 0;
+    let mut max_x = 1;
+    let mut max_y = (line_height * lines.len().max(1) as f32).ceil() as i32;
+    for (line_index, line) in lines.iter().enumerate() {
+        let mut cursor_x: f32 = 0.0;
+        for character in line.chars() {
+            let metrics = font.metrics(character, font_size);
+            let x = cursor_x.round() as i32 + metrics.xmin;
+            let baseline = line_index as f32 * line_height + ascent;
+            let y = baseline.round() as i32 - metrics.ymin - metrics.height as i32;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x + metrics.width as i32);
+            max_y = max_y.max(y + metrics.height as i32);
+            glyphs.push(PositionedGlyph { character, x, y });
+            cursor_x += metrics.advance_width;
+        }
+        max_x = max_x.max(cursor_x.ceil() as i32);
+    }
+    TextLayout {
+        glyphs,
+        min_x,
+        min_y,
+        width: (max_x - min_x).max(1) as u32,
+        height: (max_y - min_y).max(1) as u32,
+    }
+}
+
+fn text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
+    if !matches!(layer.kind, LayerKind::Text { .. }) {
+        return 1.0;
+    }
+    let target = layer
+        .transform
+        .scale_x
+        .abs()
+        .max(layer.transform.scale_y.abs())
+        * document_scale;
+    (target.max(1.0).ceil() as u32).next_power_of_two().min(16) as f32
 }
 
 fn render_rectangle(width: u32, height: u32, color: [u8; 4], radius: f32) -> RgbaImage {
@@ -524,4 +581,23 @@ pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<
         _ => unreachable!("extension was validated before rendering"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    #[test]
+    fn glyph_layout_does_not_discard_descender_pixels() {
+        let font = Font::from_bytes(
+            epaint_default_fonts::UBUNTU_LIGHT,
+            fontdue::FontSettings::default(),
+        )
+        .unwrap();
+        let (_, glyph) = font.rasterize('g', 72.0);
+        let rendered = render_text("g", 72.0, [255, 255, 255, 255]).unwrap();
+        let source_alpha: u64 = glyph.into_iter().map(u64::from).sum();
+        let rendered_alpha: u64 = rendered.pixels().map(|pixel| u64::from(pixel[3])).sum();
+        assert_eq!(rendered_alpha, source_alpha);
+    }
 }

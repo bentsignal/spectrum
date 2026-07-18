@@ -961,8 +961,8 @@ fn validate_adjustments(value: &Adjustments) -> Result<()> {
 mod render;
 
 pub use render::{
-    export_document, load_document, render_document, render_layer_base, render_layer_preview,
-    render_solid_color, save_document,
+    export_document, load_document, measure_text, render_document, render_layer_base,
+    render_layer_preview, render_solid_color, save_document,
 };
 
 #[cfg(test)]

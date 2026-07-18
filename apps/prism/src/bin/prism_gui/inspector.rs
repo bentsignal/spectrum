@@ -2,14 +2,14 @@ use super::*;
 
 impl PrismApp {
     pub(super) fn inspector(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("INSPECTOR").size(10.0).strong().color(MUTED));
+        ui.label(RichText::new("DETAILS").size(10.0).strong().color(MUTED));
         ui.add_space(6.0);
         let Some(layer) = self.selected_layer().cloned() else {
             ui.add_space(18.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No layer selected").color(MUTED));
+                ui.label(RichText::new("Nothing in focus").color(MUTED));
                 ui.label(
-                    RichText::new("Choose a layer on the canvas or in the stack.")
+                    RichText::new("Choose an element on the canvas or in the composition.")
                         .size(11.0)
                         .color(MUTED),
                 );

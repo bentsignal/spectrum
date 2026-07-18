@@ -1,5 +1,8 @@
 use super::*;
 
+const RESIZE_HANDLE_HIT_RADIUS: f32 = 18.0;
+const RESIZE_HANDLE_SIZE: f32 = 9.0;
+
 #[derive(Clone, Copy)]
 pub(super) enum ToggleIcon {
     Visibility,
@@ -61,82 +64,6 @@ pub(super) fn icon_toggle(ui: &mut egui::Ui, enabled: bool, icon: ToggleIcon) ->
     response
 }
 
-pub(super) fn tool_button(ui: &mut egui::Ui, tool: Tool, selected: bool) -> egui::Response {
-    let response = ui.add_sized([40.0, 40.0], egui::Button::new("").selected(selected));
-    let center = response.rect.center();
-    let color = if selected { Color32::BLACK } else { TEXT };
-    let stroke = Stroke::new(1.8, color);
-    let painter = ui.painter();
-    match tool {
-        Tool::Move => {
-            let points = [
-                center + Vec2::new(-7.0, -9.0),
-                center + Vec2::new(-6.0, 8.0),
-                center + Vec2::new(-1.0, 3.0),
-                center + Vec2::new(3.0, 10.0),
-                center + Vec2::new(7.0, 8.0),
-                center + Vec2::new(3.0, 1.0),
-                center + Vec2::new(10.0, 0.0),
-            ];
-            painter.add(egui::Shape::closed_line(points.to_vec(), stroke));
-        }
-        Tool::Crop => {
-            painter.line_segment(
-                [
-                    center + Vec2::new(-8.0, -4.0),
-                    center + Vec2::new(5.0, -4.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    center + Vec2::new(-4.0, -8.0),
-                    center + Vec2::new(-4.0, 5.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [center + Vec2::new(-5.0, 4.0), center + Vec2::new(8.0, 4.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [center + Vec2::new(4.0, -5.0), center + Vec2::new(4.0, 8.0)],
-                stroke,
-            );
-        }
-        Tool::Text => {
-            painter.text(
-                center,
-                Align2::CENTER_CENTER,
-                "Aa",
-                FontId::proportional(16.0),
-                color,
-            );
-        }
-        Tool::Rectangle => {
-            painter.rect_stroke(
-                Rect::from_center_size(center, Vec2::new(19.0, 15.0)),
-                3.0,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-        }
-        Tool::Mask => {
-            let rect = Rect::from_center_size(center, Vec2::new(20.0, 16.0));
-            for corner in [
-                rect.left_top(),
-                rect.right_top(),
-                rect.left_bottom(),
-                rect.right_bottom(),
-            ] {
-                painter.rect_filled(Rect::from_center_size(corner, Vec2::splat(3.0)), 0.5, color);
-            }
-            painter.circle_stroke(center, 5.0, stroke);
-        }
-    }
-    response
-}
-
 pub(super) fn canvas_geometry(
     viewport: Rect,
     width: u32,
@@ -165,11 +92,9 @@ pub(super) fn layer_bounds(layer: &Layer, cached_size: Option<Vec2>) -> Option<R
         }
         LayerKind::Text {
             text, font_size, ..
-        } => {
-            let longest = text.lines().map(str::len).max().unwrap_or(1) as f32;
-            let lines = text.lines().count().max(1) as f32;
-            Vec2::new(longest * font_size * 0.55, lines * font_size * 1.25)
-        }
+        } => prism_core::measure_text(text, *font_size)
+            .ok()
+            .map(|(width, height)| Vec2::new(width as f32, height as f32))?,
         LayerKind::Rectangle { width, height, .. } => Vec2::new(*width as f32, *height as f32),
     });
     let size = Vec2::new(
@@ -197,8 +122,17 @@ pub(super) fn resize_handle_at(
     ];
     corners
         .into_iter()
-        .find(|(_, corner)| geometry.canvas_to_screen(*corner).distance(pointer) <= 10.0)
+        .map(|(handle, corner)| (handle, geometry.canvas_to_screen(corner).distance(pointer)))
+        .filter(|(_, distance)| *distance <= RESIZE_HANDLE_HIT_RADIUS)
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
         .map(|(handle, _)| handle)
+}
+
+pub(super) fn resize_cursor(handle: ResizeHandle) -> egui::CursorIcon {
+    match handle {
+        ResizeHandle::TopLeft | ResizeHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
+        ResizeHandle::TopRight | ResizeHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
+    }
 }
 
 pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transform {
@@ -218,12 +152,12 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
     };
     let minimum_width = 1.0_f32.min(bounds.width());
     let minimum_height = 1.0_f32.min(bounds.height());
-    let mut width = match handle {
+    let width = match handle {
         ResizeHandle::TopLeft | ResizeHandle::BottomLeft => bounds.right() - drag.current_canvas.x,
         ResizeHandle::TopRight | ResizeHandle::BottomRight => drag.current_canvas.x - bounds.left(),
     }
     .max(minimum_width);
-    let mut height = match handle {
+    let height = match handle {
         ResizeHandle::TopLeft | ResizeHandle::TopRight => bounds.bottom() - drag.current_canvas.y,
         ResizeHandle::BottomLeft | ResizeHandle::BottomRight => {
             drag.current_canvas.y - bounds.top()
@@ -233,16 +167,12 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
     let mut ratio_x = width / bounds.width().max(0.001);
     let mut ratio_y = height / bounds.height().max(0.001);
     if preserve_aspect {
-        let ratio = if (ratio_x - 1.0).abs() >= (ratio_y - 1.0).abs() {
-            ratio_x
-        } else {
-            ratio_y
-        };
+        let ratio = ((ratio_x + ratio_y) * 0.5).max(0.01);
         ratio_x = ratio;
         ratio_y = ratio;
-        width = bounds.width() * ratio;
-        height = bounds.height() * ratio;
     }
+    let width = bounds.width() * ratio_x;
+    let height = bounds.height() * ratio_y;
     let (x, y) = match handle {
         ResizeHandle::TopLeft => (bounds.right() - width, bounds.bottom() - height),
         ResizeHandle::TopRight => (bounds.left(), bounds.bottom() - height),
@@ -285,7 +215,7 @@ pub(super) fn paint_layer_outline(
         rect.right_bottom(),
     ] {
         ui.painter().rect_filled(
-            Rect::from_center_size(corner, Vec2::splat(7.0)),
+            Rect::from_center_size(corner, Vec2::splat(RESIZE_HANDLE_SIZE)),
             1.0,
             ACCENT,
         );
