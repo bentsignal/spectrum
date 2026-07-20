@@ -89,6 +89,7 @@ impl PrismApp {
             self.status_error = false;
             return;
         }
+        self.settle_inline_text_editor();
         self.finish_interaction();
         self.history.visible = true;
         self.history.selected = None;

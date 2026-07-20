@@ -142,7 +142,10 @@ impl PrismApp {
             } else if self.pending_open_documents.is_empty() && now >= self.startup_project_ready_at
             {
                 match create_managed_workspace(Document::default()) {
-                    Ok(workspace) => self.workspace = workspace,
+                    Ok(workspace) => {
+                        self.settle_inline_text_editor();
+                        self.workspace = workspace;
+                    }
                     Err(error) => {
                         self.status = format!("Could not create local project: {error:#}");
                         self.status_error = true;
@@ -176,6 +179,7 @@ impl PrismApp {
     fn replace_with_opened_project(&mut self, path: &Path) {
         match open_local_workspace(path) {
             Ok(workspace) => {
+                self.settle_inline_text_editor();
                 self.workspace = workspace;
                 self.status = format!("Opened {}", path.display());
                 self.status_error = false;
@@ -220,6 +224,7 @@ impl PrismApp {
     }
 
     pub(super) fn begin_move_project(&mut self) {
+        self.settle_inline_text_editor();
         self.move_project_dialog = Some(MoveProjectDialog::default());
     }
 
