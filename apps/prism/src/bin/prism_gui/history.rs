@@ -161,7 +161,11 @@ impl PrismApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("HISTORY").size(11.0).strong().color(TEXT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if quiet_button(ui, "Canvas  ⌘H").clicked() {
+                        #[cfg(target_os = "macos")]
+                        let canvas_label = "Canvas  ⇧⌘H";
+                        #[cfg(not(target_os = "macos"))]
+                        let canvas_label = "Canvas  ⌘H";
+                        if quiet_button(ui, canvas_label).clicked() {
                             close = true;
                         }
                     });

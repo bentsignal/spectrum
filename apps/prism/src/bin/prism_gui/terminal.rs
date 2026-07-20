@@ -254,6 +254,7 @@ struct TerminalLaunch {
 }
 
 impl PrismApp {
+    #[cfg(not(target_os = "macos"))]
     pub(super) fn terminal_status_control(&mut self, ui: &mut egui::Ui) {
         if ui
             .selectable_label(self.terminal.visible(), "Terminal  ⌘J")

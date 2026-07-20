@@ -16,6 +16,31 @@ pub(super) enum ShortcutDomain {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApplicationShortcutOwner {
+    Egui,
+    #[cfg(target_os = "macos")]
+    NativeMenu,
+}
+
+#[cfg(target_os = "macos")]
+fn application_shortcut_owner() -> ApplicationShortcutOwner {
+    ApplicationShortcutOwner::NativeMenu
+}
+
+#[cfg(not(target_os = "macos"))]
+fn application_shortcut_owner() -> ApplicationShortcutOwner {
+    ApplicationShortcutOwner::Egui
+}
+
+fn route_application_shortcut(
+    owner: ApplicationShortcutOwner,
+    action_available: bool,
+    shortcut_pressed: bool,
+) -> bool {
+    owner == ApplicationShortcutOwner::Egui && action_available && shortcut_pressed
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GlobalShortcut {
     ToolsAndActions,
     JumpToObject,
@@ -100,8 +125,18 @@ pub(super) fn global_shortcut_pressed(input: &egui::InputState, shortcut: Global
         && input.key_pressed(shortcut.key())
 }
 
-fn terminal_shortcut_allowed(has_modal_surface: bool, shortcut_pressed: bool) -> bool {
-    !has_modal_surface && shortcut_pressed
+fn history_shortcut_pressed(input: &egui::InputState) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        input.modifiers.command
+            && input.modifiers.shift
+            && !input.modifiers.alt
+            && input.key_pressed(GlobalShortcut::History.key())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        global_shortcut_pressed(input, GlobalShortcut::History)
+    }
 }
 
 fn terminal_shortcut_pressed(input: &egui::InputState) -> bool {
@@ -132,8 +167,13 @@ fn reset_tool_after_escape(tool: &mut Tool, status: &mut String, status_error: &
 
 impl PrismApp {
     pub(super) fn keyboard(&mut self, context: &egui::Context) {
+        let application_shortcut_owner = application_shortcut_owner();
         let terminal_pressed = context.input(terminal_shortcut_pressed);
-        if terminal_shortcut_allowed(self.has_modal_surface(), terminal_pressed) {
+        if route_application_shortcut(
+            application_shortcut_owner,
+            !self.has_modal_surface(),
+            terminal_pressed,
+        ) {
             self.toggle_terminal();
             return;
         }
@@ -143,7 +183,11 @@ impl PrismApp {
         if self.has_modal_surface() || context.egui_wants_keyboard_input() {
             return;
         }
-        if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::History)) {
+        if route_application_shortcut(
+            application_shortcut_owner,
+            true,
+            context.input(history_shortcut_pressed),
+        ) {
             self.toggle_history();
             return;
         }
@@ -195,7 +239,11 @@ impl PrismApp {
         if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::JumpToObject)) {
             self.composition_search_focus = true;
         }
-        if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::UndoRedo)) {
+        if route_application_shortcut(
+            application_shortcut_owner,
+            true,
+            context.input(|input| global_shortcut_pressed(input, GlobalShortcut::UndoRedo)),
+        ) {
             if context.input(|input| input.modifiers.shift) {
                 self.execute(Command::Redo);
             } else {
@@ -300,9 +348,13 @@ mod tests {
     }
 
     #[test]
-    fn command_h_belongs_to_the_global_history_surface() {
+    fn platform_history_chord_belongs_to_the_global_history_surface() {
         let mut input = egui::RawInput::default();
         input.modifiers.command = true;
+        #[cfg(target_os = "macos")]
+        {
+            input.modifiers.shift = true;
+        }
         input.events.push(egui::Event::Key {
             key: egui::Key::H,
             physical_key: Some(egui::Key::H),
@@ -312,7 +364,7 @@ mod tests {
         });
         let context = egui::Context::default();
         context.begin_pass(input);
-        assert!(context.input(|state| global_shortcut_pressed(state, GlobalShortcut::History)));
+        assert!(context.input(history_shortcut_pressed));
         let _ = context.end_pass();
     }
 
@@ -332,10 +384,35 @@ mod tests {
     }
 
     #[test]
-    fn terminal_shortcut_never_replaces_an_open_modal() {
-        assert!(!terminal_shortcut_allowed(true, true));
-        assert!(terminal_shortcut_allowed(false, true));
-        assert!(!terminal_shortcut_allowed(false, false));
+    fn application_shortcuts_have_one_owner_and_respect_availability() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            application_shortcut_owner(),
+            ApplicationShortcutOwner::NativeMenu
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(application_shortcut_owner(), ApplicationShortcutOwner::Egui);
+        assert!(route_application_shortcut(
+            ApplicationShortcutOwner::Egui,
+            true,
+            true
+        ));
+        #[cfg(target_os = "macos")]
+        assert!(!route_application_shortcut(
+            ApplicationShortcutOwner::NativeMenu,
+            true,
+            true
+        ));
+        assert!(!route_application_shortcut(
+            ApplicationShortcutOwner::Egui,
+            false,
+            true
+        ));
+        assert!(!route_application_shortcut(
+            ApplicationShortcutOwner::Egui,
+            true,
+            false
+        ));
     }
 
     #[test]

@@ -275,6 +275,8 @@ struct PrismApp {
     move_project_dialog: Option<MoveProjectDialog>,
     history: HistoryViewState,
     open_document_receiver: Receiver<PathBuf>,
+    #[cfg(target_os = "macos")]
+    native_menu: macos::NativeMenuBridge,
     pending_open_documents: VecDeque<(std::time::Instant, PathBuf)>,
     startup_project_ready_at: std::time::Instant,
     collaboration_poll_at: std::time::Instant,
@@ -312,24 +314,7 @@ fn main() -> eframe::Result {
 #[cfg(target_os = "macos")]
 fn main() -> eframe::Result {
     let initial_project = std::env::args_os().nth(1).map(PathBuf::from);
-    let (open_document_sender, open_document_receiver) = mpsc::channel();
-    let event_loop =
-        winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
-    macos::install_open_document_handler(open_document_sender);
-    let mut application = eframe::create_native(
-        "Prism",
-        native_options(),
-        Box::new(move |creation| {
-            Ok(Box::new(PrismApp::new(
-                creation,
-                initial_project.as_deref(),
-                open_document_receiver,
-            )))
-        }),
-        &event_loop,
-    );
-    event_loop.run_app(&mut application)?;
-    Ok(())
+    macos::run(initial_project)
 }
 
 impl PrismApp {
@@ -337,9 +322,8 @@ impl PrismApp {
         creation: &eframe::CreationContext<'_>,
         initial_project: Option<&Path>,
         open_document_receiver: Receiver<PathBuf>,
+        #[cfg(target_os = "macos")] native_menu: macos::NativeMenuBridge,
     ) -> Self {
-        #[cfg(target_os = "macos")]
-        macos::install_open_document_repaint(creation.egui_ctx.clone());
         install_style(&creation.egui_ctx);
         let (layer_render_request_sender, layer_render_request_receiver) = mpsc::channel();
         let (layer_render_result_sender, layer_render_receiver) = mpsc::channel();
@@ -390,6 +374,8 @@ impl PrismApp {
             move_project_dialog: None,
             history: HistoryViewState::new(creation.egui_ctx.clone()),
             open_document_receiver,
+            #[cfg(target_os = "macos")]
+            native_menu,
             pending_open_documents: VecDeque::new(),
             startup_project_ready_at: std::time::Instant::now()
                 + std::time::Duration::from_millis(250),
@@ -653,7 +639,9 @@ impl PrismApp {
                             .color(if self.status_error { DANGER } else { MUTED }),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        #[cfg(not(target_os = "macos"))]
                         self.terminal_status_control(ui);
+                        #[cfg(not(target_os = "macos"))]
                         if ui.small_button("Fit").clicked() {
                             self.zoom = 1.0;
                             self.pan = Vec2::ZERO;
@@ -688,7 +676,7 @@ impl eframe::App for PrismApp {
     fn ui(&mut self, root: &mut egui::Ui, frame: &mut eframe::Frame) {
         let _ = frame;
         #[cfg(target_os = "macos")]
-        spectrum_history_ui::reserve_history_shortcut();
+        self.process_native_menu_actions(root.ctx());
         let context = root.ctx().clone();
         self.receive_open_documents(&context);
         self.sync_agent_collaborations(&context);
@@ -708,6 +696,8 @@ impl eframe::App for PrismApp {
             }
         }
         self.dialogs(&context);
+        #[cfg(target_os = "macos")]
+        self.sync_native_menu_state(&context);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

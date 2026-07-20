@@ -129,74 +129,75 @@ impl PrismApp {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("PRISM").size(12.0).strong().color(TEXT));
-                    ui.separator();
-                    ui.menu_button("Project", |ui| {
-                        if ui.button("New document").clicked() {
-                            self.new_dialog = Some(NewDocumentDialog::default());
-                            ui.close();
-                        }
-                        if ui.button("Open…").clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Prism project", &["prism", "mica"])
-                                .pick_file()
-                            {
-                                self.open_path(&path);
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        ui.separator();
+                        ui.menu_button("Project", |ui| {
+                            if ui.button("New document").clicked() {
+                                self.new_dialog = Some(NewDocumentDialog::default());
+                                ui.close();
                             }
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("Move project…").clicked() {
-                            self.begin_move_project();
-                            ui.close();
-                        }
-                        ui.separator();
+                            if ui.button("Open…").clicked() {
+                                self.open_project_dialog();
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Move project…").clicked() {
+                                self.begin_move_project();
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui
+                                .button(if self.history.visible {
+                                    "Close history  ⌘H"
+                                } else {
+                                    "History  ⌘H"
+                                })
+                                .clicked()
+                            {
+                                self.toggle_history();
+                                ui.close();
+                            }
+                            if ui
+                                .button(if self.terminal.visible() {
+                                    "Hide terminal  ⌘J"
+                                } else {
+                                    "Show terminal  ⌘J"
+                                })
+                                .clicked()
+                            {
+                                self.toggle_terminal();
+                                ui.close();
+                            }
+                        });
                         if ui
-                            .button(if self.history.visible {
-                                "Close history  ⌘H"
-                            } else {
-                                "History  ⌘H"
-                            })
+                            .add_enabled(self.workspace.can_undo(), egui::Button::new("Back"))
+                            .on_hover_text("Undo · ⌘Z")
+                            .clicked()
+                        {
+                            self.execute(Command::Undo);
+                        }
+                        if ui
+                            .add_enabled(self.workspace.can_redo(), egui::Button::new("Forward"))
+                            .on_hover_text("Redo · ⇧⌘Z")
+                            .clicked()
+                        {
+                            self.execute(Command::Redo);
+                        }
+                        if ui
+                            .selectable_label(self.history.visible, "History")
+                            .on_hover_text("Revision history · ⌘H")
                             .clicked()
                         {
                             self.toggle_history();
-                            ui.close();
                         }
-                        if ui
-                            .button(if self.terminal.visible() {
-                                "Hide terminal  ⌘J"
-                            } else {
-                                "Show terminal  ⌘J"
-                            })
-                            .clicked()
-                        {
-                            self.toggle_terminal();
-                            ui.close();
-                        }
-                    });
-                    if ui
-                        .add_enabled(self.workspace.can_undo(), egui::Button::new("Back"))
-                        .on_hover_text("Undo · ⌘Z")
-                        .clicked()
-                    {
-                        self.execute(Command::Undo);
-                    }
-                    if ui
-                        .add_enabled(self.workspace.can_redo(), egui::Button::new("Forward"))
-                        .on_hover_text("Redo · ⇧⌘Z")
-                        .clicked()
-                    {
-                        self.execute(Command::Redo);
-                    }
-                    if ui
-                        .selectable_label(self.history.visible, "History")
-                        .on_hover_text("Revision history · ⌘H")
-                        .clicked()
-                    {
-                        self.toggle_history();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if primary_button(ui, "Export").clicked() {
-                            self.export();
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            if primary_button(ui, "Export").clicked() {
+                                self.export();
+                            }
                         }
                         ui.label(
                             RichText::new(&self.workspace.document.name)
