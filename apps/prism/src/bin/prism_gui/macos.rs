@@ -12,6 +12,7 @@ use objc2_app_kit::{NSApplication, NSApplicationDelegate};
 use objc2_foundation::{MainThreadMarker, NSArray, NSURL};
 
 static OPEN_DOCUMENT_SENDER: OnceLock<Sender<PathBuf>> = OnceLock::new();
+static OPEN_DOCUMENT_REPAINT: OnceLock<eframe::egui::Context> = OnceLock::new();
 
 unsafe extern "C-unwind" fn application_open_urls(
     _delegate: *mut AnyObject,
@@ -22,15 +23,23 @@ unsafe extern "C-unwind" fn application_open_urls(
     let (Some(sender), Some(urls)) = (OPEN_DOCUMENT_SENDER.get(), unsafe { urls.as_ref() }) else {
         return;
     };
+    let mut queued = false;
     for url in urls {
         // Launch Services may hand Prism a security-scoped URL for protected folders such as
         // Downloads. Keep that access for the process lifetime because the live revision store
         // needs to continue reading and writing the project after this callback returns.
         let _ = unsafe { url.startAccessingSecurityScopedResource() };
         if let Some(path) = url.to_file_path() {
-            let _ = sender.send(path);
+            queued |= sender.send(path).is_ok();
         }
     }
+    if queued && let Some(context) = OPEN_DOCUMENT_REPAINT.get() {
+        context.request_repaint();
+    }
+}
+
+pub(super) fn install_open_document_repaint(context: eframe::egui::Context) {
+    let _ = OPEN_DOCUMENT_REPAINT.set(context);
 }
 
 pub(super) fn install_open_document_handler(sender: Sender<PathBuf>) {

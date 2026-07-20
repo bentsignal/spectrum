@@ -384,7 +384,7 @@ fn completed_preview_is_safe_to_display(
     completed: &CompositePreviewKey,
     desired: &CompositePreviewKey,
 ) -> bool {
-    completed.tab_id == desired.tab_id && completed.generation == desired.generation
+    completed == desired
 }
 
 pub(super) fn document_requires_composite_preview(document: &Document) -> bool {
@@ -523,10 +523,11 @@ mod tests {
             Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 80.0)),
         );
         let completed = CompositePreviewKey::new(4, 7, &document, geometry, 1.0).unwrap();
-        let same_generation = CompositePreviewKey::new(4, 7, &document, geometry, 2.0).unwrap();
-        assert!(completed_preview_is_safe_to_display(
+        assert!(completed_preview_is_safe_to_display(&completed, &completed));
+        let different_scale = CompositePreviewKey::new(4, 7, &document, geometry, 2.0).unwrap();
+        assert!(!completed_preview_is_safe_to_display(
             &completed,
-            &same_generation
+            &different_scale
         ));
         assert!(!completed_preview_is_safe_to_display(
             &completed,
@@ -535,6 +536,19 @@ mod tests {
         assert!(!completed_preview_is_safe_to_display(
             &completed,
             &CompositePreviewKey::new(4, 8, &document, geometry, 1.0).unwrap()
+        ));
+
+        let mut moved = document.clone();
+        moved.layers.push(Layer {
+            transform: Transform {
+                x: 20.0,
+                ..Transform::default()
+            },
+            ..Layer::default()
+        });
+        assert!(!completed_preview_is_safe_to_display(
+            &completed,
+            &CompositePreviewKey::new(4, 7, &moved, geometry, 1.0).unwrap()
         ));
     }
 
