@@ -172,17 +172,6 @@ pub fn document_supports_region_native_zoom(document: &Document) -> bool {
         !layer.visible
             || layer.opacity <= 0.0
             || crate::render_region::supports_bounded_source(layer)
-            || matches!(
-                &layer.kind,
-                LayerKind::Rectangle {
-                    corner_radius,
-                    ..
-                } if *corner_radius <= 0.0
-            ) && !layer.stroke.enabled
-                && layer.adjustments == spectrum_imaging::Adjustments::default()
-                && layer.transform.rotation.abs() < 0.01
-                && layer.transform.scale_x > 0.0
-                && layer.transform.scale_y > 0.0
     })
 }
 
@@ -308,26 +297,13 @@ fn render_document_region_scaled_impl(
         scaled_layer.transform.scale_y *= scale / text_scale / shape_scale[1];
         let mut coverage = RgbaImage::new(region.width, region.height);
         if bound_fallback_layers
-            && composite_solid_rectangle_region(
-                &mut canvas,
-                &mut coverage,
-                &render_layer,
-                &scaled_layer,
-                shape_scale,
-                previous_coverage.as_ref(),
-                region,
-            )
-        {
-            previous_coverage = Some(coverage);
-            continue;
-        }
-        if bound_fallback_layers
             && crate::render_region::composite_bounded_source_region(
                 &mut canvas,
                 &mut coverage,
                 layer,
                 &render_layer,
                 &scaled_layer,
+                shape_scale,
                 previous_coverage.as_ref(),
                 region,
                 font_asset,
@@ -457,75 +433,6 @@ fn ensure_region_fallback_is_bounded(
         );
     }
     Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn composite_solid_rectangle_region(
-    canvas: &mut RgbaImage,
-    coverage: &mut RgbaImage,
-    render_layer: &Layer,
-    scaled_layer: &Layer,
-    shape_scale: [f32; 2],
-    clip: Option<&RgbaImage>,
-    region: RenderRegion,
-) -> bool {
-    let LayerKind::Rectangle {
-        width,
-        height,
-        color,
-        corner_radius,
-    } = &render_layer.kind
-    else {
-        return false;
-    };
-    if *corner_radius > 0.0
-        || render_layer.stroke.enabled
-        || render_layer.adjustments != spectrum_imaging::Adjustments::default()
-        || scaled_layer.transform.rotation.abs() >= 0.01
-        || scaled_layer.transform.scale_x <= 0.0
-        || scaled_layer.transform.scale_y <= 0.0
-    {
-        return false;
-    }
-
-    let base_width = (*width as f32 * shape_scale[0]).round().max(1.0) as u32;
-    let base_height = (*height as f32 * shape_scale[1]).round().max(1.0) as u32;
-    let source_width = (base_width as f32 * scaled_layer.transform.scale_x)
-        .round()
-        .max(1.0) as u32;
-    let source_height = (base_height as f32 * scaled_layer.transform.scale_y)
-        .round()
-        .max(1.0) as u32;
-    let origin_x = scaled_layer.transform.x.round() as i64;
-    let origin_y = scaled_layer.transform.y.round() as i64;
-    let left = origin_x.max(i64::from(region.x));
-    let top = origin_y.max(i64::from(region.y));
-    let right = (origin_x + i64::from(source_width)).min(i64::from(region.x + region.width));
-    let bottom = (origin_y + i64::from(source_height)).min(i64::from(region.y + region.height));
-    if right <= left || bottom <= top {
-        return true;
-    }
-
-    for canvas_y in top..bottom {
-        for canvas_x in left..right {
-            let source_x = (canvas_x - origin_x) as u32;
-            let source_y = (canvas_y - origin_y) as u32;
-            composite_pixel(
-                canvas,
-                coverage,
-                *color,
-                source_x,
-                source_y,
-                source_width,
-                source_height,
-                scaled_layer,
-                clip,
-                canvas_x as u32 - region.x,
-                canvas_y as u32 - region.y,
-            );
-        }
-    }
-    true
 }
 
 fn scaled_document_dimensions(document: &Document, scale: f32) -> Result<(u32, u32)> {

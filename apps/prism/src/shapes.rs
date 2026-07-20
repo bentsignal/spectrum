@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use image::{Rgba, RgbaImage};
 
-use crate::{Document, Layer, LayerKind, MAX_CANVAS_DIMENSION, ShapeStroke};
+use crate::{Document, Layer, LayerKind, MAX_CANVAS_DIMENSION};
 
 const MAX_INTERACTIVE_SHAPE_RASTER: u32 = 8_192;
 const MAX_RASTERIZE_SCALE: f32 = 64.0;
@@ -98,75 +98,157 @@ pub(crate) fn constrained_shape_scale(
 }
 
 pub(crate) fn render_shape(layer: &Layer, scale: [f32; 2]) -> Result<RgbaImage> {
-    if scale
-        .iter()
-        .any(|value| !value.is_finite() || *value <= 0.0)
-    {
-        bail!("shape render scale must contain positive finite numbers");
+    let sampler = ShapeSampler::new(layer, scale)?;
+    let (width, height) = sampler.dimensions();
+    let mut output = RgbaImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            output.put_pixel(x, y, sampler.pixel(x, y));
+        }
     }
-    let (width, height) = shape_dimensions(layer).context("layer is not a parametric shape")?;
-    if scaled_dimension(width, scale[0]) > MAX_CANVAS_DIMENSION
-        || scaled_dimension(height, scale[1]) > MAX_CANVAS_DIMENSION
-    {
-        bail!("shape render exceeds Prism's maximum raster dimension");
-    }
-    match layer.kind {
-        LayerKind::Rectangle {
-            width,
-            height,
-            color,
-            corner_radius,
-        } => Ok(render_rectangle(
-            width,
-            height,
-            color,
-            corner_radius,
-            layer.stroke,
+    Ok(output)
+}
+
+/// Samples the exact parametric source raster without allocating that raster.
+///
+/// Region compositing uses this at high zoom so its memory use follows the
+/// visible viewport rather than the full scaled shape.
+#[derive(Clone, Copy)]
+pub(crate) struct ShapeSampler<'a> {
+    layer: &'a Layer,
+    scale: [f32; 2],
+    dimensions: (u32, u32),
+}
+
+impl<'a> ShapeSampler<'a> {
+    pub(crate) fn new(layer: &'a Layer, scale: [f32; 2]) -> Result<Self> {
+        if scale
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            bail!("shape render scale must contain positive finite numbers");
+        }
+        let (width, height) = shape_dimensions(layer).context("layer is not a parametric shape")?;
+        let dimensions = (
+            scaled_dimension(width, scale[0]),
+            scaled_dimension(height, scale[1]),
+        );
+        if dimensions.0 > MAX_CANVAS_DIMENSION || dimensions.1 > MAX_CANVAS_DIMENSION {
+            bail!("shape render exceeds Prism's maximum raster dimension");
+        }
+        Ok(Self {
+            layer,
             scale,
-        )),
-        LayerKind::Ellipse {
-            width,
-            height,
-            color,
-        } => Ok(render_ellipse(width, height, color, layer.stroke, scale)),
-        _ => bail!("layer {} is not a parametric shape", layer.id),
+            dimensions,
+        })
     }
+
+    pub(crate) fn dimensions(&self) -> (u32, u32) {
+        self.dimensions
+    }
+
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Rgba<u8> {
+        let color = match self.layer.kind {
+            LayerKind::Rectangle {
+                width,
+                height,
+                color,
+                corner_radius,
+            } => {
+                if corner_radius <= 0.0 && !self.layer.stroke.enabled {
+                    color
+                } else {
+                    sample_shape_pixel(x, y, self.scale, |x, y| {
+                        if !rounded_rect_contains(x, y, width, height, corner_radius, 0.0) {
+                            return None;
+                        }
+                        let stroke_pixel = self.layer.stroke.enabled
+                            && !rounded_rect_contains(
+                                x,
+                                y,
+                                width,
+                                height,
+                                corner_radius,
+                                self.layer.stroke.width.min(width.min(height) as f32 * 0.5),
+                            );
+                        Some(if stroke_pixel {
+                            self.layer.stroke.color
+                        } else {
+                            color
+                        })
+                    })
+                }
+            }
+            LayerKind::Ellipse {
+                width,
+                height,
+                color,
+            } => {
+                let center_x = width as f32 * 0.5;
+                let center_y = height as f32 * 0.5;
+                let radius_x = center_x.max(0.5);
+                let radius_y = center_y.max(0.5);
+                let inner_x = (radius_x - self.layer.stroke.width).max(0.0);
+                let inner_y = (radius_y - self.layer.stroke.width).max(0.0);
+                sample_shape_pixel(x, y, self.scale, |x, y| {
+                    let dx = x - center_x;
+                    let dy = y - center_y;
+                    let outer = (dx / radius_x).powi(2) + (dy / radius_y).powi(2) <= 1.0;
+                    if !outer {
+                        return None;
+                    }
+                    let inner = inner_x > 0.0
+                        && inner_y > 0.0
+                        && (dx / inner_x).powi(2) + (dy / inner_y).powi(2) <= 1.0;
+                    Some(if self.layer.stroke.enabled && !inner {
+                        self.layer.stroke.color
+                    } else {
+                        color
+                    })
+                })
+            }
+            _ => unreachable!("ShapeSampler validates the layer kind"),
+        };
+        Rgba(color)
+    }
+}
+
+fn sample_shape_pixel(
+    x: u32,
+    y: u32,
+    scale: [f32; 2],
+    mut sample: impl FnMut(f32, f32) -> Option<[u8; 4]>,
+) -> [u8; 4] {
+    const OFFSETS: [(f32, f32); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
+    let mut alpha = 0_u32;
+    let mut premultiplied = [0_u32; 3];
+    for (offset_x, offset_y) in OFFSETS {
+        let Some(color) = sample(
+            (x as f32 + offset_x) / scale[0],
+            (y as f32 + offset_y) / scale[1],
+        ) else {
+            continue;
+        };
+        alpha += u32::from(color[3]);
+        for channel in 0..3 {
+            premultiplied[channel] += u32::from(color[channel]) * u32::from(color[3]);
+        }
+    }
+    if alpha == 0 {
+        return [0; 4];
+    }
+    let mut color = [0_u8; 4];
+    for channel in 0..3 {
+        color[channel] = (premultiplied[channel] / alpha) as u8;
+    }
+    color[3] = (alpha / OFFSETS.len() as u32) as u8;
+    color
 }
 
 fn quantized_scale(target: f32) -> u32 {
     (target.max(1.0).ceil() as u32)
         .next_power_of_two()
         .min(MAX_RASTERIZE_SCALE as u32)
-}
-
-fn render_rectangle(
-    width: u32,
-    height: u32,
-    color: [u8; 4],
-    radius: f32,
-    stroke: ShapeStroke,
-    scale: [f32; 2],
-) -> RgbaImage {
-    let output_width = scaled_dimension(width, scale[0]);
-    let output_height = scaled_dimension(height, scale[1]);
-    if radius <= 0.0 && !stroke.enabled {
-        return RgbaImage::from_pixel(output_width, output_height, Rgba(color));
-    }
-    sample_shape(output_width, output_height, scale, |x, y| {
-        if !rounded_rect_contains(x, y, width, height, radius, 0.0) {
-            return None;
-        }
-        let stroke_pixel = stroke.enabled
-            && !rounded_rect_contains(
-                x,
-                y,
-                width,
-                height,
-                radius,
-                stroke.width.min(width.min(height) as f32 * 0.5),
-            );
-        Some(if stroke_pixel { stroke.color } else { color })
-    })
 }
 
 fn rounded_rect_contains(x: f32, y: f32, width: u32, height: u32, radius: f32, inset: f32) -> bool {
@@ -190,77 +272,6 @@ fn rounded_rect_contains(x: f32, y: f32, width: u32, height: u32, radius: f32, i
     dx * dx + dy * dy <= radius * radius
 }
 
-fn render_ellipse(
-    width: u32,
-    height: u32,
-    color: [u8; 4],
-    stroke: ShapeStroke,
-    scale: [f32; 2],
-) -> RgbaImage {
-    let output_width = scaled_dimension(width, scale[0]);
-    let output_height = scaled_dimension(height, scale[1]);
-    let center_x = width as f32 * 0.5;
-    let center_y = height as f32 * 0.5;
-    let radius_x = center_x.max(0.5);
-    let radius_y = center_y.max(0.5);
-    let inner_x = (radius_x - stroke.width).max(0.0);
-    let inner_y = (radius_y - stroke.width).max(0.0);
-    sample_shape(output_width, output_height, scale, |x, y| {
-        let dx = x - center_x;
-        let dy = y - center_y;
-        let outer = (dx / radius_x).powi(2) + (dy / radius_y).powi(2) <= 1.0;
-        if !outer {
-            return None;
-        }
-        let inner = inner_x > 0.0
-            && inner_y > 0.0
-            && (dx / inner_x).powi(2) + (dy / inner_y).powi(2) <= 1.0;
-        Some(if stroke.enabled && !inner {
-            stroke.color
-        } else {
-            color
-        })
-    })
-}
-
 fn scaled_dimension(value: u32, scale: f32) -> u32 {
     (value as f32 * scale).round().max(1.0) as u32
-}
-
-fn sample_shape(
-    width: u32,
-    height: u32,
-    scale: [f32; 2],
-    mut sample: impl FnMut(f32, f32) -> Option<[u8; 4]>,
-) -> RgbaImage {
-    const OFFSETS: [(f32, f32); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
-    let mut output = RgbaImage::new(width, height);
-    for y in 0..height {
-        for x in 0..width {
-            let mut alpha = 0_u32;
-            let mut premultiplied = [0_u32; 3];
-            for (offset_x, offset_y) in OFFSETS {
-                let Some(color) = sample(
-                    (x as f32 + offset_x) / scale[0],
-                    (y as f32 + offset_y) / scale[1],
-                ) else {
-                    continue;
-                };
-                alpha += u32::from(color[3]);
-                for channel in 0..3 {
-                    premultiplied[channel] += u32::from(color[channel]) * u32::from(color[3]);
-                }
-            }
-            if alpha == 0 {
-                continue;
-            }
-            let mut color = [0_u8; 4];
-            for channel in 0..3 {
-                color[channel] = (premultiplied[channel] / alpha) as u8;
-            }
-            color[3] = (alpha / OFFSETS.len() as u32) as u8;
-            output.put_pixel(x, y, Rgba(color));
-        }
-    }
-    output
 }
