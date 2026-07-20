@@ -373,8 +373,12 @@ impl PrismApp {
                 text,
                 font_size,
                 color,
-                ..
-            } => self.text_content(ui, layer.id, text, *font_size, *color),
+                typography,
+            } => {
+                self.text_content(ui, layer.id, text, *font_size, *color);
+                self.typeface_controls(ui, layer.id, typography);
+                self.paragraph_controls(ui, layer.id, typography);
+            }
             LayerKind::Rectangle {
                 width,
                 height,
@@ -557,6 +561,10 @@ impl PrismApp {
     }
 
     fn appearance_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
+        if let LayerKind::Text { typography, .. } = &layer.kind {
+            self.text_effects_controls(ui, layer.id, typography);
+            ui.separator();
+        }
         let mut opacity = layer.opacity * 100.0;
         let response = ui.add(
             egui::Slider::new(&mut opacity, 0.0..=100.0)

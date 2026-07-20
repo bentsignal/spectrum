@@ -865,4 +865,45 @@ mod tests {
             assert!(mapped_uv.max.distance(texture_visual.max) < 0.001);
         }
     }
+
+    #[test]
+    fn text_visual_key_tracks_typography_but_not_gpu_transform() {
+        let layer = Layer {
+            kind: LayerKind::Text {
+                text: "Typography".into(),
+                font_size: 48.0,
+                color: [255, 255, 255, 255],
+                typography: prism_core::TextTypography::default(),
+            },
+            ..Layer::default()
+        };
+        let original = LayerVisualKey::new(&layer, 1.0);
+
+        let mut transformed = layer.clone();
+        transformed.transform.x = 240.0;
+        transformed.transform.rotation = 27.0;
+        assert_eq!(original, LayerVisualKey::new(&transformed, 1.0));
+
+        let mut imported_face = layer.clone();
+        let LayerKind::Text { typography, .. } = &mut imported_face.kind else {
+            unreachable!();
+        };
+        typography.font_id = Some(9);
+        assert_ne!(original, LayerVisualKey::new(&imported_face, 1.0));
+
+        let mut paragraph = layer.clone();
+        let LayerKind::Text { typography, .. } = &mut paragraph.kind else {
+            unreachable!();
+        };
+        typography.tracking = 12.0;
+        typography.box_width = Some(320.0);
+        assert_ne!(original, LayerVisualKey::new(&paragraph, 1.0));
+
+        let mut effects = layer;
+        let LayerKind::Text { typography, .. } = &mut effects.kind else {
+            unreachable!();
+        };
+        typography.effects.outline_width = 4.0;
+        assert_ne!(original, LayerVisualKey::new(&effects, 1.0));
+    }
 }

@@ -133,6 +133,7 @@ pub(super) enum CanvasInvalidation {
 pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
     match command {
         Command::UpdateText { id, .. }
+        | Command::SetTextTypography { id, .. }
         | Command::UpdateRectangle { id, .. }
         | Command::UpdateEllipse { id, .. }
         | Command::SetShapeStroke { id, .. }
@@ -146,6 +147,7 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::DuplicateLayer { .. }
         | Command::Undo
         | Command::Redo => CanvasInvalidation::All,
+        Command::ImportFont { .. } => CanvasInvalidation::None,
         Command::RemoveLayer { .. } => CanvasInvalidation::Structure,
         _ => CanvasInvalidation::None,
     }

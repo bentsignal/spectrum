@@ -54,6 +54,8 @@ mod terminal_input;
 mod terminal_render;
 #[path = "prism_gui/theme.rs"]
 mod theme;
+#[path = "prism_gui/typography_ui.rs"]
+mod typography_ui;
 use history::HistoryViewState;
 use project_lifecycle::MoveProjectDialog;
 use renderer::*;
@@ -126,6 +128,7 @@ struct PrismApp {
     rename_layer: Option<(u64, String)>,
     new_dialog: Option<NewDocumentDialog>,
     text_dialog: Option<TextDialogDraft>,
+    font_query: String,
     delete_confirmation: Option<u64>,
     layer_drag: Option<u64>,
     layer_drop_index: Option<usize>,
@@ -227,6 +230,7 @@ impl PrismApp {
             rename_layer: None,
             new_dialog: None,
             text_dialog: None,
+            font_query: String::new(),
             delete_confirmation: None,
             layer_drag: None,
             layer_drop_index: None,
@@ -816,6 +820,19 @@ mod tests {
                 },
             }),
             CanvasInvalidation::Layer(7)
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::SetTextTypography {
+                id: 7,
+                typography: prism_core::TextTypography::default(),
+            }),
+            CanvasInvalidation::Layer(7)
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::ImportFont {
+                path: PathBuf::from("face.otf"),
+            }),
+            CanvasInvalidation::None
         );
         assert_eq!(canvas_invalidation(&Command::Undo), CanvasInvalidation::All);
     }
