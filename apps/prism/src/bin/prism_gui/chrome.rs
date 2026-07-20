@@ -46,6 +46,12 @@ enum PaletteNavigation {
     Cancel,
 }
 
+struct PaletteInteraction<'a> {
+    active_index: &'a mut usize,
+    scroll_to_active: bool,
+    pointer_moved: bool,
+}
+
 fn palette_navigation(ui: &egui::Ui) -> Option<PaletteNavigation> {
     ui.input(|input| {
         if input.key_pressed(egui::Key::ArrowDown) {
@@ -94,6 +100,18 @@ fn step_active_index(
         }
     }
     0
+}
+
+fn reconcile_hover_active_index(
+    active_index: usize,
+    hovered_index: usize,
+    pointer_moved: bool,
+) -> usize {
+    if pointer_moved {
+        hovered_index
+    } else {
+        active_index
+    }
 }
 
 impl PrismApp {
@@ -355,6 +373,7 @@ impl PrismApp {
                         results[index].enabled(has_selection)
                     });
                 let mut scroll_to_active = false;
+                let pointer_moved = ui.input(|input| input.pointer.delta() != Vec2::ZERO);
                 match palette_navigation(ui) {
                     Some(PaletteNavigation::Next) => {
                         state.active_index =
@@ -402,8 +421,11 @@ impl PrismApp {
                                 "TOOLS · change how the canvas responds",
                                 &tools,
                                 has_selection,
-                                &mut state.active_index,
-                                scroll_to_active,
+                                PaletteInteraction {
+                                    active_index: &mut state.active_index,
+                                    scroll_to_active,
+                                    pointer_moved,
+                                },
                                 &mut chosen,
                             );
                         }
@@ -416,8 +438,11 @@ impl PrismApp {
                                 "ACTIONS · happen immediately",
                                 &actions,
                                 has_selection,
-                                &mut state.active_index,
-                                scroll_to_active,
+                                PaletteInteraction {
+                                    active_index: &mut state.active_index,
+                                    scroll_to_active,
+                                    pointer_moved,
+                                },
                                 &mut chosen,
                             );
                         }
@@ -481,6 +506,7 @@ impl PrismApp {
                 state.active_index =
                     normalized_active_index(state.active_index, results.len(), |_| true);
                 let mut scroll_to_active = false;
+                let pointer_moved = ui.input(|input| input.pointer.delta() != Vec2::ZERO);
                 match palette_navigation(ui) {
                     Some(PaletteNavigation::Next) => {
                         state.active_index =
@@ -506,7 +532,8 @@ impl PrismApp {
                         response.scroll_to_me(Some(egui::Align::Center));
                     }
                     if response.hovered() {
-                        state.active_index = index;
+                        state.active_index =
+                            reconcile_hover_active_index(state.active_index, index, pointer_moved);
                     }
                     if response.clicked() {
                         chosen = Some(shape);
@@ -650,21 +677,24 @@ fn palette_group(
     heading: &str,
     items: &[(usize, PaletteItem)],
     has_selection: bool,
-    active_index: &mut usize,
-    scroll_to_active: bool,
+    interaction: PaletteInteraction<'_>,
     chosen: &mut Option<PaletteItem>,
 ) {
     ui.label(RichText::new(heading).size(9.0).color(MUTED));
     for (index, item) in items {
         let enabled = item.enabled(has_selection);
-        let active = enabled && *active_index == *index;
+        let active = enabled && *interaction.active_index == *index;
         let response = palette_row(ui, *item, enabled, active)
             .on_disabled_hover_text("Focus an element before drawing its mask.");
-        if active && scroll_to_active {
+        if active && interaction.scroll_to_active {
             response.scroll_to_me(Some(egui::Align::Center));
         }
         if enabled && response.hovered() {
-            *active_index = *index;
+            *interaction.active_index = reconcile_hover_active_index(
+                *interaction.active_index,
+                *index,
+                interaction.pointer_moved,
+            );
         }
         if response.clicked() {
             *chosen = Some(*item);
@@ -797,6 +827,12 @@ mod tests {
         assert_eq!(step_active_index(0, 4, false, enabled), 3);
         assert_eq!(step_active_index(3, 4, true, enabled), 0);
         assert_eq!(step_active_index(0, 0, true, |_| true), 0);
+    }
+
+    #[test]
+    fn stationary_pointer_cannot_overwrite_keyboard_selection() {
+        assert_eq!(reconcile_hover_active_index(1, 0, false), 1);
+        assert_eq!(reconcile_hover_active_index(1, 0, true), 0);
     }
 
     #[test]
