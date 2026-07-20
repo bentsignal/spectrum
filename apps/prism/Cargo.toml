@@ -25,6 +25,7 @@ epaint_default_fonts.workspace = true
 flate2.workspace = true
 fontdue.workspace = true
 image.workspace = true
+png.workspace = true
 lumen-photo = { path = "../lumen" }
 rfd.workspace = true
 serde.workspace = true

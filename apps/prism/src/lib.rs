@@ -876,15 +876,18 @@ fn guide_output(action: &str, message: &str, guide_ids: Vec<u64>) -> CommandOutp
 }
 
 mod render;
+mod render_region;
+mod text_render;
 mod text_rotation;
 
 pub use render::{
-    RenderRegion, TextGeometry, document_supports_region_native_zoom, export_document,
-    load_document, measure_text, measure_text_geometry, render_document,
-    render_document_region_scaled, render_document_scaled, render_document_thumbnail,
+    RegionRenderStats, RenderRegion, document_supports_region_native_zoom, export_document,
+    load_document, render_document, render_document_region_scaled,
+    render_document_region_scaled_with_stats, render_document_scaled, render_document_thumbnail,
     render_layer_base, render_layer_base_scaled, render_layer_preview, render_layer_preview_scaled,
     render_solid_color, save_document,
 };
+pub use text_render::{TextGeometry, measure_text, measure_text_geometry};
 
 #[cfg(test)]
 #[path = "core_tests.rs"]

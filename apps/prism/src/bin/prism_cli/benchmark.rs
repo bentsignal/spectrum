@@ -1,9 +1,10 @@
-use std::time::Instant;
+use std::{io::Write, path::PathBuf, time::Instant};
 
 use anyhow::{Result, bail};
 use prism_core::{
-    BlendMode, Command, Document, LayerMask, RenderRegion, Transform, Workspace, render_document,
-    render_document_region_scaled, render_layer_base_scaled, render_solid_color,
+    BlendMode, Command, Document, Layer, LayerKind, LayerMask, RenderRegion, Transform, Workspace,
+    render_document, render_document_region_scaled, render_document_region_scaled_with_stats,
+    render_layer_base_scaled, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -206,6 +207,66 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         }
         viewport_composite_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    let large_raster = TemporaryRaster::new(16_384, 1_025)?;
+    let mut bounded_sources = Document::new("Bounded sources", 16_384, 2_048);
+    bounded_sources.layers = vec![
+        Layer {
+            id: 100,
+            transform: Transform {
+                x: 7_760.0,
+                y: 260.0,
+                scale_x: 1.15,
+                scale_y: 1.1,
+                rotation: 3.0,
+            },
+            kind: LayerKind::Raster {
+                path: large_raster.path.clone(),
+                original_path: None,
+            },
+            ..Layer::default()
+        },
+        Layer {
+            id: 101,
+            opacity: 0.78,
+            blend_mode: BlendMode::Overlay,
+            transform: Transform {
+                x: 7_940.0,
+                y: 380.0,
+                rotation: 11.0,
+                ..Transform::default()
+            },
+            kind: LayerKind::Text {
+                text: "Bounded viewport text ".repeat(320),
+                font_size: 48.0,
+                color: [242, 207, 116, 230],
+                typography: Default::default(),
+            },
+            ..Layer::default()
+        },
+    ];
+    let bounded_region = RenderRegion {
+        x: 8_000,
+        y: 400,
+        width: 960,
+        height: 540,
+    };
+    let mut bounded_source_samples = Vec::new();
+    for _ in 0..3 {
+        let started = Instant::now();
+        let (rendered, stats) =
+            render_document_region_scaled_with_stats(&bounded_sources, 1.0, bounded_region)?;
+        if (rendered.width(), rendered.height()) != (bounded_region.width, bounded_region.height) {
+            bail!("bounded source compositor returned the wrong physical dimensions");
+        }
+        if stats.full_source_pixels <= 4_096 * 4_096
+            || stats.source_staging_pixels >= stats.full_source_pixels
+            || stats.fallback_decode_bytes != 0
+            || stats.transformed_surface_pixels != 0
+        {
+            bail!("bounded source compositor regressed to full-source staging");
+        }
+        bounded_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     let (command_median, command_p95) = sample_summary(&mut command_samples);
     let (interaction_median, interaction_p95) = sample_summary(&mut interaction_samples);
     let (text_interaction_median, text_interaction_p95) =
@@ -216,6 +277,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let (blend_render_median, blend_render_p95) = sample_summary(&mut blend_render_samples);
     let (viewport_composite_median, viewport_composite_p95) =
         sample_summary(&mut viewport_composite_samples);
+    let (bounded_source_median, bounded_source_p95) = sample_summary(&mut bounded_source_samples);
     let metrics = [
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
@@ -273,6 +335,13 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             budget_ms: 500.0,
             pass: viewport_composite_p95 <= 500.0,
         },
+        BenchmarkMetric {
+            name: "large_rotated_raster_text_bounded_staging",
+            median_ms: bounded_source_median,
+            p95_ms: bounded_source_p95,
+            budget_ms: 750.0,
+            pass: bounded_source_p95 <= 750.0,
+        },
     ];
     let passed = metrics.iter().all(|metric| metric.pass);
     if strict && !passed {
@@ -286,6 +355,40 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         "output": [rendered.as_ref().unwrap().width(), rendered.as_ref().unwrap().height()],
         "metrics": metrics
     }))
+}
+
+struct TemporaryRaster {
+    path: PathBuf,
+}
+
+impl TemporaryRaster {
+    fn new(width: u32, height: u32) -> Result<Self> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("prism-benchmark-{stamp}.png"));
+        let file = std::fs::File::create(&path)?;
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header()?;
+        let mut stream = writer.stream_writer()?;
+        let mut row = vec![0; width as usize];
+        for y in 0..height {
+            for (x, pixel) in row.iter_mut().enumerate() {
+                *pixel = ((x as u32 * 17 + y * 31) % 256) as u8;
+            }
+            stream.write_all(&row)?;
+        }
+        stream.finish()?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for TemporaryRaster {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 fn sample_summary(samples: &mut [f64]) -> (f64, f64) {
