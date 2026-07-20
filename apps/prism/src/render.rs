@@ -5,13 +5,13 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use fontdue::Font;
 use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
 use crate::{
     Document, Layer, LayerKind, Transform, blend_rgb,
     shapes::{constrained_shape_scale, render_shape},
+    text_render::{measure_text, measure_text_geometry, render_text},
 };
 
 pub fn save_document(document: &Document, path: &Path) -> Result<()> {
@@ -150,12 +150,26 @@ pub struct RenderRegion {
     pub height: u32,
 }
 
+/// Allocation accounting for exact viewport compositing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RegionRenderStats {
+    pub output_pixels: u64,
+    pub source_staging_pixels: u64,
+    pub source_staging_bytes: u64,
+    pub max_source_staging_pixels: u64,
+    pub full_source_pixels: u64,
+    pub fallback_decode_bytes: u64,
+    /// The region path never materializes transformed full-layer surfaces.
+    pub transformed_surface_pixels: u64,
+}
+
 /// Whether every visible layer can be sampled directly into a viewport region
 /// without allocating a transformed full-layer surface.
 pub fn document_supports_region_native_zoom(document: &Document) -> bool {
     document.layers.iter().all(|layer| {
         !layer.visible
             || layer.opacity <= 0.0
+            || crate::render_region::supports_bounded_source(layer)
             || matches!(
                 &layer.kind,
                 LayerKind::Rectangle {
@@ -188,6 +202,7 @@ pub fn render_document_scaled(document: &Document, scale: f32) -> Result<Dynamic
             height: canvas_height,
         },
         false,
+        &mut RegionRenderStats::default(),
     )
 }
 
@@ -201,7 +216,24 @@ pub fn render_document_region_scaled(
     scale: f32,
     region: RenderRegion,
 ) -> Result<DynamicImage> {
-    render_document_region_scaled_impl(document, scale, region, true)
+    render_document_region_scaled_impl(
+        document,
+        scale,
+        region,
+        true,
+        &mut RegionRenderStats::default(),
+    )
+}
+
+/// Renders a viewport crop with allocation counters for regression checks.
+pub fn render_document_region_scaled_with_stats(
+    document: &Document,
+    scale: f32,
+    region: RenderRegion,
+) -> Result<(DynamicImage, RegionRenderStats)> {
+    let mut stats = RegionRenderStats::default();
+    let image = render_document_region_scaled_impl(document, scale, region, true, &mut stats)?;
+    Ok((image, stats))
 }
 
 fn render_document_region_scaled_impl(
@@ -209,6 +241,7 @@ fn render_document_region_scaled_impl(
     scale: f32,
     region: RenderRegion,
     bound_fallback_layers: bool,
+    stats: &mut RegionRenderStats,
 ) -> Result<DynamicImage> {
     let (canvas_width, canvas_height) = scaled_document_dimensions(document, scale)?;
     if region.width == 0 || region.height == 0 {
@@ -231,6 +264,7 @@ fn render_document_region_scaled_impl(
     if bound_fallback_layers && u64::from(region.width) * u64::from(region.height) > 4_096 * 4_096 {
         bail!("document render region exceeds the bounded viewport area");
     }
+    stats.output_pixels = u64::from(region.width) * u64::from(region.height);
 
     let mut canvas = RgbaImage::from_pixel(region.width, region.height, Rgba(document.background));
     let mut previous_coverage: Option<RgbaImage> = None;
@@ -274,6 +308,21 @@ fn render_document_region_scaled_impl(
                 previous_coverage.as_ref(),
                 region,
             )
+        {
+            previous_coverage = Some(coverage);
+            continue;
+        }
+        if bound_fallback_layers
+            && crate::render_region::composite_bounded_source_region(
+                &mut canvas,
+                &mut coverage,
+                layer,
+                &render_layer,
+                &scaled_layer,
+                previous_coverage.as_ref(),
+                region,
+                stats,
+            )?
         {
             previous_coverage = Some(coverage);
             continue;
@@ -537,159 +586,6 @@ pub fn render_solid_color(color: [u8; 4], adjustments: &spectrum_imaging::Adjust
     .0
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TextGeometry {
-    pub width: u32,
-    pub height: u32,
-    pub visual_left: f32,
-    pub visual_top: f32,
-    pub visual_width: f32,
-    pub visual_height: f32,
-}
-
-impl TextGeometry {
-    pub fn visual_center(self) -> (f32, f32) {
-        (
-            self.visual_left + self.visual_width * 0.5,
-            self.visual_top + self.visual_height * 0.5,
-        )
-    }
-}
-
-pub fn measure_text(text: &str, font_size: f32) -> Result<(u32, u32)> {
-    let geometry = measure_text_geometry(text, font_size)?;
-    Ok((geometry.width, geometry.height))
-}
-
-pub fn measure_text_geometry(text: &str, font_size: f32) -> Result<TextGeometry> {
-    let font = Font::from_bytes(
-        epaint_default_fonts::UBUNTU_LIGHT,
-        fontdue::FontSettings::default(),
-    )
-    .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?;
-    let layout = layout_text(&font, text, font_size);
-    Ok(layout.geometry())
-}
-
-fn render_text(text: &str, font_size: f32, color: [u8; 4]) -> Result<RgbaImage> {
-    let font = Font::from_bytes(
-        epaint_default_fonts::UBUNTU_LIGHT,
-        fontdue::FontSettings::default(),
-    )
-    .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?;
-    let layout = layout_text(&font, text, font_size);
-    let mut output = RgbaImage::new(layout.width, layout.height);
-    for glyph in layout.glyphs {
-        let (metrics, bitmap) = font.rasterize(glyph.character, font_size);
-        for row in 0..metrics.height {
-            for column in 0..metrics.width {
-                let x = glyph.x + column as i32 - layout.min_x;
-                let y = glyph.y + row as i32 - layout.min_y;
-                if x >= 0 && y >= 0 && (x as u32) < layout.width && (y as u32) < layout.height {
-                    let alpha = bitmap[row * metrics.width + column] as u16 * color[3] as u16 / 255;
-                    output.put_pixel(
-                        x as u32,
-                        y as u32,
-                        Rgba([color[0], color[1], color[2], alpha as u8]),
-                    );
-                }
-            }
-        }
-    }
-    Ok(output)
-}
-
-struct PositionedGlyph {
-    character: char,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-struct TextLayout {
-    glyphs: Vec<PositionedGlyph>,
-    min_x: i32,
-    min_y: i32,
-    width: u32,
-    height: u32,
-}
-
-impl TextLayout {
-    fn geometry(&self) -> TextGeometry {
-        let visual = self
-            .glyphs
-            .iter()
-            .filter(|glyph| glyph.width > 0 && glyph.height > 0)
-            .fold(None::<(i32, i32, i32, i32)>, |bounds, glyph| {
-                let left = glyph.x - self.min_x;
-                let top = glyph.y - self.min_y;
-                let right = left + glyph.width as i32;
-                let bottom = top + glyph.height as i32;
-                Some(match bounds {
-                    Some((min_x, min_y, max_x, max_y)) => (
-                        min_x.min(left),
-                        min_y.min(top),
-                        max_x.max(right),
-                        max_y.max(bottom),
-                    ),
-                    None => (left, top, right, bottom),
-                })
-            })
-            .unwrap_or((0, 0, self.width as i32, self.height as i32));
-        TextGeometry {
-            width: self.width,
-            height: self.height,
-            visual_left: visual.0 as f32,
-            visual_top: visual.1 as f32,
-            visual_width: (visual.2 - visual.0).max(1) as f32,
-            visual_height: (visual.3 - visual.1).max(1) as f32,
-        }
-    }
-}
-
-fn layout_text(font: &Font, text: &str, font_size: f32) -> TextLayout {
-    let line_metrics = font.horizontal_line_metrics(font_size);
-    let ascent = line_metrics.map_or(font_size, |metrics| metrics.ascent);
-    let natural_height = line_metrics.map_or(font_size, |metrics| metrics.new_line_size);
-    let line_height = natural_height.max(font_size * 1.25).ceil().max(1.0);
-    let lines: Vec<_> = text.split('\n').collect();
-    let mut glyphs = Vec::new();
-    let mut min_x = 0;
-    let mut min_y = 0;
-    let mut max_x = 1;
-    let mut max_y = (line_height * lines.len().max(1) as f32).ceil() as i32;
-    for (line_index, line) in lines.iter().enumerate() {
-        let mut cursor_x: f32 = 0.0;
-        for character in line.chars() {
-            let metrics = font.metrics(character, font_size);
-            let x = cursor_x.round() as i32 + metrics.xmin;
-            let baseline = line_index as f32 * line_height + ascent;
-            let y = baseline.round() as i32 - metrics.ymin - metrics.height as i32;
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x + metrics.width as i32);
-            max_y = max_y.max(y + metrics.height as i32);
-            glyphs.push(PositionedGlyph {
-                character,
-                x,
-                y,
-                width: metrics.width as u32,
-                height: metrics.height as u32,
-            });
-            cursor_x += metrics.advance_width;
-        }
-        max_x = max_x.max(cursor_x.ceil() as i32);
-    }
-    TextLayout {
-        glyphs,
-        min_x,
-        min_y,
-        width: (max_x - min_x).max(1) as u32,
-        height: (max_y - min_y).max(1) as u32,
-    }
-}
-
 fn text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
     if !matches!(layer.kind, LayerKind::Text { .. }) {
         return 1.0;
@@ -785,7 +681,7 @@ fn composite_layer_region(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn composite_pixel(
+pub(crate) fn composite_pixel(
     canvas: &mut RgbaImage,
     coverage: &mut RgbaImage,
     source_pixel: [u8; 4],
@@ -919,6 +815,7 @@ pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<
 #[cfg(test)]
 mod text_tests {
     use super::*;
+    use fontdue::Font;
 
     #[test]
     fn glyph_layout_does_not_discard_descender_pixels() {
@@ -932,15 +829,5 @@ mod text_tests {
         let source_alpha: u64 = glyph.into_iter().map(u64::from).sum();
         let rendered_alpha: u64 = rendered.pixels().map(|pixel| u64::from(pixel[3])).sum();
         assert_eq!(rendered_alpha, source_alpha);
-    }
-
-    #[test]
-    fn text_geometry_uses_visible_glyph_bounds_inside_the_line_box() {
-        let geometry = measure_text_geometry("I", 72.0).unwrap();
-
-        assert!(geometry.visual_width < geometry.width as f32);
-        assert!(geometry.visual_height < geometry.height as f32);
-        assert!(geometry.visual_center().0 > geometry.visual_left);
-        assert!(geometry.visual_center().1 > geometry.visual_top);
     }
 }

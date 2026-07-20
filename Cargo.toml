@@ -26,6 +26,7 @@ flate2 = "1.1"
 fs2 = "0.4"
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
+png = "0.18.1"
 portable-pty = "0.9"
 rawler = "0.7.2"
 rayon = "1.12"

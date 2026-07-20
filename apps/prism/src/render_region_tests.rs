@@ -1,7 +1,52 @@
 use crate::{
     BlendMode, Document, Layer, LayerKind, LayerMask, RenderRegion, Transform,
-    document_supports_region_native_zoom, render_document_region_scaled, render_document_scaled,
+    document_supports_region_native_zoom, render_document_region_scaled,
+    render_document_region_scaled_with_stats, render_document_scaled,
 };
+
+fn temporary_raster(label: &str, width: u32, height: u32) -> std::path::PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("prism-region-{label}-{stamp}.png"));
+    image::RgbaImage::from_fn(width, height, |x, y| {
+        image::Rgba([
+            ((x * 29 + y * 7) % 256) as u8,
+            ((x * 3 + y * 31) % 256) as u8,
+            ((x * 17 + y * 11) % 256) as u8,
+            (80 + (x * 13 + y * 5) % 176) as u8,
+        ])
+    })
+    .save(&path)
+    .unwrap();
+    path
+}
+
+fn temporary_large_grayscale_png(label: &str, width: u32, height: u32) -> std::path::PathBuf {
+    use std::io::Write;
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("prism-region-{label}-{stamp}.png"));
+    let file = std::fs::File::create(&path).unwrap();
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Grayscale);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    let mut stream = writer.stream_writer().unwrap();
+    let mut row = vec![0; width as usize];
+    for y in 0..height {
+        for (x, pixel) in row.iter_mut().enumerate() {
+            *pixel = ((x as u32 * 17 + y * 31) % 256) as u8;
+        }
+        stream.write_all(&row).unwrap();
+    }
+    stream.finish().unwrap();
+    path
+}
 
 #[test]
 fn viewport_regions_match_the_export_oracle_for_every_blend_mode() {
@@ -131,6 +176,165 @@ fn transformed_fallback_region_matches_exact_export_crop() {
     let oracle = image::imageops::crop_imm(&full, region.x, region.y, region.width, region.height)
         .to_image();
     assert_eq!(viewport, oracle);
+}
+
+#[test]
+fn rotated_raster_region_matches_export_without_full_source_staging() {
+    let raster_path = temporary_raster("rotated-raster", 37, 29);
+    let mut document = Document::new("Raster parity", 128, 96);
+    document.background = [22, 37, 53, 179];
+    document.layers.push(Layer {
+        id: 41,
+        opacity: 0.77,
+        blend_mode: BlendMode::SoftLight,
+        transform: Transform {
+            x: 13.0,
+            y: 9.0,
+            scale_x: 1.7,
+            scale_y: 1.35,
+            rotation: 27.0,
+        },
+        mask: LayerMask {
+            enabled: true,
+            x: 0.08,
+            y: 0.13,
+            width: 0.82,
+            height: 0.71,
+            invert: true,
+        },
+        kind: LayerKind::Raster {
+            path: raster_path.clone(),
+            original_path: None,
+        },
+        ..Layer::default()
+    });
+    assert!(document_supports_region_native_zoom(&document));
+    let full = render_document_scaled(&document, 1.5).unwrap().to_rgba8();
+    let region = RenderRegion {
+        x: 45,
+        y: 35,
+        width: 31,
+        height: 23,
+    };
+    let (viewport, stats) =
+        render_document_region_scaled_with_stats(&document, 1.5, region).unwrap();
+    let oracle = image::imageops::crop_imm(&full, region.x, region.y, region.width, region.height)
+        .to_image();
+    let _ = std::fs::remove_file(raster_path);
+    assert_eq!(viewport.to_rgba8(), oracle);
+    assert!(stats.source_staging_pixels < stats.full_source_pixels);
+    assert_ne!(stats.source_staging_pixels, stats.output_pixels);
+    assert_eq!(stats.source_staging_bytes, stats.source_staging_pixels * 4);
+    assert_eq!(stats.max_source_staging_pixels, stats.source_staging_pixels);
+    assert_eq!(stats.fallback_decode_bytes, 0);
+    assert_eq!(stats.transformed_surface_pixels, 0);
+}
+
+#[test]
+fn rotated_text_region_matches_off_center_visible_pivot_export() {
+    let mut document = Document::new("Text pivot parity", 220, 160);
+    document.background = [19, 25, 38, 213];
+    document.layers.push(Layer {
+        id: 42,
+        opacity: 0.83,
+        blend_mode: BlendMode::Overlay,
+        transform: Transform {
+            x: 38.0,
+            y: 21.0,
+            scale_x: 1.25,
+            scale_y: 0.9,
+            rotation: 33.0,
+        },
+        kind: LayerKind::Text {
+            text: "I\nWide visible glyphs".into(),
+            font_size: 29.0,
+            color: [237, 196, 91, 224],
+            typography: Default::default(),
+        },
+        ..Layer::default()
+    });
+    assert!(document_supports_region_native_zoom(&document));
+    let geometry = crate::measure_text_geometry("I\nWide visible glyphs", 29.0).unwrap();
+    assert_ne!(
+        geometry.visual_center(),
+        (geometry.width as f32 * 0.5, geometry.height as f32 * 0.5)
+    );
+    let full = render_document_scaled(&document, 1.75).unwrap().to_rgba8();
+    let region = RenderRegion {
+        x: 210,
+        y: 65,
+        width: 47,
+        height: 39,
+    };
+    let (viewport, stats) =
+        render_document_region_scaled_with_stats(&document, 1.75, region).unwrap();
+    let oracle = image::imageops::crop_imm(&full, region.x, region.y, region.width, region.height)
+        .to_image();
+    assert_eq!(viewport.to_rgba8(), oracle);
+    assert!(stats.source_staging_pixels < stats.full_source_pixels);
+    assert_ne!(stats.source_staging_pixels, stats.output_pixels);
+    assert_eq!(stats.transformed_surface_pixels, 0);
+}
+
+#[test]
+fn raster_larger_than_legacy_full_source_cap_stages_only_visible_rows() {
+    let raster_path = temporary_large_grayscale_png("large-raster", 16_384, 1_025);
+    let mut document = Document::new("Large raster staging", 16_384, 2_048);
+    document.layers.push(Layer {
+        id: 43,
+        kind: LayerKind::Raster {
+            path: raster_path.clone(),
+            original_path: None,
+        },
+        ..Layer::default()
+    });
+    let region = RenderRegion {
+        x: 8_000,
+        y: 400,
+        width: 320,
+        height: 180,
+    };
+    let (rendered, stats) =
+        render_document_region_scaled_with_stats(&document, 1.0, region).unwrap();
+    let _ = std::fs::remove_file(raster_path);
+    assert_eq!((rendered.width(), rendered.height()), (320, 180));
+    assert!(stats.full_source_pixels > 4_096 * 4_096);
+    assert_eq!(stats.source_staging_pixels, 320 * 180);
+    assert_eq!(stats.source_staging_bytes, 320 * 180 * 4);
+    assert_eq!(stats.fallback_decode_bytes, 0);
+}
+
+#[test]
+fn text_larger_than_legacy_full_source_cap_stages_only_visible_glyphs() {
+    let mut document = Document::new("Large text staging", 16_384, 1_024);
+    document.layers.push(Layer {
+        id: 44,
+        transform: Transform {
+            x: 0.0,
+            y: 120.0,
+            ..Transform::default()
+        },
+        kind: LayerKind::Text {
+            text: "Bounded viewport text ".repeat(1_000),
+            font_size: 48.0,
+            color: [238, 202, 117, 255],
+            typography: Default::default(),
+        },
+        ..Layer::default()
+    });
+    let region = RenderRegion {
+        x: 8_000,
+        y: 120,
+        width: 320,
+        height: 80,
+    };
+    let (rendered, stats) =
+        render_document_region_scaled_with_stats(&document, 1.0, region).unwrap();
+    assert_eq!((rendered.width(), rendered.height()), (320, 80));
+    assert!(stats.full_source_pixels > 4_096 * 4_096);
+    assert!(stats.source_staging_pixels <= 320 * 80);
+    assert_eq!(stats.source_staging_bytes, stats.source_staging_pixels * 4);
+    assert_eq!(stats.fallback_decode_bytes, 0);
 }
 
 #[test]
