@@ -473,7 +473,18 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     ];
     let passed = metrics.iter().all(|metric| metric.pass);
     if strict && !passed {
-        bail!("Prism benchmark exceeded a strict regression budget");
+        let failures = metrics
+            .iter()
+            .filter(|metric| !metric.pass)
+            .map(|metric| {
+                format!(
+                    "{} p95 {:.3} ms > {:.3} ms",
+                    metric.name, metric.p95_ms, metric.budget_ms
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("Prism benchmark exceeded a strict regression budget: {failures}");
     }
     Ok(json!({
         "ok": true,
