@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use spectrum_imaging::AdjustmentPatch;
 
 use crate::{
-    Alignment, AlignmentReference, BlendMode, GuideOrientation, LayerMask, ShapeStroke,
-    TextTypography, Transform,
+    Alignment, AlignmentReference, BlendMode, GuideOrientation, LayerMask, LayerTransfer,
+    ShapeStroke, TextTypography, Transform,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,6 +84,11 @@ pub enum Command {
     },
     DuplicateLayer {
         id: u64,
+    },
+    InsertLayer {
+        transfer: Box<LayerTransfer>,
+        #[serde(default)]
+        index: Option<usize>,
     },
     RenameLayer {
         id: u64,

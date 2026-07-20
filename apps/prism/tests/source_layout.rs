@@ -91,6 +91,53 @@ fn inline_text_editor_uses_one_preview_transaction_and_keeps_add_text_dialog() {
 }
 
 #[test]
+fn layer_transfer_core_and_cli_stay_in_dedicated_modules() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let library = fs::read_to_string(manifest.join("src/lib.rs")).unwrap();
+    let commands = fs::read_to_string(manifest.join("src/commands.rs")).unwrap();
+    let core = fs::read_to_string(manifest.join("src/transfer.rs")).unwrap();
+    let cli = fs::read_to_string(manifest.join("src/bin/prism_cli/transfer.rs")).unwrap();
+    let binary = fs::read_to_string(manifest.join("src/bin/prism.rs")).unwrap();
+
+    assert!(library.contains("mod transfer;"));
+    assert!(commands.contains("InsertLayer"));
+    assert!(commands.contains("transfer: Box<LayerTransfer>"));
+    assert!(core.contains("LAYER_TRANSFER_VERSION"));
+    assert!(core.contains("document-local layer ID"));
+    assert!(core.contains("document-local font ID"));
+    assert!(cli.contains("LayerCopyArgs"));
+    assert!(cli.contains("LayerPasteArgs"));
+    assert!(binary.contains("prism_cli/transfer.rs"));
+    assert!(cli.lines().count() < 200);
+}
+
+#[test]
+fn prism_cli_delegates_agent_collaboration_with_binary_headroom() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let binary = fs::read_to_string(manifest.join("src/bin/prism.rs")).unwrap();
+    let agent = fs::read_to_string(manifest.join("src/bin/prism_cli/agent.rs")).unwrap();
+
+    assert!(binary.contains("prism_cli/agent.rs"));
+    assert!(!binary.contains("fn agent_command("));
+    assert!(agent.contains("pub(super) fn agent_command("));
+    assert!(agent.contains("fn local_gui_session_id("));
+    assert!(binary.lines().count() < 950);
+}
+
+#[test]
+fn prism_schema_builds_command_examples_without_macro_recursion_overrides() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let schema = fs::read_to_string(manifest.join("src/bin/prism_cli/schema.rs")).unwrap();
+    let binary = fs::read_to_string(manifest.join("src/bin/prism.rs")).unwrap();
+
+    assert!(schema.contains("let command_examples = command_examples();"));
+    assert!(schema.contains("\"examples\": command_examples"));
+    assert!(schema.contains("fn command_examples() -> Vec<Value>"));
+    assert!(!schema.contains("recursion_limit"));
+    assert!(!binary.contains("recursion_limit"));
+}
+
+#[test]
 fn revision_graph_comes_from_the_shared_spectrum_surface() {
     let history = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/history.rs"),
