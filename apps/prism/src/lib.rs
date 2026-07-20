@@ -688,7 +688,7 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
             Ok(output("duplicate_layer", "duplicated layer", vec![new_id]))
         }
         Command::InsertLayer { transfer, index } => {
-            let id = transfer.insert_into(document, index)?;
+            let id = (*transfer).insert_into(document, index)?;
             Ok(output(
                 "insert_layer",
                 "inserted transferred layer",

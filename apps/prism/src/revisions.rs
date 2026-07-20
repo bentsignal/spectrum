@@ -531,6 +531,7 @@ impl DurableProject {
                     }
                 }
                 Command::InsertLayer { transfer, .. } => {
+                    let transfer = transfer.as_mut();
                     if let LayerKind::Raster {
                         path,
                         original_path,
@@ -692,6 +693,7 @@ impl PreparedOperations {
                     assets.push(prepared.asset);
                 }
                 Command::InsertLayer { transfer, .. } => {
+                    let transfer = transfer.as_mut();
                     if let LayerKind::Raster {
                         path,
                         original_path,

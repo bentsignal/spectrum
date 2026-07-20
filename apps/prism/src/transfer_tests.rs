@@ -89,7 +89,7 @@ fn transfer_preserves_every_layer_field_except_local_ids_in_one_undo_step() {
         .unwrap();
     let inserted = destination
         .execute(Command::InsertLayer {
-            transfer,
+            transfer: Box::new(transfer),
             index: None,
         })
         .unwrap()
@@ -138,7 +138,7 @@ fn transfer_rejects_foreign_ids_versions_and_invalid_values_atomically() {
     assert!(
         workspace
             .execute(Command::InsertLayer {
-                transfer,
+                transfer: Box::new(transfer),
                 index: None,
             })
             .is_err()
@@ -208,7 +208,7 @@ fn text_transfer_deduplicates_font_bytes_and_remaps_the_font_id() {
     assert_eq!(destination.document.font_assets[0].id, 17);
     let inserted = destination
         .execute(Command::InsertLayer {
-            transfer,
+            transfer: Box::new(transfer),
             index: Some(0),
         })
         .unwrap()
@@ -270,7 +270,7 @@ fn durable_raster_transfer_embeds_pixels_in_a_version_two_operation() {
     .unwrap();
     destination
         .execute(Command::InsertLayer {
-            transfer,
+            transfer: Box::new(transfer),
             index: None,
         })
         .unwrap();
@@ -364,7 +364,7 @@ fn durable_text_transfer_embeds_font_bytes_and_replays_the_remapped_id() {
     .unwrap();
     destination
         .execute(Command::InsertLayer {
-            transfer,
+            transfer: Box::new(transfer),
             index: None,
         })
         .unwrap();

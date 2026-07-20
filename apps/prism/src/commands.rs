@@ -86,7 +86,7 @@ pub enum Command {
         id: u64,
     },
     InsertLayer {
-        transfer: LayerTransfer,
+        transfer: Box<LayerTransfer>,
         #[serde(default)]
         index: Option<usize>,
     },

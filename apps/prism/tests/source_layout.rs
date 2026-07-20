@@ -101,6 +101,7 @@ fn layer_transfer_core_and_cli_stay_in_dedicated_modules() {
 
     assert!(library.contains("mod transfer;"));
     assert!(commands.contains("InsertLayer"));
+    assert!(commands.contains("transfer: Box<LayerTransfer>"));
     assert!(core.contains("LAYER_TRANSFER_VERSION"));
     assert!(core.contains("document-local layer ID"));
     assert!(core.contains("document-local font ID"));

@@ -53,7 +53,7 @@ pub(super) fn paste_command(arguments: LayerPasteArgs) -> Result<Command> {
     let json = fs::read_to_string(&arguments.input)
         .with_context(|| format!("could not read {}", arguments.input.display()))?;
     Ok(Command::InsertLayer {
-        transfer: LayerTransfer::from_json(&json)?,
+        transfer: Box::new(LayerTransfer::from_json(&json)?),
         index: arguments.index,
     })
 }
