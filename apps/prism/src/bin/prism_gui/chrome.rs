@@ -319,9 +319,6 @@ impl PrismApp {
         self.drag = None;
         self.status = tool.description().into();
         self.status_error = false;
-        if tool.activation() == ToolActivation::ImmediateDialog {
-            self.open_new_text_dialog();
-        }
     }
 
     fn choose_shape(&mut self, shape: ShapeKind) {

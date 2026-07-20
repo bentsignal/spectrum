@@ -71,14 +71,6 @@ struct NewDocumentDialog {
     height: u32,
 }
 
-#[derive(Clone, Debug)]
-struct TextDialogDraft {
-    position: Pos2,
-    text: String,
-    font_size: f32,
-    color: [u8; 4],
-}
-
 impl Default for NewDocumentDialog {
     fn default() -> Self {
         Self {
@@ -123,7 +115,6 @@ struct PrismApp {
     alignment_reference: Option<u64>,
     rename_layer: Option<(u64, String)>,
     new_dialog: Option<NewDocumentDialog>,
-    text_dialog: Option<TextDialogDraft>,
     inline_text_editor: Option<inline_text::InlineTextEditor>,
     font_query: String,
     delete_confirmation: Option<u64>,
@@ -226,7 +217,6 @@ impl PrismApp {
             alignment_reference: None,
             rename_layer: None,
             new_dialog: None,
-            text_dialog: None,
             inline_text_editor: None,
             font_query: String::new(),
             delete_confirmation: None,
@@ -853,7 +843,7 @@ mod tests {
 
     #[test]
     fn tools_declare_whether_selection_opens_ui_or_arms_the_canvas() {
-        assert_eq!(Tool::Text.activation(), ToolActivation::ImmediateDialog);
+        assert_eq!(Tool::Text.activation(), ToolActivation::CanvasGesture);
         assert_eq!(Tool::Shape.activation(), ToolActivation::ChoiceDialog);
         assert_eq!(Tool::Crop.activation(), ToolActivation::CanvasGesture);
     }

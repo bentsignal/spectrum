@@ -72,7 +72,7 @@ fn continuous_inspector_controls_use_gesture_transactions() {
 }
 
 #[test]
-fn inline_text_editor_uses_one_preview_transaction_and_keeps_add_text_dialog() {
+fn inline_text_editor_owns_existing_edits_and_click_to_type_creation() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let inline = fs::read_to_string(manifest.join("src/bin/prism_gui/inline_text.rs"))
         .expect("inline text editor source should be readable");
@@ -86,8 +86,10 @@ fn inline_text_editor_uses_one_preview_transaction_and_keeps_add_text_dialog() {
     assert!(inline.contains("let source_geometry = self.layer_source_geometry(layer);"));
     assert!(inline.contains("transformed_visual_screen_bounds(geometry, layer, source_geometry)"));
     assert!(!inline.contains("self.execute(Command::UpdateText"));
-    assert!(dialogs.contains("self.text_dialog = Some(TextDialogDraft"));
-    assert!(dialogs.contains("Command::AddText"));
+    assert!(inline.contains("Command::AddText"));
+    assert!(inline.contains("open_new_text_editor"));
+    assert!(!dialogs.contains("TextDialogDraft"));
+    assert!(!dialogs.contains("Command::AddText"));
 }
 
 #[test]

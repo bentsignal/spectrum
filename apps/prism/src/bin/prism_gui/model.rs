@@ -13,7 +13,6 @@ pub(super) enum Tool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ToolActivation {
-    ImmediateDialog,
     ChoiceDialog,
     CanvasGesture,
 }
@@ -53,7 +52,7 @@ impl Tool {
             Self::Move => "Select on the canvas, drag to move, or pull a corner to resize.",
             Self::Rotate => "Rotation armed · drag around the focused object · Shift snaps to 15°.",
             Self::Crop => "Draw the new canvas boundary.",
-            Self::Text => "Type the text now, then move it into place.",
+            Self::Text => "Click the canvas, then type directly beside the new text.",
             Self::Shape => "Choose a rectangle, ellipse, or another shape to draw.",
             Self::Mask => "Draw the visible region of the focused element.",
         }
@@ -61,7 +60,6 @@ impl Tool {
 
     pub(super) fn activation(self) -> ToolActivation {
         match self {
-            Self::Text => ToolActivation::ImmediateDialog,
             Self::Shape => ToolActivation::ChoiceDialog,
             _ => ToolActivation::CanvasGesture,
         }
