@@ -104,43 +104,48 @@ impl NativeMenuBridge {
 
 impl NativeMenuState {
     fn allows(self, action: NativeMenuAction) -> bool {
-        if matches!(
-            action,
-            NativeMenuAction::Cut | NativeMenuAction::Copy | NativeMenuAction::Paste
-        ) {
-            if self.keyboard_focus || self.terminal_visible {
-                return true;
-            }
-            return !self.modal_open
-                && self.workspace_ready
-                && !self.history_visible
-                && !self.interaction_active
-                && (action == NativeMenuAction::Paste || self.selection_present);
-        }
-        if self.modal_open {
-            return false;
-        }
         match action {
-            NativeMenuAction::NewDocument | NativeMenuAction::OpenDocument => true,
-            NativeMenuAction::MoveProject => self.workspace_ready && self.can_move_project,
-            NativeMenuAction::Export | NativeMenuAction::ToggleTerminal => self.workspace_ready,
+            NativeMenuAction::Cut | NativeMenuAction::Copy | NativeMenuAction::Paste => {
+                self.keyboard_focus
+                    || self.terminal_visible
+                    || !self.modal_open
+                        && self.workspace_ready
+                        && !self.history_visible
+                        && !self.interaction_active
+                        && (action == NativeMenuAction::Paste || self.selection_present)
+            }
+            NativeMenuAction::NewDocument | NativeMenuAction::OpenDocument => !self.modal_open,
+            NativeMenuAction::MoveProject => {
+                !self.modal_open && self.workspace_ready && self.can_move_project
+            }
+            NativeMenuAction::Export | NativeMenuAction::ToggleTerminal => {
+                !self.modal_open && self.workspace_ready
+            }
             NativeMenuAction::ToggleHistory => {
-                self.workspace_ready && !self.keyboard_focus && !self.terminal_visible
+                !self.modal_open
+                    && self.workspace_ready
+                    && !self.keyboard_focus
+                    && !self.terminal_visible
             }
             NativeMenuAction::Undo => {
-                self.workspace_ready
+                !self.modal_open
+                    && self.workspace_ready
                     && self.can_undo
                     && !self.keyboard_focus
                     && !self.terminal_visible
             }
             NativeMenuAction::Redo => {
-                self.workspace_ready
+                !self.modal_open
+                    && self.workspace_ready
                     && self.can_redo
                     && !self.keyboard_focus
                     && !self.terminal_visible
             }
             NativeMenuAction::FitCanvas | NativeMenuAction::ZoomIn | NativeMenuAction::ZoomOut => {
-                self.workspace_ready && !self.history_visible && !self.terminal_visible
+                !self.modal_open
+                    && self.workspace_ready
+                    && !self.history_visible
+                    && !self.terminal_visible
             }
         }
     }
@@ -157,6 +162,7 @@ impl NativeMenuState {
             } else {
                 "Show Terminal"
             }),
+            NativeMenuAction::Cut | NativeMenuAction::Copy | NativeMenuAction::Paste => None,
             _ => None,
         }
     }
@@ -782,5 +788,17 @@ mod tests {
             Some(egui::ViewportCommand::RequestPaste)
         ));
         assert!(clipboard_viewport_command(NativeMenuAction::Undo).is_none());
+    }
+
+    #[test]
+    fn clipboard_menu_titles_remain_static() {
+        let state = NativeMenuState::default();
+        for action in [
+            NativeMenuAction::Cut,
+            NativeMenuAction::Copy,
+            NativeMenuAction::Paste,
+        ] {
+            assert_eq!(state.title(action), None);
+        }
     }
 }
