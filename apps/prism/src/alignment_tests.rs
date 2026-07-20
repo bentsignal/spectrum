@@ -156,6 +156,70 @@ fn text_alignment_uses_visible_glyph_bounds_for_canvas_and_layer_references() {
 }
 
 #[test]
+fn imported_typography_alignment_uses_the_rendered_effect_bounds() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let font_path = std::env::temp_dir().join(format!("prism-align-font-{stamp}.ttf"));
+    std::fs::write(&font_path, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let font = FontAsset::import(31, &font_path).unwrap();
+    let mut document = Document::new("Imported alignment", 720, 420);
+    document.font_assets.push(font);
+    let id = text(&mut document, "Aligned imported face", 63.0, 48.0);
+    let LayerKind::Text { typography, .. } = &mut document.layer_mut(id).unwrap().kind else {
+        unreachable!();
+    };
+    *typography = TextTypography {
+        font_id: Some(31),
+        alignment: TextAlignment::Right,
+        tracking: 2.0,
+        box_width: Some(360.0),
+        effects: TextEffects {
+            outline_width: 3.0,
+            shadow_offset_x: -9.0,
+            shadow_offset_y: 7.0,
+            shadow_color: [0, 0, 0, 160],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    document.layer_mut(id).unwrap().transform.rotation = 14.0;
+    let mut workspace = Workspace::new(document, None);
+    workspace
+        .execute(Command::AlignLayer {
+            id,
+            alignment: Alignment::Right,
+            reference: AlignmentReference::Canvas,
+        })
+        .unwrap();
+    let layer = workspace.document.layer(id).unwrap();
+    let LayerKind::Text {
+        text,
+        font_size,
+        typography,
+        ..
+    } = &layer.kind
+    else {
+        unreachable!();
+    };
+    let geometry = measure_text_geometry_with_typography(
+        text,
+        *font_size,
+        typography,
+        workspace.document.font_for_layer(layer),
+    )
+    .unwrap();
+    let transformed = layer_geometry_with_bounds(
+        layer,
+        [geometry.visual_left, geometry.visual_top],
+        [geometry.visual_width, geometry.visual_height],
+    );
+    let _ = std::fs::remove_file(font_path);
+    assert!((transformed.max[0] - workspace.document.width as f32).abs() < 0.001);
+}
+
+#[test]
 fn alignment_respects_locking_and_rejects_self_reference() {
     let mut document = Document::new("Alignment", 500, 400);
     let id = rectangle(&mut document, 80.0, 70.0, 120, 40);

@@ -113,8 +113,11 @@ fn resolved_source_geometry(
             )))
         }
         LayerKind::Text {
-            text, font_size, ..
-        } => prism_core::measure_text_geometry(text, *font_size)
+            text,
+            font_size,
+            typography,
+            ..
+        } => prism_core::measure_text_geometry_with_typography(text, *font_size, typography, None)
             .ok()
             .map(|geometry| LayerSourceGeometry {
                 size: Vec2::new(geometry.width as f32, geometry.height as f32),

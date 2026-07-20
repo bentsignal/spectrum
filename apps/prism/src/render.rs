@@ -9,9 +9,11 @@ use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
 use crate::{
-    Document, Layer, LayerKind, Transform, blend_rgb,
+    Document, FontAsset, Layer, LayerKind, Transform, blend_rgb,
     shapes::{constrained_shape_scale, render_shape},
-    text_render::{measure_text, measure_text_geometry, render_text},
+    text_render::{
+        measure_text_geometry_with_typography, measure_text_with_typography, render_text,
+    },
 };
 
 pub fn save_document(document: &Document, path: &Path) -> Result<()> {
@@ -272,6 +274,7 @@ fn render_document_region_scaled_impl(
         if !layer.visible || layer.opacity <= 0.0 {
             continue;
         }
+        let font_asset = document.font_for_layer(layer);
         let text_scale = text_raster_scale(layer, scale);
         let shape_scale = if matches!(
             layer.kind,
@@ -289,8 +292,14 @@ fn render_document_region_scaled_impl(
             [1.0; 2]
         };
         let mut render_layer = layer.clone();
-        if let LayerKind::Text { font_size, .. } = &mut render_layer.kind {
+        if let LayerKind::Text {
+            font_size,
+            typography,
+            ..
+        } = &mut render_layer.kind
+        {
             *font_size *= text_scale;
+            typography.scale_for_raster(text_scale);
         }
         let mut scaled_layer = layer.clone();
         scaled_layer.transform.x *= scale;
@@ -321,6 +330,7 @@ fn render_document_region_scaled_impl(
                 &scaled_layer,
                 previous_coverage.as_ref(),
                 region,
+                font_asset,
                 stats,
             )?
         {
@@ -328,19 +338,31 @@ fn render_document_region_scaled_impl(
             continue;
         }
         if bound_fallback_layers {
-            ensure_region_fallback_is_bounded(&render_layer, &scaled_layer, shape_scale)?;
+            ensure_region_fallback_is_bounded(
+                &render_layer,
+                &scaled_layer,
+                shape_scale,
+                font_asset,
+            )?;
         }
-        let source = render_layer_preview_scaled(&render_layer, None, shape_scale)?;
+        let source =
+            render_layer_preview_scaled_with_font(&render_layer, None, shape_scale, font_asset)?;
         let source = if matches!(render_layer.kind, LayerKind::Text { .. }) {
             let LayerKind::Text {
                 text: base_text,
                 font_size: base_font_size,
+                typography: base_typography,
                 ..
             } = &layer.kind
             else {
                 unreachable!("render layer kind mirrors its source layer");
             };
-            let base_geometry = measure_text_geometry(base_text, *base_font_size)?;
+            let base_geometry = measure_text_geometry_with_typography(
+                base_text,
+                *base_font_size,
+                base_typography,
+                font_asset,
+            )?;
             let base_pivot = base_geometry.visual_center();
             let transformed_width = (source.width() as f32 * scaled_layer.transform.scale_x)
                 .round()
@@ -379,14 +401,18 @@ fn ensure_region_fallback_is_bounded(
     render_layer: &Layer,
     scaled_layer: &Layer,
     shape_scale: [f32; 2],
+    font_asset: Option<&FontAsset>,
 ) -> Result<()> {
     const MAX_FALLBACK_PIXELS: u64 = 4_096 * 4_096;
     let (base_width, base_height) = match &render_layer.kind {
         LayerKind::Raster { path, .. } => image::image_dimensions(path)
             .with_context(|| format!("could not inspect layer source {}", path.display()))?,
         LayerKind::Text {
-            text, font_size, ..
-        } => measure_text(text, *font_size)?,
+            text,
+            font_size,
+            typography,
+            ..
+        } => measure_text_with_typography(text, *font_size, typography, font_asset)?,
         LayerKind::Rectangle { width, height, .. } | LayerKind::Ellipse { width, height, .. } => (
             (*width as f32 * shape_scale[0]).round().max(1.0) as u32,
             (*height as f32 * shape_scale[1]).round().max(1.0) as u32,
@@ -529,7 +555,16 @@ pub fn render_layer_preview_scaled(
     max_size: Option<u32>,
     shape_scale: [f32; 2],
 ) -> Result<DynamicImage> {
-    let image = render_layer_base_scaled(layer, max_size, shape_scale)?;
+    render_layer_preview_scaled_with_font(layer, max_size, shape_scale, None)
+}
+
+pub fn render_layer_preview_scaled_with_font(
+    layer: &Layer,
+    max_size: Option<u32>,
+    shape_scale: [f32; 2],
+    font_asset: Option<&FontAsset>,
+) -> Result<DynamicImage> {
+    let image = render_layer_base_scaled_with_font(layer, max_size, shape_scale, font_asset)?;
     Ok(render_image(
         image,
         layer.adjustments.clone(),
@@ -548,6 +583,15 @@ pub fn render_layer_base_scaled(
     max_size: Option<u32>,
     shape_scale: [f32; 2],
 ) -> Result<DynamicImage> {
+    render_layer_base_scaled_with_font(layer, max_size, shape_scale, None)
+}
+
+pub fn render_layer_base_scaled_with_font(
+    layer: &Layer,
+    max_size: Option<u32>,
+    shape_scale: [f32; 2],
+    font_asset: Option<&FontAsset>,
+) -> Result<DynamicImage> {
     let mut image = match &layer.kind {
         LayerKind::Raster { path, .. } => image::ImageReader::open(path)
             .with_context(|| format!("could not open {}", path.display()))?
@@ -558,8 +602,10 @@ pub fn render_layer_base_scaled(
             text,
             font_size,
             color,
-            ..
-        } => DynamicImage::ImageRgba8(render_text(text, *font_size, *color)?),
+            typography,
+        } => DynamicImage::ImageRgba8(render_text(
+            text, *font_size, *color, typography, font_asset,
+        )?),
         LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => {
             DynamicImage::ImageRgba8(render_shape(layer, shape_scale)?)
         }
@@ -825,7 +871,14 @@ mod text_tests {
         )
         .unwrap();
         let (_, glyph) = font.rasterize('g', 72.0);
-        let rendered = render_text("g", 72.0, [255, 255, 255, 255]).unwrap();
+        let rendered = render_text(
+            "g",
+            72.0,
+            [255, 255, 255, 255],
+            &crate::TextTypography::default(),
+            None,
+        )
+        .unwrap();
         let source_alpha: u64 = glyph.into_iter().map(u64::from).sum();
         let rendered_alpha: u64 = rendered.pixels().map(|pixel| u64::from(pixel[3])).sum();
         assert_eq!(rendered_alpha, source_alpha);

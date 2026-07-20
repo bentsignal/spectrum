@@ -73,7 +73,7 @@ impl LayerGeometry {
 }
 
 pub fn layer_geometry(layer: &Layer) -> Result<LayerGeometry> {
-    let (source_origin, source_size) = layer_source_bounds(layer)?;
+    let (source_origin, source_size) = layer_source_bounds(layer, None)?;
     Ok(layer_geometry_with_bounds(
         layer,
         source_origin,
@@ -145,7 +145,7 @@ pub fn align_layer_transform(
     if layer.locked {
         bail!("layer {id} is locked");
     }
-    let moving = layer_geometry(layer)?;
+    let moving = layer_geometry_in_document(document, layer)?;
     let reference = match reference {
         AlignmentReference::Canvas => LayerGeometry {
             corners: [
@@ -162,7 +162,7 @@ pub fn align_layer_transform(
             if reference_id == id {
                 bail!("a layer cannot be aligned to itself");
             }
-            layer_geometry(document.layer(reference_id)?)?
+            layer_geometry_in_document(document, document.layer(reference_id)?)?
         }
     };
     let delta = match alignment {
@@ -239,7 +239,19 @@ pub(crate) fn crop_guides(document: &mut Document, x: u32, y: u32) {
     });
 }
 
-fn layer_source_bounds(layer: &Layer) -> Result<([f32; 2], [f32; 2])> {
+fn layer_geometry_in_document(document: &Document, layer: &Layer) -> Result<LayerGeometry> {
+    let (source_origin, source_size) = layer_source_bounds(layer, document.font_for_layer(layer))?;
+    Ok(layer_geometry_with_bounds(
+        layer,
+        source_origin,
+        source_size,
+    ))
+}
+
+fn layer_source_bounds(
+    layer: &Layer,
+    font_asset: Option<&crate::FontAsset>,
+) -> Result<([f32; 2], [f32; 2])> {
     match &layer.kind {
         LayerKind::Raster { path, .. } => {
             let (width, height) = image::image_dimensions(path)
@@ -247,9 +259,14 @@ fn layer_source_bounds(layer: &Layer) -> Result<([f32; 2], [f32; 2])> {
             Ok(([0.0, 0.0], [width as f32, height as f32]))
         }
         LayerKind::Text {
-            text, font_size, ..
+            text,
+            font_size,
+            typography,
+            ..
         } => {
-            let geometry = crate::measure_text_geometry(text, *font_size)?;
+            let geometry = crate::measure_text_geometry_with_typography(
+                text, *font_size, typography, font_asset,
+            )?;
             Ok((
                 [geometry.visual_left, geometry.visual_top],
                 [geometry.visual_width, geometry.visual_height],
