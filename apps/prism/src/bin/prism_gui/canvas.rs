@@ -24,7 +24,10 @@ impl PrismApp {
                     geometry.pixels_per_point * ui.ctx().pixels_per_point(),
                 );
                 self.canvas_interaction(ui, &response, geometry);
-                if document_requires_composite_preview(&self.workspace.document) {
+                let direct_manipulation = direct_manipulation_preview(self.drag);
+                if document_requires_composite_preview(&self.workspace.document)
+                    && !direct_manipulation
+                {
                     let frame = match self.composite_preview.ensure(
                         ui.ctx(),
                         self.active_tab_id,
@@ -41,7 +44,19 @@ impl PrismApp {
                             None
                         }
                     };
-                    paint_composite_preview(ui, geometry, frame.as_ref());
+                    if let Some(frame) = frame.as_ref() {
+                        paint_composite_preview(ui, geometry, Some(frame));
+                    } else {
+                        // Never put a stale composited surface behind a current transform. The
+                        // cached per-layer visuals are an immediate GPU-transformed preview while
+                        // the exact blend/mask compositor catches up after the gesture.
+                        paint_interactive_document(
+                            ui,
+                            geometry,
+                            &self.workspace.document,
+                            &self.layer_visuals,
+                        );
+                    }
                 } else {
                     paint_interactive_document(
                         ui,
@@ -443,6 +458,57 @@ impl PrismApp {
                     .is_some_and(|rect| rect.contains(position))
             })
             .map(|layer| layer.id)
+    }
+}
+
+fn direct_manipulation_preview(drag: Option<DragState>) -> bool {
+    drag.is_some_and(|drag| {
+        drag.layer_id.is_some()
+            && matches!(
+                drag.action,
+                DragAction::Move | DragAction::Rotate | DragAction::Resize(_)
+            )
+    })
+}
+
+#[cfg(test)]
+mod direct_manipulation_tests {
+    use super::*;
+
+    fn drag(action: DragAction, layer_id: Option<u64>) -> DragState {
+        DragState {
+            start_canvas: Pos2::ZERO,
+            current_canvas: Pos2::new(20.0, 10.0),
+            layer_id,
+            transform: Transform::default(),
+            action,
+            bounds: None,
+        }
+    }
+
+    #[test]
+    fn layer_transform_gestures_bypass_the_async_compositor() {
+        assert!(direct_manipulation_preview(Some(drag(
+            DragAction::Move,
+            Some(7)
+        ))));
+        assert!(direct_manipulation_preview(Some(drag(
+            DragAction::Rotate,
+            Some(7)
+        ))));
+        assert!(direct_manipulation_preview(Some(drag(
+            DragAction::Resize(ResizeHandle::BottomRight),
+            Some(7)
+        ))));
+        assert!(!direct_manipulation_preview(Some(drag(
+            DragAction::Draw,
+            Some(7)
+        ))));
+        assert!(!direct_manipulation_preview(Some(drag(
+            DragAction::Move,
+            None
+        ))));
+        assert!(!direct_manipulation_preview(None));
     }
 }
 

@@ -154,7 +154,14 @@ impl PrismApp {
                 .expect("front was just checked");
             self.open_path(&path);
         }
-        context.request_repaint_after(std::time::Duration::from_millis(50));
+        if let Some(delay) = next_open_document_repaint_delay(
+            now,
+            self.workspace_initialized,
+            self.startup_project_ready_at,
+            self.pending_open_documents.front(),
+        ) {
+            context.request_repaint_after(delay);
+        }
     }
 
     fn replace_with_opened_project(&mut self, path: &Path) {
@@ -294,6 +301,20 @@ impl PrismApp {
     }
 }
 
+fn next_open_document_repaint_delay(
+    now: std::time::Instant,
+    workspace_initialized: bool,
+    startup_project_ready_at: std::time::Instant,
+    pending: Option<&(std::time::Instant, PathBuf)>,
+) -> Option<std::time::Duration> {
+    pending
+        .map(|(ready_at, _)| ready_at.saturating_duration_since(now))
+        .or_else(|| {
+            (!workspace_initialized)
+                .then(|| startup_project_ready_at.saturating_duration_since(now))
+        })
+}
+
 fn collaboration_agent_name(
     workspace: &Workspace,
     session_id: spectrum_revisions::SessionId,
@@ -347,5 +368,28 @@ mod tests {
             "Campaign  Summer 2026"
         );
         assert_eq!(safe_project_stem("..."), "Untitled artwork");
+    }
+
+    #[test]
+    fn idle_project_does_not_force_periodic_full_app_repaints() {
+        let now = std::time::Instant::now();
+        assert_eq!(next_open_document_repaint_delay(now, true, now, None), None);
+    }
+
+    #[test]
+    fn startup_and_debounced_open_documents_schedule_only_their_deadlines() {
+        let now = std::time::Instant::now();
+        let startup_delay = std::time::Duration::from_millis(250);
+        assert_eq!(
+            next_open_document_repaint_delay(now, false, now + startup_delay, None),
+            Some(startup_delay)
+        );
+
+        let open_delay = std::time::Duration::from_millis(100);
+        let pending = (now + open_delay, PathBuf::from("Artwork.prism"));
+        assert_eq!(
+            next_open_document_repaint_delay(now, true, now, Some(&pending)),
+            Some(open_delay)
+        );
     }
 }

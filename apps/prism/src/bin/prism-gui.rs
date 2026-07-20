@@ -337,6 +337,8 @@ impl PrismApp {
         initial_project: Option<&Path>,
         open_document_receiver: Receiver<PathBuf>,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        macos::install_open_document_repaint(creation.egui_ctx.clone());
         install_style(&creation.egui_ctx);
         let (layer_render_request_sender, layer_render_request_receiver) = mpsc::channel();
         let (layer_render_result_sender, layer_render_receiver) = mpsc::channel();
