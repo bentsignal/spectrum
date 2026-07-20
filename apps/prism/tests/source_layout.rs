@@ -125,6 +125,19 @@ fn prism_cli_delegates_agent_collaboration_with_binary_headroom() {
 }
 
 #[test]
+fn prism_schema_builds_command_examples_without_macro_recursion_overrides() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let schema = fs::read_to_string(manifest.join("src/bin/prism_cli/schema.rs")).unwrap();
+    let binary = fs::read_to_string(manifest.join("src/bin/prism.rs")).unwrap();
+
+    assert!(schema.contains("let command_examples = command_examples();"));
+    assert!(schema.contains("\"examples\": command_examples"));
+    assert!(schema.contains("fn command_examples() -> Vec<Value>"));
+    assert!(!schema.contains("recursion_limit"));
+    assert!(!binary.contains("recursion_limit"));
+}
+
+#[test]
 fn revision_graph_comes_from_the_shared_spectrum_surface() {
     let history = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/history.rs"),

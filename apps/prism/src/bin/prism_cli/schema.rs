@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 
 pub(super) fn schema() -> Value {
+    let command_examples = command_examples();
     json!({
         "ok": true,
         "application": "Prism",
@@ -25,23 +26,7 @@ pub(super) fn schema() -> Value {
         "command_protocol": {
             "encoding": "serde tagged JSON",
             "tag": "command",
-            "examples": [
-                {"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0},
-                {"command": "import_font", "path": "/fonts/Inter-Regular.ttf"},
-                {"command": "set_text_typography", "id": 1, "typography": {"font_id": 1, "alignment": "center", "line_height": 1.3, "tracking": 2.0, "box_width": 480.0, "effects": {"outline_width": 1.0, "outline_color": [0,0,0,255], "shadow_offset_x": 4.0, "shadow_offset_y": 6.0, "shadow_color": [0,0,0,128]}}},
-                {"command": "insert_layer", "transfer": {"format": "spectrum.prism.layer", "version": 1, "layer": {"id": 0, "name": "Card", "visible": true, "locked": false, "opacity": 1.0, "blend_mode": "normal", "transform": {}, "adjustments": {}, "mask": {}, "stroke": {}, "clip_to_below": false, "kind": {"type": "rectangle", "width": 320, "height": 180, "color": [174,123,255,255], "corner_radius": 24.0}}}},
-                {"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0},
-                {"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}},
-                {"command": "rasterize_shape", "id": 1, "path": "/generated/shape.png", "scale": 2.0},
-                {"command": "set_transform", "id": 1, "transform": {"x": 220.0, "y": 160.0, "scale_x": 1.2, "scale_y": 1.2, "rotation": 8.0}},
-                {"command": "set_rotation", "id": 1, "degrees": 15.0},
-                {"command": "align_layer", "id": 1, "alignment": "horizontal_center", "reference": {"kind": "canvas"}},
-                {"command": "set_snapping", "enabled": true},
-                {"command": "add_guide", "orientation": "vertical", "position": 960.0},
-                {"command": "move_guide", "id": 1, "position": 800.0},
-                {"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}},
-                {"command": "adjust_layer", "id": 1, "patch": {"exposure": 0.5, "contrast": 12.0}}
-            ]
+            "examples": command_examples
         },
         "gui_interactions": {
             "rotate_focused_object": "Option-R on macOS or Alt-R on Windows/Linux arms the next canvas drag; Shift snaps the absolute angle to 15-degree increments; Escape cancels",
@@ -79,4 +64,24 @@ pub(super) fn schema() -> Value {
         "color": "RRGGBB or RRGGBBAA",
         "coordinates": "canvas pixels; guides use canvas pixels; layer masks are normalized 0..1"
     })
+}
+
+fn command_examples() -> Vec<Value> {
+    vec![
+        json!({"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0}),
+        json!({"command": "import_font", "path": "/fonts/Inter-Regular.ttf"}),
+        json!({"command": "set_text_typography", "id": 1, "typography": {"font_id": 1, "alignment": "center", "line_height": 1.3, "tracking": 2.0, "box_width": 480.0, "effects": {"outline_width": 1.0, "outline_color": [0,0,0,255], "shadow_offset_x": 4.0, "shadow_offset_y": 6.0, "shadow_color": [0,0,0,128]}}}),
+        json!({"command": "insert_layer", "transfer": {"format": "spectrum.prism.layer", "version": 1, "layer": {"id": 0, "name": "Card", "visible": true, "locked": false, "opacity": 1.0, "blend_mode": "normal", "transform": {}, "adjustments": {}, "mask": {}, "stroke": {}, "clip_to_below": false, "kind": {"type": "rectangle", "width": 320, "height": 180, "color": [174,123,255,255], "corner_radius": 24.0}}}}),
+        json!({"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0}),
+        json!({"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}}),
+        json!({"command": "rasterize_shape", "id": 1, "path": "/generated/shape.png", "scale": 2.0}),
+        json!({"command": "set_transform", "id": 1, "transform": {"x": 220.0, "y": 160.0, "scale_x": 1.2, "scale_y": 1.2, "rotation": 8.0}}),
+        json!({"command": "set_rotation", "id": 1, "degrees": 15.0}),
+        json!({"command": "align_layer", "id": 1, "alignment": "horizontal_center", "reference": {"kind": "canvas"}}),
+        json!({"command": "set_snapping", "enabled": true}),
+        json!({"command": "add_guide", "orientation": "vertical", "position": 960.0}),
+        json!({"command": "move_guide", "id": 1, "position": 800.0}),
+        json!({"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}}),
+        json!({"command": "adjust_layer", "id": 1, "patch": {"exposure": 0.5, "contrast": 12.0}}),
+    ]
 }
