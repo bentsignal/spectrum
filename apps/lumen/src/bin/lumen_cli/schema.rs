@@ -3,8 +3,26 @@ use super::*;
 pub(super) fn schema() -> serde_json::Value {
     json!({
         "ok": true,
-        "catalog_version": lumen_core::project::CATALOG_VERSION,
+        "project_extension": ".lumen",
+        "legacy_catalog_extensions": [".lumencatalog"],
+        "legacy_catalog_version": lumen_core::project::CATALOG_VERSION,
         "output": "JSON on stdout; structured errors on stderr; nonzero exit on failure",
+        "project_storage": {
+            "container": "single transactional SQLite .lumen file",
+            "history": "one immutable revision tree per photo, with session-specific cursors",
+            "persistence": "each completed semantic action is an attributed durable revision",
+            "assets": "imported originals are embedded and content-addressed",
+            "batching": "run arrays publish atomically as one change set across affected photo tracks"
+        },
+        "agent_collaboration": {
+            "agent_prompt": "before starting, ask whether the user wants to continue together or explore separately",
+            "start": "lumen --catalog <path> agent start <photo-id> --mode <together|separate> --name <agent>",
+            "continue": "pass the returned --session value to every list, edit, run, and export command",
+            "status": "lumen --catalog <path> --session <id> agent status",
+            "together": "starts at the human cursor for one photo; other photo histories remain independent",
+            "separate": "starts at the human cursor for one photo and never moves the human session",
+            "transport": "CLI JSON; no vendor-specific integration required"
+        },
         "adjustments": {
             "exposure": { "range": [-5.0, 5.0], "unit": "stops", "default": 0.0 },
             "temperature": { "range": [-100, 100], "default": 0 },
@@ -36,7 +54,7 @@ pub(super) fn schema() -> serde_json::Value {
             { "command": "adjust", "id": 1, "patch": { "exposure": 0.7, "shadows": 18 } },
             { "command": "copy-edits", "id": 1 },
             { "command": "paste-edits", "ids": [2, 3] },
-            { "command": "history-back", "id": 1 },
+            { "command": "undo" },
             { "command": "set-pick", "ids": [1, 2], "state": "keep" },
             { "command": "rename-batch", "id": 1, "name": "Night walk" },
             { "command": "save-preset", "name": "Warm portrait", "from_id": 1 },

@@ -21,11 +21,15 @@ impl LumenApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        self.history_ui(ui, id);
+                        ui.add_space(4.0);
                         self.histogram_ui(ui);
                         self.photo_details_ui(ui, id);
                         ui.add_space(4.0);
-                        ui.heading("Develop");
-                        ui.add_space(3.0);
+                        if !self.workspace.is_durable() {
+                            ui.heading("Develop");
+                            ui.add_space(3.0);
+                        }
                         let mut draft = self.draft.clone();
                         let mut changed = false;
                         let mut commit = false;
@@ -464,7 +468,7 @@ impl LumenApp {
                                     egui::Button::new("Paste Edits"),
                                 )
                                 .clicked()
-                                && self.execute_and_autosave(Command::PasteEdits {
+                                && self.execute_and_commit(Command::PasteEdits {
                                     ids: self.selected_photo_ids(),
                                 })
                             {
@@ -485,7 +489,6 @@ impl LumenApp {
                         });
                         ui.separator();
                         self.presets_ui(ui, id);
-                        self.history_ui(ui, id);
                     });
             });
     }
@@ -577,7 +580,7 @@ impl LumenApp {
                             egui::Button::new("Save Current"),
                         )
                         .clicked()
-                        && self.execute_and_autosave(Command::SavePreset {
+                        && self.execute_and_commit(Command::SavePreset {
                             name: self.preset_name.trim().to_owned(),
                             from_id: id,
                         })
@@ -600,7 +603,7 @@ impl LumenApp {
                 for (preset_id, name) in presets {
                     ui.horizontal(|ui| {
                         if ui.button(&name).clicked()
-                            && self.execute_and_autosave(Command::ApplyPreset {
+                            && self.execute_and_commit(Command::ApplyPreset {
                                 preset_id,
                                 ids: self.selected_photo_ids(),
                             })
@@ -616,7 +619,7 @@ impl LumenApp {
                             .on_hover_text("Delete preset")
                             .clicked()
                         {
-                            self.execute_and_autosave(Command::DeletePreset { id: preset_id });
+                            self.execute_and_commit(Command::DeletePreset { id: preset_id });
                         }
                     });
                 }
@@ -627,6 +630,17 @@ impl LumenApp {
     }
 
     pub(super) fn history_ui(&mut self, ui: &mut egui::Ui, id: u64) {
+        if self.workspace.is_durable() {
+            ui.horizontal(|ui| {
+                ui.heading("Develop");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("History  ⌘H").clicked() {
+                        self.toggle_history();
+                    }
+                });
+            });
+            return;
+        }
         egui::CollapsingHeader::new("Edit History")
             .default_open(false)
             .show(ui, |ui| {
@@ -645,7 +659,7 @@ impl LumenApp {
                     if ui
                         .selectable_label(index == cursor, format!("{marker}  {label}"))
                         .clicked()
-                        && self.execute_and_autosave(Command::HistoryJump { id, index })
+                        && self.execute_and_commit(Command::HistoryJump { id, index })
                     {
                         self.draft_id = None;
                         self.sync_draft();

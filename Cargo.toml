@@ -3,6 +3,8 @@ members = [
     "apps/lumen",
     "apps/prism",
     "crates/spectrum-imaging",
+    "crates/spectrum-history-ui",
+    "crates/spectrum-revisions",
     "tools/workspace-guardrails",
 ]
 resolver = "2"
@@ -17,14 +19,22 @@ anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6", features = ["derive"] }
 eframe = { version = "0.35", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
+egui = "0.35"
 epaint_default_fonts = "0.35"
+flate2 = "1.1"
+fs2 = "0.4"
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
 rawler = "0.7.2"
 rayon = "1.12"
 rfd = "0.17"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.11"
+uuid = { version = "1.24", features = ["serde", "v4"] }
+url = "2.5"
+winit = "0.30.13"
 
 [profile.release]
 lto = "thin"

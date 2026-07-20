@@ -30,12 +30,20 @@ impl PrismApp {
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button("Save").clicked() {
-                            self.save(false);
+                        if ui.button("Move project…").clicked() {
+                            self.begin_move_project();
                             ui.close();
                         }
-                        if ui.button("Save as…").clicked() {
-                            self.save(true);
+                        ui.separator();
+                        if ui
+                            .button(if self.history.visible {
+                                "Close history  ⌘H"
+                            } else {
+                                "History  ⌘H"
+                            })
+                            .clicked()
+                        {
+                            self.toggle_history();
                             ui.close();
                         }
                     });
@@ -52,6 +60,13 @@ impl PrismApp {
                         .clicked()
                     {
                         self.execute(Command::Redo);
+                    }
+                    if ui
+                        .selectable_label(self.history.visible, "History")
+                        .on_hover_text("Revision history · ⌘H")
+                        .clicked()
+                    {
+                        self.toggle_history();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
@@ -108,7 +123,7 @@ impl PrismApp {
                         if ui
                             .small_button("×")
                             .on_hover_text(if dirty {
-                                "Save before closing"
+                                "Project has not finished persisting"
                             } else {
                                 "Close document"
                             })

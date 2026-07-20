@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
 };
@@ -22,18 +22,26 @@ mod canvas;
 mod chrome;
 #[path = "prism_gui/dialogs.rs"]
 mod dialogs;
+#[path = "prism_gui/history.rs"]
+mod history;
 #[path = "prism_gui/inspector.rs"]
 mod inspector;
 #[path = "prism_gui/layers.rs"]
 mod layers;
+#[cfg(target_os = "macos")]
+#[path = "prism_gui/macos.rs"]
+mod macos;
+#[path = "prism_gui/project_lifecycle.rs"]
+mod project_lifecycle;
 #[path = "prism_gui/renderer.rs"]
 mod renderer;
 #[path = "prism_gui/shortcuts.rs"]
 mod shortcuts;
 use dialogs::*;
+use history::HistoryViewState;
 use inspector::InspectorLens;
+use project_lifecycle::MoveProjectDialog;
 use renderer::*;
-use shortcuts::*;
 
 const INK: Color32 = Color32::from_rgb(14, 16, 20);
 const PANEL: Color32 = Color32::from_rgb(25, 28, 34);
@@ -253,31 +261,71 @@ struct PrismApp {
     delete_confirmation: Option<u64>,
     layer_drag: Option<u64>,
     layer_drop_index: Option<usize>,
+    move_project_dialog: Option<MoveProjectDialog>,
+    history: HistoryViewState,
+    open_document_receiver: Receiver<PathBuf>,
+    pending_open_documents: VecDeque<(std::time::Instant, PathBuf)>,
+    startup_project_ready_at: std::time::Instant,
+    collaboration_poll_at: std::time::Instant,
+    workspace_initialized: bool,
 }
 
-fn main() -> eframe::Result {
-    let initial_project = std::env::args_os().nth(1).map(PathBuf::from);
-    let options = eframe::NativeOptions {
+fn native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1500.0, 940.0])
             .with_min_inner_size([980.0, 640.0]),
         centered: true,
         ..Default::default()
-    };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn main() -> eframe::Result {
+    let initial_project = std::env::args_os().nth(1).map(PathBuf::from);
+    let (_, open_document_receiver) = mpsc::channel();
     eframe::run_native(
         "Prism",
-        options,
+        native_options(),
         Box::new(move |creation| {
             Ok(Box::new(PrismApp::new(
                 creation,
                 initial_project.as_deref(),
+                open_document_receiver,
             )))
         }),
     )
 }
 
+#[cfg(target_os = "macos")]
+fn main() -> eframe::Result {
+    let initial_project = std::env::args_os().nth(1).map(PathBuf::from);
+    let (open_document_sender, open_document_receiver) = mpsc::channel();
+    let event_loop =
+        winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+    macos::install_open_document_handler(open_document_sender);
+    let mut application = eframe::create_native(
+        "Prism",
+        native_options(),
+        Box::new(move |creation| {
+            Ok(Box::new(PrismApp::new(
+                creation,
+                initial_project.as_deref(),
+                open_document_receiver,
+            )))
+        }),
+        &event_loop,
+    );
+    event_loop.run_app(&mut application)?;
+    Ok(())
+}
+
 impl PrismApp {
-    fn new(creation: &eframe::CreationContext<'_>, initial_project: Option<&Path>) -> Self {
+    fn new(
+        creation: &eframe::CreationContext<'_>,
+        initial_project: Option<&Path>,
+        open_document_receiver: Receiver<PathBuf>,
+    ) -> Self {
         install_style(&creation.egui_ctx);
         let (layer_render_request_sender, layer_render_request_receiver) = mpsc::channel();
         let (layer_render_result_sender, layer_render_receiver) = mpsc::channel();
@@ -286,8 +334,11 @@ impl PrismApp {
             layer_render_result_sender,
             creation.egui_ctx.clone(),
         );
+        let initial_workspace =
+            initial_project.and_then(|path| project_lifecycle::open_local_workspace(path).ok());
+        let workspace_initialized = initial_workspace.is_some();
         let mut app = Self {
-            workspace: Workspace::default(),
+            workspace: initial_workspace.unwrap_or_default(),
             tab_ids: vec![1],
             active_tab_id: 1,
             next_tab_id: 2,
@@ -318,9 +369,22 @@ impl PrismApp {
             delete_confirmation: None,
             layer_drag: None,
             layer_drop_index: None,
+            move_project_dialog: None,
+            history: HistoryViewState::new(creation.egui_ctx.clone()),
+            open_document_receiver,
+            pending_open_documents: VecDeque::new(),
+            startup_project_ready_at: std::time::Instant::now()
+                + std::time::Duration::from_millis(250),
+            collaboration_poll_at: std::time::Instant::now(),
+            workspace_initialized,
         };
         if let Some(path) = initial_project {
-            app.open_path(path);
+            if workspace_initialized {
+                app.status = format!("Opened {}", path.display());
+            } else {
+                app.status = format!("Could not open project {}", path.display());
+                app.status_error = true;
+            }
         }
         app
     }
@@ -330,8 +394,16 @@ impl PrismApp {
         match self.workspace.execute(command) {
             Ok(output) => {
                 self.apply_canvas_invalidation(invalidation);
-                self.status = output.message;
-                self.status_error = false;
+                if let Some(error) = self.workspace.pending_publish_error() {
+                    self.status = format!(
+                        "Edit is safe in Prism recovery storage, but the project file could not update: {error}"
+                    );
+                    self.status_error = true;
+                } else {
+                    self.status = output.message;
+                    self.status_error = false;
+                }
+                self.history.mark_stale();
                 true
             }
             Err(error) => {
@@ -384,24 +456,44 @@ impl PrismApp {
     }
 
     fn finish_interaction(&mut self) {
-        if self.workspace.commit_interaction() {
-            self.status = "Finished interaction".into();
-            self.status_error = false;
+        match self.workspace.commit_interaction() {
+            Ok(true) => {
+                if let Some(error) = self.workspace.pending_publish_error() {
+                    self.status = format!(
+                        "Edit is safe in Prism recovery storage, but the project file could not update: {error}"
+                    );
+                    self.status_error = true;
+                } else {
+                    self.status = "Finished interaction".into();
+                    self.status_error = false;
+                }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.status = format!("Could not record interaction: {error:#}");
+                self.status_error = true;
+            }
         }
     }
 
     fn widget_command(&mut self, response: &egui::Response, command: Command) {
-        if response.drag_started() {
+        self.widget_command_if(response, Some(command));
+    }
+
+    fn widget_command_if(&mut self, response: &egui::Response, command: Option<Command>) {
+        if response.drag_started() || response.gained_focus() {
             self.workspace.begin_interaction();
         }
-        if response.changed() {
+        if response.changed()
+            && let Some(command) = command
+        {
             if self.workspace.interaction_active() {
                 self.preview_command(command);
             } else {
                 self.execute(command);
             }
         }
-        if response.drag_stopped() {
+        if response.drag_stopped() || response.lost_focus() {
             self.finish_interaction();
         }
     }
@@ -413,29 +505,6 @@ impl PrismApp {
             .and_then(|id| self.workspace.document.layer(id).ok())
     }
 
-    fn open_path(&mut self, path: &Path) {
-        match Workspace::open(path) {
-            Ok(workspace) => {
-                self.add_workspace_tab(workspace);
-                self.status = format!("Opened {}", path.display());
-                self.status_error = false;
-            }
-            Err(error) => {
-                self.status = format!("Could not open project: {error:#}");
-                self.status_error = true;
-            }
-        }
-    }
-
-    fn new_document(&mut self, draft: NewDocumentDialog) {
-        self.add_workspace_tab(Workspace::new(
-            Document::new(draft.name, draft.width, draft.height),
-            None,
-        ));
-        self.status = "Created a new Prism document".into();
-        self.status_error = false;
-    }
-
     fn add_workspace_tab(&mut self, workspace: Workspace) {
         self.inactive_workspaces.insert(
             self.active_tab_id,
@@ -445,6 +514,7 @@ impl PrismApp {
         self.next_tab_id += 1;
         self.tab_ids.push(id);
         self.active_tab_id = id;
+        self.history.workspace_changed();
         self.reset_canvas_cache();
         self.layer_thumbnails.clear();
         self.fit_requested = true;
@@ -462,6 +532,7 @@ impl PrismApp {
         self.inactive_workspaces
             .insert(self.active_tab_id, previous);
         self.active_tab_id = id;
+        self.history.workspace_changed();
         self.reset_canvas_cache();
         self.layer_thumbnails.clear();
         self.fit_requested = true;
@@ -479,7 +550,7 @@ impl PrismApp {
         };
         if dirty {
             self.activate_tab(id);
-            self.status = "Save this document before closing its tab".into();
+            self.status = "This legacy document must be converted before its tab can close".into();
             self.status_error = true;
             return;
         }
@@ -499,35 +570,12 @@ impl PrismApp {
         } else {
             self.inactive_workspaces.remove(&id);
         }
+        self.history.workspace_changed();
         self.reset_canvas_cache();
         self.layer_thumbnails.clear();
         self.fit_requested = true;
         self.pan = Vec2::ZERO;
         self.drag = None;
-    }
-
-    fn save(&mut self, save_as: bool) {
-        let path = if save_as || self.workspace.project_path.is_none() {
-            rfd::FileDialog::new()
-                .add_filter("Prism project", &["prism"])
-                .set_file_name(format!("{}.prism", self.workspace.document.name))
-                .save_file()
-        } else {
-            None
-        };
-        if (save_as || self.workspace.project_path.is_none()) && path.is_none() {
-            return;
-        }
-        match self.workspace.save(path.as_deref()) {
-            Ok(path) => {
-                self.status = format!("Saved {}", path.display());
-                self.status_error = false;
-            }
-            Err(error) => {
-                self.status = format!("Save failed: {error:#}");
-                self.status_error = true;
-            }
-        }
     }
 
     fn export(&mut self) {
@@ -613,73 +661,35 @@ impl PrismApp {
                 });
             });
     }
-
-    fn keyboard(&mut self, context: &egui::Context) {
-        if context.egui_wants_keyboard_input() {
-            return;
-        }
-        let chosen_tool = context.input(|input| {
-            if shortcut_domain(input.modifiers) != Some(ShortcutDomain::Tool) {
-                return None;
-            }
-            if input.key_pressed(egui::Key::V) {
-                Some(Tool::Move)
-            } else if input.key_pressed(egui::Key::C) {
-                Some(Tool::Crop)
-            } else if input.key_pressed(egui::Key::T) {
-                Some(Tool::Text)
-            } else if input.key_pressed(egui::Key::R) {
-                Some(Tool::Rectangle)
-            } else if input.key_pressed(egui::Key::M) {
-                Some(Tool::Mask)
-            } else {
-                None
-            }
-        });
-        if let Some(tool) = chosen_tool {
-            self.choose_tool(tool);
-        }
-        if context.input(|input| focused_shortcut_pressed(input, egui::Key::E)) {
-            self.edit_focused();
-        }
-        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
-            self.save(false);
-        }
-        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::K)) {
-            self.tool_palette = Some(String::new());
-        }
-        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::J)) {
-            self.composition_search_focus = true;
-        }
-        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Z)) {
-            if context.input(|input| input.modifiers.shift) {
-                self.execute(Command::Redo);
-            } else {
-                self.execute(Command::Undo);
-            }
-        }
-        if context.input(|input| input.key_pressed(egui::Key::Delete)) {
-            self.delete_confirmation = self.workspace.document.selected;
-        }
-        if context.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.tool_palette = None;
-            self.tool = Tool::Move;
-            self.drag = None;
-        }
-    }
 }
 
 impl eframe::App for PrismApp {
     fn ui(&mut self, root: &mut egui::Ui, frame: &mut eframe::Frame) {
         let _ = frame;
+        #[cfg(target_os = "macos")]
+        spectrum_history_ui::reserve_history_shortcut();
         let context = root.ctx().clone();
+        self.receive_open_documents(&context);
+        self.sync_agent_collaborations(&context);
         self.keyboard(&context);
         self.top_bar(root);
-        self.workbench_bar(root);
-        self.status_bar(root);
-        self.right_panel(root);
-        self.canvas(root);
+        if self.history.visible {
+            self.history_view(root);
+        } else {
+            self.workbench_bar(root);
+            self.status_bar(root);
+            self.right_panel(root);
+            self.canvas(root);
+        }
         self.dialogs(&context);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.finish_interaction();
+        let _ = self.workspace.checkpoint();
+        for workspace in self.inactive_workspaces.values() {
+            let _ = workspace.checkpoint();
+        }
     }
 }
 

@@ -12,6 +12,12 @@ use spectrum_imaging::{AdjustmentPatch, Adjustments};
 mod text;
 use text::default_text_layer_name;
 
+mod revisions;
+pub use revisions::{DurableProject, ProjectHistory};
+
+mod workspace;
+pub use workspace::Workspace;
+
 pub const PRISM_VERSION: u32 = 1;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
@@ -413,152 +419,6 @@ pub struct CommandOutput {
     pub action: String,
     pub message: String,
     pub layer_ids: Vec<u64>,
-}
-
-pub struct Workspace {
-    pub document: Document,
-    pub project_path: Option<PathBuf>,
-    undo: Vec<Document>,
-    redo: Vec<Document>,
-    dirty: bool,
-    interaction_before: Option<Document>,
-}
-
-impl Default for Workspace {
-    fn default() -> Self {
-        Self::new(Document::default(), None)
-    }
-}
-
-impl Workspace {
-    pub fn new(document: Document, project_path: Option<PathBuf>) -> Self {
-        Self {
-            document,
-            project_path,
-            undo: Vec::new(),
-            redo: Vec::new(),
-            dirty: false,
-            interaction_before: None,
-        }
-    }
-
-    pub fn open(path: &Path) -> Result<Self> {
-        Ok(Self::new(load_document(path)?, Some(path.to_owned())))
-    }
-
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
-    }
-
-    pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
-    }
-
-    pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
-    }
-
-    pub fn save(&mut self, path: Option<&Path>) -> Result<PathBuf> {
-        let path = path
-            .map(Path::to_owned)
-            .or_else(|| self.project_path.clone())
-            .context("choose a .prism project path first")?;
-        save_document(&self.document, &path)?;
-        self.document = load_document(&path)?;
-        self.project_path = Some(path.clone());
-        self.dirty = false;
-        Ok(path)
-    }
-
-    pub fn execute(&mut self, command: Command) -> Result<CommandOutput> {
-        if self.interaction_before.is_some() {
-            bail!("finish the active interaction before executing another command");
-        }
-        match command {
-            Command::Undo => self.undo(),
-            Command::Redo => self.redo(),
-            command @ Command::SelectLayer { .. } => apply_command(&mut self.document, command),
-            command => {
-                let before = self.document.clone();
-                let output = apply_command(&mut self.document, command)?;
-                if self.document != before {
-                    self.record_edit(before);
-                }
-                Ok(output)
-            }
-        }
-    }
-
-    /// Starts a gesture whose many preview commands should become one undo step.
-    pub fn begin_interaction(&mut self) {
-        if self.interaction_before.is_none() {
-            self.interaction_before = Some(self.document.clone());
-        }
-    }
-
-    /// Applies a command without cloning the document or adding an undo entry.
-    /// Call [`Workspace::commit_interaction`] when the gesture ends.
-    pub fn preview(&mut self, command: Command) -> Result<CommandOutput> {
-        if self.interaction_before.is_none() {
-            bail!("begin an interaction before applying preview commands");
-        }
-        if matches!(
-            command,
-            Command::Undo | Command::Redo | Command::SelectLayer { .. }
-        ) {
-            bail!("history and selection commands cannot preview an interaction");
-        }
-        apply_command(&mut self.document, command)
-    }
-
-    /// Commits the current gesture as a single history entry.
-    pub fn commit_interaction(&mut self) -> bool {
-        let Some(before) = self.interaction_before.take() else {
-            return false;
-        };
-        if self.document == before {
-            return false;
-        }
-        self.record_edit(before);
-        true
-    }
-
-    /// Restores the document from before the current gesture.
-    pub fn cancel_interaction(&mut self) -> bool {
-        let Some(before) = self.interaction_before.take() else {
-            return false;
-        };
-        self.document = before;
-        true
-    }
-
-    pub fn interaction_active(&self) -> bool {
-        self.interaction_before.is_some()
-    }
-
-    fn record_edit(&mut self, before: Document) {
-        self.undo.push(before);
-        if self.undo.len() > MAX_HISTORY {
-            self.undo.remove(0);
-        }
-        self.redo.clear();
-        self.dirty = true;
-    }
-
-    fn undo(&mut self) -> Result<CommandOutput> {
-        let previous = self.undo.pop().context("nothing to undo")?;
-        self.redo
-            .push(std::mem::replace(&mut self.document, previous));
-        self.dirty = true;
-        Ok(output("undo", "went back one edit", Vec::new()))
-    }
-
-    fn redo(&mut self) -> Result<CommandOutput> {
-        let next = self.redo.pop().context("nothing to redo")?;
-        self.undo.push(std::mem::replace(&mut self.document, next));
-        self.dirty = true;
-        Ok(output("redo", "went forward one edit", Vec::new()))
-    }
 }
 
 fn apply_command(document: &mut Document, command: Command) -> Result<CommandOutput> {
@@ -974,8 +834,8 @@ fn validate_adjustments(value: &Adjustments) -> Result<()> {
 mod render;
 
 pub use render::{
-    export_document, load_document, measure_text, render_document, render_layer_base,
-    render_layer_preview, render_solid_color, save_document,
+    export_document, load_document, measure_text, render_document, render_document_thumbnail,
+    render_layer_base, render_layer_preview, render_solid_color, save_document,
 };
 
 #[cfg(test)]

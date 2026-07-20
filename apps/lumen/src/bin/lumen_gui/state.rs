@@ -1,6 +1,36 @@
 use super::*;
 
 impl LumenApp {
+    pub(super) fn sync_agent_collaborations(&mut self, context: &egui::Context) {
+        let now = Instant::now();
+        if now < self.collaboration_poll_at {
+            return;
+        }
+        self.collaboration_poll_at = now + Duration::from_millis(100);
+        match self.workspace.sync_together() {
+            Ok(spectrum_revisions::CollaborationSync::Advanced { .. }) => {
+                self.reset_catalog_view(self.library_mode);
+                self.status = "Following the agent's latest changes".into();
+                self.error = false;
+                context.request_repaint();
+            }
+            Ok(spectrum_revisions::CollaborationSync::Split(_)) => {
+                self.status = "You and the agent are now continuing separately".into();
+                self.error = false;
+                context.request_repaint();
+            }
+            Ok(
+                spectrum_revisions::CollaborationSync::Idle
+                | spectrum_revisions::CollaborationSync::Waiting(_),
+            ) => {}
+            Err(error) => {
+                self.status = format!("Could not follow agent changes: {error:#}");
+                self.error = true;
+            }
+        }
+        context.request_repaint_after(Duration::from_millis(100));
+    }
+
     pub(super) fn execute(&mut self, command: Command) -> bool {
         match self.workspace.execute(command) {
             Ok(output) => {
@@ -16,13 +46,11 @@ impl LumenApp {
         }
     }
 
-    pub(super) fn execute_and_autosave(&mut self, command: Command) -> bool {
+    pub(super) fn execute_and_commit(&mut self, command: Command) -> bool {
         let succeeded = self.execute(command);
-        if succeeded
-            && let Some(path) = self.workspace.catalog_path.clone()
-            && let Err(error) = self.workspace.project.save(&path)
-        {
-            self.status = format!("change applied, but autosave failed: {error:#}");
+        if succeeded && let Some(error) = self.workspace.pending_publish_error() {
+            self.status =
+                format!("change committed locally, but project publication failed: {error}");
             self.error = true;
         }
         succeeded
@@ -68,7 +96,7 @@ impl LumenApp {
     }
 
     pub(super) fn finish_edit(&mut self, id: u64) {
-        if self.execute_and_autosave(Command::SetAdjustments {
+        if self.execute_and_commit(Command::SetAdjustments {
             id,
             adjustments: self.draft.clone(),
         }) {
@@ -141,7 +169,7 @@ impl LumenApp {
 
     pub(super) fn set_pick(&mut self, ids: Vec<u64>, state: PickState) {
         if !ids.is_empty() {
-            self.execute_and_autosave(Command::SetPick { ids, state });
+            self.execute_and_commit(Command::SetPick { ids, state });
         }
     }
 
@@ -175,7 +203,7 @@ impl LumenApp {
         }
         let batch_count = self.workspace.project.batches.len();
         self.status = "Reading photo metadata and importing...".into();
-        if self.execute_and_autosave(Command::Import { paths }) {
+        if self.execute_and_commit(Command::Import { paths }) {
             self.thumbnails.clear();
             self.selected_ids.clear();
             self.selection_anchor = None;
@@ -243,76 +271,91 @@ impl LumenApp {
     }
 
     pub(super) fn request_catalog_switch(&mut self, action: CatalogSwitch) {
-        if self.workspace.catalog_path.is_none() && !self.workspace.project.photos.is_empty() {
-            self.pending_catalog_switch = Some(action);
-        } else {
-            self.apply_catalog_switch(action);
+        self.apply_catalog_switch(action);
+    }
+
+    pub(super) fn receive_open_documents(&mut self, context: &egui::Context) {
+        let paths: Vec<_> = self.open_document_receiver.try_iter().collect();
+        for path in paths {
+            let current = self
+                .workspace
+                .catalog_path
+                .as_ref()
+                .and_then(|current| std::fs::canonicalize(current).ok());
+            let incoming = std::fs::canonicalize(&path).ok();
+            if current.is_some() && current == incoming {
+                continue;
+            }
+            self.apply_catalog_switch(CatalogSwitch::Open(path));
         }
+        context.request_repaint_after(Duration::from_millis(50));
     }
 
     pub(super) fn apply_catalog_switch(&mut self, action: CatalogSwitch) {
         match action {
-            CatalogSwitch::New(path) => {
-                let name = path
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or("Untitled catalog")
-                    .to_owned();
-                if self.execute(Command::New { name })
-                    && self.execute(Command::Save {
-                        path: Some(path.clone()),
-                    })
-                {
-                    self.remember_catalog(path);
+            CatalogSwitch::Open(path) => match open_local_workspace(&path) {
+                Ok(workspace) => {
+                    let opened = workspace.catalog_path.clone().unwrap_or(path);
+                    self.workspace = workspace;
+                    self.remember_catalog(opened);
                     self.reset_catalog_view(true);
+                    self.status = "Opened Lumen project".into();
+                    self.error = false;
                 }
-            }
-            CatalogSwitch::Open(path) => {
-                if self.execute(Command::Open { path: path.clone() }) {
-                    self.remember_catalog(path);
-                    self.reset_catalog_view(true);
+                Err(error) => {
+                    self.status = format!("Could not open project: {error:#}");
+                    self.error = true;
                 }
-            }
+            },
         }
     }
 
     pub(super) fn new_catalog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Lumen catalog", &["lumencatalog"])
-            .set_file_name("New shoot.lumencatalog")
-            .save_file()
-        {
-            self.request_catalog_switch(CatalogSwitch::New(path));
+        match create_managed_workspace(Project::new("Untitled shoot")) {
+            Ok(workspace) => {
+                let path = workspace.catalog_path.clone();
+                self.workspace = workspace;
+                if let Some(path) = path {
+                    self.remember_catalog(path);
+                }
+                self.reset_catalog_view(true);
+                self.status = "Created a new Lumen project".into();
+                self.error = false;
+            }
+            Err(error) => {
+                self.status = format!("Could not create project: {error:#}");
+                self.error = true;
+            }
         }
     }
 
     pub(super) fn open_catalog(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Lumen catalog", &["lumencatalog"])
+            .add_filter("Lumen project", &["lumen", "lumencatalog"])
             .pick_file()
         {
             self.request_catalog_switch(CatalogSwitch::Open(path));
         }
     }
 
-    pub(super) fn save_catalog(&mut self, save_as: bool) {
-        let needs_picker = save_as || self.workspace.catalog_path.is_none();
-        let path = if needs_picker {
-            rfd::FileDialog::new()
-                .add_filter("Lumen catalog", &["lumencatalog"])
-                .set_file_name(format!("{}.lumencatalog", self.workspace.project.name))
-                .save_file()
-        } else {
-            None
-        };
-        if needs_picker && path.is_none() {
+    pub(super) fn move_project(&mut self) {
+        let Some(destination) = rfd::FileDialog::new()
+            .add_filter("Lumen project", &["lumen"])
+            .set_file_name(format!("{}.lumen", self.workspace.project.name))
+            .save_file()
+        else {
             return;
-        }
-        if self.execute(Command::Save { path })
-            && let Some(path) = self.workspace.catalog_path.clone()
-        {
-            self.remember_catalog(path);
+        };
+        match self.workspace.move_project(&destination) {
+            Ok(path) => {
+                self.remember_catalog(path.clone());
+                self.status = format!("Moved project to {}", path.display());
+                self.error = false;
+            }
+            Err(error) => {
+                self.status = format!("Could not move project: {error:#}");
+                self.error = true;
+            }
         }
     }
 
@@ -465,7 +508,15 @@ impl LumenApp {
             self.import(dropped);
         }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
-            self.save_catalog(context.input(|input| input.modifiers.shift));
+            if context.input(|input| input.modifiers.shift) {
+                self.move_project();
+            } else {
+                self.status = "Every completed action is already saved".into();
+                self.error = false;
+            }
+        }
+        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::H)) {
+            self.toggle_history();
         }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::A))
             && !context.egui_wants_keyboard_input()
@@ -486,15 +537,13 @@ impl LumenApp {
                 None
             }
         });
-        if let Some(forward) = history
-            && let Some(id) = self.workspace.project.selected
-        {
+        if let Some(forward) = history {
             let command = if forward {
-                Command::HistoryForward { id }
+                Command::Redo
             } else {
-                Command::HistoryBack { id }
+                Command::Undo
             };
-            if self.execute_and_autosave(command) {
+            if self.execute(command) {
                 self.draft_id = None;
                 self.sync_draft();
             }
@@ -556,5 +605,72 @@ impl LumenApp {
             .unwrap_or(0) as i32;
         let index = (current + direction).clamp(0, visible.len() as i32 - 1) as usize;
         self.select(visible[index]);
+    }
+}
+
+fn local_session_id() -> anyhow::Result<spectrum_revisions::SessionId> {
+    let directory = eframe::storage_dir("Spectrum")
+        .ok_or_else(|| anyhow::anyhow!("Spectrum could not locate its local application folder"))?;
+    spectrum_revisions::local_session_id(&directory).map_err(Into::into)
+}
+
+fn local_actor(session: spectrum_revisions::SessionId) -> spectrum_revisions::Actor {
+    spectrum_revisions::Actor {
+        id: format!("local:human:{session}"),
+        display_name: "Local User".into(),
+        kind: spectrum_revisions::ActorKind::Human,
+    }
+}
+
+pub(super) fn open_local_workspace(path: &Path) -> anyhow::Result<Workspace> {
+    let session = local_session_id()?;
+    Workspace::open_as(path, local_actor(session), session)
+}
+
+pub(super) fn create_workspace_at(project: Project, path: &Path) -> anyhow::Result<Workspace> {
+    let session = local_session_id()?;
+    Workspace::create_durable(project, path, local_actor(session), session)
+}
+
+pub(super) fn create_managed_workspace(project: Project) -> anyhow::Result<Workspace> {
+    let directory = eframe::storage_dir("Lumen")
+        .map(|directory| directory.join("Projects"))
+        .ok_or_else(|| anyhow::anyhow!("Lumen could not locate its local application folder"))?;
+    std::fs::create_dir_all(&directory)?;
+    let path = available_project_path(&directory, &project.name);
+    create_workspace_at(project, &path)
+}
+
+fn available_project_path(directory: &Path, name: &str) -> PathBuf {
+    let stem = safe_project_stem(name);
+    let initial = directory.join(format!("{stem}.lumen"));
+    if !initial.exists() {
+        return initial;
+    }
+    for copy in 2..u32::MAX {
+        let candidate = directory.join(format!("{stem} {copy}.lumen"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    directory.join(format!(
+        "{stem}-{}.lumen",
+        spectrum_revisions::ProjectId::new()
+    ))
+}
+
+fn safe_project_stem(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .filter(|character| {
+            !character.is_control() && !matches!(character, '/' | '\\' | ':' | '\0')
+        })
+        .take(96)
+        .collect();
+    let stem = stem.trim().trim_matches('.');
+    if stem.is_empty() {
+        "Untitled shoot".into()
+    } else {
+        stem.into()
     }
 }

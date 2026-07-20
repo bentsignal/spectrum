@@ -1,4 +1,5 @@
 use super::*;
+use spectrum_revisions::{Actor, ActorKind};
 
 pub(super) fn benchmark(
     strict: bool,
@@ -50,15 +51,20 @@ pub(super) fn benchmark(
         photo.format = "jpg".into();
         project.photos.push(photo);
         project.selected = Some(1);
-        let catalog_path = directory.join("benchmark.lumencatalog");
-        project.save(&catalog_path)?;
-        let mut workspace = Workspace::new(project, Some(catalog_path.clone()));
+        let catalog_path = directory.join("benchmark.lumen");
+        let session = SessionId::new();
+        let actor = Actor {
+            id: "benchmark:lumen".into(),
+            display_name: "Lumen benchmark".into(),
+            kind: ActorKind::System,
+        };
+        let mut workspace =
+            Workspace::create_durable(project, &catalog_path, actor.clone(), session)?;
 
         let mut command_samples = Vec::with_capacity(12);
         for iteration in 0..12 {
             let started = Instant::now();
-            let project = Project::load(&catalog_path)?;
-            let mut invocation = Workspace::new(project, Some(catalog_path.clone()));
+            let mut invocation = Workspace::open_as(&catalog_path, actor.clone(), session)?;
             let mut adjustments = invocation.project.photo(1)?.adjustments.clone();
             let y = if iteration % 2 == 0 { 0.42 } else { 0.58 };
             adjustments.curves.master = ToneCurve {
@@ -69,7 +75,6 @@ pub(super) fn benchmark(
                 ],
             };
             invocation.execute(Command::SetAdjustments { id: 1, adjustments })?;
-            invocation.project.save(&catalog_path)?;
             command_samples.push(started.elapsed());
             workspace = invocation;
         }
@@ -121,9 +126,9 @@ pub(super) fn benchmark(
 
         let command = latency_metric(
             "tone_curve_command",
-            "Catalog load, core command, and atomic persistence",
+            "Portable project load, core command, and atomic 24 MP project publication",
             &command_samples,
-            8.0,
+            50.0,
             profile.command_budget_ms(),
         );
         let preview_metric = latency_metric(

@@ -12,7 +12,7 @@ This repository is the Spectrum creative-suite monorepo. Applications live in
 app depend on another for behavior that belongs in a neutral Spectrum crate.
 
 Use the `lumen` CLI for all photo and catalog automation and the `prism` CLI for
-all layered-document automation. Do not edit `.lumencatalog`, `.prism`, or
+all layered-document automation. Do not edit `.lumen`, legacy `.lumencatalog`, `.prism`, or
 legacy `.mica` JSON manually unless recovering a damaged file; the CLIs apply validation,
 transactional mutation, and path checks.
 

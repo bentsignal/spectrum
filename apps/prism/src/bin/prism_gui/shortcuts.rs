@@ -55,6 +55,67 @@ pub(super) fn focused_shortcut_pressed(input: &egui::InputState, key: egui::Key)
                 .any(|event| event_is_focused_shortcut(event, key)))
 }
 
+pub(super) fn global_shortcut_pressed(input: &egui::InputState, key: egui::Key) -> bool {
+    shortcut_domain(input.modifiers) == Some(ShortcutDomain::Global) && input.key_pressed(key)
+}
+
+impl PrismApp {
+    pub(super) fn keyboard(&mut self, context: &egui::Context) {
+        if context.egui_wants_keyboard_input() {
+            return;
+        }
+        if context.input(|input| global_shortcut_pressed(input, egui::Key::H)) {
+            self.toggle_history();
+            return;
+        }
+        let chosen_tool = context.input(|input| {
+            if shortcut_domain(input.modifiers) != Some(ShortcutDomain::Tool) {
+                return None;
+            }
+            if input.key_pressed(egui::Key::V) {
+                Some(Tool::Move)
+            } else if input.key_pressed(egui::Key::C) {
+                Some(Tool::Crop)
+            } else if input.key_pressed(egui::Key::T) {
+                Some(Tool::Text)
+            } else if input.key_pressed(egui::Key::R) {
+                Some(Tool::Rectangle)
+            } else if input.key_pressed(egui::Key::M) {
+                Some(Tool::Mask)
+            } else {
+                None
+            }
+        });
+        if let Some(tool) = chosen_tool {
+            self.choose_tool(tool);
+        }
+        if context.input(|input| focused_shortcut_pressed(input, egui::Key::E)) {
+            self.edit_focused();
+        }
+        if context.input(|input| global_shortcut_pressed(input, egui::Key::K)) {
+            self.tool_palette = Some(String::new());
+        }
+        if context.input(|input| global_shortcut_pressed(input, egui::Key::J)) {
+            self.composition_search_focus = true;
+        }
+        if context.input(|input| global_shortcut_pressed(input, egui::Key::Z)) {
+            if context.input(|input| input.modifiers.shift) {
+                self.execute(Command::Redo);
+            } else {
+                self.execute(Command::Undo);
+            }
+        }
+        if context.input(|input| input.key_pressed(egui::Key::Delete)) {
+            self.delete_confirmation = self.workspace.document.selected;
+        }
+        if context.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.tool_palette = None;
+            self.tool = Tool::Move;
+            self.drag = None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +163,22 @@ mod tests {
             },
         };
         assert!(event_is_focused_shortcut(&event, egui::Key::E));
+    }
+
+    #[test]
+    fn command_h_belongs_to_the_global_history_surface() {
+        let mut input = egui::RawInput::default();
+        input.modifiers.command = true;
+        input.events.push(egui::Event::Key {
+            key: egui::Key::H,
+            physical_key: Some(egui::Key::H),
+            pressed: true,
+            repeat: false,
+            modifiers: input.modifiers,
+        });
+        let context = egui::Context::default();
+        context.begin_pass(input);
+        assert!(context.input(|state| global_shortcut_pressed(state, egui::Key::H)));
+        let _ = context.end_pass();
     }
 }

@@ -1,26 +1,31 @@
 use std::{
-    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     process::ExitCode,
     time::Instant,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use lumen_core::{Project as LumenProject, engine::render_photo};
+use lumen_core::{
+    DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
+};
 use prism_core::{
     BlendMode, Command, Document, LayerMask, Transform, Workspace, export_document,
-    render_document, render_solid_color, save_document,
+    render_document, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 use spectrum_imaging::{AdjustmentPatch, Adjustments, RenderOptions};
+use spectrum_revisions::{Actor, ActorKind, CollaborationMode, SessionId};
 
 #[derive(Parser)]
 #[command(name = "prism", version, about = "Agent-first layered image editor")]
 struct Cli {
     #[arg(short, long, global = true, default_value = "untitled.prism")]
     project: PathBuf,
+    /// Continue commands in an existing collaboration session.
+    #[arg(long, global = true)]
+    session: Option<SessionId>,
     #[command(subcommand)]
     command: CliCommand,
 }
@@ -225,6 +230,11 @@ enum CliCommand {
     Run {
         json: String,
     },
+    /// Start or inspect a CLI-first agent collaboration.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     /// Print the machine-facing Command protocol and examples.
     Schema,
     /// Run deterministic command and compositing performance workloads.
@@ -232,6 +242,37 @@ enum CliCommand {
         #[arg(long)]
         strict: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// Start from the current human position and return a persistent agent session.
+    Start {
+        #[arg(long, value_enum)]
+        mode: CliAgentMode,
+        #[arg(long, default_value = "Agent")]
+        name: String,
+        /// Choose a specific human session instead of the most recently active one.
+        #[arg(long)]
+        from_session: Option<SessionId>,
+    },
+    /// Inspect this agent session's mode, cursor, and follow status.
+    Status,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CliAgentMode {
+    Together,
+    Separate,
+}
+
+impl From<CliAgentMode> for CollaborationMode {
+    fn from(value: CliAgentMode) -> Self {
+        match value {
+            CliAgentMode::Together => Self::Together,
+            CliAgentMode::Separate => Self::Separate,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -296,16 +337,20 @@ fn run(cli: Cli) -> Result<Value> {
         } => {
             let mut document = Document::new(name, width, height);
             document.background = parse_color(&background)?;
-            save_document(&document, &cli.project)?;
-            Ok(json!({"ok": true, "action": "init", "project": cli.project, "document": document}))
+            let mut workspace =
+                Workspace::create_durable(document, &cli.project, cli_actor(), SessionId::new())?;
+            workspace.save(None)?;
+            Ok(
+                json!({"ok": true, "action": "init", "project": cli.project, "document": workspace.document}),
+            )
         }
         CliCommand::List => {
-            let workspace = Workspace::open(&cli.project)?;
-            Ok(json!({"ok": true, "project": cli.project, "document": workspace.document}))
+            let document = session_document(&cli.project, cli.session)?;
+            Ok(json!({"ok": true, "project": cli.project, "document": document}))
         }
         CliCommand::Export { path, quality } => {
-            let workspace = Workspace::open(&cli.project)?;
-            export_document(&workspace.document, &path, quality)?;
+            let document = session_document(&cli.project, cli.session)?;
+            export_document(&document, &path, quality)?;
             Ok(json!({"ok": true, "action": "export", "path": path}))
         }
         CliCommand::FromLumen {
@@ -313,10 +358,14 @@ fn run(cli: Cli) -> Result<Value> {
             photo,
             output,
         } => from_lumen(&catalog, photo, &output),
+        CliCommand::Agent { command } => agent_command(&cli.project, cli.session, command),
         CliCommand::Schema => Ok(schema()),
         CliCommand::Benchmark { strict } => benchmark(strict),
         command => {
-            let mut workspace = Workspace::open(&cli.project)?;
+            let mut workspace = match cli.session {
+                Some(session) => Workspace::open_session(&cli.project, session)?,
+                None => Workspace::open_as(&cli.project, cli_actor(), SessionId::new())?,
+            };
             let outputs = match command {
                 CliCommand::AddImage { path, name, x, y } => {
                     vec![workspace.execute(Command::AddRaster { path, name, x, y })?]
@@ -506,6 +555,7 @@ fn run(cli: Cli) -> Result<Value> {
                 | CliCommand::List
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }
+                | CliCommand::Agent { .. }
                 | CliCommand::Schema
                 | CliCommand::Benchmark { .. } => unreachable!(),
             };
@@ -515,33 +565,112 @@ fn run(cli: Cli) -> Result<Value> {
     }
 }
 
+fn session_document(path: &Path, session: Option<SessionId>) -> Result<Document> {
+    match session {
+        Some(session) => Ok(Workspace::open_session(path, session)?.document),
+        None => Workspace::load_read_only(path),
+    }
+}
+
+fn agent_command(path: &Path, session: Option<SessionId>, command: AgentCommand) -> Result<Value> {
+    match command {
+        AgentCommand::Start {
+            mode,
+            name,
+            from_session,
+        } => {
+            let name = name.trim();
+            if name.is_empty() {
+                bail!("agent name cannot be empty");
+            }
+            let actor = Actor {
+                id: format!("external-agent:{}", SessionId::new()),
+                display_name: name.into(),
+                kind: ActorKind::Agent,
+            };
+            let mode = CollaborationMode::from(mode);
+            let collaboration = match from_session {
+                Some(source) => Workspace::start_collaboration(path, Some(source), actor, mode)?,
+                None => match local_gui_session_id() {
+                    Some(source) => {
+                        Workspace::start_collaboration(path, Some(source), actor.clone(), mode)
+                            .or_else(|_| Workspace::start_collaboration(path, None, actor, mode))?
+                    }
+                    None => Workspace::start_collaboration(path, None, actor, mode)?,
+                },
+            };
+            Ok(json!({
+                "ok": true,
+                "action": "agent_start",
+                "project": path,
+                "mode": collaboration.mode,
+                "session": collaboration.agent_session,
+                "source_session": collaboration.source_session,
+                "base_revision": collaboration.base_revision,
+                "status": collaboration.status,
+                "use_for_every_command": [
+                    "--project", path,
+                    "--session", collaboration.agent_session.to_string()
+                ],
+                "behavior": match collaboration.mode {
+                    CollaborationMode::Together => "Prism follows agent revisions until the human makes a competing edit",
+                    CollaborationMode::Separate => "the human canvas stays on its own session while the agent explores",
+                }
+            }))
+        }
+        AgentCommand::Status => {
+            let session = session.context("agent status requires --session <SESSION_ID>")?;
+            let collaboration = Workspace::collaboration(path, session)?;
+            let workspace = Workspace::open_session(path, session)?;
+            let cursor = workspace
+                .history()?
+                .context("agent session does not have durable history")?
+                .current;
+            Ok(json!({
+                "ok": true,
+                "action": "agent_status",
+                "project": path,
+                "session": session,
+                "cursor": cursor,
+                "collaboration": collaboration,
+            }))
+        }
+    }
+}
+
+fn local_gui_session_id() -> Option<SessionId> {
+    let directory = eframe::storage_dir("Spectrum")?;
+    spectrum_revisions::local_session_id(&directory).ok()
+}
+
 fn run_commands(workspace: &mut Workspace, value: &str) -> Result<Vec<prism_core::CommandOutput>> {
     if value.trim_start().starts_with('[') {
-        serde_json::from_str::<Vec<Command>>(value)?
-            .into_iter()
-            .map(|command| workspace.execute(command))
-            .collect()
+        workspace.execute_batch(serde_json::from_str::<Vec<Command>>(value)?)
     } else {
         Ok(vec![workspace.execute(serde_json::from_str(value)?)?])
     }
 }
 
+fn cli_actor() -> Actor {
+    Actor {
+        id: "local:prism-cli".into(),
+        display_name: "Prism CLI".into(),
+        kind: ActorKind::Agent,
+    }
+}
+
 fn from_lumen(catalog: &Path, photo_id: u64, output: &Path) -> Result<Value> {
-    let project = LumenProject::load(catalog)?;
+    let project = if LumenDurableCatalog::looks_durable(catalog)? {
+        LumenDurableCatalog::load_current(catalog)?
+    } else {
+        LumenProject::load(catalog)?
+    };
     let photo = project.photo(photo_id)?;
     let rendered = render_photo(photo, RenderOptions::default())?;
-    let directory = output.parent().unwrap_or_else(|| Path::new("."));
-    let assets = directory.join("prism-assets");
-    std::fs::create_dir_all(&assets)?;
-    let mut source_hash = DefaultHasher::new();
-    std::fs::canonicalize(catalog)
-        .unwrap_or_else(|_| catalog.to_owned())
-        .hash(&mut source_hash);
-    photo_id.hash(&mut source_hash);
-    let asset = assets.join(format!(
-        "lumen-{:016x}-{photo_id}.png",
-        source_hash.finish()
-    ));
+    let session = SessionId::new();
+    let import_directory = std::env::temp_dir().join("spectrum-prism-imports");
+    std::fs::create_dir_all(&import_directory)?;
+    let asset = import_directory.join(format!("{session}.png"));
     rendered.save(&asset)?;
 
     let mut workspace = Workspace::new(
@@ -550,15 +679,18 @@ fn from_lumen(catalog: &Path, photo_id: u64, output: &Path) -> Result<Value> {
             rendered.width(),
             rendered.height(),
         ),
-        Some(output.to_owned()),
+        None,
     );
     workspace.document.background = [0, 0, 0, 0];
     workspace.execute(Command::AddRaster {
-        path: asset,
+        path: asset.clone(),
         name: Some(photo.name.clone()),
         x: 0.0,
         y: 0.0,
     })?;
+    let durable = Workspace::create_durable(workspace.document, output, cli_actor(), session);
+    let _ = std::fs::remove_file(asset);
+    let mut workspace = durable?;
     workspace.save(None)?;
     Ok(json!({
         "ok": true,
@@ -589,6 +721,22 @@ fn schema() -> Value {
         "application": "Prism",
         "project_extension": ".prism",
         "legacy_project_extensions": [".mica"],
+        "project_storage": {
+            "container": "single transactional SQLite .prism file",
+            "persistence": "each completed semantic action is an attributed durable revision",
+            "batching": "run arrays commit atomically as one revision",
+            "history": "immutable revision tree with session-specific cursors",
+            "assets": "embedded and content-addressed"
+        },
+        "agent_collaboration": {
+            "transport": "CLI JSON; no vendor-specific integration required",
+            "start": "prism --project <path> agent start --mode <together|separate> --name <agent>",
+            "continue": "pass the returned --session value to every list, edit, run, and export command",
+            "status": "prism --project <path> --session <id> agent status",
+            "together": "starts at the current human cursor; Prism follows until the human makes a competing edit, then both sessions continue separately",
+            "separate": "starts at the current human cursor and never moves the human session",
+            "agent_prompt": "before starting, ask whether the user wants to continue together or explore separately"
+        },
         "command_protocol": {
             "encoding": "serde tagged JSON",
             "tag": "command",
@@ -658,7 +806,7 @@ fn benchmark(strict: bool) -> Result<Value> {
         })?;
         interaction_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    interaction_workspace.commit_interaction();
+    interaction_workspace.commit_interaction()?;
     let mut text_workspace = Workspace::new(Document::new("Text benchmark", 1600, 1200), None);
     text_workspace.execute(Command::AddText {
         text: "Prism interaction benchmark".into(),
@@ -683,7 +831,7 @@ fn benchmark(strict: bool) -> Result<Value> {
         })?;
         text_interaction_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    text_workspace.commit_interaction();
+    text_workspace.commit_interaction()?;
     let mut shape_preview_samples = Vec::new();
     for frame in 0..240 {
         let adjustments = Adjustments {
