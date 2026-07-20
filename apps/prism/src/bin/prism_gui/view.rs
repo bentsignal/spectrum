@@ -84,42 +84,99 @@ pub(super) fn canvas_geometry(
     }
 }
 
-pub(super) fn layer_bounds(layer: &Layer, cached_size: Option<Vec2>) -> Option<Rect> {
-    let size = cached_size.unwrap_or(match &layer.kind {
+pub(super) fn layer_bounds(
+    layer: &Layer,
+    cached_geometry: Option<LayerSourceGeometry>,
+) -> Option<Rect> {
+    let source = cached_geometry.unwrap_or(match &layer.kind {
         LayerKind::Raster { path, .. } => {
             let (width, height) = image::image_dimensions(path).ok()?;
-            Vec2::new(width as f32, height as f32)
+            LayerSourceGeometry::full(Vec2::new(width as f32, height as f32))
         }
         LayerKind::Text {
             text, font_size, ..
-        } => prism_core::measure_text(text, *font_size)
+        } => prism_core::measure_text_geometry(text, *font_size)
             .ok()
-            .map(|(width, height)| Vec2::new(width as f32, height as f32))?,
-        LayerKind::Rectangle { width, height, .. } => Vec2::new(*width as f32, *height as f32),
-        LayerKind::Ellipse { width, height, .. } => Vec2::new(*width as f32, *height as f32),
+            .map(|geometry| LayerSourceGeometry {
+                size: Vec2::new(geometry.width as f32, geometry.height as f32),
+                visual_bounds: Rect::from_min_size(
+                    Pos2::new(geometry.visual_left, geometry.visual_top),
+                    Vec2::new(geometry.visual_width, geometry.visual_height),
+                ),
+            })?,
+        LayerKind::Rectangle { width, height, .. } => {
+            LayerSourceGeometry::full(Vec2::new(*width as f32, *height as f32))
+        }
+        LayerKind::Ellipse { width, height, .. } => {
+            LayerSourceGeometry::full(Vec2::new(*width as f32, *height as f32))
+        }
     });
-    let size = Vec2::new(
-        size.x * layer.transform.scale_x,
-        size.y * layer.transform.scale_y,
+    let min = Pos2::new(
+        layer.transform.x + source.visual_bounds.min.x * layer.transform.scale_x,
+        layer.transform.y + source.visual_bounds.min.y * layer.transform.scale_y,
     );
-    Some(Rect::from_min_size(
-        Pos2::new(layer.transform.x, layer.transform.y),
-        size,
-    ))
+    let size = Vec2::new(
+        source.visual_bounds.width() * layer.transform.scale_x,
+        source.visual_bounds.height() * layer.transform.scale_y,
+    );
+    Some(Rect::from_min_size(min, size))
+}
+
+pub(super) fn rotated_layer_corners(
+    layer: &Layer,
+    source_geometry: Option<LayerSourceGeometry>,
+) -> Option<[Pos2; 4]> {
+    let bounds = layer_bounds(layer, source_geometry)?;
+    let mut corners = [
+        bounds.left_top(),
+        bounds.right_top(),
+        bounds.right_bottom(),
+        bounds.left_bottom(),
+    ];
+    if matches!(layer.kind, LayerKind::Text { .. }) {
+        rotate_points_about(&mut corners, bounds.center(), layer.transform.rotation);
+    }
+    Some(corners)
+}
+
+fn rotate_points_about(points: &mut [Pos2], pivot: Pos2, degrees: f32) {
+    if degrees.abs() < 0.01 {
+        return;
+    }
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    for point in points {
+        let delta = *point - pivot;
+        *point = pivot + Vec2::new(delta.x * cos - delta.y * sin, delta.x * sin + delta.y * cos);
+    }
+}
+
+pub(super) fn layer_contains_point(
+    layer: &Layer,
+    source_geometry: Option<LayerSourceGeometry>,
+    point: Pos2,
+) -> bool {
+    let Some(bounds) = layer_bounds(layer, source_geometry) else {
+        return false;
+    };
+    let mut local = [point];
+    if matches!(layer.kind, LayerKind::Text { .. }) {
+        rotate_points_about(&mut local, bounds.center(), -layer.transform.rotation);
+    }
+    bounds.contains(local[0])
 }
 
 pub(super) fn resize_handle_at(
     geometry: CanvasGeometry,
     layer: &Layer,
-    source_size: Option<Vec2>,
+    source_geometry: Option<LayerSourceGeometry>,
     pointer: Pos2,
 ) -> Option<ResizeHandle> {
-    let bounds = layer_bounds(layer, source_size)?;
+    let corners = rotated_layer_corners(layer, source_geometry)?;
     let corners = [
-        (ResizeHandle::TopLeft, bounds.left_top()),
-        (ResizeHandle::TopRight, bounds.right_top()),
-        (ResizeHandle::BottomLeft, bounds.left_bottom()),
-        (ResizeHandle::BottomRight, bounds.right_bottom()),
+        (ResizeHandle::TopLeft, corners[0]),
+        (ResizeHandle::TopRight, corners[1]),
+        (ResizeHandle::BottomLeft, corners[3]),
+        (ResizeHandle::BottomRight, corners[2]),
     ];
     corners
         .into_iter()
@@ -151,20 +208,58 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
     let Some(bounds) = drag.bounds else {
         return drag.transform;
     };
+    let geometry_rotation = if drag.visual_rotation_bounds {
+        drag.transform.rotation
+    } else {
+        0.0
+    };
     let minimum_width = 1.0_f32.min(bounds.width());
     let minimum_height = 1.0_f32.min(bounds.height());
-    let width = match handle {
-        ResizeHandle::TopLeft | ResizeHandle::BottomLeft => bounds.right() - drag.current_canvas.x,
-        ResizeHandle::TopRight | ResizeHandle::BottomRight => drag.current_canvas.x - bounds.left(),
-    }
-    .max(minimum_width);
-    let height = match handle {
-        ResizeHandle::TopLeft | ResizeHandle::TopRight => bounds.bottom() - drag.current_canvas.y,
-        ResizeHandle::BottomLeft | ResizeHandle::BottomRight => {
-            drag.current_canvas.y - bounds.top()
-        }
-    }
-    .max(minimum_height);
+    let (width, height, opposite) = if geometry_rotation.abs() < 0.01 {
+        let width = match handle {
+            ResizeHandle::TopLeft | ResizeHandle::BottomLeft => {
+                bounds.right() - drag.current_canvas.x
+            }
+            ResizeHandle::TopRight | ResizeHandle::BottomRight => {
+                drag.current_canvas.x - bounds.left()
+            }
+        };
+        let height = match handle {
+            ResizeHandle::TopLeft | ResizeHandle::TopRight => {
+                bounds.bottom() - drag.current_canvas.y
+            }
+            ResizeHandle::BottomLeft | ResizeHandle::BottomRight => {
+                drag.current_canvas.y - bounds.top()
+            }
+        };
+        let opposite = match handle {
+            ResizeHandle::TopLeft => bounds.right_bottom(),
+            ResizeHandle::TopRight => bounds.left_bottom(),
+            ResizeHandle::BottomLeft => bounds.right_top(),
+            ResizeHandle::BottomRight => bounds.left_top(),
+        };
+        (width, height, opposite)
+    } else {
+        let corners = rotated_rect_corners(bounds, geometry_rotation);
+        let opposite = match handle {
+            ResizeHandle::TopLeft => corners[2],
+            ResizeHandle::TopRight => corners[3],
+            ResizeHandle::BottomLeft => corners[1],
+            ResizeHandle::BottomRight => corners[0],
+        };
+        let local = rotate_vector(drag.current_canvas - opposite, -geometry_rotation);
+        let width = match handle {
+            ResizeHandle::TopLeft | ResizeHandle::BottomLeft => -local.x,
+            ResizeHandle::TopRight | ResizeHandle::BottomRight => local.x,
+        };
+        let height = match handle {
+            ResizeHandle::TopLeft | ResizeHandle::TopRight => -local.y,
+            ResizeHandle::BottomLeft | ResizeHandle::BottomRight => local.y,
+        };
+        (width, height, opposite)
+    };
+    let width = width.max(minimum_width);
+    let height = height.max(minimum_height);
     let mut ratio_x = width / bounds.width().max(0.001);
     let mut ratio_y = height / bounds.height().max(0.001);
     if preserve_aspect {
@@ -174,12 +269,17 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
     }
     let width = bounds.width() * ratio_x;
     let height = bounds.height() * ratio_y;
-    let (x, y) = match handle {
-        ResizeHandle::TopLeft => (bounds.right() - width, bounds.bottom() - height),
-        ResizeHandle::TopRight => (bounds.left(), bounds.bottom() - height),
-        ResizeHandle::BottomLeft => (bounds.right() - width, bounds.top()),
-        ResizeHandle::BottomRight => (bounds.left(), bounds.top()),
+    let local_center_from_opposite = match handle {
+        ResizeHandle::TopLeft => Vec2::new(-width * 0.5, -height * 0.5),
+        ResizeHandle::TopRight => Vec2::new(width * 0.5, -height * 0.5),
+        ResizeHandle::BottomLeft => Vec2::new(-width * 0.5, height * 0.5),
+        ResizeHandle::BottomRight => Vec2::new(width * 0.5, height * 0.5),
     };
+    let center = opposite + rotate_vector(local_center_from_opposite, geometry_rotation);
+    let visual_offset_x = (bounds.left() - drag.transform.x) * ratio_x;
+    let visual_offset_y = (bounds.top() - drag.transform.y) * ratio_y;
+    let x = center.x - width * 0.5 - visual_offset_x;
+    let y = center.y - height * 0.5 - visual_offset_y;
     Transform {
         x,
         y,
@@ -187,6 +287,25 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
         scale_y: (drag.transform.scale_y * ratio_y).max(0.01),
         rotation: drag.transform.rotation,
     }
+}
+
+fn rotated_rect_corners(bounds: Rect, degrees: f32) -> [Pos2; 4] {
+    let mut corners = [
+        bounds.left_top(),
+        bounds.right_top(),
+        bounds.right_bottom(),
+        bounds.left_bottom(),
+    ];
+    rotate_points_about(&mut corners, bounds.center(), degrees);
+    corners
+}
+
+fn rotate_vector(vector: Vec2, degrees: f32) -> Vec2 {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    Vec2::new(
+        vector.x * cos - vector.y * sin,
+        vector.x * sin + vector.y * cos,
+    )
 }
 
 pub(super) fn drag_rotation(drag: DragState, snap: bool) -> f32 {
@@ -212,56 +331,78 @@ pub(super) fn paint_layer_outline(
     ui: &egui::Ui,
     geometry: CanvasGeometry,
     layer: &Layer,
-    source_size: Option<Vec2>,
+    source_geometry: Option<LayerSourceGeometry>,
     offset: Vec2,
 ) {
-    paint_selection_outline(ui, geometry, layer, source_size, offset, true);
+    paint_selection_outline(ui, geometry, layer, source_geometry, offset, true);
 }
 
 pub(super) fn paint_rotation_outline(
     ui: &egui::Ui,
     geometry: CanvasGeometry,
     layer: &Layer,
-    source_size: Option<Vec2>,
+    source_geometry: Option<LayerSourceGeometry>,
 ) {
-    paint_selection_outline(ui, geometry, layer, source_size, Vec2::ZERO, false);
+    paint_selection_outline(ui, geometry, layer, source_geometry, Vec2::ZERO, false);
 }
 
 fn paint_selection_outline(
     ui: &egui::Ui,
     geometry: CanvasGeometry,
     layer: &Layer,
-    source_size: Option<Vec2>,
+    source_geometry: Option<LayerSourceGeometry>,
     offset: Vec2,
     show_resize_handles: bool,
 ) {
-    let Some(bounds) = layer_bounds(layer, source_size) else {
+    if !matches!(layer.kind, LayerKind::Text { .. }) {
+        let Some(bounds) = layer_bounds(layer, source_geometry) else {
+            return;
+        };
+        let rect = Rect::from_min_max(
+            geometry.canvas_to_screen(bounds.min) + offset,
+            geometry.canvas_to_screen(bounds.max) + offset,
+        );
+        ui.painter().with_clip_rect(geometry.viewport).rect_stroke(
+            rect,
+            1.0,
+            Stroke::new(1.5, ACCENT),
+            egui::StrokeKind::Outside,
+        );
+        if show_resize_handles {
+            for corner in [
+                rect.left_top(),
+                rect.right_top(),
+                rect.left_bottom(),
+                rect.right_bottom(),
+            ] {
+                paint_resize_handle(ui, corner);
+            }
+        }
+        return;
+    }
+    let Some(corners) = rotated_layer_corners(layer, source_geometry) else {
         return;
     };
-    let rect = Rect::from_min_max(
-        geometry.canvas_to_screen(bounds.min) + offset,
-        geometry.canvas_to_screen(bounds.max) + offset,
-    );
-    ui.painter().with_clip_rect(geometry.viewport).rect_stroke(
-        rect,
-        1.0,
-        Stroke::new(1.5, ACCENT),
-        egui::StrokeKind::Outside,
-    );
+    let corners = corners.map(|corner| geometry.canvas_to_screen(corner) + offset);
+    ui.painter()
+        .with_clip_rect(geometry.viewport)
+        .add(egui::Shape::closed_line(
+            corners.to_vec(),
+            Stroke::new(1.5, ACCENT),
+        ));
     if show_resize_handles {
-        for corner in [
-            rect.left_top(),
-            rect.right_top(),
-            rect.left_bottom(),
-            rect.right_bottom(),
-        ] {
-            ui.painter().rect_filled(
-                Rect::from_center_size(corner, Vec2::splat(RESIZE_HANDLE_SIZE)),
-                1.0,
-                ACCENT,
-            );
+        for corner in corners {
+            paint_resize_handle(ui, corner);
         }
     }
+}
+
+fn paint_resize_handle(ui: &egui::Ui, corner: Pos2) {
+    ui.painter().rect_filled(
+        Rect::from_center_size(corner, Vec2::splat(RESIZE_HANDLE_SIZE)),
+        1.0,
+        ACCENT,
+    );
 }
 
 pub(super) fn contrast_text(background: Color32) -> Color32 {
@@ -408,6 +549,18 @@ pub(super) fn alternate_shortcut(ui: &mut egui::Ui, key: &str) -> egui::Response
 mod tests {
     use super::*;
 
+    fn text_layer(transform: Transform) -> Layer {
+        Layer {
+            transform,
+            kind: LayerKind::Text {
+                text: "Rotate".into(),
+                font_size: 32.0,
+                color: [255, 255, 255, 255],
+            },
+            ..Layer::default()
+        }
+    }
+
     fn rotation_drag(current_canvas: Pos2) -> DragState {
         DragState {
             start_canvas: Pos2::new(100.0, 50.0),
@@ -419,6 +572,7 @@ mod tests {
             },
             action: DragAction::Rotate,
             bounds: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 100.0))),
+            visual_rotation_bounds: false,
         }
     }
 
@@ -442,5 +596,161 @@ mod tests {
         let mut drag = rotation_drag(Pos2::new(99.240_39, 58.682_41));
         drag.transform.rotation = 355.0;
         assert_eq!(drag_rotation(drag, true), 0.0);
+    }
+
+    #[test]
+    fn rotated_visual_bounds_keep_the_same_center_at_varied_zoom() {
+        let layer = text_layer(Transform {
+            x: 80.0,
+            y: 50.0,
+            scale_x: 1.5,
+            scale_y: 0.75,
+            rotation: 37.0,
+        });
+        let source = LayerSourceGeometry {
+            size: Vec2::new(140.0, 80.0),
+            visual_bounds: Rect::from_min_size(Pos2::new(12.0, 18.0), Vec2::new(96.0, 42.0)),
+        };
+        let bounds = layer_bounds(&layer, Some(source)).unwrap();
+        let corners = rotated_layer_corners(&layer, Some(source)).unwrap();
+        let canvas_center = corners
+            .iter()
+            .fold(Vec2::ZERO, |sum, point| sum + point.to_vec2())
+            / 4.0;
+        assert!(Pos2::new(canvas_center.x, canvas_center.y).distance(bounds.center()) < 0.001);
+
+        for pixels_per_point in [0.2, 1.0, 8.0] {
+            let geometry = CanvasGeometry {
+                viewport: Rect::from_min_size(Pos2::ZERO, Vec2::splat(1.0)),
+                canvas: Rect::from_min_size(Pos2::new(17.0, 23.0), Vec2::splat(1.0)),
+                pixels_per_point,
+            };
+            let screen_center = corners.iter().fold(Vec2::ZERO, |sum, point| {
+                sum + geometry.canvas_to_screen(*point).to_vec2()
+            }) / 4.0;
+            assert!(
+                Pos2::new(screen_center.x, screen_center.y)
+                    .distance(geometry.canvas_to_screen(bounds.center()))
+                    < 0.001
+            );
+        }
+    }
+
+    #[test]
+    fn hit_testing_follows_rotated_visual_bounds() {
+        let layer = text_layer(Transform {
+            rotation: 90.0,
+            ..Transform::default()
+        });
+        let source = LayerSourceGeometry::full(Vec2::new(100.0, 20.0));
+
+        assert!(layer_contains_point(
+            &layer,
+            Some(source),
+            Pos2::new(50.0, -20.0)
+        ));
+        assert!(!layer_contains_point(
+            &layer,
+            Some(source),
+            Pos2::new(10.0, 10.0)
+        ));
+    }
+
+    #[test]
+    fn unrotated_shape_bounds_preserve_the_existing_top_left_semantics() {
+        let layer = Layer {
+            transform: Transform {
+                x: 20.0,
+                y: 30.0,
+                scale_x: 2.0,
+                scale_y: 3.0,
+                ..Transform::default()
+            },
+            ..Layer::default()
+        };
+        let bounds = layer_bounds(
+            &layer,
+            Some(LayerSourceGeometry::full(Vec2::new(100.0, 80.0))),
+        )
+        .unwrap();
+
+        assert_eq!(bounds.min, Pos2::new(20.0, 30.0));
+        assert_eq!(bounds.size(), Vec2::new(200.0, 240.0));
+    }
+
+    #[test]
+    fn shape_selection_geometry_keeps_its_existing_rotation_behavior() {
+        let layer = Layer {
+            transform: Transform {
+                x: 20.0,
+                y: 30.0,
+                rotation: 90.0,
+                ..Transform::default()
+            },
+            ..Layer::default()
+        };
+        let corners = rotated_layer_corners(
+            &layer,
+            Some(LayerSourceGeometry::full(Vec2::new(100.0, 80.0))),
+        )
+        .unwrap();
+
+        assert_eq!(corners[0], Pos2::new(20.0, 30.0));
+        assert_eq!(corners[2], Pos2::new(120.0, 110.0));
+    }
+
+    #[test]
+    fn shape_resize_keeps_its_existing_axis_aligned_behavior_when_rotated() {
+        let transform = drag_transform(
+            DragState {
+                start_canvas: Pos2::new(110.0, 70.0),
+                current_canvas: Pos2::new(210.0, 120.0),
+                layer_id: Some(1),
+                transform: Transform {
+                    x: 10.0,
+                    y: 20.0,
+                    rotation: 90.0,
+                    ..Transform::default()
+                },
+                action: DragAction::Resize(ResizeHandle::BottomRight),
+                bounds: Some(Rect::from_min_size(
+                    Pos2::new(10.0, 20.0),
+                    Vec2::new(100.0, 50.0),
+                )),
+                visual_rotation_bounds: false,
+            },
+            true,
+        );
+
+        assert_eq!((transform.x, transform.y), (10.0, 20.0));
+        assert_eq!((transform.scale_x, transform.scale_y), (2.0, 2.0));
+        assert_eq!(transform.rotation, 90.0);
+    }
+
+    #[test]
+    fn rotated_text_resize_keeps_the_opposite_visual_corner_fixed() {
+        let original_opposite = Pos2::new(60.0, -40.0);
+        let transform = drag_transform(
+            DragState {
+                start_canvas: Pos2::new(40.0, 60.0),
+                current_canvas: Pos2::new(20.0, 160.0),
+                layer_id: Some(1),
+                transform: Transform {
+                    rotation: 90.0,
+                    ..Transform::default()
+                },
+                action: DragAction::Resize(ResizeHandle::BottomRight),
+                bounds: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 20.0))),
+                visual_rotation_bounds: true,
+            },
+            false,
+        );
+        let resized_bounds =
+            Rect::from_min_size(Pos2::new(transform.x, transform.y), Vec2::new(200.0, 40.0));
+        let resized_corners = rotated_rect_corners(resized_bounds, transform.rotation);
+
+        assert!(resized_corners[0].distance(original_opposite) < 0.001);
+        assert!((transform.scale_x - 2.0).abs() < 0.001);
+        assert!((transform.scale_y - 2.0).abs() < 0.001);
     }
 }

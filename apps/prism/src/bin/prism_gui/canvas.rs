@@ -71,11 +71,16 @@ impl PrismApp {
                             ui,
                             geometry,
                             layer,
-                            self.layer_source_size(layer),
+                            self.layer_source_geometry(layer),
                             Vec2::ZERO,
                         );
                     } else {
-                        paint_rotation_outline(ui, geometry, layer, self.layer_source_size(layer));
+                        paint_rotation_outline(
+                            ui,
+                            geometry,
+                            layer,
+                            self.layer_source_geometry(layer),
+                        );
                     }
                 }
                 if let Some(drag) = self.drag {
@@ -126,7 +131,12 @@ impl PrismApp {
             } else {
                 hover_pointer.and_then(|pointer| {
                     self.selected_layer().and_then(|layer| {
-                        resize_handle_at(geometry, layer, self.layer_source_size(layer), pointer)
+                        resize_handle_at(
+                            geometry,
+                            layer,
+                            self.layer_source_geometry(layer),
+                            pointer,
+                        )
                     })
                 })
             }
@@ -148,7 +158,7 @@ impl PrismApp {
                     resize_handle_at(
                         geometry,
                         layer,
-                        self.layer_source_size(layer),
+                        self.layer_source_geometry(layer),
                         press_pointer,
                     )
                 })
@@ -176,6 +186,9 @@ impl PrismApp {
             if editable {
                 self.workspace.begin_interaction();
             }
+            let visual_rotation_bounds = selected
+                .as_ref()
+                .is_some_and(|layer| matches!(layer.kind, LayerKind::Text { .. }));
             self.drag = Some(DragState {
                 start_canvas: canvas,
                 current_canvas: geometry.screen_to_canvas(pointer),
@@ -183,11 +196,15 @@ impl PrismApp {
                     .as_ref()
                     .filter(|layer| !layer.locked)
                     .map(|layer| layer.id),
-                transform: selected.map(|layer| layer.transform).unwrap_or_default(),
+                transform: selected
+                    .as_ref()
+                    .map(|layer| layer.transform)
+                    .unwrap_or_default(),
                 bounds: self
                     .selected_layer()
-                    .and_then(|layer| layer_bounds(layer, self.layer_source_size(layer))),
+                    .and_then(|layer| layer_bounds(layer, self.layer_source_geometry(layer))),
                 action,
+                visual_rotation_bounds,
             });
         }
         if response.dragged()
@@ -242,7 +259,7 @@ impl PrismApp {
                         ui,
                         geometry,
                         layer,
-                        self.layer_source_size(layer),
+                        self.layer_source_geometry(layer),
                         Vec2::ZERO,
                     );
                 }
@@ -294,7 +311,7 @@ impl PrismApp {
                         ui,
                         geometry,
                         layer,
-                        self.layer_source_size(layer),
+                        self.layer_source_geometry(layer),
                         Vec2::ZERO,
                     );
                 }
@@ -453,10 +470,7 @@ impl PrismApp {
             .iter()
             .rev()
             .filter(|layer| layer.visible)
-            .find(|layer| {
-                layer_bounds(layer, self.layer_source_size(layer))
-                    .is_some_and(|rect| rect.contains(position))
-            })
+            .find(|layer| layer_contains_point(layer, self.layer_source_geometry(layer), position))
             .map(|layer| layer.id)
     }
 }
@@ -483,6 +497,7 @@ mod direct_manipulation_tests {
             transform: Transform::default(),
             action,
             bounds: None,
+            visual_rotation_bounds: false,
         }
     }
 
