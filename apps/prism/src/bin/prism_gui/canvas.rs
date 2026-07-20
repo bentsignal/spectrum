@@ -3,7 +3,7 @@ use super::*;
 impl PrismApp {
     pub(super) fn canvas(&mut self, root: &mut egui::Ui) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(INK).inner_margin(20))
+            .frame(egui::Frame::new().fill(INK).inner_margin(12))
             .show(root, |ui| {
                 let available = ui.available_rect_before_wrap();
                 let response = ui.allocate_rect(available, Sense::click_and_drag());

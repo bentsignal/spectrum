@@ -98,10 +98,7 @@ pub(super) fn global_shortcut_pressed(input: &egui::InputState, shortcut: Global
 
 impl PrismApp {
     pub(super) fn keyboard(&mut self, context: &egui::Context) {
-        if self.tool_palette.is_some()
-            || self.shape_palette.is_some()
-            || context.egui_wants_keyboard_input()
-        {
+        if self.has_modal_surface() || context.egui_wants_keyboard_input() {
             return;
         }
         if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::History)) {

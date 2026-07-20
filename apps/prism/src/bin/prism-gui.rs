@@ -40,26 +40,12 @@ mod renderer;
 #[path = "prism_gui/shortcuts.rs"]
 mod shortcuts;
 use compositor::*;
+#[path = "prism_gui/theme.rs"]
+mod theme;
 use history::HistoryViewState;
 use project_lifecycle::MoveProjectDialog;
 use renderer::*;
-
-const INK: Color32 = Color32::from_rgb(14, 16, 20);
-const PANEL: Color32 = Color32::from_rgb(25, 28, 34);
-const SURFACE: Color32 = Color32::from_rgb(34, 38, 46);
-const RAISED: Color32 = Color32::from_rgb(45, 50, 60);
-const HOVER_SURFACE: Color32 = Color32::from_rgb(57, 63, 74);
-const ACTIVE_SURFACE: Color32 = Color32::from_rgb(39, 91, 85);
-const SELECTED_SURFACE: Color32 = Color32::from_rgb(36, 58, 60);
-const BORDER: Color32 = Color32::from_rgb(62, 68, 80);
-const TEXT: Color32 = Color32::from_rgb(226, 230, 238);
-const MUTED: Color32 = Color32::from_rgb(145, 153, 169);
-const ACCENT: Color32 = Color32::from_rgb(93, 216, 199);
-const ACCENT_WARM: Color32 = Color32::from_rgb(247, 178, 102);
-const DANGER: Color32 = Color32::from_rgb(242, 115, 121);
-const CANVAS_EDGE: Color32 = Color32::from_gray(90);
-const CHECKER_LIGHT: Color32 = Color32::from_rgb(64, 67, 73);
-const CHECKER_DARK: Color32 = Color32::from_rgb(49, 52, 58);
+use theme::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Tool {
@@ -260,6 +246,7 @@ struct PrismApp {
     composition_query: String,
     composition_search_focus: bool,
     composition_result_index: usize,
+    composition_scroll_to_selection: Option<u64>,
     zoom: f32,
     pan: Vec2,
     fit_requested: bool,
@@ -371,6 +358,7 @@ impl PrismApp {
             composition_query: String::new(),
             composition_search_focus: false,
             composition_result_index: 0,
+            composition_scroll_to_selection: None,
             zoom: 1.0,
             pan: Vec2::ZERO,
             fit_requested: true,
@@ -630,14 +618,15 @@ impl PrismApp {
 
     fn status_bar(&mut self, root: &mut egui::Ui) {
         egui::Panel::bottom("prism-status")
-            .exact_size(30.0)
+            .exact_size(STATUS_HEIGHT)
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
-                    .inner_margin(6)
+                    .inner_margin(egui::Margin::symmetric(6, 3))
                     .stroke(Stroke::new(1.0, BORDER)),
             )
             .show(root, |ui| {
+                ui.spacing_mut().interact_size.y = 18.0;
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(&self.status)
@@ -703,30 +692,6 @@ impl eframe::App for PrismApp {
             let _ = workspace.checkpoint();
         }
     }
-}
-
-fn install_style(context: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = PANEL;
-    visuals.window_fill = PANEL;
-    visuals.extreme_bg_color = INK;
-    visuals.faint_bg_color = SURFACE;
-    visuals.selection.bg_fill = ACCENT;
-    visuals.selection.stroke.color = Color32::BLACK;
-    visuals.widgets.noninteractive.bg_fill = SURFACE;
-    visuals.widgets.inactive.bg_fill = RAISED;
-    visuals.widgets.hovered.bg_fill = HOVER_SURFACE;
-    visuals.widgets.active.bg_fill = ACTIVE_SURFACE;
-    visuals.widgets.inactive.corner_radius = 5.into();
-    visuals.widgets.hovered.corner_radius = 5.into();
-    visuals.widgets.active.corner_radius = 5.into();
-    visuals.override_text_color = Some(TEXT);
-    context.set_visuals(visuals);
-    context.all_styles_mut(|style| {
-        style.spacing.item_spacing = Vec2::new(7.0, 7.0);
-        style.spacing.button_padding = Vec2::new(9.0, 6.0);
-        style.interaction.selectable_labels = false;
-    });
 }
 
 #[path = "prism_gui/view.rs"]

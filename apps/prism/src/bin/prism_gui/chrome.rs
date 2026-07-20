@@ -117,17 +117,18 @@ fn reconcile_hover_active_index(
 impl PrismApp {
     pub(super) fn top_bar(&mut self, root: &mut egui::Ui) {
         egui::Panel::top("prism-top")
-            .exact_size(82.0)
+            .exact_size(TOP_BAR_HEIGHT)
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
-                    .inner_margin(8)
+                    .inner_margin(egui::Margin::symmetric(8, 5))
                     .stroke(Stroke::new(1.0, BORDER)),
             )
             .show(root, |ui| {
+                ui.spacing_mut().interact_size.y = COMPACT_CONTROL_HEIGHT;
+                ui.spacing_mut().item_spacing.y = 2.0;
                 ui.horizontal(|ui| {
-                    ui.add_space(3.0);
-                    ui.label(RichText::new("PRISM").size(15.0).strong().color(ACCENT));
+                    ui.label(RichText::new("PRISM").size(12.0).strong().color(TEXT));
                     ui.separator();
                     ui.menu_button("Project", |ui| {
                         if ui.button("New document").clicked() {
@@ -183,10 +184,7 @@ impl PrismApp {
                         self.toggle_history();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(RichText::new("Export").strong().color(ACCENT))
-                            .clicked()
-                        {
+                        if primary_button(ui, "Export").clicked() {
                             self.export();
                         }
                         ui.label(
@@ -196,7 +194,6 @@ impl PrismApp {
                         );
                     });
                 });
-                ui.add_space(4.0);
                 self.document_tabs(ui);
             });
     }
@@ -245,7 +242,6 @@ impl PrismApp {
                         {
                             close = Some(id);
                         }
-                        ui.separator();
                     }
                     if let Some(id) = close {
                         self.close_tab(id);
@@ -256,31 +252,23 @@ impl PrismApp {
 
     pub(super) fn workbench_bar(&mut self, root: &mut egui::Ui) {
         egui::Panel::top("prism-workbench")
-            .exact_size(52.0)
+            .exact_size(WORKBENCH_HEIGHT)
             .frame(
                 egui::Frame::new()
-                    .fill(SURFACE)
-                    .inner_margin(8)
+                    .fill(PANEL)
+                    .inner_margin(egui::Margin::symmetric(8, 5))
                     .stroke(Stroke::new(1.0, BORDER)),
             )
             .show(root, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("ACTIVE TOOL").size(9.0).strong().color(MUTED));
-                    egui::Frame::new()
-                        .fill(RAISED)
-                        .corner_radius(5.0)
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                let label = if self.tool == Tool::Shape {
-                                    format!("Shape · {}", self.shape_kind.label())
-                                } else {
-                                    self.tool.label().into()
-                                };
-                                ui.label(RichText::new(label).strong().color(ACCENT));
-                                shortcut_key(ui, self.tool.shortcut());
-                            });
-                        });
+                    ui.label(RichText::new("TOOL").size(9.0).strong().color(SUBTLE));
+                    let label = if self.tool == Tool::Shape {
+                        format!("Shape · {}", self.shape_kind.label())
+                    } else {
+                        self.tool.label().into()
+                    };
+                    ui.label(RichText::new(label).size(12.0).strong().color(TEXT));
+                    shortcut_key(ui, self.tool.shortcut());
                     if workbench_action_button(
                         ui,
                         "Tools & Actions",
@@ -339,23 +327,22 @@ impl PrismApp {
         let mut chosen = None;
         let has_selection = self.workspace.document.selected.is_some();
         egui::Window::new("Tools & Actions")
+            .order(egui::Order::Foreground)
             .id(egui::Id::new("prism-action-palette"))
             .collapsible(false)
             .resizable(false)
-            .fixed_size(Vec2::new(520.0, 520.0))
-            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 126.0))
+            .fixed_size(Vec2::new(500.0, 454.0))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 88.0))
             .show(context, |ui| {
                 ui.label(
-                    RichText::new("Find a tool or run an action")
-                        .size(17.0)
+                    RichText::new("Search tools and actions")
+                        .size(15.0)
                         .strong(),
                 );
                 ui.label(
-                    RichText::new(
-                        "Tools change how the canvas responds. Actions happen immediately.",
-                    )
-                    .size(11.0)
-                    .color(MUTED),
+                    RichText::new("Choose a canvas mode or run a one-step action.")
+                        .size(11.0)
+                        .color(MUTED),
                 );
                 ui.add_space(6.0);
                 let search = ui.add(
@@ -401,7 +388,7 @@ impl PrismApp {
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical()
                     .id_salt("action-results")
-                    .max_height(390.0)
+                    .max_height(330.0)
                     .show(ui, |ui| {
                         let tools: Vec<_> = results
                             .iter()
@@ -418,7 +405,7 @@ impl PrismApp {
                         if !tools.is_empty() {
                             palette_group(
                                 ui,
-                                "TOOLS · change how the canvas responds",
+                                "TOOLS",
                                 &tools,
                                 has_selection,
                                 PaletteInteraction {
@@ -435,7 +422,7 @@ impl PrismApp {
                         if !actions.is_empty() {
                             palette_group(
                                 ui,
-                                "ACTIONS · happen immediately",
+                                "ACTIONS",
                                 &actions,
                                 has_selection,
                                 PaletteInteraction {
@@ -473,17 +460,14 @@ impl PrismApp {
         let mut keep_open = true;
         let mut chosen = None;
         egui::Window::new("Choose a shape")
+            .order(egui::Order::Foreground)
             .id(egui::Id::new("prism-shape-palette"))
             .collapsible(false)
             .resizable(false)
-            .fixed_size(Vec2::new(480.0, 300.0))
-            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 150.0))
+            .fixed_size(Vec2::new(460.0, 260.0))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 104.0))
             .show(context, |ui| {
-                ui.label(
-                    RichText::new("What do you want to draw?")
-                        .size(17.0)
-                        .strong(),
-                );
+                ui.label(RichText::new("Select a shape").size(15.0).strong());
                 ui.label(
                     RichText::new("Search shapes now; new shape types will appear here.")
                         .size(11.0)
@@ -553,26 +537,26 @@ impl PrismApp {
 
     pub(super) fn right_panel(&mut self, root: &mut egui::Ui) {
         egui::Panel::right("prism-inspector")
-            .default_size(370.0)
-            .min_size(330.0)
-            .max_size(460.0)
+            .default_size(350.0)
+            .min_size(320.0)
+            .max_size(430.0)
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
-                    .inner_margin(10)
+                    .inner_margin(PANEL_PADDING)
                     .stroke(Stroke::new(1.0, BORDER)),
             )
             .show(root, |ui| {
                 self.layers_panel(ui);
-                ui.add_space(8.0);
+                ui.add_space(SECTION_GAP);
                 ui.separator();
-                ui.add_space(8.0);
+                ui.add_space(SECTION_GAP);
                 self.inspector(ui);
             });
     }
 }
 
-const WORKBENCH_ACTION_SIZE: Vec2 = Vec2::new(154.0, 32.0);
+const WORKBENCH_ACTION_SIZE: Vec2 = Vec2::new(148.0, CONTROL_HEIGHT);
 
 fn workbench_shortcut_rect(rect: Rect) -> Rect {
     Rect::from_center_size(
@@ -592,7 +576,7 @@ fn workbench_action_button(ui: &mut egui::Ui, label: &str, key: &str) -> egui::R
     };
     ui.painter().rect(
         rect,
-        5.0,
+        RADIUS,
         visuals.bg_fill,
         visuals.bg_stroke,
         egui::StrokeKind::Inside,
@@ -633,13 +617,6 @@ impl PaletteItem {
         match self {
             Self::Tool(tool) => tool.shortcut(),
             Self::PlaceImage => "",
-        }
-    }
-
-    fn kind(self) -> &'static str {
-        match self {
-            Self::Tool(_) => "TOOL",
-            Self::PlaceImage => "ACTION",
         }
     }
 
@@ -710,13 +687,17 @@ fn palette_row(
 ) -> egui::Response {
     ui.add_enabled_ui(enabled, |ui| {
         let response = ui.add_sized(
-            [ui.available_width(), 48.0],
+            [ui.available_width(), 42.0],
             egui::Button::new("")
                 .frame(true)
-                .fill(if active { SELECTED_SURFACE } else { RAISED })
+                .fill(if active {
+                    SELECTED_SURFACE
+                } else {
+                    Color32::TRANSPARENT
+                })
                 .stroke(Stroke::new(
-                    if active { 1.5 } else { 1.0 },
-                    if active { ACCENT } else { BORDER },
+                    1.0,
+                    if active { ACCENT } else { Color32::TRANSPARENT },
                 )),
         );
         ui.scope_builder(
@@ -724,13 +705,6 @@ fn palette_row(
                 .max_rect(response.rect.shrink2(Vec2::new(10.0, 5.0)))
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
-                ui.label(RichText::new(item.kind()).monospace().size(9.0).color(
-                    if matches!(item, PaletteItem::Tool(_)) {
-                        ACCENT
-                    } else {
-                        ACCENT_WARM
-                    },
-                ));
                 ui.vertical(|ui| {
                     ui.label(RichText::new(item.label()).size(12.0).strong());
                     ui.label(RichText::new(item.description()).size(10.0).color(MUTED));
@@ -754,12 +728,16 @@ fn palette_row(
 
 fn shape_palette_row(ui: &mut egui::Ui, shape: ShapeKind, active: bool) -> egui::Response {
     let response = ui.add_sized(
-        [ui.available_width(), 56.0],
+        [ui.available_width(), 46.0],
         egui::Button::new("")
-            .fill(if active { SELECTED_SURFACE } else { RAISED })
+            .fill(if active {
+                SELECTED_SURFACE
+            } else {
+                Color32::TRANSPARENT
+            })
             .stroke(Stroke::new(
-                if active { 1.5 } else { 1.0 },
-                if active { ACCENT } else { BORDER },
+                1.0,
+                if active { ACCENT } else { Color32::TRANSPARENT },
             )),
     );
     ui.scope_builder(
@@ -841,6 +819,6 @@ mod tests {
         let shortcut = workbench_shortcut_rect(control);
         assert_eq!(shortcut.center().y, control.center().y);
         assert_eq!(shortcut.height(), 20.0);
-        assert_eq!(control.height(), 32.0);
+        assert_eq!(control.height(), CONTROL_HEIGHT);
     }
 }

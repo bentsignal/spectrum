@@ -219,9 +219,10 @@ impl PrismApp {
         let mut keep_open = true;
         let mut move_now = false;
         egui::Window::new("Move Prism project")
+            .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
-            .default_width(560.0)
+            .fixed_size(Vec2::new(520.0, 228.0))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(context, |ui| {
                 ui.label(RichText::new("Current location").strong());
@@ -230,14 +231,14 @@ impl PrismApp {
                         .monospace()
                         .color(MUTED),
                 );
-                if ui.button("Show in Finder").clicked()
+                if quiet_button(ui, "Show in Finder").clicked()
                     && let Err(error) = reveal_project(&current)
                 {
                     self.status = format!("Could not reveal project: {error:#}");
                     self.status_error = true;
                 }
 
-                ui.add_space(12.0);
+                ui.add_space(10.0);
                 ui.label(RichText::new("Destination folder").strong());
                 ui.label(
                     RichText::new(dialog.destination_directory.as_ref().map_or_else(
@@ -247,7 +248,7 @@ impl PrismApp {
                     .monospace()
                     .color(MUTED),
                 );
-                if ui.button("Choose folder…").clicked()
+                if quiet_button(ui, "Choose folder…").clicked()
                     && let Some(destination) = rfd::FileDialog::new()
                         .set_directory(current.parent().unwrap_or_else(|| Path::new(".")))
                         .pick_folder()
@@ -255,19 +256,15 @@ impl PrismApp {
                     dialog.destination_directory = Some(destination);
                 }
 
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        keep_open = false;
-                    }
-                    if ui
-                        .add_enabled(
-                            dialog.destination_directory.is_some(),
-                            egui::Button::new(RichText::new("Move project").color(ACCENT)),
-                        )
-                        .clicked()
-                    {
-                        move_now = true;
+                ui.add_space(10.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_enabled_ui(dialog.destination_directory.is_some(), |ui| {
+                        if primary_button(ui, "Move project").clicked() {
+                            move_now = true;
+                            keep_open = false;
+                        }
+                    });
+                    if quiet_button(ui, "Cancel").clicked() {
                         keep_open = false;
                     }
                 });

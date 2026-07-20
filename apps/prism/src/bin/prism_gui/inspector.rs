@@ -1,7 +1,7 @@
 use super::*;
 
 const INSPECTOR_TAB_GAP: f32 = 4.0;
-const INSPECTOR_TAB_HEIGHT: f32 = 27.0;
+const INSPECTOR_TAB_HEIGHT: f32 = 26.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum InspectorSection {
@@ -73,12 +73,12 @@ impl PrismApp {
     pub(super) fn inspector(&mut self, ui: &mut egui::Ui) {
         let selected = self.selected_layer().cloned();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("PROPERTIES").size(11.0).strong().color(TEXT));
+            ui.label(RichText::new("PROPERTIES").size(10.0).strong().color(TEXT));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = selected
                     .as_ref()
                     .map_or("CANVAS", |layer| layer_kind_label(&layer.kind));
-                ui.label(RichText::new(label).size(9.0).strong().color(ACCENT));
+                ui.label(RichText::new(label).size(9.0).strong().color(SUBTLE));
             });
         });
         if let Some(layer) = &selected {
@@ -90,16 +90,16 @@ impl PrismApp {
                     .color(MUTED),
             );
         }
-        ui.add_space(8.0);
+        ui.add_space(6.0);
 
         let Some(layer) = selected else {
             self.canvas_inspector(ui);
             return;
         };
         self.layer_header(ui, &layer);
-        ui.add_space(7.0);
+        ui.add_space(6.0);
         inspector_section_tabs(ui, &mut self.inspector_section);
-        ui.add_space(7.0);
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(self.inspector_section.label())
@@ -115,8 +115,7 @@ impl PrismApp {
                 );
             });
         });
-        ui.separator();
-        ui.add_space(3.0);
+        ui.add_space(2.0);
         egui::ScrollArea::vertical()
             .id_salt(("properties-inspector", layer.id, self.inspector_section))
             .auto_shrink([false, false])
@@ -130,145 +129,126 @@ impl PrismApp {
     }
 
     fn canvas_inspector(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::new()
-            .fill(SURFACE)
-            .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(8.0)
-            .inner_margin(12)
+        ui.label(
+            RichText::new(&self.workspace.document.name)
+                .size(14.0)
+                .strong()
+                .color(TEXT),
+        );
+        ui.label(
+            RichText::new(format!(
+                "{} × {} px · {} objects",
+                self.workspace.document.width,
+                self.workspace.document.height,
+                self.workspace.document.layers.len()
+            ))
+            .size(10.0)
+            .color(MUTED),
+        );
+        ui.add_space(SECTION_GAP);
+        ui.label(RichText::new("CANVAS").size(9.0).strong().color(SUBTLE));
+        ui.add_space(4.0);
+        let mut width = self.workspace.document.width;
+        let mut height = self.workspace.document.height;
+        let mut background = color32(self.workspace.document.background);
+        egui::Grid::new("canvas-size-grid")
+            .num_columns(2)
+            .spacing(Vec2::new(10.0, 7.0))
             .show(ui, |ui| {
-                ui.label(
-                    RichText::new(&self.workspace.document.name)
-                        .size(15.0)
-                        .strong()
-                        .color(TEXT),
+                property_label(ui, "Width");
+                let response = ui.add_sized(
+                    [ui.available_width(), CONTROL_HEIGHT],
+                    egui::DragValue::new(&mut width)
+                        .range(1..=prism_core::MAX_CANVAS_DIMENSION)
+                        .suffix(" px"),
                 );
-                ui.label(
-                    RichText::new(format!(
-                        "{} × {} px · {} objects",
-                        self.workspace.document.width,
-                        self.workspace.document.height,
-                        self.workspace.document.layers.len()
-                    ))
-                    .size(10.0)
-                    .color(MUTED),
+                self.widget_command(
+                    &response,
+                    Command::SetCanvas {
+                        width,
+                        height,
+                        background: rgba(background),
+                    },
                 );
+                ui.end_row();
+                property_label(ui, "Height");
+                let response = ui.add_sized(
+                    [ui.available_width(), CONTROL_HEIGHT],
+                    egui::DragValue::new(&mut height)
+                        .range(1..=prism_core::MAX_CANVAS_DIMENSION)
+                        .suffix(" px"),
+                );
+                self.widget_command(
+                    &response,
+                    Command::SetCanvas {
+                        width,
+                        height,
+                        background: rgba(background),
+                    },
+                );
+                ui.end_row();
+                property_label(ui, "Background");
+                let response = ui.color_edit_button_srgba(&mut background);
+                self.widget_command(
+                    &response,
+                    Command::SetCanvas {
+                        width,
+                        height,
+                        background: rgba(background),
+                    },
+                );
+                ui.end_row();
             });
-        ui.add_space(8.0);
-        egui::CollapsingHeader::new("Canvas")
-            .default_open(true)
-            .show(ui, |ui| {
-                let mut width = self.workspace.document.width;
-                let mut height = self.workspace.document.height;
-                let mut background = color32(self.workspace.document.background);
-                egui::Grid::new("canvas-size-grid")
-                    .num_columns(2)
-                    .spacing(Vec2::new(10.0, 7.0))
-                    .show(ui, |ui| {
-                        property_label(ui, "Width");
-                        let response = ui.add_sized(
-                            [ui.available_width(), 24.0],
-                            egui::DragValue::new(&mut width)
-                                .range(1..=prism_core::MAX_CANVAS_DIMENSION)
-                                .suffix(" px"),
-                        );
-                        self.widget_command(
-                            &response,
-                            Command::SetCanvas {
-                                width,
-                                height,
-                                background: rgba(background),
-                            },
-                        );
-                        ui.end_row();
-                        property_label(ui, "Height");
-                        let response = ui.add_sized(
-                            [ui.available_width(), 24.0],
-                            egui::DragValue::new(&mut height)
-                                .range(1..=prism_core::MAX_CANVAS_DIMENSION)
-                                .suffix(" px"),
-                        );
-                        self.widget_command(
-                            &response,
-                            Command::SetCanvas {
-                                width,
-                                height,
-                                background: rgba(background),
-                            },
-                        );
-                        ui.end_row();
-                        property_label(ui, "Background");
-                        let response = ui.color_edit_button_srgba(&mut background);
-                        self.widget_command(
-                            &response,
-                            Command::SetCanvas {
-                                width,
-                                height,
-                                background: rgba(background),
-                            },
-                        );
-                        ui.end_row();
-                    });
-                ui.add_space(6.0);
-                if ui.button("Crop canvas  C").clicked() {
-                    self.choose_tool(Tool::Crop);
-                }
-            });
+        ui.add_space(4.0);
+        if ui.button("Crop canvas  C").clicked() {
+            self.choose_tool(Tool::Crop);
+        }
     }
 
     fn layer_header(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        egui::Frame::new()
-            .fill(SURFACE)
-            .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(8.0)
-            .inner_margin(10)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut visible = layer.visible;
-                    if ui.checkbox(&mut visible, "Visible").changed() {
-                        self.execute(Command::SetVisibility {
-                            id: layer.id,
-                            visible,
-                        });
-                    }
-                    let mut locked = layer.locked;
-                    if ui.checkbox(&mut locked, "Locked").changed() {
-                        self.execute(Command::SetLocked {
-                            id: layer.id,
-                            locked,
-                        });
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!("#{}", layer.id))
-                                .monospace()
-                                .size(9.0)
-                                .color(MUTED),
-                        );
-                    });
+        ui.horizontal(|ui| {
+            let mut visible = layer.visible;
+            if ui.checkbox(&mut visible, "Visible").changed() {
+                self.execute(Command::SetVisibility {
+                    id: layer.id,
+                    visible,
                 });
-                ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    if matches!(layer.kind, LayerKind::Text { .. }) {
-                        if ui.small_button("Edit text").clicked() {
-                            self.open_text_editor(layer.id);
-                        }
-                        let _ = alternate_shortcut(ui, "E");
-                    }
-                    if ui.small_button("Duplicate").clicked() {
-                        self.execute(Command::DuplicateLayer { id: layer.id });
-                    }
-                    let _ = alternate_shortcut(ui, "D");
-                    if ui.small_button("Rename").clicked() {
-                        self.rename_layer = Some((layer.id, layer.name.clone()));
-                    }
-                    if ui
-                        .small_button(RichText::new("Delete").color(DANGER))
-                        .clicked()
-                    {
-                        self.delete_confirmation = Some(layer.id);
-                    }
+            }
+            let mut locked = layer.locked;
+            if ui.checkbox(&mut locked, "Locked").changed() {
+                self.execute(Command::SetLocked {
+                    id: layer.id,
+                    locked,
                 });
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("#{}", layer.id))
+                        .monospace()
+                        .size(9.0)
+                        .color(MUTED),
+                );
             });
+        });
+        ui.add_space(3.0);
+        ui.horizontal(|ui| {
+            if matches!(layer.kind, LayerKind::Text { .. }) {
+                if quiet_button(ui, "Edit text").clicked() {
+                    self.open_text_editor(layer.id);
+                }
+                let _ = alternate_shortcut(ui, "E");
+            }
+            if quiet_button(ui, "Duplicate").clicked() {
+                self.execute(Command::DuplicateLayer { id: layer.id });
+            }
+            let _ = alternate_shortcut(ui, "D");
+            if quiet_button(ui, "Rename").clicked() {
+                self.rename_layer = Some((layer.id, layer.name.clone()));
+            }
+            if quiet_danger_button(ui, "Delete").clicked() {
+                self.delete_confirmation = Some(layer.id);
+            }
+        });
     }
 
     fn transform_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
@@ -831,16 +811,23 @@ fn inspector_section_tabs(ui: &mut egui::Ui, active: &mut InspectorSection) {
             let response = ui.add_sized(
                 [width, INSPECTOR_TAB_HEIGHT],
                 egui::Button::new(RichText::new(section.label()).size(9.0).color(if selected {
-                    ACCENT
+                    TEXT
                 } else {
                     MUTED
                 }))
-                .fill(if selected { SELECTED_SURFACE } else { SURFACE })
-                .stroke(Stroke::new(
-                    if selected { 1.5 } else { 1.0 },
-                    if selected { ACCENT } else { BORDER },
-                )),
+                .fill(if selected {
+                    SELECTED_SURFACE
+                } else {
+                    Color32::TRANSPARENT
+                })
+                .stroke(Stroke::NONE),
             );
+            if selected {
+                ui.painter().line_segment(
+                    [response.rect.left_bottom(), response.rect.right_bottom()],
+                    Stroke::new(2.0, ACCENT),
+                );
+            }
             if response.on_hover_text(section.description()).clicked() {
                 *active = section;
             }

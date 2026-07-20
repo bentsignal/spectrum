@@ -34,6 +34,15 @@ fn step_result_index(current: usize, result_count: usize, forward: bool) -> usiz
     }
 }
 
+fn should_scroll_selected_layer(
+    target: Option<u64>,
+    layer_id: u64,
+    query_is_empty: bool,
+    search_active: bool,
+) -> bool {
+    target == Some(layer_id) && query_is_empty && !search_active
+}
+
 impl From<&Layer> for LayerRowData {
     fn from(layer: &Layer) -> Self {
         let kind = match &layer.kind {
@@ -86,7 +95,7 @@ impl LayerRowData {
 
 impl PrismApp {
     pub(super) fn layers_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("COMPOSITION").size(11.0).strong().color(TEXT));
+        ui.label(RichText::new("COMPOSITION").size(10.0).strong().color(TEXT));
         ui.label(
             RichText::new(format!(
                 "{} object{} on canvas",
@@ -100,12 +109,12 @@ impl PrismApp {
             .size(10.0)
             .color(MUTED),
         );
-        ui.add_space(8.0);
+        ui.add_space(6.0);
         let search = ui
             .horizontal(|ui| {
                 let search_width = (ui.available_width() - 50.0).max(120.0);
                 let search = ui.add_sized(
-                    [search_width, 26.0],
+                    [search_width, CONTROL_HEIGHT],
                     egui::TextEdit::singleline(&mut self.composition_query)
                         .hint_text("Jump to object…")
                         .vertical_align(egui::Align::Center),
@@ -176,7 +185,9 @@ impl PrismApp {
                 }
                 Some(ObjectMapNavigation::Confirm) => {
                     if let Some((_, layer)) = filtered.get(self.composition_result_index) {
-                        self.execute(Command::SelectLayer { id: Some(layer.id) });
+                        let id = layer.id;
+                        self.execute(Command::SelectLayer { id: Some(id) });
+                        self.composition_scroll_to_selection = Some(id);
                         self.composition_query.clear();
                         self.composition_result_index = 0;
                         search.surrender_focus();
@@ -190,7 +201,7 @@ impl PrismApp {
                 None => {}
             }
         }
-        ui.add_space(10.0);
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("OBJECT MAP").size(9.0).strong().color(MUTED));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -214,20 +225,29 @@ impl PrismApp {
             });
         });
         let keyboard_target = search.has_focus().then_some(self.composition_result_index);
+        let mut scrolled_to_selection = false;
         egui::ScrollArea::vertical()
             .id_salt("composition-object-map")
-            .max_height(260.0)
+            .max_height(232.0)
             .show(ui, |ui| {
                 for (result_index, (index, layer)) in filtered.into_iter().enumerate() {
+                    let scroll_to_selection = should_scroll_selected_layer(
+                        self.composition_scroll_to_selection,
+                        layer.id,
+                        self.composition_query.is_empty(),
+                        search_active,
+                    );
                     self.layer_row(
                         ui,
                         layer,
                         index,
                         layers.len(),
                         keyboard_target == Some(result_index),
-                        scroll_to_result && keyboard_target == Some(result_index),
+                        (scroll_to_result && keyboard_target == Some(result_index))
+                            || scroll_to_selection,
                     );
-                    ui.add_space(2.0);
+                    scrolled_to_selection |= scroll_to_selection;
+                    ui.add_space(1.0);
                 }
                 if layers.is_empty() {
                     ui.add_space(18.0);
@@ -248,6 +268,9 @@ impl PrismApp {
                     ui.label(RichText::new("No object matches this query.").color(MUTED));
                 }
             });
+        if scrolled_to_selection {
+            self.composition_scroll_to_selection = None;
+        }
         if ui.input(|input| input.pointer.any_released())
             && let (Some(id), Some(index)) = (self.layer_drag.take(), self.layer_drop_index.take())
             && self
@@ -273,8 +296,8 @@ impl PrismApp {
     ) {
         let selected = self.workspace.document.selected == Some(layer.id);
         let thumbnail = self.layer_thumbnail(ui.ctx(), layer.id, layer.raster_path());
-        let row_height = 56.0;
-        let thumbnail_size = 32.0;
+        let row_height = 46.0;
+        let thumbnail_size = 28.0;
         let (rect, response) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), row_height),
             Sense::click_and_drag(),
@@ -282,13 +305,15 @@ impl PrismApp {
         let dropping = self.layer_drag.is_some() && self.layer_drop_index == Some(index);
         ui.painter().rect(
             rect,
-            5.0,
+            RADIUS,
             if selected {
                 SELECTED_SURFACE
             } else if keyboard_target {
                 RAISED
+            } else if response.hovered() {
+                HOVER_SURFACE
             } else {
-                SURFACE
+                Color32::TRANSPARENT
             },
             Stroke::new(
                 if dropping { 2.0 } else { 1.0 },
@@ -297,15 +322,15 @@ impl PrismApp {
                 } else if keyboard_target {
                     ACCENT_WARM
                 } else {
-                    BORDER
+                    Color32::TRANSPARENT
                 },
             ),
             egui::StrokeKind::Inside,
         );
-        let inner = rect.shrink2(Vec2::new(8.0, 6.0));
-        let number_rect = Rect::from_min_size(inner.min, Vec2::new(24.0, inner.height()));
+        let inner = rect.shrink2(Vec2::new(6.0, 4.0));
+        let number_rect = Rect::from_min_size(inner.min, Vec2::new(22.0, inner.height()));
         let thumbnail_rect = Rect::from_center_size(
-            Pos2::new(number_rect.right() + 20.0, inner.center().y),
+            Pos2::new(number_rect.right() + 17.0, inner.center().y),
             Vec2::splat(thumbnail_size),
         );
         let controls_rect = Rect::from_min_max(
@@ -313,8 +338,8 @@ impl PrismApp {
             inner.right_bottom(),
         );
         let text_rect = Rect::from_min_max(
-            Pos2::new(thumbnail_rect.right() + 10.0, inner.center().y - 18.0),
-            Pos2::new(controls_rect.left() - 8.0, inner.center().y + 18.0),
+            Pos2::new(thumbnail_rect.right() + 8.0, inner.center().y - 16.0),
+            Pos2::new(controls_rect.left() - 6.0, inner.center().y + 16.0),
         );
         ui.painter().text(
             number_rect.center(),
@@ -333,7 +358,7 @@ impl PrismApp {
             );
         } else {
             let fill = layer.fill();
-            ui.painter().rect_filled(thumbnail_rect, 4.0, fill);
+            ui.painter().rect_filled(thumbnail_rect, RADIUS, fill);
             ui.painter().text(
                 thumbnail_rect.center(),
                 Align2::CENTER_CENTER,
@@ -348,14 +373,14 @@ impl PrismApp {
         }
         let text_painter = ui.painter().with_clip_rect(text_rect);
         text_painter.text(
-            Pos2::new(text_rect.left(), text_rect.center().y - 8.0),
+            Pos2::new(text_rect.left(), text_rect.center().y - 7.0),
             Align2::LEFT_CENTER,
             &layer.name,
-            FontId::proportional(12.0),
+            FontId::proportional(11.5),
             TEXT,
         );
         text_painter.text(
-            Pos2::new(text_rect.left(), text_rect.center().y + 8.0),
+            Pos2::new(text_rect.left(), text_rect.center().y + 7.0),
             Align2::LEFT_CENTER,
             format!("{} · #{}", kind, layer.id),
             FontId::proportional(9.0),
@@ -461,5 +486,13 @@ mod tests {
         assert_eq!(step_result_index(2, 3, true), 0);
         assert_eq!(step_result_index(0, 3, false), 2);
         assert_eq!(step_result_index(0, 0, true), 0);
+    }
+
+    #[test]
+    fn confirmed_search_waits_for_the_full_map_before_scrolling_selection() {
+        assert!(!should_scroll_selected_layer(Some(12), 12, true, true));
+        assert!(should_scroll_selected_layer(Some(12), 12, true, false));
+        assert!(!should_scroll_selected_layer(Some(12), 11, true, false));
+        assert!(!should_scroll_selected_layer(Some(12), 12, false, false));
     }
 }

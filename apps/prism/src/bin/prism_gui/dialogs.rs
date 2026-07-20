@@ -45,9 +45,16 @@ fn modal_text_input(
     let id = egui::Id::new(id_source);
     let initialized_id = id.with("focus-initialized");
     let mut output = if multiline {
-        egui::TextEdit::multiline(text).id(id).show(ui)
+        egui::TextEdit::multiline(text)
+            .id(id)
+            .desired_width(f32::INFINITY)
+            .desired_rows(5)
+            .show(ui)
     } else {
-        egui::TextEdit::singleline(text).id(id).show(ui)
+        egui::TextEdit::singleline(text)
+            .id(id)
+            .desired_width(f32::INFINITY)
+            .show(ui)
     };
     let initialized = ui.data(|data| data.get_temp::<bool>(initialized_id).unwrap_or(false));
     if !initialized {
@@ -73,7 +80,44 @@ fn normalized_text_submission(text: &str) -> String {
     text.trim_end_matches(['\r', '\n']).to_owned()
 }
 
+const MODAL_BACKDROP_ALPHA: u8 = 148;
+
+fn modal_backdrop_sense() -> Sense {
+    Sense::click_and_drag()
+}
+
+fn show_modal_backdrop(context: &egui::Context) {
+    let screen = context.content_rect();
+    egui::Area::new(egui::Id::new("prism-modal-backdrop"))
+        .order(egui::Order::Middle)
+        .fixed_pos(screen.min)
+        .movable(false)
+        .interactable(true)
+        .show(context, |ui| {
+            ui.set_min_size(screen.size());
+            let (rect, _) = ui.allocate_exact_size(screen.size(), modal_backdrop_sense());
+            ui.painter()
+                .rect_filled(rect, 0.0, Color32::from_black_alpha(MODAL_BACKDROP_ALPHA));
+        });
+}
+
+fn modal_surface_present(states: [bool; 7]) -> bool {
+    states.into_iter().any(|present| present)
+}
+
 impl PrismApp {
+    pub(super) fn has_modal_surface(&self) -> bool {
+        modal_surface_present([
+            self.move_project_dialog.is_some(),
+            self.delete_confirmation.is_some(),
+            self.rename_layer.is_some(),
+            self.text_dialog.is_some(),
+            self.new_dialog.is_some(),
+            self.tool_palette.is_some(),
+            self.shape_palette.is_some(),
+        ])
+    }
+
     pub(super) fn open_new_text_dialog(&mut self) {
         let width = self.workspace.document.width as f32;
         let height = self.workspace.document.height as f32;
@@ -128,6 +172,9 @@ impl PrismApp {
     }
 
     pub(super) fn dialogs(&mut self, context: &egui::Context) {
+        if self.has_modal_surface() {
+            show_modal_backdrop(context);
+        }
         if self.move_project_dialog.is_some() {
             self.move_project_dialog(context);
         } else if self.delete_confirmation.is_some() {
@@ -150,8 +197,10 @@ impl PrismApp {
         let mut create = false;
         let mut keep_open = true;
         egui::Window::new("New Prism document")
+            .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
+            .fixed_size(Vec2::new(360.0, 152.0))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(context, |ui| {
                 ui.label("Name");
@@ -162,7 +211,7 @@ impl PrismApp {
                     ui.label("Height");
                     ui.add(egui::DragValue::new(&mut draft.height).range(1..=32_768));
                 });
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 match modal_action(ui) {
                     ModalAction::Cancel => keep_open = false,
                     ModalAction::Confirm => {
@@ -171,15 +220,12 @@ impl PrismApp {
                     }
                     ModalAction::None => {}
                 }
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if primary_button(ui, "Create canvas").clicked() {
+                        create = true;
                         keep_open = false;
                     }
-                    if ui
-                        .button(RichText::new("Create canvas").color(ACCENT))
-                        .clicked()
-                    {
-                        create = true;
+                    if quiet_button(ui, "Cancel").clicked() {
                         keep_open = false;
                     }
                 });
@@ -202,8 +248,10 @@ impl PrismApp {
         let mut save = false;
         let mut keep_open = true;
         egui::Window::new(if editing { "Edit text" } else { "Add text" })
+            .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
+            .fixed_size(Vec2::new(420.0, 272.0))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(context, |ui| {
                 modal_text_input(ui, &mut draft.text, ADD_TEXT_CONTENT_ID, true);
@@ -227,13 +275,13 @@ impl PrismApp {
                     }
                     ModalAction::None => {}
                 }
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label = if editing { "Update text" } else { "Add text" };
+                    if primary_button(ui, label).clicked() {
+                        save = true;
                         keep_open = false;
                     }
-                    let label = if editing { "Update text" } else { "Add text" };
-                    if ui.button(RichText::new(label).color(ACCENT)).clicked() {
-                        save = true;
+                    if quiet_button(ui, "Cancel").clicked() {
                         keep_open = false;
                     }
                 });
@@ -278,8 +326,10 @@ impl PrismApp {
         let mut save = false;
         let mut keep_open = true;
         egui::Window::new("Rename layer")
+            .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
+            .fixed_size(Vec2::new(360.0, 108.0))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(context, |ui| {
                 modal_text_input(ui, &mut name, RENAME_LAYER_ID, false);
@@ -291,12 +341,12 @@ impl PrismApp {
                     }
                     ModalAction::None => {}
                 }
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if primary_button(ui, "Rename").clicked() {
+                        save = true;
                         keep_open = false;
                     }
-                    if ui.button("Rename").clicked() {
-                        save = true;
+                    if quiet_button(ui, "Cancel").clicked() {
                         keep_open = false;
                     }
                 });
@@ -318,28 +368,27 @@ impl PrismApp {
         let mut delete = false;
         let mut cancel = false;
         egui::Window::new("Delete layer?")
+            .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
+            .fixed_size(Vec2::new(380.0, 126.0))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(context, |ui| {
                 ui.label("This removes the layer from the Prism document.");
                 ui.label(
-                    RichText::new("Linked source image files are never deleted.").color(ACCENT),
+                    RichText::new("Linked source image files are never deleted.").color(MUTED),
                 );
                 match modal_action(ui) {
                     ModalAction::Cancel => cancel = true,
                     ModalAction::Confirm => delete = true,
                     ModalAction::None => {}
                 }
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                    if ui
-                        .button(RichText::new("Delete layer").color(DANGER))
-                        .clicked()
-                    {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if danger_button(ui, "Delete layer").clicked() {
                         delete = true;
+                    }
+                    if quiet_button(ui, "Cancel").clicked() {
+                        cancel = true;
                     }
                 });
             });
@@ -382,5 +431,23 @@ mod tests {
             normalized_text_submission("Title\nSubtitle\n"),
             "Title\nSubtitle"
         );
+    }
+
+    #[test]
+    fn modal_backdrop_consumes_clicks_and_drags() {
+        let sense = modal_backdrop_sense();
+        assert!(sense.senses_click());
+        assert!(sense.senses_drag());
+        assert!(sense.interactive());
+    }
+
+    #[test]
+    fn every_dialog_state_gates_the_shared_modal_surface() {
+        assert!(!modal_surface_present([false; 7]));
+        for index in 0..7 {
+            let mut states = [false; 7];
+            states[index] = true;
+            assert!(modal_surface_present(states));
+        }
     }
 }
