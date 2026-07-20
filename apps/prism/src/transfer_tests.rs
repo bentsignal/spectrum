@@ -191,6 +191,7 @@ fn text_transfer_deduplicates_font_bytes_and_remaps_the_font_id() {
         .unwrap();
     let transfer = LayerTransfer::from_selected(&source.document).unwrap();
     assert!(transfer.font_asset.is_some());
+    assert!(!transfer.to_json().unwrap().contains("original_path"));
     let LayerKind::Text { typography, .. } = &transfer.layer.kind else {
         panic!("transfer should stay text");
     };
@@ -213,6 +214,7 @@ fn text_transfer_deduplicates_font_bytes_and_remaps_the_font_id() {
         .unwrap()
         .layer_ids[0];
     assert_eq!(destination.document.font_assets.len(), 1);
+    assert!(destination.document.font_assets[0].original_path.is_some());
     let LayerKind::Text { typography, .. } = &destination.document.layer(inserted).unwrap().kind
     else {
         panic!("inserted layer should stay text");
@@ -238,7 +240,25 @@ fn durable_raster_transfer_embeds_pixels_in_a_version_two_operation() {
             y: 4.0,
         })
         .unwrap();
+    let provenance = directory.join("private-origin-do-not-transfer.png");
+    let source_id = source.document.selected.unwrap();
+    let LayerKind::Raster { original_path, .. } =
+        &mut source.document.layer_mut(source_id).unwrap().kind
+    else {
+        panic!("source layer should be raster");
+    };
+    *original_path = Some(provenance.clone());
     let transfer = LayerTransfer::from_selected(&source.document).unwrap();
+    let LayerKind::Raster { original_path, .. } = &transfer.layer.kind else {
+        panic!("transfer should stay raster");
+    };
+    assert!(original_path.is_none());
+    assert!(
+        !transfer
+            .to_json()
+            .unwrap()
+            .contains(provenance.to_str().unwrap())
+    );
 
     let project_path = directory.join("destination.prism");
     let mut destination = Workspace::create_durable(
@@ -348,6 +368,7 @@ fn durable_text_transfer_embeds_font_bytes_and_replays_the_remapped_id() {
             index: None,
         })
         .unwrap();
+    assert!(destination.document.font_assets[0].original_path.is_none());
     destination.save(None).unwrap();
     drop(destination);
     fs::remove_file(&font_path).unwrap();

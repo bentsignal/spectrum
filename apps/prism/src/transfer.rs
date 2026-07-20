@@ -17,9 +17,9 @@ const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 4 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
 ///
-/// Document-local layer and font IDs are deliberately removed. Raster and font
-/// paths remain explicit so durable Prism revisions can embed their bytes in the
-/// destination project before recording `Command::InsertLayer`.
+/// Document-local layer and font IDs and source-provenance paths are deliberately
+/// removed. Only active raster and font paths remain so durable Prism revisions
+/// can embed their bytes before recording `Command::InsertLayer`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayerTransfer {
     pub format: String,
@@ -39,8 +39,6 @@ pub struct LayerTransferFont {
     pub subset_allowed: bool,
     pub content_hash: String,
     pub path: PathBuf,
-    #[serde(default)]
-    pub original_path: Option<PathBuf>,
 }
 
 impl LayerTransfer {
@@ -53,6 +51,10 @@ impl LayerTransfer {
         let mut layer = document.layer(id)?.clone();
         layer.id = 0;
         let font_asset = match &mut layer.kind {
+            LayerKind::Raster { original_path, .. } => {
+                *original_path = None;
+                None
+            }
             LayerKind::Text { typography, .. } => match typography.font_id.take() {
                 Some(font_id) => Some(LayerTransferFont::from(document.font_asset(font_id)?)),
                 None => None,
@@ -166,7 +168,6 @@ impl From<&FontAsset> for LayerTransferFont {
             subset_allowed: font.subset_allowed,
             content_hash: font.content_hash.clone(),
             path: font.path.clone(),
-            original_path: font.original_path.clone(),
         }
     }
 }
@@ -264,7 +265,7 @@ fn import_transferred_font(document: &mut Document, font: LayerTransferFont) -> 
         subset_allowed: parsed.subset_allowed,
         content_hash: parsed.content_hash,
         path: parsed.path,
-        original_path: font.original_path,
+        original_path: None,
     });
     Ok(id)
 }

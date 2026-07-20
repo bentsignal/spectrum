@@ -544,7 +544,6 @@ impl DurableProject {
                         && let Some(reference) = AssetReference::parse(&font.path)
                     {
                         font.path = self.materialize(reference)?;
-                        font.original_path = None;
                     }
                 }
                 _ => {}
@@ -706,7 +705,6 @@ impl PreparedOperations {
                     if let Some(font) = &mut transfer.font_asset {
                         let prepared = prepare_asset(&font.path)?;
                         font.path = prepared.reference.path();
-                        font.original_path = None;
                         assets.push(prepared.asset);
                     }
                 }

@@ -111,6 +111,19 @@ fn layer_transfer_core_and_cli_stay_in_dedicated_modules() {
 }
 
 #[test]
+fn prism_cli_delegates_agent_collaboration_with_binary_headroom() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let binary = fs::read_to_string(manifest.join("src/bin/prism.rs")).unwrap();
+    let agent = fs::read_to_string(manifest.join("src/bin/prism_cli/agent.rs")).unwrap();
+
+    assert!(binary.contains("prism_cli/agent.rs"));
+    assert!(!binary.contains("fn agent_command("));
+    assert!(agent.contains("pub(super) fn agent_command("));
+    assert!(agent.contains("fn local_gui_session_id("));
+    assert!(binary.lines().count() < 950);
+}
+
+#[test]
 fn revision_graph_comes_from_the_shared_spectrum_surface() {
     let history = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/history.rs"),
