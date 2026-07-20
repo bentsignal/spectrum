@@ -11,7 +11,7 @@ use eframe::egui::{
     TextureOptions, Vec2,
 };
 use prism_core::{
-    BlendMode, Command, Document, Layer, LayerKind, LayerMask, Transform, Workspace,
+    BlendMode, Command, Document, Layer, LayerKind, LayerMask, ShapeStroke, Transform, Workspace,
     export_document,
 };
 use spectrum_imaging::AdjustmentPatch;
@@ -39,7 +39,6 @@ mod renderer;
 mod shortcuts;
 use dialogs::*;
 use history::HistoryViewState;
-use inspector::InspectorLens;
 use project_lifecycle::MoveProjectDialog;
 use renderer::*;
 
@@ -49,7 +48,6 @@ const SURFACE: Color32 = Color32::from_rgb(34, 38, 46);
 const RAISED: Color32 = Color32::from_rgb(45, 50, 60);
 const HOVER_SURFACE: Color32 = Color32::from_rgb(57, 63, 74);
 const ACTIVE_SURFACE: Color32 = Color32::from_rgb(39, 91, 85);
-const FOCUS_SURFACE: Color32 = Color32::from_rgb(31, 56, 57);
 const SELECTED_SURFACE: Color32 = Color32::from_rgb(36, 58, 60);
 const BORDER: Color32 = Color32::from_rgb(62, 68, 80);
 const TEXT: Color32 = Color32::from_rgb(226, 230, 238);
@@ -68,6 +66,7 @@ enum Tool {
     Crop,
     Text,
     Rectangle,
+    Ellipse,
     Mask,
 }
 
@@ -78,11 +77,12 @@ enum ToolActivation {
 }
 
 impl Tool {
-    const ALL: [(Self, &'static str, &'static str); 5] = [
+    const ALL: [(Self, &'static str, &'static str); 6] = [
         (Self::Move, "V", "Select / move"),
         (Self::Crop, "C", "Crop canvas"),
         (Self::Text, "T", "Text"),
         (Self::Rectangle, "R", "Rectangle"),
+        (Self::Ellipse, "U", "Ellipse"),
         (Self::Mask, "M", "Layer mask"),
     ];
 
@@ -92,6 +92,7 @@ impl Tool {
             Self::Crop => "Crop canvas",
             Self::Text => "Add text",
             Self::Rectangle => "Draw shape",
+            Self::Ellipse => "Draw ellipse",
             Self::Mask => "Draw mask",
         }
     }
@@ -109,6 +110,7 @@ impl Tool {
             Self::Crop => "Draw the new canvas boundary.",
             Self::Text => "Type the text now, then move it into place.",
             Self::Rectangle => "Drag a shape, or click for a standard size.",
+            Self::Ellipse => "Drag an ellipse, or click for a standard circle.",
             Self::Mask => "Draw the visible region of the focused element.",
         }
     }
@@ -185,11 +187,14 @@ fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
     match command {
         Command::UpdateText { id, .. }
         | Command::UpdateRectangle { id, .. }
+        | Command::UpdateEllipse { id, .. }
+        | Command::SetShapeStroke { id, .. }
         | Command::AdjustLayer { id, .. }
         | Command::ResetLayerAdjustments { id } => CanvasInvalidation::Layer(*id),
         Command::AddRaster { .. }
         | Command::AddText { .. }
         | Command::AddRectangle { .. }
+        | Command::AddEllipse { .. }
         | Command::DuplicateLayer { .. }
         | Command::Undo
         | Command::Redo => CanvasInvalidation::All,
@@ -250,7 +255,6 @@ struct PrismApp {
     composition_query: String,
     composition_search_focus: bool,
     composition_result_index: usize,
-    inspector_lens: InspectorLens,
     zoom: f32,
     pan: Vec2,
     fit_requested: bool,
@@ -358,7 +362,6 @@ impl PrismApp {
             composition_query: String::new(),
             composition_search_focus: false,
             composition_result_index: 0,
-            inspector_lens: InspectorLens::Object,
             zoom: 1.0,
             pan: Vec2::ZERO,
             fit_requested: true,
@@ -960,6 +963,7 @@ mod tests {
     fn tools_declare_whether_selection_opens_ui_or_arms_the_canvas() {
         assert_eq!(Tool::Text.activation(), ToolActivation::ImmediateDialog);
         assert_eq!(Tool::Rectangle.activation(), ToolActivation::CanvasGesture);
+        assert_eq!(Tool::Ellipse.activation(), ToolActivation::CanvasGesture);
         assert_eq!(Tool::Crop.activation(), ToolActivation::CanvasGesture);
     }
 }

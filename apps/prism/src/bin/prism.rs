@@ -10,7 +10,7 @@ use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
 use prism_core::{
-    BlendMode, Command, Document, LayerMask, Transform, Workspace, export_document,
+    BlendMode, Command, Document, LayerMask, ShapeStroke, Transform, Workspace, export_document,
     render_document, render_solid_color,
 };
 use serde::Serialize;
@@ -85,6 +85,21 @@ enum CliCommand {
         #[arg(long, default_value_t = 0.0)]
         y: f32,
     },
+    /// Add an editable vector ellipse layer.
+    AddEllipse {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, default_value_t = 360)]
+        width: u32,
+        #[arg(long, default_value_t = 360)]
+        height: u32,
+        #[arg(long, default_value = "f7b266ff")]
+        color: String,
+        #[arg(long, default_value_t = 0.0)]
+        x: f32,
+        #[arg(long, default_value_t = 0.0)]
+        y: f32,
+    },
     EditText {
         id: u64,
         text: String,
@@ -103,6 +118,24 @@ enum CliCommand {
         color: String,
         #[arg(long, default_value_t = 0.0)]
         radius: f32,
+    },
+    EditEllipse {
+        id: u64,
+        #[arg(long)]
+        width: u32,
+        #[arg(long)]
+        height: u32,
+        #[arg(long, default_value = "f7b266ff")]
+        color: String,
+    },
+    Stroke {
+        id: u64,
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        enabled: bool,
+        #[arg(long, default_value_t = 4.0)]
+        width: f32,
+        #[arg(long, default_value = "ffffffff")]
+        color: String,
     },
     Rename {
         id: u64,
@@ -402,6 +435,21 @@ fn run(cli: Cli) -> Result<Value> {
                     x,
                     y,
                 })?],
+                CliCommand::AddEllipse {
+                    name,
+                    width,
+                    height,
+                    color,
+                    x,
+                    y,
+                } => vec![workspace.execute(Command::AddEllipse {
+                    name,
+                    width,
+                    height,
+                    color: parse_color(&color)?,
+                    x,
+                    y,
+                })?],
                 CliCommand::EditText {
                     id,
                     text,
@@ -425,6 +473,30 @@ fn run(cli: Cli) -> Result<Value> {
                     height,
                     color: parse_color(&color)?,
                     corner_radius: radius,
+                })?],
+                CliCommand::EditEllipse {
+                    id,
+                    width,
+                    height,
+                    color,
+                } => vec![workspace.execute(Command::UpdateEllipse {
+                    id,
+                    width,
+                    height,
+                    color: parse_color(&color)?,
+                })?],
+                CliCommand::Stroke {
+                    id,
+                    enabled,
+                    width,
+                    color,
+                } => vec![workspace.execute(Command::SetShapeStroke {
+                    id,
+                    stroke: ShapeStroke {
+                        enabled,
+                        width,
+                        color: parse_color(&color)?,
+                    },
                 })?],
                 CliCommand::Rename { id, name } => {
                     vec![workspace.execute(Command::RenameLayer { id, name })?]
@@ -742,6 +814,8 @@ fn schema() -> Value {
             "tag": "command",
             "examples": [
                 {"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0},
+                {"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0},
+                {"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}},
                 {"command": "set_transform", "id": 1, "transform": {"x": 220.0, "y": 160.0, "scale_x": 1.2, "scale_y": 1.2, "rotation": 8.0}},
                 {"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}},
                 {"command": "adjust_layer", "id": 1, "patch": {"exposure": 0.5, "contrast": 12.0}}
@@ -752,7 +826,7 @@ fn schema() -> Value {
             "color_dodge", "color_burn", "hard_light", "soft_light", "difference",
             "exclusion"
         ],
-        "layer_types": ["raster", "text", "rectangle"],
+        "layer_types": ["raster", "text", "rectangle", "ellipse"],
         "color": "RRGGBB or RRGGBBAA",
         "coordinates": "canvas pixels; layer masks are normalized 0..1"
     })

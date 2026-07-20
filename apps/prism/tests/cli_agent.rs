@@ -116,6 +116,59 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn cli_creates_and_styles_editable_ellipses() {
+    let directory = std::env::temp_dir().join(format!(
+        "prism-cli-ellipse-{}",
+        spectrum_revisions::RevisionId::new()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("ellipse.prism");
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "init",
+        "Ellipse CLI",
+        "--width",
+        "640",
+        "--height",
+        "480",
+    ]);
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "add-ellipse",
+        "--name",
+        "Sun",
+        "--width",
+        "180",
+        "--height",
+        "120",
+        "--color",
+        "f7b266ff",
+        "--x",
+        "40",
+        "--y",
+        "50",
+    ]);
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "stroke",
+        "1",
+        "--width",
+        "8",
+        "--color",
+        "ffffffff",
+    ]);
+    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let layer = &listed["document"]["layers"][0];
+    assert_eq!(layer["kind"]["type"], "ellipse");
+    assert_eq!(layer["stroke"]["enabled"], true);
+    assert_eq!(layer["stroke"]["width"], 8.0);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 fn status(project: &Path, session: SessionId) -> Value {
     run_prism(&[
         "--project",

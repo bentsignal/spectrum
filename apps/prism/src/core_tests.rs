@@ -267,6 +267,18 @@ fn non_finite_commands_are_rejected_before_serialization() {
             .unwrap()
             .contains("\"opacity\":null")
     );
+    assert!(
+        workspace
+            .execute(Command::SetShapeStroke {
+                id: 1,
+                stroke: ShapeStroke {
+                    enabled: true,
+                    width: f32::NAN,
+                    color: [255, 255, 255, 255],
+                },
+            })
+            .is_err()
+    );
 }
 
 #[test]

@@ -96,6 +96,7 @@ pub(super) fn layer_bounds(layer: &Layer, cached_size: Option<Vec2>) -> Option<R
             .ok()
             .map(|(width, height)| Vec2::new(width as f32, height as f32))?,
         LayerKind::Rectangle { width, height, .. } => Vec2::new(*width as f32, *height as f32),
+        LayerKind::Ellipse { width, height, .. } => Vec2::new(*width as f32, *height as f32),
     });
     let size = Vec2::new(
         size.x * layer.transform.scale_x,

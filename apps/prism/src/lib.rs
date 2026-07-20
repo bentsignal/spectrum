@@ -136,6 +136,34 @@ pub struct LayerMask {
     pub invert: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShapeStroke {
+    pub enabled: bool,
+    pub width: f32,
+    pub color: [u8; 4],
+}
+
+impl Default for ShapeStroke {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            width: 4.0,
+            color: [255, 255, 255, 255],
+        }
+    }
+}
+
+impl ShapeStroke {
+    fn sanitized(self) -> Self {
+        Self {
+            enabled: self.enabled,
+            width: self.width.clamp(0.5, 512.0),
+            color: self.color,
+        }
+    }
+}
+
 impl Default for LayerMask {
     fn default() -> Self {
         Self {
@@ -183,6 +211,11 @@ pub enum LayerKind {
         color: [u8; 4],
         corner_radius: f32,
     },
+    Ellipse {
+        width: u32,
+        height: u32,
+        color: [u8; 4],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -197,6 +230,7 @@ pub struct Layer {
     pub transform: Transform,
     pub adjustments: Adjustments,
     pub mask: LayerMask,
+    pub stroke: ShapeStroke,
     pub clip_to_below: bool,
     pub kind: LayerKind,
 }
@@ -213,6 +247,7 @@ impl Default for Layer {
             transform: Transform::default(),
             adjustments: Adjustments::default(),
             mask: LayerMask::default(),
+            stroke: ShapeStroke::default(),
             clip_to_below: false,
             kind: LayerKind::Rectangle {
                 width: 100,
@@ -292,10 +327,12 @@ impl Document {
             require_finite("layer opacity", layer.opacity)?;
             validate_transform(layer.transform)?;
             validate_mask(layer.mask)?;
+            validate_shape_stroke(layer.stroke)?;
             validate_adjustments(&layer.adjustments)?;
             layer.opacity = layer.opacity.clamp(0.0, 1.0);
             layer.transform = layer.transform.sanitized();
             layer.mask = layer.mask.sanitized();
+            layer.stroke = layer.stroke.sanitized();
             layer.adjustments = layer.adjustments.clone().sanitized();
         }
         self.next_id = self
@@ -345,6 +382,14 @@ pub enum Command {
         x: f32,
         y: f32,
     },
+    AddEllipse {
+        name: Option<String>,
+        width: u32,
+        height: u32,
+        color: [u8; 4],
+        x: f32,
+        y: f32,
+    },
     UpdateText {
         id: u64,
         text: String,
@@ -357,6 +402,12 @@ pub enum Command {
         height: u32,
         color: [u8; 4],
         corner_radius: f32,
+    },
+    UpdateEllipse {
+        id: u64,
+        width: u32,
+        height: u32,
+        color: [u8; 4],
     },
     RemoveLayer {
         id: u64,
@@ -405,6 +456,10 @@ pub enum Command {
     SetMask {
         id: u64,
         mask: LayerMask,
+    },
+    SetShapeStroke {
+        id: u64,
+        stroke: ShapeStroke,
     },
     SetClipping {
         id: u64,
@@ -549,6 +604,35 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
             document.selected = Some(id);
             Ok(output("add_rectangle", "added rectangle layer", vec![id]))
         }
+        Command::AddEllipse {
+            name,
+            width,
+            height,
+            color,
+            x,
+            y,
+        } => {
+            require_finite("x", x)?;
+            require_finite("y", y)?;
+            let id = document.allocate_id();
+            document.layers.push(Layer {
+                id,
+                name: name.unwrap_or_else(|| "Ellipse".into()),
+                transform: Transform {
+                    x,
+                    y,
+                    ..Default::default()
+                },
+                kind: LayerKind::Ellipse {
+                    width: width.clamp(1, MAX_CANVAS_DIMENSION),
+                    height: height.clamp(1, MAX_CANVAS_DIMENSION),
+                    color,
+                },
+                ..Default::default()
+            });
+            document.selected = Some(id);
+            Ok(output("add_ellipse", "added ellipse layer", vec![id]))
+        }
         Command::UpdateText {
             id,
             text,
@@ -610,6 +694,26 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
                 "updated rectangle layer",
                 vec![id],
             ))
+        }
+        Command::UpdateEllipse {
+            id,
+            width,
+            height,
+            color,
+        } => {
+            let layer = document.layer_mut(id)?;
+            let LayerKind::Ellipse {
+                width: layer_width,
+                height: layer_height,
+                color: layer_color,
+            } = &mut layer.kind
+            else {
+                bail!("layer {id} is not an ellipse layer");
+            };
+            *layer_width = width.clamp(1, MAX_CANVAS_DIMENSION);
+            *layer_height = height.clamp(1, MAX_CANVAS_DIMENSION);
+            *layer_color = color;
+            Ok(output("update_ellipse", "updated ellipse layer", vec![id]))
         }
         Command::RemoveLayer { id } => {
             let index = document
@@ -716,6 +820,18 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
             document.layer_mut(id)?.mask = mask.sanitized();
             Ok(output("set_mask", "updated layer mask", vec![id]))
         }
+        Command::SetShapeStroke { id, stroke } => {
+            validate_shape_stroke(stroke)?;
+            let layer = document.layer_mut(id)?;
+            if !matches!(
+                layer.kind,
+                LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+            ) {
+                bail!("layer {id} is not a shape layer");
+            }
+            layer.stroke = stroke.sanitized();
+            Ok(output("set_shape_stroke", "updated shape stroke", vec![id]))
+        }
         Command::SetClipping { id, enabled } => {
             document.layer_mut(id)?.clip_to_below = enabled;
             Ok(output("set_clipping", "updated clipping", vec![id]))
@@ -762,6 +878,10 @@ fn validate_mask(mask: LayerMask) -> Result<()> {
         require_finite(label, value)?;
     }
     Ok(())
+}
+
+fn validate_shape_stroke(stroke: ShapeStroke) -> Result<()> {
+    require_finite("shape stroke width", stroke.width)
 }
 
 fn validate_adjustments(value: &Adjustments) -> Result<()> {
@@ -841,3 +961,7 @@ pub use render::{
 #[cfg(test)]
 #[path = "core_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "shape_tests.rs"]
+mod shape_tests;

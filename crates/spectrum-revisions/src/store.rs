@@ -185,6 +185,22 @@ impl RevisionStore {
         validate_actor(&actor)?;
         self.require_revision(fallback)?;
         if let Some(session) = self.session(id)? {
+            let default_track = self.project_info()?.default_track_id;
+            if self.session_on_track(id, default_track)?.is_none() {
+                let transaction = self
+                    .connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                insert_session_cursor(
+                    &transaction,
+                    id,
+                    default_track,
+                    session.cursor,
+                    session.updated_at_ms,
+                )?;
+                bump_generation(&transaction)?;
+                transaction.commit()?;
+                self.finish_write()?;
+            }
             return Ok(session);
         }
         let updated_at_ms = now_ms();
