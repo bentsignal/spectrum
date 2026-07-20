@@ -238,6 +238,7 @@ enum CliCommand {
     },
     Clip {
         id: u64,
+        #[arg(action = clap::ArgAction::Set)]
         enabled: bool,
     },
     Canvas {
@@ -319,34 +320,62 @@ impl From<CliAgentMode> for CollaborationMode {
 #[derive(Clone, Copy, ValueEnum)]
 enum CliBlend {
     Normal,
-    Multiply,
-    Screen,
-    Overlay,
     Darken,
-    Lighten,
-    ColorDodge,
+    Multiply,
     ColorBurn,
-    HardLight,
+    LinearBurn,
+    DarkerColor,
+    Lighten,
+    Screen,
+    ColorDodge,
+    LinearDodge,
+    LighterColor,
+    Overlay,
     SoftLight,
+    HardLight,
+    VividLight,
+    LinearLight,
+    PinLight,
+    HardMix,
     Difference,
     Exclusion,
+    Subtract,
+    Divide,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
 
 impl From<CliBlend> for BlendMode {
     fn from(value: CliBlend) -> Self {
         match value {
             CliBlend::Normal => Self::Normal,
-            CliBlend::Multiply => Self::Multiply,
-            CliBlend::Screen => Self::Screen,
-            CliBlend::Overlay => Self::Overlay,
             CliBlend::Darken => Self::Darken,
-            CliBlend::Lighten => Self::Lighten,
-            CliBlend::ColorDodge => Self::ColorDodge,
+            CliBlend::Multiply => Self::Multiply,
             CliBlend::ColorBurn => Self::ColorBurn,
-            CliBlend::HardLight => Self::HardLight,
+            CliBlend::LinearBurn => Self::LinearBurn,
+            CliBlend::DarkerColor => Self::DarkerColor,
+            CliBlend::Lighten => Self::Lighten,
+            CliBlend::Screen => Self::Screen,
+            CliBlend::ColorDodge => Self::ColorDodge,
+            CliBlend::LinearDodge => Self::LinearDodge,
+            CliBlend::LighterColor => Self::LighterColor,
+            CliBlend::Overlay => Self::Overlay,
             CliBlend::SoftLight => Self::SoftLight,
+            CliBlend::HardLight => Self::HardLight,
+            CliBlend::VividLight => Self::VividLight,
+            CliBlend::LinearLight => Self::LinearLight,
+            CliBlend::PinLight => Self::PinLight,
+            CliBlend::HardMix => Self::HardMix,
             CliBlend::Difference => Self::Difference,
             CliBlend::Exclusion => Self::Exclusion,
+            CliBlend::Subtract => Self::Subtract,
+            CliBlend::Divide => Self::Divide,
+            CliBlend::Hue => Self::Hue,
+            CliBlend::Saturation => Self::Saturation,
+            CliBlend::Color => Self::Color,
+            CliBlend::Luminosity => Self::Luminosity,
         }
     }
 }
@@ -843,9 +872,11 @@ fn schema() -> Value {
             ]
         },
         "blend_modes": [
-            "normal", "multiply", "screen", "overlay", "darken", "lighten",
-            "color_dodge", "color_burn", "hard_light", "soft_light", "difference",
-            "exclusion"
+            "normal", "darken", "multiply", "color_burn", "linear_burn", "darker_color",
+            "lighten", "screen", "color_dodge", "linear_dodge", "lighter_color", "overlay",
+            "soft_light", "hard_light", "vivid_light", "linear_light", "pin_light", "hard_mix",
+            "difference", "exclusion", "subtract", "divide", "hue", "saturation", "color",
+            "luminosity"
         ],
         "layer_types": ["raster", "text", "rectangle", "ellipse"],
         "color": "RRGGBB or RRGGBBAA",

@@ -1,0 +1,62 @@
+{
+  "document": {
+    "name": "Blend parity",
+    "width": 4,
+    "height": 4,
+    "background": [0, 0, 0, 0],
+    "layers": [
+      {
+        "id": 1,
+        "name": "Clipping base",
+        "transform": { "x": 1.0, "y": 1.0 },
+        "kind": {
+          "type": "rectangle",
+          "width": 2,
+          "height": 2,
+          "color": [40, 120, 210, 255],
+          "corner_radius": 0.0
+        }
+      },
+      {
+        "id": 2,
+        "name": "Clipped color blend",
+        "blend_mode": "color",
+        "clip_to_below": true,
+        "kind": {
+          "type": "rectangle",
+          "width": 4,
+          "height": 4,
+          "color": [220, 65, 95, 210],
+          "corner_radius": 0.0
+        }
+      },
+      {
+        "id": 3,
+        "name": "Inverted multiply mask",
+        "blend_mode": "multiply",
+        "mask": {
+          "enabled": true,
+          "x": 0.25,
+          "y": 0.25,
+          "width": 0.5,
+          "height": 0.5,
+          "invert": true
+        },
+        "kind": {
+          "type": "rectangle",
+          "width": 4,
+          "height": 4,
+          "color": [80, 210, 120, 160],
+          "corner_radius": 0.0
+        }
+      }
+    ],
+    "next_id": 4
+  },
+  "expected_rgba": [
+    80, 210, 120, 160, 80, 210, 120, 160, 80, 210, 120, 160, 80, 210, 120, 160,
+    80, 210, 120, 160, 181, 67, 108, 255, 181, 67, 108, 255, 0, 0, 0, 0,
+    80, 210, 120, 160, 181, 67, 108, 255, 181, 67, 108, 255, 0, 0, 0, 0,
+    80, 210, 120, 160, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  ]
+}

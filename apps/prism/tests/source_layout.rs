@@ -34,20 +34,27 @@ fn prism_source_files_stay_within_the_maintainability_budget() {
 }
 
 #[test]
-fn interactive_gui_never_calls_the_full_document_compositor() {
+fn interactive_gui_limits_full_document_rendering_to_the_transitional_fallback() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = vec![manifest.join("src/bin/prism-gui.rs")];
     rust_sources(&manifest.join("src/bin/prism_gui"), &mut files);
     let offenders: Vec<_> = files
         .into_iter()
         .filter(|path| {
-            fs::read_to_string(path).is_ok_and(|source| source.contains("render_document("))
+            path.file_name().is_none_or(|name| name != "compositor.rs")
+                && fs::read_to_string(path).is_ok_and(|source| {
+                    source.contains("render_document(")
+                        || source.contains("render_document_scaled(")
+                })
         })
         .collect();
     assert!(
         offenders.is_empty(),
-        "interactive Prism code must render cached layers, not full documents: {offenders:#?}"
+        "only the transitional parity fallback may render full documents: {offenders:#?}"
     );
+    let fallback = fs::read_to_string(manifest.join("src/bin/prism_gui/compositor.rs"))
+        .expect("transitional compositor should be readable");
+    assert!(fallback.contains("render_document_scaled("));
 }
 
 #[test]

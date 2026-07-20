@@ -10,7 +10,7 @@ use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
 use crate::{
-    BlendMode, Document, Layer, LayerKind, Transform,
+    Document, Layer, LayerKind, Transform, blend_rgb,
     shapes::{constrained_shape_scale, render_shape},
 };
 
@@ -129,8 +129,21 @@ pub fn render_document(document: &Document, max_size: Option<u32>) -> Result<Dyn
     let scale = max_size
         .filter(|size| *size > 0)
         .map_or(1.0, |size| (size as f32 / longest).min(1.0));
+    render_document_scaled(document, scale)
+}
+
+/// Renders a complete document at an explicit canvas-pixel scale. Interactive
+/// offscreen clients use this to match export semantics at physical display
+/// resolution, including scales above 1 for editable parametric geometry.
+pub fn render_document_scaled(document: &Document, scale: f32) -> Result<DynamicImage> {
+    if !scale.is_finite() || scale <= 0.0 {
+        bail!("document render scale must be a positive finite number");
+    }
     let canvas_width = (document.width as f32 * scale).round().max(1.0) as u32;
     let canvas_height = (document.height as f32 * scale).round().max(1.0) as u32;
+    if canvas_width > crate::MAX_CANVAS_DIMENSION || canvas_height > crate::MAX_CANVAS_DIMENSION {
+        bail!("scaled document exceeds Prism's maximum canvas dimension");
+    }
     let mut canvas = RgbaImage::from_pixel(canvas_width, canvas_height, Rgba(document.background));
     let mut previous_coverage: Option<RgbaImage> = None;
     for layer in &document.layers {
@@ -438,7 +451,8 @@ fn composite_layer(
         let mut output = [0; 4];
         for channel in 0..3 {
             let value = if output_alpha > 0.0 {
-                (blended[channel] as f32 * alpha
+                (source_pixel[channel] as f32 * alpha * (1.0 - destination_alpha)
+                    + blended[channel] as f32 * alpha * destination_alpha
                     + destination[channel] as f32 * destination_alpha * (1.0 - alpha))
                     / output_alpha
             } else {
@@ -450,68 +464,6 @@ fn composite_layer(
         canvas.put_pixel(x, y, Rgba(output));
         coverage.put_pixel(x, y, Rgba([255, 255, 255, (alpha * 255.0) as u8]));
     }
-}
-
-fn blend_rgb(source: [u8; 4], destination: [u8; 4], mode: BlendMode) -> [u8; 3] {
-    let blend = |source: u8, destination: u8| -> u8 {
-        let s = source as f32 / 255.0;
-        let d = destination as f32 / 255.0;
-        let value = match mode {
-            BlendMode::Normal => s,
-            BlendMode::Multiply => s * d,
-            BlendMode::Screen => 1.0 - (1.0 - s) * (1.0 - d),
-            BlendMode::Overlay => {
-                if d <= 0.5 {
-                    2.0 * s * d
-                } else {
-                    1.0 - 2.0 * (1.0 - s) * (1.0 - d)
-                }
-            }
-            BlendMode::Darken => s.min(d),
-            BlendMode::Lighten => s.max(d),
-            BlendMode::ColorDodge => {
-                if s >= 1.0 {
-                    1.0
-                } else {
-                    (d / (1.0 - s)).min(1.0)
-                }
-            }
-            BlendMode::ColorBurn => {
-                if s <= 0.0 {
-                    0.0
-                } else {
-                    1.0 - ((1.0 - d) / s).min(1.0)
-                }
-            }
-            BlendMode::HardLight => {
-                if s <= 0.5 {
-                    2.0 * s * d
-                } else {
-                    1.0 - 2.0 * (1.0 - s) * (1.0 - d)
-                }
-            }
-            BlendMode::SoftLight => {
-                if s <= 0.5 {
-                    d - (1.0 - 2.0 * s) * d * (1.0 - d)
-                } else {
-                    let curve = if d <= 0.25 {
-                        ((16.0 * d - 12.0) * d + 4.0) * d
-                    } else {
-                        d.sqrt()
-                    };
-                    d + (2.0 * s - 1.0) * (curve - d)
-                }
-            }
-            BlendMode::Difference => (d - s).abs(),
-            BlendMode::Exclusion => d + s - 2.0 * d * s,
-        };
-        (value * 255.0).round().clamp(0.0, 255.0) as u8
-    };
-    [
-        blend(source[0], destination[0]),
-        blend(source[1], destination[1]),
-        blend(source[2], destination[2]),
-    ]
 }
 
 pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<()> {

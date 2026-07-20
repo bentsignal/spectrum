@@ -20,6 +20,8 @@ use spectrum_imaging::AdjustmentPatch;
 mod canvas;
 #[path = "prism_gui/chrome.rs"]
 mod chrome;
+#[path = "prism_gui/compositor.rs"]
+mod compositor;
 #[path = "prism_gui/dialogs.rs"]
 mod dialogs;
 #[path = "prism_gui/history.rs"]
@@ -37,6 +39,7 @@ mod project_lifecycle;
 mod renderer;
 #[path = "prism_gui/shortcuts.rs"]
 mod shortcuts;
+use compositor::*;
 use history::HistoryViewState;
 use project_lifecycle::MoveProjectDialog;
 use renderer::*;
@@ -244,6 +247,7 @@ struct PrismApp {
     layer_render_in_flight: bool,
     layer_render_request_sender: Sender<LayerRenderRequest>,
     layer_render_receiver: Receiver<LayerRenderResult>,
+    composite_preview: CompositePreview,
     preview_error: Option<String>,
     layer_thumbnails: HashMap<u64, TextureHandle>,
     status: String,
@@ -354,6 +358,7 @@ impl PrismApp {
             layer_render_in_flight: false,
             layer_render_request_sender,
             layer_render_receiver,
+            composite_preview: CompositePreview::new(creation.egui_ctx.clone()),
             preview_error: None,
             layer_thumbnails: HashMap::new(),
             status: "Ready".into(),

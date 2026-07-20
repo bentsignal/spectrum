@@ -56,6 +56,15 @@ the matching Content-panel action) only when the layer should intentionally be
 frozen into an embedded raster asset. `--scale <factor>` overrides the CLI's
 current-transform-aware raster resolution.
 
+Prism supports the deterministic Photoshop-style Darken, Lighten, Contrast,
+Difference, and component blend families. The mode picker includes Multiply,
+Screen, the Burn/Dodge and Linear families, Overlay through Hard Mix,
+Difference through Divide, and Hue/Saturation/Color/Luminosity. Blended,
+clipped, and inverted-mask stacks use the shared core compositor for both the
+interactive offscreen preview and export, so editing and saved output have the
+same pixel semantics. Simple Normal-mode stacks retain the direct interactive
+texture path for low-latency transforms.
+
 The native properties panel presents one stable hierarchy instead of mode tabs:
 canvas settings when no object is selected, then Transform, Content, Appearance,
 Mask, and Develop for the focused object. This keeps common geometry and styling
