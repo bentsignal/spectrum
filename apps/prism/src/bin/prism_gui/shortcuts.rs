@@ -263,6 +263,7 @@ impl PrismApp {
             self.shape_palette = None;
             reset_tool_after_escape(&mut self.tool, &mut self.status, &mut self.status_error);
             self.drag = None;
+            self.smart_guides = SmartGuides::default();
         }
     }
 }

@@ -9,7 +9,8 @@ use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
 use prism_core::{
-    BlendMode, Command, Document, LayerMask, ShapeStroke, Transform, Workspace, export_document,
+    Alignment, AlignmentReference, BlendMode, Command, Document, GuideOrientation, LayerMask,
+    ShapeStroke, Transform, Workspace, export_document,
 };
 use serde_json::{Value, json};
 use spectrum_imaging::{AdjustmentPatch, RenderOptions};
@@ -18,6 +19,9 @@ use spectrum_revisions::{Actor, ActorKind, CollaborationMode, SessionId};
 #[path = "prism_cli/benchmark.rs"]
 mod benchmark;
 use benchmark::benchmark;
+#[path = "prism_cli/schema.rs"]
+mod schema;
+use schema::schema;
 
 #[derive(Parser)]
 #[command(name = "prism", version, about = "Agent-first layered image editor")]
@@ -197,6 +201,24 @@ enum CliCommand {
         #[arg(allow_negative_numbers = true)]
         degrees: f32,
     },
+    /// Align a layer's transformed visual bounds to the canvas or another layer.
+    Align {
+        id: u64,
+        #[arg(value_enum)]
+        alignment: CliAlignment,
+        #[arg(long)]
+        to_layer: Option<u64>,
+    },
+    /// Enable or disable object and guide snapping for the document.
+    Snapping {
+        #[arg(action = clap::ArgAction::Set)]
+        enabled: bool,
+    },
+    /// Add, move, or remove a persistent document guide.
+    Guide {
+        #[command(subcommand)]
+        command: GuideCommand,
+    },
     Adjust {
         id: u64,
         #[arg(long)]
@@ -306,6 +328,62 @@ enum AgentCommand {
     },
     /// Inspect this agent session's mode, cursor, and follow status.
     Status,
+}
+
+#[derive(Subcommand)]
+enum GuideCommand {
+    Add {
+        #[arg(value_enum)]
+        orientation: CliGuideOrientation,
+        #[arg(allow_negative_numbers = true)]
+        position: f32,
+    },
+    Move {
+        id: u64,
+        #[arg(allow_negative_numbers = true)]
+        position: f32,
+    },
+    Remove {
+        id: u64,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CliGuideOrientation {
+    Horizontal,
+    Vertical,
+}
+
+impl From<CliGuideOrientation> for GuideOrientation {
+    fn from(value: CliGuideOrientation) -> Self {
+        match value {
+            CliGuideOrientation::Horizontal => Self::Horizontal,
+            CliGuideOrientation::Vertical => Self::Vertical,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CliAlignment {
+    Left,
+    HorizontalCenter,
+    Right,
+    Top,
+    VerticalCenter,
+    Bottom,
+}
+
+impl From<CliAlignment> for Alignment {
+    fn from(value: CliAlignment) -> Self {
+        match value {
+            CliAlignment::Left => Self::Left,
+            CliAlignment::HorizontalCenter => Self::HorizontalCenter,
+            CliAlignment::Right => Self::Right,
+            CliAlignment::Top => Self::Top,
+            CliAlignment::VerticalCenter => Self::VerticalCenter,
+            CliAlignment::Bottom => Self::Bottom,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -603,6 +681,31 @@ fn run(cli: Cli) -> Result<Value> {
                 CliCommand::Rotate { id, degrees } => {
                     vec![workspace.execute(Command::SetRotation { id, degrees })?]
                 }
+                CliCommand::Align {
+                    id,
+                    alignment,
+                    to_layer,
+                } => vec![workspace.execute(Command::AlignLayer {
+                    id,
+                    alignment: alignment.into(),
+                    reference: to_layer.map_or(AlignmentReference::Canvas, |id| {
+                        AlignmentReference::Layer { id }
+                    }),
+                })?],
+                CliCommand::Snapping { enabled } => {
+                    vec![workspace.execute(Command::SetSnapping { enabled })?]
+                }
+                CliCommand::Guide { command } => vec![workspace.execute(match command {
+                    GuideCommand::Add {
+                        orientation,
+                        position,
+                    } => Command::AddGuide {
+                        orientation: orientation.into(),
+                        position,
+                    },
+                    GuideCommand::Move { id, position } => Command::MoveGuide { id, position },
+                    GuideCommand::Remove { id } => Command::RemoveGuide { id },
+                })?],
                 CliCommand::Adjust {
                     id,
                     exposure,
@@ -845,113 +948,6 @@ fn parse_color(value: &str) -> Result<[u8; 4]> {
     ])
 }
 
-fn schema() -> Value {
-    json!({
-        "ok": true,
-        "application": "Prism",
-        "project_extension": ".prism",
-        "legacy_project_extensions": [".mica"],
-        "project_storage": {
-            "container": "single transactional SQLite .prism file",
-            "persistence": "each completed semantic action is an attributed durable revision",
-            "batching": "run arrays commit atomically as one revision",
-            "history": "immutable revision tree with session-specific cursors",
-            "assets": "embedded and content-addressed"
-        },
-        "agent_collaboration": {
-            "transport": "CLI JSON; no vendor-specific integration required",
-            "start": "prism --project <path> agent start --mode <together|separate> --name <agent>",
-            "continue": "pass the returned --session value to every list, edit, run, and export command",
-            "status": "prism --project <path> --session <id> agent status",
-            "together": "starts at the current human cursor; Prism follows until the human makes a competing edit, then both sessions continue separately",
-            "separate": "starts at the current human cursor and never moves the human session",
-            "agent_prompt": "before starting, ask whether the user wants to continue together or explore separately"
-        },
-        "command_protocol": {
-            "encoding": "serde tagged JSON",
-            "tag": "command",
-            "examples": [
-                {"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0},
-                {"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0},
-                {"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}},
-                {"command": "rasterize_shape", "id": 1, "path": "/generated/shape.png", "scale": 2.0},
-                {"command": "set_transform", "id": 1, "transform": {"x": 220.0, "y": 160.0, "scale_x": 1.2, "scale_y": 1.2, "rotation": 8.0}},
-                {"command": "set_rotation", "id": 1, "degrees": 15.0},
-                {"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}},
-                {"command": "adjust_layer", "id": 1, "patch": {"exposure": 0.5, "contrast": 12.0}}
-            ]
-        },
-        "gui_interactions": {
-            "rotate_focused_object": "Option-R on macOS or Alt-R on Windows/Linux arms the next canvas drag; Shift snaps the absolute angle to 15-degree increments; Escape cancels"
-        },
-        "blend_modes": [
-            "normal", "darken", "multiply", "color_burn", "linear_burn", "darker_color",
-            "lighten", "screen", "color_dodge", "linear_dodge", "lighter_color", "overlay",
-            "soft_light", "hard_light", "vivid_light", "linear_light", "pin_light", "hard_mix",
-            "difference", "exclusion", "subtract", "divide", "hue", "saturation", "color",
-            "luminosity"
-        ],
-        "layer_types": ["raster", "text", "rectangle", "ellipse"],
-        "color": "RRGGBB or RRGGBBAA",
-        "coordinates": "canvas pixels; layer masks are normalized 0..1"
-    })
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn colors_accept_rgb_and_rgba() {
-        assert_eq!(parse_color("ae7bff").unwrap(), [174, 123, 255, 255]);
-        assert_eq!(parse_color("#01020304").unwrap(), [1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn rotate_cli_persists_the_normalized_angle() {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let project = std::env::temp_dir().join(format!("prism-rotate-cli-{stamp}.prism"));
-        run(Cli {
-            project: project.clone(),
-            session: None,
-            command: CliCommand::Init {
-                name: "Rotate CLI".into(),
-                width: 400,
-                height: 300,
-                background: "18191dff".into(),
-            },
-        })
-        .unwrap();
-        run(Cli {
-            project: project.clone(),
-            session: None,
-            command: CliCommand::AddRectangle {
-                name: None,
-                width: 100,
-                height: 80,
-                color: "ffffffff".into(),
-                radius: 0.0,
-                x: 10.0,
-                y: 20.0,
-            },
-        })
-        .unwrap();
-        let rotate = Cli::try_parse_from([
-            "prism",
-            "--project",
-            project.to_str().unwrap(),
-            "rotate",
-            "1",
-            "-15",
-        ])
-        .unwrap();
-        run(rotate).unwrap();
-        let document = Workspace::load_read_only(&project).unwrap();
-        assert_eq!(document.layer(1).unwrap().transform.rotation, 345.0);
-        std::fs::remove_file(project).unwrap();
-    }
-}
+#[path = "prism_cli/tests.rs"]
+mod tests;
