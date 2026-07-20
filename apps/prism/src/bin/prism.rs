@@ -22,6 +22,9 @@ use benchmark::benchmark;
 #[path = "prism_cli/schema.rs"]
 mod schema;
 use schema::schema;
+#[path = "prism_cli/typography.rs"]
+mod typography;
+use typography::{TypographyArgs, updated_typography};
 
 #[derive(Parser)]
 #[command(name = "prism", version, about = "Agent-first layered image editor")]
@@ -73,6 +76,17 @@ enum CliCommand {
         #[arg(long, default_value_t = 0.0)]
         y: f32,
     },
+    /// Embed an OpenType font in this portable Prism project.
+    FontImport {
+        path: PathBuf,
+    },
+    /// Search bundled and embedded font faces.
+    FontList {
+        #[arg(long)]
+        query: Option<String>,
+    },
+    /// Update one text layer's font, paragraph metrics, and effects.
+    Typography(TypographyArgs),
     /// Add an editable vector-style rectangle layer.
     AddRectangle {
         #[arg(long)]
@@ -502,6 +516,10 @@ fn run(cli: Cli) -> Result<Value> {
             let document = session_document(&cli.project, cli.session)?;
             Ok(json!({"ok": true, "project": cli.project, "document": document}))
         }
+        CliCommand::FontList { query } => Ok(typography::font_list(
+            &session_document(&cli.project, cli.session)?,
+            query,
+        )),
         CliCommand::Export { path, quality } => {
             let document = session_document(&cli.project, cli.session)?;
             export_document(&document, &path, quality)?;
@@ -521,6 +539,16 @@ fn run(cli: Cli) -> Result<Value> {
                 None => Workspace::open_as(&cli.project, cli_actor(), SessionId::new())?,
             };
             let outputs = match command {
+                CliCommand::FontImport { path } => {
+                    vec![workspace.execute(Command::ImportFont { path })?]
+                }
+                CliCommand::Typography(arguments) => {
+                    let typography = updated_typography(&workspace.document, &arguments)?;
+                    vec![workspace.execute(Command::SetTextTypography {
+                        id: arguments.id,
+                        typography,
+                    })?]
+                }
                 CliCommand::AddImage { path, name, x, y } => {
                     vec![workspace.execute(Command::AddRaster { path, name, x, y })?]
                 }
@@ -786,6 +814,7 @@ fn run(cli: Cli) -> Result<Value> {
                 CliCommand::Run { json } => run_commands(&mut workspace, &json)?,
                 CliCommand::Init { .. }
                 | CliCommand::List
+                | CliCommand::FontList { .. }
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }
                 | CliCommand::Agent { .. }

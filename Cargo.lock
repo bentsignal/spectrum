@@ -2765,10 +2765,12 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "spectrum-history-ui",
  "spectrum-imaging",
  "spectrum-revisions",
  "spectrum-terminal",
+ "ttf-parser 0.21.1",
  "vt100",
  "winit",
 ]

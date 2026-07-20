@@ -67,6 +67,11 @@ pub fn save_document(document: &Document, path: &Path) -> Result<()> {
             }
         }
     }
+    crate::typography::make_fonts_portable(
+        &mut portable.font_assets,
+        &directory,
+        &asset_directory,
+    )?;
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);
@@ -121,6 +126,7 @@ pub fn load_document(path: &Path) -> Result<Document> {
             }
         }
     }
+    crate::typography::resolve_portable_fonts(&mut document.font_assets, directory);
     Ok(document)
 }
 
@@ -503,6 +509,7 @@ pub fn render_layer_base_scaled(
             text,
             font_size,
             color,
+            ..
         } => DynamicImage::ImageRgba8(render_text(text, *font_size, *color)?),
         LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => {
             DynamicImage::ImageRgba8(render_shape(layer, shape_scale)?)

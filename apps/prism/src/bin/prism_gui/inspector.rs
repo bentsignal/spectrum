@@ -373,6 +373,7 @@ impl PrismApp {
                 text,
                 font_size,
                 color,
+                ..
             } => self.text_content(ui, layer.id, text, *font_size, *color),
             LayerKind::Rectangle {
                 width,

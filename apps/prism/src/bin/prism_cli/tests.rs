@@ -8,6 +8,84 @@ fn colors_accept_rgb_and_rgba() {
 }
 
 #[test]
+fn typography_cli_parses_face_paragraph_and_effect_controls() {
+    let cli = Cli::try_parse_from([
+        "prism",
+        "--project",
+        "type.prism",
+        "typography",
+        "7",
+        "--family",
+        "Hack",
+        "--weight",
+        "700",
+        "--style",
+        "Bold",
+        "--align",
+        "right",
+        "--line-height",
+        "0.8",
+        "--tracking",
+        "-2",
+        "--box-width",
+        "420",
+        "--outline-width",
+        "2",
+        "--shadow-x",
+        "4",
+        "--shadow-y",
+        "6",
+    ])
+    .unwrap();
+    let CliCommand::Typography(arguments) = cli.command else {
+        panic!("typography subcommand should parse");
+    };
+    assert_eq!(arguments.id, 7);
+    assert_eq!(arguments.family.as_deref(), Some("Hack"));
+    assert_eq!(arguments.weight, Some(700));
+    assert_eq!(arguments.style.as_deref(), Some("Bold"));
+    assert_eq!(arguments.line_height, Some(0.8));
+    assert_eq!(arguments.tracking, Some(-2.0));
+    assert_eq!(arguments.box_width, Some(420.0));
+    assert_eq!(arguments.outline_width, Some(2.0));
+    assert_eq!(arguments.shadow_x, Some(4.0));
+    assert_eq!(arguments.shadow_y, Some(6.0));
+}
+
+#[test]
+fn font_list_cli_accepts_an_optional_query() {
+    let cli = Cli::try_parse_from([
+        "prism",
+        "--project",
+        "type.prism",
+        "font-list",
+        "--query",
+        "hack",
+    ])
+    .unwrap();
+    let CliCommand::FontList { query } = cli.command else {
+        panic!("font-list subcommand should parse");
+    };
+    assert_eq!(query.as_deref(), Some("hack"));
+}
+
+#[test]
+fn schema_keeps_guides_and_typography_commands_together() {
+    let schema = schema();
+    let examples = schema["command_protocol"]["examples"].as_array().unwrap();
+    for command in [
+        "align_layer",
+        "add_guide",
+        "import_font",
+        "set_text_typography",
+    ] {
+        assert!(examples.iter().any(|example| example["command"] == command));
+    }
+    assert!(schema["alignment"].is_object());
+    assert!(schema["typography"].is_object());
+}
+
+#[test]
 fn rotate_cli_persists_the_normalized_angle() {
     let project = temporary_project("rotate");
     initialize_rectangle_project(&project);

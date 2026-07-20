@@ -7,10 +7,16 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use spectrum_imaging::{AdjustmentPatch, Adjustments};
+use spectrum_imaging::Adjustments;
+
+mod commands;
+pub use commands::Command;
 
 mod text;
 use text::default_text_layer_name;
+
+mod typography;
+pub use typography::{FontAsset, FontSlant, TextAlignment, TextEffects, TextTypography};
 
 mod validation;
 use validation::*;
@@ -27,7 +33,7 @@ pub use shapes::{
     recommended_rasterization_scale, shape_dimensions,
 };
 
-pub const PRISM_VERSION: u32 = 1;
+pub const PRISM_VERSION: u32 = 2;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 
@@ -153,6 +159,8 @@ pub enum LayerKind {
         text: String,
         font_size: f32,
         color: [u8; 4],
+        #[serde(default)]
+        typography: TextTypography,
     },
     Rectangle {
         width: u32,
@@ -218,11 +226,13 @@ pub struct Document {
     pub background: [u8; 4],
     pub guides: Vec<Guide>,
     pub snapping_enabled: bool,
+    pub font_assets: Vec<FontAsset>,
     /// Bottom-to-top paint order.
     pub layers: Vec<Layer>,
     pub selected: Option<u64>,
     pub next_id: u64,
     pub next_guide_id: u64,
+    pub next_font_id: u64,
 }
 
 impl Default for Document {
@@ -241,10 +251,12 @@ impl Document {
             background: [24, 25, 29, 255],
             guides: Vec::new(),
             snapping_enabled: true,
+            font_assets: Vec::new(),
             layers: Vec::new(),
             selected: None,
             next_id: 1,
             next_guide_id: 1,
+            next_font_id: 1,
         }
     }
 
@@ -275,6 +287,20 @@ impl Document {
             .with_context(|| format!("guide {id} is not in this document"))
     }
 
+    pub fn font_asset(&self, id: u64) -> Result<&FontAsset> {
+        self.font_assets
+            .iter()
+            .find(|font| font.id == id)
+            .with_context(|| format!("font asset {id} is not in this document"))
+    }
+
+    pub fn font_for_layer(&self, layer: &Layer) -> Option<&FontAsset> {
+        let LayerKind::Text { typography, .. } = &layer.kind else {
+            return None;
+        };
+        typography.font_id.and_then(|id| self.font_asset(id).ok())
+    }
+
     fn migrate(&mut self) -> Result<()> {
         if self.version > PRISM_VERSION {
             bail!(
@@ -299,6 +325,15 @@ impl Document {
             layer.mask = layer.mask.sanitized();
             layer.stroke = layer.stroke.sanitized();
             layer.adjustments = layer.adjustments.clone().sanitized();
+            if let LayerKind::Text { typography, .. } = &mut layer.kind {
+                *typography = typography.clone().sanitized();
+                if typography
+                    .font_id
+                    .is_some_and(|id| !self.font_assets.iter().any(|font| font.id == id))
+                {
+                    typography.font_id = None;
+                }
+            }
         }
         self.next_id = self
             .next_id
@@ -306,163 +341,19 @@ impl Document {
         self.next_guide_id = self
             .next_guide_id
             .max(self.guides.iter().map(|guide| guide.id).max().unwrap_or(0) + 1);
+        self.next_font_id = self.next_font_id.max(
+            self.font_assets
+                .iter()
+                .map(|font| font.id)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
         if self.selected.is_some_and(|id| self.layer(id).is_err()) {
             self.selected = self.layers.last().map(|layer| layer.id);
         }
         Ok(())
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "command", rename_all = "snake_case")]
-pub enum Command {
-    SetCanvas {
-        width: u32,
-        height: u32,
-        background: [u8; 4],
-    },
-    CropCanvas {
-        x: u32,
-        y: u32,
-        width: u32,
-        height: u32,
-    },
-    AddRaster {
-        path: PathBuf,
-        name: Option<String>,
-        x: f32,
-        y: f32,
-    },
-    AddText {
-        text: String,
-        name: Option<String>,
-        font_size: f32,
-        color: [u8; 4],
-        x: f32,
-        y: f32,
-    },
-    AddRectangle {
-        name: Option<String>,
-        width: u32,
-        height: u32,
-        color: [u8; 4],
-        corner_radius: f32,
-        x: f32,
-        y: f32,
-    },
-    AddEllipse {
-        name: Option<String>,
-        width: u32,
-        height: u32,
-        color: [u8; 4],
-        x: f32,
-        y: f32,
-    },
-    UpdateText {
-        id: u64,
-        text: String,
-        font_size: f32,
-        color: [u8; 4],
-    },
-    UpdateRectangle {
-        id: u64,
-        width: u32,
-        height: u32,
-        color: [u8; 4],
-        corner_radius: f32,
-    },
-    UpdateEllipse {
-        id: u64,
-        width: u32,
-        height: u32,
-        color: [u8; 4],
-    },
-    RemoveLayer {
-        id: u64,
-    },
-    DuplicateLayer {
-        id: u64,
-    },
-    RenameLayer {
-        id: u64,
-        name: String,
-    },
-    SelectLayer {
-        id: Option<u64>,
-    },
-    MoveLayer {
-        id: u64,
-        index: usize,
-    },
-    SetVisibility {
-        id: u64,
-        visible: bool,
-    },
-    SetLocked {
-        id: u64,
-        locked: bool,
-    },
-    SetOpacity {
-        id: u64,
-        opacity: f32,
-    },
-    SetBlendMode {
-        id: u64,
-        blend_mode: BlendMode,
-    },
-    SetTransform {
-        id: u64,
-        transform: Transform,
-    },
-    SetRotation {
-        id: u64,
-        degrees: f32,
-    },
-    AlignLayer {
-        id: u64,
-        alignment: Alignment,
-        reference: AlignmentReference,
-    },
-    SetSnapping {
-        enabled: bool,
-    },
-    AddGuide {
-        orientation: GuideOrientation,
-        position: f32,
-    },
-    MoveGuide {
-        id: u64,
-        position: f32,
-    },
-    RemoveGuide {
-        id: u64,
-    },
-    AdjustLayer {
-        id: u64,
-        patch: AdjustmentPatch,
-    },
-    ResetLayerAdjustments {
-        id: u64,
-    },
-    SetMask {
-        id: u64,
-        mask: LayerMask,
-    },
-    SetShapeStroke {
-        id: u64,
-        stroke: ShapeStroke,
-    },
-    RasterizeShape {
-        id: u64,
-        path: PathBuf,
-        scale: f32,
-    },
-    SetClipping {
-        id: u64,
-        enabled: bool,
-    },
-    Undo,
-    Redo,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -566,11 +457,31 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
                     text,
                     font_size: font_size.clamp(4.0, 1_000.0),
                     color,
+                    typography: TextTypography::default(),
                 },
                 ..Default::default()
             });
             document.selected = Some(id);
             Ok(output("add_text", "added text layer", vec![id]))
+        }
+        Command::ImportFont { path } => {
+            let id = document.next_font_id;
+            let font = FontAsset::import(id, &path)?;
+            if let Some(existing) = document
+                .font_assets
+                .iter()
+                .find(|existing| existing.content_hash == font.content_hash)
+            {
+                return Ok(output(
+                    "import_font",
+                    &format!("font already embedded as asset {}", existing.id),
+                    Vec::new(),
+                ));
+            }
+            document.next_font_id += 1;
+            let message = format!("embedded {} {} as font asset {id}", font.family, font.style);
+            document.font_assets.push(font);
+            Ok(output("import_font", &message, Vec::new()))
         }
         Command::AddRectangle {
             name,
@@ -654,6 +565,7 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
                     text: layer_text,
                     font_size: layer_size,
                     color: layer_color,
+                    ..
                 } = &mut layer.kind
                 else {
                     unreachable!("text kind was checked above");
@@ -666,6 +578,33 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
                 layer.name = default_text_layer_name(text);
             }
             Ok(output("update_text", "updated text layer", vec![id]))
+        }
+        Command::SetTextTypography { id, typography } => {
+            require_finite("line height", typography.line_height)?;
+            require_finite("tracking", typography.tracking)?;
+            require_finite("outline width", typography.effects.outline_width)?;
+            require_finite("shadow x", typography.effects.shadow_offset_x)?;
+            require_finite("shadow y", typography.effects.shadow_offset_y)?;
+            if let Some(width) = typography.box_width {
+                require_finite("text box width", width)?;
+            }
+            if let Some(font_id) = typography.font_id {
+                document.font_asset(font_id)?;
+            }
+            let layer = document.layer_mut(id)?;
+            let LayerKind::Text {
+                typography: layer_typography,
+                ..
+            } = &mut layer.kind
+            else {
+                bail!("layer {id} is not a text layer");
+            };
+            *layer_typography = typography.sanitized();
+            Ok(output(
+                "set_text_typography",
+                "updated typography",
+                vec![id],
+            ))
         }
         Command::UpdateRectangle {
             id,
@@ -966,3 +905,7 @@ mod rotation_tests;
 #[cfg(test)]
 #[path = "alignment_tests.rs"]
 mod alignment_tests;
+
+#[cfg(test)]
+#[path = "typography_tests.rs"]
+mod typography_tests;

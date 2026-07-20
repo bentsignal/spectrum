@@ -705,6 +705,7 @@ mod tests {
                 text: "testing".into(),
                 font_size: 72.0,
                 color: [255, 255, 255, 255],
+                typography: prism_core::TextTypography::default(),
             },
             ..Default::default()
         };
@@ -723,6 +724,7 @@ mod tests {
                 text: "testing".into(),
                 font_size: 72.0,
                 color: [255, 255, 255, 255],
+                typography: prism_core::TextTypography::default(),
             },
             ..Default::default()
         };

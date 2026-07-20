@@ -153,6 +153,7 @@ fn text_metrics_match_the_rendered_layout() {
             text: "testing\ngy".into(),
             font_size: 72.0,
             color: [255, 255, 255, 255],
+            typography: TextTypography::default(),
         },
         ..Default::default()
     };

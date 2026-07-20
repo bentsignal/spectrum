@@ -478,6 +478,7 @@ mod tests {
                 text: "Visible glyphs".into(),
                 font_size: 48.0,
                 color: [255; 4],
+                typography: prism_core::TextTypography::default(),
             },
             ..Default::default()
         };

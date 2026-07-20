@@ -482,10 +482,11 @@ impl DurableProject {
         for step in plan.steps {
             let mut commands: Vec<Command> = serde_json::from_slice(&step.operations.bytes)
                 .context("invalid Prism operation batch")?;
-            self.materialize_command_assets(&mut commands)?;
+            let materialized_fonts = self.materialize_command_assets(&mut commands)?;
             for command in commands {
                 apply_command(&mut document, command)?;
             }
+            detach_materialized_font_origins(&mut document, &materialized_fonts);
         }
         Ok((document, snapshot_tail))
     }
@@ -502,18 +503,35 @@ impl DurableProject {
                 *original_path = None;
             }
         }
-        Ok(())
-    }
-
-    fn materialize_command_assets(&self, commands: &mut [Command]) -> Result<()> {
-        for command in commands {
-            if let Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } = command
-                && let Some(reference) = AssetReference::parse(path)
-            {
-                *path = self.materialize(reference)?;
+        for font in &mut document.font_assets {
+            if let Some(reference) = AssetReference::parse(&font.path) {
+                font.path = self.materialize(reference)?;
+                font.original_path = None;
             }
         }
         Ok(())
+    }
+
+    fn materialize_command_assets(&self, commands: &mut [Command]) -> Result<Vec<PathBuf>> {
+        let mut materialized_fonts = Vec::new();
+        for command in commands {
+            match command {
+                Command::ImportFont { path } => {
+                    if let Some(reference) = AssetReference::parse(path) {
+                        *path = self.materialize(reference)?;
+                        materialized_fonts
+                            .push(fs::canonicalize(&*path).unwrap_or_else(|_| path.to_path_buf()));
+                    }
+                }
+                Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } => {
+                    if let Some(reference) = AssetReference::parse(path) {
+                        *path = self.materialize(reference)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(materialized_fonts)
     }
 
     fn materialize(&self, reference: AssetReference) -> Result<PathBuf> {
@@ -539,6 +557,14 @@ impl DurableProject {
             fs::rename(temporary, &path)?;
         }
         Ok(path)
+    }
+}
+
+fn detach_materialized_font_origins(document: &mut Document, materialized_fonts: &[PathBuf]) {
+    for font in &mut document.font_assets {
+        if materialized_fonts.iter().any(|path| path == &font.path) {
+            font.original_path = None;
+        }
     }
 }
 
@@ -598,6 +624,12 @@ impl PreparedSnapshot {
                 assets.push(prepared.asset);
             }
         }
+        for font in &mut portable.font_assets {
+            let prepared = prepare_asset(&font.path)?;
+            font.path = prepared.reference.path();
+            font.original_path = None;
+            assets.push(prepared.asset);
+        }
         let serialized = serde_json::to_vec(&portable)?;
         let payload = if compressed {
             Payload::new(
@@ -625,7 +657,9 @@ impl PreparedOperations {
         let mut portable = commands.to_vec();
         let mut assets = Vec::new();
         for command in &mut portable {
-            if let Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } = command
+            if let Command::AddRaster { path, .. }
+            | Command::RasterizeShape { path, .. }
+            | Command::ImportFont { path } = command
             {
                 let prepared = prepare_asset(path)?;
                 *path = prepared.reference.path();
@@ -730,6 +764,8 @@ fn media_type(extension: &str) -> &'static str {
         "png" => "image/png",
         "tif" | "tiff" => "image/tiff",
         "webp" => "image/webp",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
         _ => "application/octet-stream",
     }
 }
