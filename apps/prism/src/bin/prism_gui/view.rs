@@ -189,12 +189,51 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
     }
 }
 
+pub(super) fn drag_rotation(drag: DragState, snap: bool) -> f32 {
+    let Some(bounds) = drag.bounds else {
+        return drag.transform.rotation;
+    };
+    let center = bounds.center();
+    let start = drag.start_canvas - center;
+    let current = drag.current_canvas - center;
+    if start.length_sq() < 0.001 || current.length_sq() < 0.001 {
+        return drag.transform.rotation;
+    }
+    let delta = current.y.atan2(current.x) - start.y.atan2(start.x);
+    let degrees = drag.transform.rotation + delta.to_degrees();
+    if snap {
+        ((degrees / 15.0).round() * 15.0).rem_euclid(360.0)
+    } else {
+        degrees.rem_euclid(360.0)
+    }
+}
+
 pub(super) fn paint_layer_outline(
     ui: &egui::Ui,
     geometry: CanvasGeometry,
     layer: &Layer,
     source_size: Option<Vec2>,
     offset: Vec2,
+) {
+    paint_selection_outline(ui, geometry, layer, source_size, offset, true);
+}
+
+pub(super) fn paint_rotation_outline(
+    ui: &egui::Ui,
+    geometry: CanvasGeometry,
+    layer: &Layer,
+    source_size: Option<Vec2>,
+) {
+    paint_selection_outline(ui, geometry, layer, source_size, Vec2::ZERO, false);
+}
+
+fn paint_selection_outline(
+    ui: &egui::Ui,
+    geometry: CanvasGeometry,
+    layer: &Layer,
+    source_size: Option<Vec2>,
+    offset: Vec2,
+    show_resize_handles: bool,
 ) {
     let Some(bounds) = layer_bounds(layer, source_size) else {
         return;
@@ -209,17 +248,19 @@ pub(super) fn paint_layer_outline(
         Stroke::new(1.5, ACCENT),
         egui::StrokeKind::Outside,
     );
-    for corner in [
-        rect.left_top(),
-        rect.right_top(),
-        rect.left_bottom(),
-        rect.right_bottom(),
-    ] {
-        ui.painter().rect_filled(
-            Rect::from_center_size(corner, Vec2::splat(RESIZE_HANDLE_SIZE)),
-            1.0,
-            ACCENT,
-        );
+    if show_resize_handles {
+        for corner in [
+            rect.left_top(),
+            rect.right_top(),
+            rect.left_bottom(),
+            rect.right_bottom(),
+        ] {
+            ui.painter().rect_filled(
+                Rect::from_center_size(corner, Vec2::splat(RESIZE_HANDLE_SIZE)),
+                1.0,
+                ACCENT,
+            );
+        }
     }
 }
 
@@ -360,5 +401,46 @@ pub(super) fn alternate_shortcut(ui: &mut egui::Ui, key: &str) -> egui::Response
             ui.allocate_exact_size(Vec2::new(modifier_width + 23.0, 20.0), Sense::hover());
         paint_modified_shortcut(ui, rect, "Alt", modifier_width, key);
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rotation_drag(current_canvas: Pos2) -> DragState {
+        DragState {
+            start_canvas: Pos2::new(100.0, 50.0),
+            current_canvas,
+            layer_id: Some(1),
+            transform: Transform {
+                rotation: 10.0,
+                ..Default::default()
+            },
+            action: DragAction::Rotate,
+            bounds: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 100.0))),
+        }
+    }
+
+    #[test]
+    fn rotation_drag_tracks_clockwise_canvas_angle() {
+        assert!(
+            (drag_rotation(rotation_drag(Pos2::new(50.0, 100.0)), false) - 100.0).abs() < 0.001
+        );
+    }
+
+    #[test]
+    fn rotation_drag_snaps_absolute_angle_to_fifteen_degrees() {
+        assert_eq!(
+            drag_rotation(rotation_drag(Pos2::new(50.0, 100.0)), true),
+            105.0
+        );
+    }
+
+    #[test]
+    fn rotation_drag_snaps_cleanly_across_zero_degrees() {
+        let mut drag = rotation_drag(Pos2::new(99.240_39, 58.682_41));
+        drag.transform.rotation = 355.0;
+        assert_eq!(drag_rotation(drag, true), 0.0);
     }
 }

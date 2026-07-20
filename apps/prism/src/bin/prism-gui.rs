@@ -58,6 +58,7 @@ use theme::*;
 enum Tool {
     #[default]
     Move,
+    Rotate,
     Crop,
     Text,
     Shape,
@@ -83,6 +84,7 @@ impl Tool {
     fn label(self) -> &'static str {
         match self {
             Self::Move => "Move",
+            Self::Rotate => "Rotate",
             Self::Crop => "Crop canvas",
             Self::Text => "Add text",
             Self::Shape => "Shape",
@@ -91,6 +93,9 @@ impl Tool {
     }
 
     fn shortcut(self) -> &'static str {
+        if self == Self::Rotate {
+            return "R";
+        }
         Self::ALL
             .iter()
             .find_map(|(tool, key, _)| (*tool == self).then_some(*key))
@@ -100,6 +105,7 @@ impl Tool {
     fn description(self) -> &'static str {
         match self {
             Self::Move => "Select on the canvas, drag to move, or pull a corner to resize.",
+            Self::Rotate => "Rotation armed · drag around the focused object · Shift snaps to 15°.",
             Self::Crop => "Draw the new canvas boundary.",
             Self::Text => "Type the text now, then move it into place.",
             Self::Shape => "Choose a rectangle, ellipse, or another shape to draw.",
@@ -156,6 +162,7 @@ struct DragState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DragAction {
     Move,
+    Rotate,
     Resize(ResizeHandle),
     Draw,
 }

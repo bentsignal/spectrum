@@ -51,13 +51,17 @@ impl PrismApp {
                     );
                 }
                 if let Some(layer) = self.selected_layer() {
-                    paint_layer_outline(
-                        ui,
-                        geometry,
-                        layer,
-                        self.layer_source_size(layer),
-                        Vec2::ZERO,
-                    );
+                    if selection_outline_has_resize_handles(self.tool) {
+                        paint_layer_outline(
+                            ui,
+                            geometry,
+                            layer,
+                            self.layer_source_size(layer),
+                            Vec2::ZERO,
+                        );
+                    } else {
+                        paint_rotation_outline(ui, geometry, layer, self.layer_source_size(layer));
+                    }
                 }
                 if let Some(drag) = self.drag {
                     self.paint_drag(ui, geometry, drag);
@@ -89,6 +93,9 @@ impl PrismApp {
         if ui.input(|input| input.pointer.middle_down()) && response.dragged() {
             self.pan += response.drag_delta();
             return;
+        }
+        if self.tool == Tool::Rotate && response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
         let pointer = response.interact_pointer_pos();
         let hover_pointer = ui
@@ -143,10 +150,14 @@ impl PrismApp {
             let action = match (self.tool, resize) {
                 (Tool::Move, Some(handle)) => DragAction::Resize(handle),
                 (Tool::Move, None) => DragAction::Move,
+                (Tool::Rotate, _) => DragAction::Rotate,
                 _ => DragAction::Draw,
             };
             let editable = selected.as_ref().is_some_and(|layer| !layer.locked)
-                && matches!(action, DragAction::Move | DragAction::Resize(_));
+                && matches!(
+                    action,
+                    DragAction::Move | DragAction::Rotate | DragAction::Resize(_)
+                );
             if editable {
                 self.workspace.begin_interaction();
             }
@@ -172,11 +183,22 @@ impl PrismApp {
         if response.dragged()
             && let Some(drag) = self.drag
             && let Some(id) = drag.layer_id
-            && matches!(drag.action, DragAction::Move | DragAction::Resize(_))
+            && matches!(
+                drag.action,
+                DragAction::Move | DragAction::Rotate | DragAction::Resize(_)
+            )
         {
-            let preserve_aspect = !ui.input(|input| input.modifiers.shift);
-            let transform = drag_transform(drag, preserve_aspect);
-            self.preview_command(Command::SetTransform { id, transform });
+            if drag.action == DragAction::Rotate {
+                let snap = ui.input(|input| input.modifiers.shift);
+                self.preview_command(Command::SetRotation {
+                    id,
+                    degrees: drag_rotation(drag, snap),
+                });
+            } else {
+                let preserve_aspect = !ui.input(|input| input.modifiers.shift);
+                let transform = drag_transform(drag, preserve_aspect);
+                self.preview_command(Command::SetTransform { id, transform });
+            }
         }
         if response.drag_stopped()
             && let Some(drag) = self.drag.take()
@@ -269,6 +291,20 @@ impl PrismApp {
                     ACCENT,
                 );
             }
+            DragAction::Rotate => {
+                let snapped = ui.input(|input| input.modifiers.shift);
+                ui.painter().text(
+                    current,
+                    Align2::LEFT_BOTTOM,
+                    if snapped {
+                        format!("{:.0}° · snapped 15°", drag_rotation(drag, true))
+                    } else {
+                        format!("{:.1}° · Shift to snap", drag_rotation(drag, false))
+                    },
+                    FontId::monospace(11.0),
+                    ACCENT,
+                );
+            }
         }
     }
 
@@ -278,6 +314,10 @@ impl PrismApp {
         let size = max - min;
         match drag.action {
             DragAction::Move | DragAction::Resize(_) => self.finish_interaction(),
+            DragAction::Rotate => {
+                self.finish_interaction();
+                self.tool = Tool::Move;
+            }
             DragAction::Draw => match (self.tool, self.shape_kind) {
                 (Tool::Shape, chrome::ShapeKind::Rectangle) if size.x > 2.0 && size.y > 2.0 => {
                     self.execute(Command::AddRectangle {
@@ -403,5 +443,20 @@ impl PrismApp {
                     .is_some_and(|rect| rect.contains(position))
             })
             .map(|layer| layer.id)
+    }
+}
+
+fn selection_outline_has_resize_handles(tool: Tool) -> bool {
+    tool != Tool::Rotate
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotate_uses_a_stroke_only_selection_outline() {
+        assert!(!selection_outline_has_resize_handles(Tool::Rotate));
+        assert!(selection_outline_has_resize_handles(Tool::Move));
     }
 }

@@ -389,6 +389,10 @@ pub enum Command {
         id: u64,
         transform: Transform,
     },
+    SetRotation {
+        id: u64,
+        degrees: f32,
+    },
     AdjustLayer {
         id: u64,
         patch: AdjustmentPatch,
@@ -747,6 +751,15 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
             layer.transform = transform.sanitized();
             Ok(output("set_transform", "transformed layer", vec![id]))
         }
+        Command::SetRotation { id, degrees } => {
+            require_finite("rotation", degrees)?;
+            let layer = document.layer_mut(id)?;
+            if layer.locked {
+                bail!("layer {id} is locked");
+            }
+            layer.transform.rotation = degrees.rem_euclid(360.0);
+            Ok(output("set_rotation", "rotated layer", vec![id]))
+        }
         Command::AdjustLayer { id, patch } => {
             let layer = document.layer_mut(id)?;
             let mut adjustments = layer.adjustments.clone();
@@ -849,3 +862,7 @@ mod shape_tests;
 #[cfg(test)]
 #[path = "render_region_tests.rs"]
 mod render_region_tests;
+
+#[cfg(test)]
+#[path = "rotation_tests.rs"]
+mod rotation_tests;

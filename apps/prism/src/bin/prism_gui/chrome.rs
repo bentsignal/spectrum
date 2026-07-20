@@ -279,7 +279,11 @@ impl PrismApp {
                         self.tool.label().into()
                     };
                     ui.label(RichText::new(label).size(12.0).strong().color(TEXT));
-                    shortcut_key(ui, self.tool.shortcut());
+                    if self.tool == Tool::Rotate {
+                        alternate_shortcut(ui, "R");
+                    } else {
+                        shortcut_key(ui, self.tool.shortcut());
+                    }
                     if workbench_action_button(
                         ui,
                         "Tools & Actions",

@@ -191,6 +191,12 @@ enum CliCommand {
         #[arg(long, default_value_t = 0.0)]
         rotation: f32,
     },
+    /// Set one layer's absolute clockwise rotation in degrees.
+    Rotate {
+        id: u64,
+        #[arg(allow_negative_numbers = true)]
+        degrees: f32,
+    },
     Adjust {
         id: u64,
         #[arg(long)]
@@ -594,6 +600,9 @@ fn run(cli: Cli) -> Result<Value> {
                         rotation,
                     },
                 })?],
+                CliCommand::Rotate { id, degrees } => {
+                    vec![workspace.execute(Command::SetRotation { id, degrees })?]
+                }
                 CliCommand::Adjust {
                     id,
                     exposure,
@@ -867,9 +876,13 @@ fn schema() -> Value {
                 {"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}},
                 {"command": "rasterize_shape", "id": 1, "path": "/generated/shape.png", "scale": 2.0},
                 {"command": "set_transform", "id": 1, "transform": {"x": 220.0, "y": 160.0, "scale_x": 1.2, "scale_y": 1.2, "rotation": 8.0}},
+                {"command": "set_rotation", "id": 1, "degrees": 15.0},
                 {"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}},
                 {"command": "adjust_layer", "id": 1, "patch": {"exposure": 0.5, "contrast": 12.0}}
             ]
+        },
+        "gui_interactions": {
+            "rotate_focused_object": "Option-R on macOS or Alt-R on Windows/Linux arms the next canvas drag; Shift snaps the absolute angle to 15-degree increments; Escape cancels"
         },
         "blend_modes": [
             "normal", "darken", "multiply", "color_burn", "linear_burn", "darker_color",
@@ -887,10 +900,58 @@ fn schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn colors_accept_rgb_and_rgba() {
         assert_eq!(parse_color("ae7bff").unwrap(), [174, 123, 255, 255]);
         assert_eq!(parse_color("#01020304").unwrap(), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn rotate_cli_persists_the_normalized_angle() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let project = std::env::temp_dir().join(format!("prism-rotate-cli-{stamp}.prism"));
+        run(Cli {
+            project: project.clone(),
+            session: None,
+            command: CliCommand::Init {
+                name: "Rotate CLI".into(),
+                width: 400,
+                height: 300,
+                background: "18191dff".into(),
+            },
+        })
+        .unwrap();
+        run(Cli {
+            project: project.clone(),
+            session: None,
+            command: CliCommand::AddRectangle {
+                name: None,
+                width: 100,
+                height: 80,
+                color: "ffffffff".into(),
+                radius: 0.0,
+                x: 10.0,
+                y: 20.0,
+            },
+        })
+        .unwrap();
+        let rotate = Cli::try_parse_from([
+            "prism",
+            "--project",
+            project.to_str().unwrap(),
+            "rotate",
+            "1",
+            "-15",
+        ])
+        .unwrap();
+        run(rotate).unwrap();
+        let document = Workspace::load_read_only(&project).unwrap();
+        assert_eq!(document.layer(1).unwrap().transform.rotation, 345.0);
+        std::fs::remove_file(project).unwrap();
     }
 }
