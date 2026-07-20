@@ -80,6 +80,8 @@ impl PrismApp {
                 Some(Tool::Text)
             } else if input.key_pressed(egui::Key::R) {
                 Some(Tool::Rectangle)
+            } else if input.key_pressed(egui::Key::U) {
+                Some(Tool::Ellipse)
             } else if input.key_pressed(egui::Key::M) {
                 Some(Tool::Mask)
             } else {
@@ -91,6 +93,11 @@ impl PrismApp {
         }
         if context.input(|input| focused_shortcut_pressed(input, egui::Key::E)) {
             self.edit_focused();
+        }
+        if context.input(|input| focused_shortcut_pressed(input, egui::Key::D))
+            && let Some(id) = self.workspace.document.selected
+        {
+            self.execute(Command::DuplicateLayer { id });
         }
         if context.input(|input| global_shortcut_pressed(input, egui::Key::K)) {
             self.tool_palette = Some(String::new());
@@ -105,7 +112,9 @@ impl PrismApp {
                 self.execute(Command::Undo);
             }
         }
-        if context.input(|input| input.key_pressed(egui::Key::Delete)) {
+        if context.input(|input| {
+            input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace)
+        }) {
             self.delete_confirmation = self.workspace.document.selected;
         }
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {

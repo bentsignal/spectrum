@@ -209,6 +209,20 @@ impl PrismApp {
                         egui::StrokeKind::Inside,
                     );
                 }
+                Tool::Ellipse => {
+                    let rect = Rect::from_two_pos(start, current);
+                    let radius = rect.size() * 0.5;
+                    ui.painter().add(egui::Shape::ellipse_filled(
+                        rect.center(),
+                        radius,
+                        with_alpha(ACCENT, 30),
+                    ));
+                    ui.painter().add(egui::Shape::ellipse_stroke(
+                        rect.center(),
+                        radius,
+                        Stroke::new(1.5, ACCENT),
+                    ));
+                }
                 _ => {}
             },
             DragAction::Move => {
@@ -249,6 +263,17 @@ impl PrismApp {
                         height: size.y.round().max(1.0) as u32,
                         color: [93, 216, 199, 255],
                         corner_radius: 10.0,
+                        x: min.x,
+                        y: min.y,
+                    });
+                    self.tool = Tool::Move;
+                }
+                Tool::Ellipse if size.x > 2.0 && size.y > 2.0 => {
+                    self.execute(Command::AddEllipse {
+                        name: None,
+                        width: size.x.round().max(1.0) as u32,
+                        height: size.y.round().max(1.0) as u32,
+                        color: [247, 178, 102, 255],
                         x: min.x,
                         y: min.y,
                     });
@@ -310,6 +335,17 @@ impl PrismApp {
                     height: 180,
                     color: [93, 216, 199, 255],
                     corner_radius: 12.0,
+                    x: position.x,
+                    y: position.y,
+                });
+                self.tool = Tool::Move;
+            }
+            Tool::Ellipse => {
+                self.execute(Command::AddEllipse {
+                    name: None,
+                    width: 240,
+                    height: 240,
+                    color: [247, 178, 102, 255],
                     x: position.x,
                     y: position.y,
                 });

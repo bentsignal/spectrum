@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct LayerVisualKey {
     kind: LayerKind,
     adjustments: spectrum_imaging::Adjustments,
+    stroke: ShapeStroke,
     pub(super) text_raster_scale: u32,
 }
 
@@ -12,6 +13,7 @@ impl LayerVisualKey {
         Self {
             kind: layer.kind.clone(),
             adjustments: layer.adjustments.clone(),
+            stroke: layer.stroke,
             text_raster_scale: preview_text_scale(layer, zoom),
         }
     }
@@ -190,6 +192,7 @@ impl PrismApp {
                 color,
                 ..
             } = layer.kind
+                && !layer.stroke.enabled
             {
                 let adjusted = prism_core::render_solid_color(color, &layer.adjustments);
                 self.layer_visuals.insert(
@@ -244,6 +247,7 @@ impl PrismApp {
 
 struct CachedLayerBase {
     kind: LayerKind,
+    stroke: ShapeStroke,
     max_size: u32,
     image: image::DynamicImage,
 }
@@ -262,7 +266,9 @@ pub(super) fn spawn_layer_render_worker(
                 *font_size *= request.key.text_raster_scale as f32;
             }
             let cached = bases.get(&cache_id).filter(|cached| {
-                cached.kind == render_layer.kind && cached.max_size >= request.max_size
+                cached.kind == render_layer.kind
+                    && cached.stroke == render_layer.stroke
+                    && cached.max_size >= request.max_size
             });
             let base = if let Some(cached) = cached {
                 Ok(cached.image.clone())
@@ -273,6 +279,7 @@ pub(super) fn spawn_layer_render_worker(
                             cache_id,
                             CachedLayerBase {
                                 kind: render_layer.kind.clone(),
+                                stroke: render_layer.stroke,
                                 max_size: request.max_size,
                                 image: image.clone(),
                             },
@@ -322,6 +329,7 @@ fn source_size_before_preview(layer: &Layer) -> Option<Vec2> {
         LayerKind::Rectangle { width, height, .. } => {
             Some(Vec2::new(*width as f32, *height as f32))
         }
+        LayerKind::Ellipse { width, height, .. } => Some(Vec2::new(*width as f32, *height as f32)),
     }
 }
 

@@ -9,7 +9,7 @@ use fontdue::Font;
 use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
-use crate::{BlendMode, Document, Layer, LayerKind, Transform};
+use crate::{BlendMode, Document, Layer, LayerKind, ShapeStroke, Transform};
 
 pub fn save_document(document: &Document, path: &Path) -> Result<()> {
     let extension = path.extension().and_then(|value| value.to_str());
@@ -193,7 +193,18 @@ pub fn render_layer_base(layer: &Layer, max_size: Option<u32>) -> Result<Dynamic
             height,
             color,
             corner_radius,
-        } => DynamicImage::ImageRgba8(render_rectangle(*width, *height, *color, *corner_radius)),
+        } => DynamicImage::ImageRgba8(render_rectangle(
+            *width,
+            *height,
+            *color,
+            *corner_radius,
+            layer.stroke,
+        )),
+        LayerKind::Ellipse {
+            width,
+            height,
+            color,
+        } => DynamicImage::ImageRgba8(render_ellipse(*width, *height, *color, layer.stroke)),
     };
     if let Some(max_size) =
         max_size.filter(|size| *size > 0 && (image.width() > *size || image.height() > *size))
@@ -318,28 +329,88 @@ fn text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
     (target.max(1.0).ceil() as u32).next_power_of_two().min(16) as f32
 }
 
-fn render_rectangle(width: u32, height: u32, color: [u8; 4], radius: f32) -> RgbaImage {
+fn render_rectangle(
+    width: u32,
+    height: u32,
+    color: [u8; 4],
+    radius: f32,
+    stroke: ShapeStroke,
+) -> RgbaImage {
     let mut output = RgbaImage::new(width, height);
     let radius = radius.clamp(0.0, width.min(height) as f32 * 0.5);
     for y in 0..height {
         for x in 0..width {
-            let dx = if x as f32 <= radius {
-                radius - x as f32
-            } else if x as f32 >= width as f32 - radius {
-                x as f32 - (width as f32 - radius)
-            } else {
-                0.0
-            };
-            let dy = if y as f32 <= radius {
-                radius - y as f32
-            } else if y as f32 >= height as f32 - radius {
-                y as f32 - (height as f32 - radius)
-            } else {
-                0.0
-            };
-            if radius == 0.0 || dx * dx + dy * dy <= radius * radius {
-                output.put_pixel(x, y, Rgba(color));
+            if rounded_rect_contains(x, y, width, height, radius, 0.0) {
+                let stroke_pixel = stroke.enabled
+                    && !rounded_rect_contains(
+                        x,
+                        y,
+                        width,
+                        height,
+                        radius,
+                        stroke.width.min(width.min(height) as f32 * 0.5),
+                    );
+                output.put_pixel(x, y, Rgba(if stroke_pixel { stroke.color } else { color }));
             }
+        }
+    }
+    output
+}
+
+fn rounded_rect_contains(x: u32, y: u32, width: u32, height: u32, radius: f32, inset: f32) -> bool {
+    let left = inset;
+    let top = inset;
+    let right = width as f32 - inset;
+    let bottom = height as f32 - inset;
+    if right <= left || bottom <= top {
+        return false;
+    }
+    let x = x as f32 + 0.5;
+    let y = y as f32 + 0.5;
+    if x < left || x > right || y < top || y > bottom {
+        return false;
+    }
+    let radius = (radius - inset)
+        .max(0.0)
+        .min((right - left).min(bottom - top) * 0.5);
+    if radius == 0.0 {
+        return true;
+    }
+    let nearest_x = x.clamp(left + radius, right - radius);
+    let nearest_y = y.clamp(top + radius, bottom - radius);
+    let dx = x - nearest_x;
+    let dy = y - nearest_y;
+    dx * dx + dy * dy <= radius * radius
+}
+
+fn render_ellipse(width: u32, height: u32, color: [u8; 4], stroke: ShapeStroke) -> RgbaImage {
+    let mut output = RgbaImage::new(width, height);
+    let center_x = width as f32 * 0.5;
+    let center_y = height as f32 * 0.5;
+    let radius_x = center_x.max(0.5);
+    let radius_y = center_y.max(0.5);
+    let inner_x = (radius_x - stroke.width).max(0.0);
+    let inner_y = (radius_y - stroke.width).max(0.0);
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x as f32 + 0.5 - center_x;
+            let dy = y as f32 + 0.5 - center_y;
+            let outer = (dx / radius_x).powi(2) + (dy / radius_y).powi(2) <= 1.0;
+            if !outer {
+                continue;
+            }
+            let inner = inner_x > 0.0
+                && inner_y > 0.0
+                && (dx / inner_x).powi(2) + (dy / inner_y).powi(2) <= 1.0;
+            output.put_pixel(
+                x,
+                y,
+                Rgba(if stroke.enabled && !inner {
+                    stroke.color
+                } else {
+                    color
+                }),
+            );
         }
     }
     output

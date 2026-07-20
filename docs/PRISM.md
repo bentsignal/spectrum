@@ -6,10 +6,11 @@ catalog. It complements Lumen instead of adding Photoshop-style complexity to
 Lumen's development workspace.
 
 The practical target is a streamlined Photoshop replacement for creating a
-canvas, combining raster and text layers, transforming and cropping content,
+canvas, combining raster, text, and editable shape layers, transforming and cropping content,
 masking or clipping layers, applying nondestructive adjustments, compositing,
-undoing and redoing work, saving an editable project, and exporting a finished
-image.
+navigating durable history, and exporting a finished image. Completed actions
+persist automatically; people work and move a project rather than managing a
+manual save cycle.
 
 Editable projects use the `.prism` extension. Legacy `.mica` documents remain
 readable and writable. Today the app presents one canvas document per project,
@@ -40,11 +41,16 @@ structured JSON so agents can inspect exact IDs and state rather than scraping
 human UI text.
 
 The global `--project <path>` option selects an editable `.prism` document.
-Commands cover project creation and save, raster/text/shape layers, selection and
-stack order, transforms, opacity and blend modes, visibility, masks and clipping,
+Commands cover project creation, raster/text/rectangle/ellipse layers, editable
+shape fills and inside strokes, selection and stack order, transforms, opacity and blend modes, visibility, masks and clipping,
 per-layer adjustments, canvas crop/resize, history, export, and the Lumen
 handoff. `schema`, raw `run`, and `benchmark` provide discovery, low-level agent
 control, and repeatable performance checks.
+
+The native properties panel presents one stable hierarchy instead of mode tabs:
+canvas settings when no object is selected, then Transform, Content, Appearance,
+Mask, and Develop for the focused object. This keeps common geometry and styling
+visible while preserving the complete nondestructive imaging controls below.
 
 ## Relationship with Lumen
 

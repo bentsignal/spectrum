@@ -403,6 +403,7 @@ fn palette_results(query: &str) -> Vec<PaletteItem> {
         PaletteItem::Tool(Tool::Mask),
         PaletteItem::Tool(Tool::Text),
         PaletteItem::Tool(Tool::Rectangle),
+        PaletteItem::Tool(Tool::Ellipse),
         PaletteItem::PlaceImage,
     ]
     .into_iter()

@@ -122,7 +122,6 @@ impl PrismApp {
         if matches!(layer.kind, LayerKind::Text { .. }) {
             self.open_text_editor(layer.id);
         } else {
-            self.inspector_lens = InspectorLens::Object;
             self.status = "Object controls are ready in the Inspector.".into();
             self.status_error = false;
         }

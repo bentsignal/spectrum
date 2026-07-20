@@ -139,6 +139,52 @@ fn existing_revision_containers_gain_collaboration_metadata_on_open() {
 }
 
 #[test]
+fn resuming_a_legacy_session_repairs_its_missing_document_cursor() {
+    let fixture = Fixture::new();
+    let path = fixture.directory.path().join("project.prism");
+    let session = fixture.human_session;
+    let root = fixture.root;
+    let track = fixture.track;
+    fixture.store.checkpoint().unwrap();
+    drop(fixture.store);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "DELETE FROM session_cursors WHERE session_id = ?1",
+            [session.as_bytes().as_slice()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut reopened = RevisionStore::open(&path).unwrap();
+    reopened
+        .resume_session(session, human("person:1", "Person"), root)
+        .unwrap();
+    assert_eq!(
+        reopened
+            .session_on_track(session, track)
+            .unwrap()
+            .unwrap()
+            .cursor,
+        root
+    );
+    reopened
+        .append(AppendRevision {
+            track_id: track,
+            session_id: session,
+            expected_parent: root,
+            application_version: "1.0.0".into(),
+            label: Some("Edit after repair".into()),
+            command_count: 1,
+            operation_payloads: vec![payload("prism.commands", 1, b"repair")],
+            snapshots: Vec::new(),
+            assets: Vec::new(),
+        })
+        .unwrap();
+}
+
+#[test]
 fn independent_connections_can_extend_the_same_project() {
     let mut fixture = Fixture::new();
     let path = fixture.directory.path().join("project.prism");

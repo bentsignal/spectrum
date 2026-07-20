@@ -1,7 +1,5 @@
 use super::*;
 
-const FOCUS_CARD_CONTENT_HEIGHT: f32 = 100.0;
-
 #[derive(Clone)]
 enum LayerRowKind {
     Raster(PathBuf),
@@ -42,6 +40,7 @@ impl From<&Layer> for LayerRowData {
             LayerKind::Raster { path, .. } => LayerRowKind::Raster(path.clone()),
             LayerKind::Text { color, .. } => LayerRowKind::Text(*color),
             LayerKind::Rectangle { color, .. } => LayerRowKind::Shape(*color),
+            LayerKind::Ellipse { color, .. } => LayerRowKind::Shape(*color),
         };
         Self {
             id: layer.id,
@@ -249,25 +248,6 @@ impl PrismApp {
                     ui.label(RichText::new("No object matches this query.").color(MUTED));
                 }
             });
-        let selected_index = self.workspace.document.selected.and_then(|selected| {
-            self.workspace
-                .document
-                .layers
-                .iter()
-                .position(|layer| layer.id == selected)
-        });
-        ui.add_space(10.0);
-        if let (Some(index), Some(layer)) = (
-            selected_index,
-            self.workspace
-                .document
-                .selected
-                .and_then(|id| layers.iter().find(|layer| layer.id == id)),
-        ) {
-            self.focus_card(ui, layer, index, layers.len());
-        } else {
-            self.empty_focus_card(ui);
-        }
         if ui.input(|input| input.pointer.any_released())
             && let (Some(id), Some(index)) = (self.layer_drag.take(), self.layer_drop_index.take())
             && self
@@ -280,87 +260,6 @@ impl PrismApp {
         {
             self.execute(Command::MoveLayer { id, index });
         }
-    }
-
-    fn focus_card(&mut self, ui: &mut egui::Ui, layer: &LayerRowData, index: usize, total: usize) {
-        egui::Frame::new()
-            .fill(FOCUS_SURFACE)
-            .stroke(Stroke::new(1.0, ACCENT))
-            .corner_radius(8.0)
-            .inner_margin(10)
-            .show(ui, |ui| {
-                ui.set_height(FOCUS_CARD_CONTENT_HEIGHT);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("FOCUS").size(9.0).strong().color(ACCENT));
-                    ui.label(
-                        RichText::new(format!("#{}", layer.id))
-                            .monospace()
-                            .size(9.0)
-                            .color(MUTED),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(layer.label().to_uppercase())
-                                .size(9.0)
-                                .strong()
-                                .color(MUTED),
-                        );
-                    });
-                });
-                ui.label(RichText::new(&layer.name).size(16.0).strong());
-                ui.label(
-                    RichText::new(format!("Stack position {} / {}", total - index, total))
-                        .size(10.0)
-                        .color(MUTED),
-                );
-                ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    if matches!(layer.kind, LayerRowKind::Text(_)) {
-                        if ui.small_button("Edit text").clicked() {
-                            self.open_text_editor(layer.id);
-                        }
-                        let _ = alternate_shortcut(ui, "E");
-                    }
-                    if ui.small_button("Duplicate").clicked() {
-                        self.execute(Command::DuplicateLayer { id: layer.id });
-                    }
-                    if ui.small_button("Rename").clicked() {
-                        self.rename_layer = Some((layer.id, layer.name.clone()));
-                    }
-                    if ui
-                        .small_button(RichText::new("Delete").color(DANGER))
-                        .clicked()
-                    {
-                        self.delete_confirmation = Some(layer.id);
-                    }
-                });
-            });
-    }
-
-    fn empty_focus_card(&self, ui: &mut egui::Ui) {
-        egui::Frame::new()
-            .fill(SURFACE)
-            .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(8.0)
-            .inner_margin(10)
-            .show(ui, |ui| {
-                ui.set_height(FOCUS_CARD_CONTENT_HEIGHT);
-                ui.label(RichText::new("FOCUS").size(9.0).strong().color(MUTED));
-                ui.add_space(16.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new("Nothing in focus")
-                            .size(16.0)
-                            .strong()
-                            .color(TEXT),
-                    );
-                    ui.label(
-                        RichText::new("Choose an object from the map or canvas.")
-                            .size(10.0)
-                            .color(MUTED),
-                    );
-                });
-            });
     }
 
     fn layer_row(
