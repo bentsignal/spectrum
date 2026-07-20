@@ -33,6 +33,8 @@ spectrum-imaging = { path = "../../crates/spectrum-imaging" }
 spectrum-history-ui = { path = "../../crates/spectrum-history-ui" }
 spectrum-revisions = { path = "../../crates/spectrum-revisions" }
 spectrum-terminal = { path = "../../crates/spectrum-terminal" }
+sha2.workspace = true
+ttf-parser.workspace = true
 vt100.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

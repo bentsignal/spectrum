@@ -144,6 +144,7 @@ impl PrismApp {
             text,
             font_size,
             color,
+            ..
         } = &layer.kind
         else {
             return false;

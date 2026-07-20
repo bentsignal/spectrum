@@ -801,6 +801,7 @@ mod tests {
                 text: "Stable".into(),
                 font_size: 48.0,
                 color: [255, 255, 255, 255],
+                typography: prism_core::TextTypography::default(),
             },
             ..Layer::default()
         };

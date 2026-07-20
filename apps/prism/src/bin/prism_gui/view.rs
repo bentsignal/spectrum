@@ -504,6 +504,7 @@ mod tests {
                 text: "Rotate".into(),
                 font_size: 32.0,
                 color: [255, 255, 255, 255],
+                typography: prism_core::TextTypography::default(),
             },
             ..Layer::default()
         }

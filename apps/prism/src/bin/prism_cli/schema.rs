@@ -27,6 +27,8 @@ pub(super) fn schema() -> Value {
             "tag": "command",
             "examples": [
                 {"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0},
+                {"command": "import_font", "path": "/fonts/Inter-Regular.ttf"},
+                {"command": "set_text_typography", "id": 1, "typography": {"font_id": 1, "alignment": "center", "line_height": 1.3, "tracking": 2.0, "box_width": 480.0, "effects": {"outline_width": 1.0, "outline_color": [0,0,0,255], "shadow_offset_x": 4.0, "shadow_offset_y": 6.0, "shadow_color": [0,0,0,128]}}},
                 {"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0},
                 {"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}},
                 {"command": "rasterize_shape", "id": 1, "path": "/generated/shape.png", "scale": 2.0},
@@ -57,6 +59,13 @@ pub(super) fn schema() -> Value {
             "luminosity"
         ],
         "layer_types": ["raster", "text", "rectangle", "ellipse"],
+        "typography": {
+            "portable_fonts": "font-import embeds permitted OpenType font bytes as content-addressed project assets",
+            "discovery": "font-list --query <text> searches embedded family and style metadata",
+            "selection": "typography <layer> accepts --font-id or --family with optional --weight and --style",
+            "paragraph": ["multiline", "wrap", "left/center/right alignment", "line height", "tracking"],
+            "effects": ["outline", "offset shadow"]
+        },
         "color": "RRGGBB or RRGGBBAA",
         "coordinates": "canvas pixels; guides use canvas pixels; layer masks are normalized 0..1"
     })
