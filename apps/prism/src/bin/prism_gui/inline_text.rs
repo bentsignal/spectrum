@@ -242,7 +242,10 @@ impl PrismApp {
             .document
             .layer(editor.layer_id)
             .ok()
-            .and_then(|layer| transformed_visual_screen_bounds(geometry, layer, None))
+            .and_then(|layer| {
+                let source_geometry = self.layer_source_geometry(layer);
+                transformed_visual_screen_bounds(geometry, layer, source_geometry)
+            })
         else {
             self.cancel_inline_text_interaction(editor.layer_id);
             return;

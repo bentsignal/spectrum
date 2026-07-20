@@ -83,6 +83,8 @@ fn inline_text_editor_uses_one_preview_transaction_and_keeps_add_text_dialog() {
     assert!(inline.contains("self.finish_interaction()"));
     assert!(inline.contains("self.workspace.cancel_interaction()"));
     assert!(inline.contains("self.layer_visual_dirty.insert(layer_id)"));
+    assert!(inline.contains("let source_geometry = self.layer_source_geometry(layer);"));
+    assert!(inline.contains("transformed_visual_screen_bounds(geometry, layer, source_geometry)"));
     assert!(!inline.contains("self.execute(Command::UpdateText"));
     assert!(dialogs.contains("self.text_dialog = Some(TextDialogDraft"));
     assert!(dialogs.contains("Command::AddText"));
