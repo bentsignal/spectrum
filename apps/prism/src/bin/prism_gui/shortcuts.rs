@@ -120,6 +120,16 @@ fn terminal_shortcut_pressed(input: &egui::InputState) -> bool {
     }
 }
 
+fn rotation_arm_allowed(interaction_active: bool, has_editable_selection: bool) -> bool {
+    !interaction_active && has_editable_selection
+}
+
+fn reset_tool_after_escape(tool: &mut Tool, status: &mut String, status_error: &mut bool) {
+    *tool = Tool::Move;
+    *status = Tool::Move.description().into();
+    *status_error = false;
+}
+
 impl PrismApp {
     pub(super) fn keyboard(&mut self, context: &egui::Context) {
         let terminal_pressed = context.input(terminal_shortcut_pressed);
@@ -166,6 +176,19 @@ impl PrismApp {
         {
             self.execute(Command::DuplicateLayer { id });
         }
+        if context.input(|input| focused_shortcut_pressed(input, egui::Key::R)) {
+            let interaction_active = self.workspace.interaction_active();
+            let has_editable_selection = self.selected_layer().is_some_and(|layer| !layer.locked);
+            if rotation_arm_allowed(interaction_active, has_editable_selection) {
+                self.choose_tool(Tool::Rotate);
+            } else if interaction_active {
+                self.status = "Finish or cancel the current canvas gesture before rotating".into();
+                self.status_error = true;
+            } else {
+                self.status = "Select an unlocked object to rotate".into();
+                self.status_error = true;
+            }
+        }
         if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::ToolsAndActions)) {
             self.tool_palette = Some(chrome::PaletteState::default());
         }
@@ -185,9 +208,12 @@ impl PrismApp {
             self.delete_confirmation = self.workspace.document.selected;
         }
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
+            if self.drag.is_some() {
+                self.workspace.cancel_interaction();
+            }
             self.tool_palette = None;
             self.shape_palette = None;
-            self.tool = Tool::Move;
+            reset_tool_after_escape(&mut self.tool, &mut self.status, &mut self.status_error);
             self.drag = None;
         }
     }
@@ -240,6 +266,37 @@ mod tests {
             },
         };
         assert!(event_is_focused_shortcut(&event, egui::Key::E));
+    }
+
+    #[test]
+    fn rotate_uses_the_focused_object_shortcut_and_label() {
+        let event = egui::Event::Key {
+            key: egui::Key::R,
+            physical_key: Some(egui::Key::R),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        };
+        assert!(event_is_focused_shortcut(&event, egui::Key::R));
+        assert_eq!(Tool::Rotate.shortcut(), "R");
+        assert!(Tool::Rotate.description().starts_with("Rotation armed"));
+        assert!(rotation_arm_allowed(false, true));
+        assert!(!rotation_arm_allowed(false, false));
+        assert!(!rotation_arm_allowed(true, true));
+    }
+
+    #[test]
+    fn escape_resets_an_armed_rotation_status_to_move() {
+        let mut tool = Tool::Rotate;
+        let mut status = Tool::Rotate.description().to_owned();
+        let mut status_error = true;
+        reset_tool_after_escape(&mut tool, &mut status, &mut status_error);
+        assert_eq!(tool, Tool::Move);
+        assert_eq!(status, Tool::Move.description());
+        assert!(!status_error);
     }
 
     #[test]

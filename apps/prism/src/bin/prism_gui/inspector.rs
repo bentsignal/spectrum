@@ -330,9 +330,9 @@ impl PrismApp {
                 );
                 self.widget_command(
                     &response,
-                    Command::SetTransform {
+                    Command::SetRotation {
                         id: layer.id,
-                        transform,
+                        degrees: transform.rotation,
                     },
                 );
                 ui.end_row();
