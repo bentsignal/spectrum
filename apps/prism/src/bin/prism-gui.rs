@@ -23,6 +23,8 @@ mod canvas;
 use alignment::*;
 #[path = "prism_gui/chrome.rs"]
 mod chrome;
+#[path = "prism_gui/clipboard.rs"]
+mod clipboard;
 #[path = "prism_gui/compositor.rs"]
 mod compositor;
 #[path = "prism_gui/dialogs.rs"]
@@ -564,6 +566,7 @@ impl eframe::App for PrismApp {
             }
         }
         self.dialogs(&context);
+        self.handle_layer_clipboard_events(&context);
         #[cfg(target_os = "macos")]
         self.sync_native_menu_state(&context);
     }
