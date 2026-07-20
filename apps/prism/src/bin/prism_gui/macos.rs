@@ -32,6 +32,9 @@ pub(super) enum NativeMenuAction {
     Export,
     Undo,
     Redo,
+    Cut,
+    Copy,
+    Paste,
     ToggleHistory,
     ToggleTerminal,
     FitCanvas,
@@ -40,13 +43,16 @@ pub(super) enum NativeMenuAction {
 }
 
 impl NativeMenuAction {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 14] = [
         Self::NewDocument,
         Self::OpenDocument,
         Self::MoveProject,
         Self::Export,
         Self::Undo,
         Self::Redo,
+        Self::Cut,
+        Self::Copy,
+        Self::Paste,
         Self::ToggleHistory,
         Self::ToggleTerminal,
         Self::FitCanvas,
@@ -56,6 +62,15 @@ impl NativeMenuAction {
 
     fn from_tag(tag: isize) -> Option<Self> {
         Self::ALL.into_iter().find(|action| *action as isize == tag)
+    }
+}
+
+fn clipboard_viewport_command(action: NativeMenuAction) -> Option<egui::ViewportCommand> {
+    match action {
+        NativeMenuAction::Cut => Some(egui::ViewportCommand::RequestCut),
+        NativeMenuAction::Copy => Some(egui::ViewportCommand::RequestCopy),
+        NativeMenuAction::Paste => Some(egui::ViewportCommand::RequestPaste),
+        _ => None,
     }
 }
 
@@ -69,6 +84,8 @@ pub(super) struct NativeMenuState {
     pub(super) history_visible: bool,
     pub(super) terminal_visible: bool,
     pub(super) keyboard_focus: bool,
+    pub(super) selection_present: bool,
+    pub(super) interaction_active: bool,
 }
 
 pub(super) struct NativeMenuBridge {
@@ -87,30 +104,48 @@ impl NativeMenuBridge {
 
 impl NativeMenuState {
     fn allows(self, action: NativeMenuAction) -> bool {
-        if self.modal_open {
-            return false;
-        }
         match action {
-            NativeMenuAction::NewDocument | NativeMenuAction::OpenDocument => true,
-            NativeMenuAction::MoveProject => self.workspace_ready && self.can_move_project,
-            NativeMenuAction::Export | NativeMenuAction::ToggleTerminal => self.workspace_ready,
+            NativeMenuAction::Cut | NativeMenuAction::Copy | NativeMenuAction::Paste => {
+                self.keyboard_focus
+                    || self.terminal_visible
+                    || !self.modal_open
+                        && self.workspace_ready
+                        && !self.history_visible
+                        && !self.interaction_active
+                        && (action == NativeMenuAction::Paste || self.selection_present)
+            }
+            NativeMenuAction::NewDocument | NativeMenuAction::OpenDocument => !self.modal_open,
+            NativeMenuAction::MoveProject => {
+                !self.modal_open && self.workspace_ready && self.can_move_project
+            }
+            NativeMenuAction::Export | NativeMenuAction::ToggleTerminal => {
+                !self.modal_open && self.workspace_ready
+            }
             NativeMenuAction::ToggleHistory => {
-                self.workspace_ready && !self.keyboard_focus && !self.terminal_visible
+                !self.modal_open
+                    && self.workspace_ready
+                    && !self.keyboard_focus
+                    && !self.terminal_visible
             }
             NativeMenuAction::Undo => {
-                self.workspace_ready
+                !self.modal_open
+                    && self.workspace_ready
                     && self.can_undo
                     && !self.keyboard_focus
                     && !self.terminal_visible
             }
             NativeMenuAction::Redo => {
-                self.workspace_ready
+                !self.modal_open
+                    && self.workspace_ready
                     && self.can_redo
                     && !self.keyboard_focus
                     && !self.terminal_visible
             }
             NativeMenuAction::FitCanvas | NativeMenuAction::ZoomIn | NativeMenuAction::ZoomOut => {
-                self.workspace_ready && !self.history_visible && !self.terminal_visible
+                !self.modal_open
+                    && self.workspace_ready
+                    && !self.history_visible
+                    && !self.terminal_visible
             }
         }
     }
@@ -127,6 +162,7 @@ impl NativeMenuState {
             } else {
                 "Show Terminal"
             }),
+            NativeMenuAction::Cut | NativeMenuAction::Copy | NativeMenuAction::Paste => None,
             _ => None,
         }
     }
@@ -424,6 +460,28 @@ fn install_main_menu(application: &NSApplication, target: &AnyObject, marker: Ma
         NativeMenuAction::Redo,
         Some(shifted_key("z")),
     ));
+    edit_menu.addItem(&NSMenuItem::separatorItem(marker));
+    edit_menu.addItem(&action_item(
+        marker,
+        target,
+        "Cut",
+        NativeMenuAction::Cut,
+        Some(key("x")),
+    ));
+    edit_menu.addItem(&action_item(
+        marker,
+        target,
+        "Copy",
+        NativeMenuAction::Copy,
+        Some(key("c")),
+    ));
+    edit_menu.addItem(&action_item(
+        marker,
+        target,
+        "Paste",
+        NativeMenuAction::Paste,
+        Some(key("v")),
+    ));
 
     let view_menu = submenu(marker, &menu_bar, "View");
     view_menu.setAutoenablesItems(false);
@@ -517,6 +575,7 @@ pub(super) fn update_menu_state(state: NativeMenuState) {
 
 impl PrismApp {
     fn native_menu_state(&self, context: &egui::Context) -> NativeMenuState {
+        let clipboard = self.layer_clipboard_state(context);
         NativeMenuState {
             modal_open: self.has_modal_surface(),
             workspace_ready: self.workspace_initialized,
@@ -525,7 +584,9 @@ impl PrismApp {
             can_redo: self.workspace.can_redo(),
             history_visible: self.history.visible,
             terminal_visible: self.terminal.visible(),
-            keyboard_focus: context.egui_wants_keyboard_input(),
+            keyboard_focus: clipboard.keyboard_focus,
+            selection_present: clipboard.selection_present,
+            interaction_active: clipboard.interaction_active,
         }
     }
 
@@ -547,6 +608,14 @@ impl PrismApp {
                 }
                 NativeMenuAction::Redo => {
                     self.execute(Command::Redo);
+                }
+                action @ (NativeMenuAction::Cut
+                | NativeMenuAction::Copy
+                | NativeMenuAction::Paste) => {
+                    context.send_viewport_cmd(
+                        clipboard_viewport_command(action)
+                            .expect("matched actions always have a clipboard command"),
+                    );
                 }
                 NativeMenuAction::ToggleHistory => self.toggle_history(),
                 NativeMenuAction::ToggleTerminal => self.toggle_terminal(),
@@ -583,7 +652,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn modal_surfaces_disable_every_prism_menu_action() {
+    fn unfocused_modal_surfaces_disable_every_prism_menu_action() {
         let state = NativeMenuState {
             modal_open: true,
             workspace_ready: true,
@@ -603,6 +672,7 @@ mod tests {
     fn edit_and_canvas_actions_follow_live_document_state() {
         let state = NativeMenuState {
             workspace_ready: true,
+            selection_present: true,
             can_undo: true,
             can_redo: false,
             history_visible: true,
@@ -612,6 +682,7 @@ mod tests {
         assert!(!state.allows(NativeMenuAction::Redo));
         assert!(!state.allows(NativeMenuAction::FitCanvas));
         assert!(state.allows(NativeMenuAction::ToggleHistory));
+        assert!(!state.allows(NativeMenuAction::Copy));
         assert_eq!(
             state.title(NativeMenuAction::ToggleHistory),
             Some("Hide History")
@@ -655,5 +726,79 @@ mod tests {
         assert!(!focused.allows(NativeMenuAction::Undo));
         assert!(!terminal.allows(NativeMenuAction::Undo));
         assert!(terminal.allows(NativeMenuAction::ToggleTerminal));
+        assert!(focused.allows(NativeMenuAction::Cut));
+        assert!(focused.allows(NativeMenuAction::Copy));
+        assert!(focused.allows(NativeMenuAction::Paste));
+        assert!(terminal.allows(NativeMenuAction::Cut));
+        assert!(terminal.allows(NativeMenuAction::Copy));
+        assert!(terminal.allows(NativeMenuAction::Paste));
+    }
+
+    #[test]
+    fn canvas_clipboard_menu_state_requires_selection_and_an_idle_canvas() {
+        let available = NativeMenuState {
+            workspace_ready: true,
+            selection_present: true,
+            ..Default::default()
+        };
+        assert!(available.allows(NativeMenuAction::Cut));
+        assert!(available.allows(NativeMenuAction::Copy));
+        assert!(available.allows(NativeMenuAction::Paste));
+
+        let no_selection = NativeMenuState {
+            selection_present: false,
+            ..available
+        };
+        assert!(!no_selection.allows(NativeMenuAction::Cut));
+        assert!(!no_selection.allows(NativeMenuAction::Copy));
+        assert!(no_selection.allows(NativeMenuAction::Paste));
+
+        for unavailable in [
+            NativeMenuState {
+                modal_open: true,
+                ..available
+            },
+            NativeMenuState {
+                history_visible: true,
+                ..available
+            },
+            NativeMenuState {
+                interaction_active: true,
+                ..available
+            },
+        ] {
+            assert!(!unavailable.allows(NativeMenuAction::Cut));
+            assert!(!unavailable.allows(NativeMenuAction::Copy));
+            assert!(!unavailable.allows(NativeMenuAction::Paste));
+        }
+    }
+
+    #[test]
+    fn native_clipboard_actions_request_the_matching_egui_event() {
+        assert!(matches!(
+            clipboard_viewport_command(NativeMenuAction::Cut),
+            Some(egui::ViewportCommand::RequestCut)
+        ));
+        assert!(matches!(
+            clipboard_viewport_command(NativeMenuAction::Copy),
+            Some(egui::ViewportCommand::RequestCopy)
+        ));
+        assert!(matches!(
+            clipboard_viewport_command(NativeMenuAction::Paste),
+            Some(egui::ViewportCommand::RequestPaste)
+        ));
+        assert!(clipboard_viewport_command(NativeMenuAction::Undo).is_none());
+    }
+
+    #[test]
+    fn clipboard_menu_titles_remain_static() {
+        let state = NativeMenuState::default();
+        for action in [
+            NativeMenuAction::Cut,
+            NativeMenuAction::Copy,
+            NativeMenuAction::Paste,
+        ] {
+            assert_eq!(state.title(action), None);
+        }
     }
 }

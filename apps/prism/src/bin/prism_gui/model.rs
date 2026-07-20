@@ -142,6 +142,7 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::AddText { .. }
         | Command::AddRectangle { .. }
         | Command::AddEllipse { .. }
+        | Command::InsertLayer { .. }
         | Command::DuplicateLayer { .. }
         | Command::Undo
         | Command::Redo => CanvasInvalidation::All,
