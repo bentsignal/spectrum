@@ -451,7 +451,7 @@ fn paint_layer_visual(
                 geometry.viewport,
                 egui::TextureId::default(),
                 screen_rect,
-                uv,
+                None,
                 Color32::from_rgba_unmultiplied(
                     color.r(),
                     color.g(),
@@ -466,7 +466,7 @@ fn paint_layer_visual(
             geometry.viewport,
             texture.id(),
             screen_rect,
-            uv,
+            Some(uv),
             Color32::from_white_alpha(alpha),
             layer.transform.rotation,
         ),
@@ -478,10 +478,21 @@ fn paint_quad(
     clip: Rect,
     texture: egui::TextureId,
     rect: Rect,
-    uv: Rect,
+    uv: Option<Rect>,
     color: Color32,
     rotation_degrees: f32,
 ) {
+    let mesh = quad_mesh(texture, rect, uv, color, rotation_degrees);
+    ui.painter().with_clip_rect(clip).add(mesh);
+}
+
+fn quad_mesh(
+    texture: egui::TextureId,
+    rect: Rect,
+    uv: Option<Rect>,
+    color: Color32,
+    rotation_degrees: f32,
+) -> egui::Mesh {
     let mut positions = [
         rect.left_top(),
         rect.right_top(),
@@ -498,22 +509,28 @@ fn paint_quad(
                 center + Vec2::new(delta.x * cos - delta.y * sin, delta.x * sin + delta.y * cos);
         }
     }
-    let uvs = [
-        uv.left_top(),
-        uv.right_top(),
-        uv.right_bottom(),
-        uv.left_bottom(),
-    ];
     let mut mesh = egui::Mesh::with_texture(texture);
-    for (position, uv) in positions.into_iter().zip(uvs) {
-        mesh.vertices.push(egui::epaint::Vertex {
-            pos: position,
-            uv,
-            color,
-        });
+    if let Some(uv) = uv {
+        let uvs = [
+            uv.left_top(),
+            uv.right_top(),
+            uv.right_bottom(),
+            uv.left_bottom(),
+        ];
+        for (position, uv) in positions.into_iter().zip(uvs) {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: position,
+                uv,
+                color,
+            });
+        }
+    } else {
+        for position in positions {
+            mesh.colored_vertex(position, color);
+        }
     }
     mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-    ui.painter().with_clip_rect(clip).add(mesh);
+    mesh
 }
 
 pub(super) fn layer_bounds_with_size(layer: &Layer, source_size: Vec2) -> Rect {
@@ -524,4 +541,55 @@ pub(super) fn layer_bounds_with_size(layer: &Layer, source_size: Vec2) -> Rect {
             source_size.y * layer.transform.scale_y,
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotated_solid_quad_samples_only_the_font_atlas_white_pixel() {
+        let mesh = quad_mesh(
+            egui::TextureId::default(),
+            Rect::from_min_size(Pos2::new(20.0, 30.0), Vec2::new(160.0, 90.0)),
+            None,
+            Color32::from_rgb(240, 80, 120),
+            23.0,
+        );
+
+        assert_eq!(mesh.vertices.len(), 4);
+        assert!(
+            mesh.vertices
+                .iter()
+                .all(|vertex| vertex.uv == egui::epaint::WHITE_UV)
+        );
+        assert!(
+            mesh.vertices
+                .iter()
+                .all(|vertex| vertex.color == Color32::from_rgb(240, 80, 120))
+        );
+    }
+
+    #[test]
+    fn rotated_texture_quad_preserves_layer_uv_coordinates() {
+        let uv = Rect::from_min_max(Pos2::new(0.1, 0.2), Pos2::new(0.8, 0.9));
+        let mesh = quad_mesh(
+            egui::TextureId::Managed(7),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(160.0, 90.0)),
+            Some(uv),
+            Color32::WHITE,
+            23.0,
+        );
+
+        let actual: Vec<_> = mesh.vertices.iter().map(|vertex| vertex.uv).collect();
+        assert_eq!(
+            actual,
+            vec![
+                uv.left_top(),
+                uv.right_top(),
+                uv.right_bottom(),
+                uv.left_bottom()
+            ]
+        );
+    }
 }
