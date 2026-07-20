@@ -132,19 +132,101 @@ pub fn render_document(document: &Document, max_size: Option<u32>) -> Result<Dyn
     render_document_scaled(document, scale)
 }
 
+/// A physical-pixel subregion of a scaled Prism document.
+///
+/// Interactive clients use regions to keep preview allocation proportional to
+/// the visible viewport instead of the full document at the current zoom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderRegion {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Whether every visible layer can be sampled directly into a viewport region
+/// without allocating a transformed full-layer surface.
+pub fn document_supports_region_native_zoom(document: &Document) -> bool {
+    document.layers.iter().all(|layer| {
+        !layer.visible
+            || layer.opacity <= 0.0
+            || matches!(
+                &layer.kind,
+                LayerKind::Rectangle {
+                    corner_radius,
+                    ..
+                } if *corner_radius <= 0.0
+            ) && !layer.stroke.enabled
+                && layer.adjustments == spectrum_imaging::Adjustments::default()
+                && layer.transform.rotation.abs() < 0.01
+                && layer.transform.scale_x > 0.0
+                && layer.transform.scale_y > 0.0
+    })
+}
+
 /// Renders a complete document at an explicit canvas-pixel scale. Interactive
 /// offscreen clients use this to match export semantics at physical display
 /// resolution, including scales above 1 for editable parametric geometry.
 pub fn render_document_scaled(document: &Document, scale: f32) -> Result<DynamicImage> {
-    if !scale.is_finite() || scale <= 0.0 {
-        bail!("document render scale must be a positive finite number");
-    }
-    let canvas_width = (document.width as f32 * scale).round().max(1.0) as u32;
-    let canvas_height = (document.height as f32 * scale).round().max(1.0) as u32;
+    let (canvas_width, canvas_height) = scaled_document_dimensions(document, scale)?;
     if canvas_width > crate::MAX_CANVAS_DIMENSION || canvas_height > crate::MAX_CANVAS_DIMENSION {
         bail!("scaled document exceeds Prism's maximum canvas dimension");
     }
-    let mut canvas = RgbaImage::from_pixel(canvas_width, canvas_height, Rgba(document.background));
+    render_document_region_scaled_impl(
+        document,
+        scale,
+        RenderRegion {
+            x: 0,
+            y: 0,
+            width: canvas_width,
+            height: canvas_height,
+        },
+        false,
+    )
+}
+
+/// Renders an exact crop of a document at an explicit scale.
+///
+/// This shares the export compositor and blend math, but only allocates the
+/// requested canvas region. Layer sources are still rasterized at the target
+/// scale so text and editable shapes retain high-zoom fidelity.
+pub fn render_document_region_scaled(
+    document: &Document,
+    scale: f32,
+    region: RenderRegion,
+) -> Result<DynamicImage> {
+    render_document_region_scaled_impl(document, scale, region, true)
+}
+
+fn render_document_region_scaled_impl(
+    document: &Document,
+    scale: f32,
+    region: RenderRegion,
+    bound_fallback_layers: bool,
+) -> Result<DynamicImage> {
+    let (canvas_width, canvas_height) = scaled_document_dimensions(document, scale)?;
+    if region.width == 0 || region.height == 0 {
+        bail!("document render region must have positive dimensions");
+    }
+    let right = region
+        .x
+        .checked_add(region.width)
+        .context("document render region overflows horizontally")?;
+    let bottom = region
+        .y
+        .checked_add(region.height)
+        .context("document render region overflows vertically")?;
+    if right > canvas_width || bottom > canvas_height {
+        bail!("document render region exceeds the scaled canvas");
+    }
+    if region.width > crate::MAX_CANVAS_DIMENSION || region.height > crate::MAX_CANVAS_DIMENSION {
+        bail!("document render region exceeds Prism's maximum canvas dimension");
+    }
+    if bound_fallback_layers && u64::from(region.width) * u64::from(region.height) > 4_096 * 4_096 {
+        bail!("document render region exceeds the bounded viewport area");
+    }
+
+    let mut canvas = RgbaImage::from_pixel(region.width, region.height, Rgba(document.background));
     let mut previous_coverage: Option<RgbaImage> = None;
     for layer in &document.layers {
         if !layer.visible || layer.opacity <= 0.0 {
@@ -170,24 +252,181 @@ pub fn render_document_scaled(document: &Document, scale: f32) -> Result<Dynamic
         if let LayerKind::Text { font_size, .. } = &mut render_layer.kind {
             *font_size *= text_scale;
         }
-        let source = render_layer_preview_scaled(&render_layer, None, shape_scale)?;
         let mut scaled_layer = layer.clone();
         scaled_layer.transform.x *= scale;
         scaled_layer.transform.y *= scale;
         scaled_layer.transform.scale_x *= scale / text_scale / shape_scale[0];
         scaled_layer.transform.scale_y *= scale / text_scale / shape_scale[1];
+        let mut coverage = RgbaImage::new(region.width, region.height);
+        if bound_fallback_layers
+            && composite_solid_rectangle_region(
+                &mut canvas,
+                &mut coverage,
+                &render_layer,
+                &scaled_layer,
+                shape_scale,
+                previous_coverage.as_ref(),
+                region,
+            )
+        {
+            previous_coverage = Some(coverage);
+            continue;
+        }
+        if bound_fallback_layers {
+            ensure_region_fallback_is_bounded(&render_layer, &scaled_layer, shape_scale)?;
+        }
+        let source = render_layer_preview_scaled(&render_layer, None, shape_scale)?;
         let source = transform_layer(source, scaled_layer.transform);
-        let mut coverage = RgbaImage::new(canvas_width, canvas_height);
-        composite_layer(
+        composite_layer_region(
             &mut canvas,
             &mut coverage,
             &source,
             &scaled_layer,
             previous_coverage.as_ref(),
+            region,
         );
         previous_coverage = Some(coverage);
     }
     Ok(DynamicImage::ImageRgba8(canvas))
+}
+
+fn ensure_region_fallback_is_bounded(
+    render_layer: &Layer,
+    scaled_layer: &Layer,
+    shape_scale: [f32; 2],
+) -> Result<()> {
+    const MAX_FALLBACK_PIXELS: u64 = 4_096 * 4_096;
+    let (base_width, base_height) = match &render_layer.kind {
+        LayerKind::Raster { path, .. } => image::image_dimensions(path)
+            .with_context(|| format!("could not inspect layer source {}", path.display()))?,
+        LayerKind::Text {
+            text, font_size, ..
+        } => measure_text(text, *font_size)?,
+        LayerKind::Rectangle { width, height, .. } | LayerKind::Ellipse { width, height, .. } => (
+            (*width as f32 * shape_scale[0]).round().max(1.0) as u32,
+            (*height as f32 * shape_scale[1]).round().max(1.0) as u32,
+        ),
+    };
+    let scaled_width = (base_width as f32 * scaled_layer.transform.scale_x)
+        .abs()
+        .round()
+        .max(1.0) as u32;
+    let scaled_height = (base_height as f32 * scaled_layer.transform.scale_y)
+        .abs()
+        .round()
+        .max(1.0) as u32;
+    let (transformed_width, transformed_height) = if scaled_layer.transform.rotation.abs() < 0.01 {
+        (scaled_width, scaled_height)
+    } else {
+        let radians = scaled_layer.transform.rotation.to_radians();
+        let (sin, cos) = radians.sin_cos();
+        (
+            (scaled_width as f32 * cos.abs() + scaled_height as f32 * sin.abs())
+                .ceil()
+                .max(1.0) as u32,
+            (scaled_width as f32 * sin.abs() + scaled_height as f32 * cos.abs())
+                .ceil()
+                .max(1.0) as u32,
+        )
+    };
+    let base_pixels = u64::from(base_width) * u64::from(base_height);
+    let scaled_pixels = u64::from(scaled_width) * u64::from(scaled_height);
+    let transformed_pixels = u64::from(transformed_width) * u64::from(transformed_height);
+    if base_width > crate::MAX_CANVAS_DIMENSION
+        || base_height > crate::MAX_CANVAS_DIMENSION
+        || transformed_width > crate::MAX_CANVAS_DIMENSION
+        || transformed_height > crate::MAX_CANVAS_DIMENSION
+        || base_pixels > MAX_FALLBACK_PIXELS
+        || scaled_pixels > MAX_FALLBACK_PIXELS
+        || transformed_pixels > MAX_FALLBACK_PIXELS
+    {
+        bail!(
+            "layer {} exceeds the bounded viewport fallback; lower zoom or simplify the layer",
+            render_layer.id
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn composite_solid_rectangle_region(
+    canvas: &mut RgbaImage,
+    coverage: &mut RgbaImage,
+    render_layer: &Layer,
+    scaled_layer: &Layer,
+    shape_scale: [f32; 2],
+    clip: Option<&RgbaImage>,
+    region: RenderRegion,
+) -> bool {
+    let LayerKind::Rectangle {
+        width,
+        height,
+        color,
+        corner_radius,
+    } = &render_layer.kind
+    else {
+        return false;
+    };
+    if *corner_radius > 0.0
+        || render_layer.stroke.enabled
+        || render_layer.adjustments != spectrum_imaging::Adjustments::default()
+        || scaled_layer.transform.rotation.abs() >= 0.01
+        || scaled_layer.transform.scale_x <= 0.0
+        || scaled_layer.transform.scale_y <= 0.0
+    {
+        return false;
+    }
+
+    let base_width = (*width as f32 * shape_scale[0]).round().max(1.0) as u32;
+    let base_height = (*height as f32 * shape_scale[1]).round().max(1.0) as u32;
+    let source_width = (base_width as f32 * scaled_layer.transform.scale_x)
+        .round()
+        .max(1.0) as u32;
+    let source_height = (base_height as f32 * scaled_layer.transform.scale_y)
+        .round()
+        .max(1.0) as u32;
+    let origin_x = scaled_layer.transform.x.round() as i64;
+    let origin_y = scaled_layer.transform.y.round() as i64;
+    let left = origin_x.max(i64::from(region.x));
+    let top = origin_y.max(i64::from(region.y));
+    let right = (origin_x + i64::from(source_width)).min(i64::from(region.x + region.width));
+    let bottom = (origin_y + i64::from(source_height)).min(i64::from(region.y + region.height));
+    if right <= left || bottom <= top {
+        return true;
+    }
+
+    for canvas_y in top..bottom {
+        for canvas_x in left..right {
+            let source_x = (canvas_x - origin_x) as u32;
+            let source_y = (canvas_y - origin_y) as u32;
+            composite_pixel(
+                canvas,
+                coverage,
+                *color,
+                source_x,
+                source_y,
+                source_width,
+                source_height,
+                scaled_layer,
+                clip,
+                canvas_x as u32 - region.x,
+                canvas_y as u32 - region.y,
+            );
+        }
+    }
+    true
+}
+
+fn scaled_document_dimensions(document: &Document, scale: f32) -> Result<(u32, u32)> {
+    if !scale.is_finite() || scale <= 0.0 {
+        bail!("document render scale must be a positive finite number");
+    }
+    let width = (document.width as f64 * f64::from(scale)).round().max(1.0);
+    let height = (document.height as f64 * f64::from(scale)).round().max(1.0);
+    if width > u32::MAX as f64 || height > u32::MAX as f64 {
+        bail!("scaled document dimensions overflow");
+    }
+    Ok((width as u32, height as u32))
 }
 
 pub fn render_document_thumbnail(document: &Document, max_size: u32) -> Result<DynamicImage> {
@@ -403,67 +642,99 @@ fn rotate_rgba(source: &RgbaImage, degrees: f32) -> RgbaImage {
     output
 }
 
-fn composite_layer(
+fn composite_layer_region(
     canvas: &mut RgbaImage,
     coverage: &mut RgbaImage,
     source: &RgbaImage,
     layer: &Layer,
     clip: Option<&RgbaImage>,
+    region: RenderRegion,
 ) {
-    let origin_x = layer.transform.x.round() as i32;
-    let origin_y = layer.transform.y.round() as i32;
-    for (source_x, source_y, source_pixel) in source.enumerate_pixels() {
-        let canvas_x = origin_x + source_x as i32;
-        let canvas_y = origin_y + source_y as i32;
-        if canvas_x < 0
-            || canvas_y < 0
-            || canvas_x >= canvas.width() as i32
-            || canvas_y >= canvas.height() as i32
-        {
-            continue;
+    let origin_x = layer.transform.x.round() as i64;
+    let origin_y = layer.transform.y.round() as i64;
+    let source_left = (i64::from(region.x) - origin_x).clamp(0, i64::from(source.width())) as u32;
+    let source_top = (i64::from(region.y) - origin_y).clamp(0, i64::from(source.height())) as u32;
+    let source_right =
+        (i64::from(region.x + region.width) - origin_x).clamp(0, i64::from(source.width())) as u32;
+    let source_bottom = (i64::from(region.y + region.height) - origin_y)
+        .clamp(0, i64::from(source.height())) as u32;
+    for source_y in source_top..source_bottom {
+        for source_x in source_left..source_right {
+            let source_pixel = source.get_pixel(source_x, source_y);
+            let canvas_x = origin_x + i64::from(source_x);
+            let canvas_y = origin_y + i64::from(source_y);
+            let x = canvas_x as u32 - region.x;
+            let y = canvas_y as u32 - region.y;
+            composite_pixel(
+                canvas,
+                coverage,
+                source_pixel.0,
+                source_x,
+                source_y,
+                source.width(),
+                source.height(),
+                layer,
+                clip,
+                x,
+                y,
+            );
         }
-        let normalized_x = source_x as f32 / source.width().max(1) as f32;
-        let normalized_y = source_y as f32 / source.height().max(1) as f32;
-        let in_mask = normalized_x >= layer.mask.x
-            && normalized_x <= layer.mask.x + layer.mask.width
-            && normalized_y >= layer.mask.y
-            && normalized_y <= layer.mask.y + layer.mask.height;
-        let mask_alpha = if !layer.mask.enabled || in_mask != layer.mask.invert {
-            1.0
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn composite_pixel(
+    canvas: &mut RgbaImage,
+    coverage: &mut RgbaImage,
+    source_pixel: [u8; 4],
+    source_x: u32,
+    source_y: u32,
+    source_width: u32,
+    source_height: u32,
+    layer: &Layer,
+    clip: Option<&RgbaImage>,
+    x: u32,
+    y: u32,
+) {
+    let normalized_x = source_x as f32 / source_width.max(1) as f32;
+    let normalized_y = source_y as f32 / source_height.max(1) as f32;
+    let in_mask = normalized_x >= layer.mask.x
+        && normalized_x <= layer.mask.x + layer.mask.width
+        && normalized_y >= layer.mask.y
+        && normalized_y <= layer.mask.y + layer.mask.height;
+    let mask_alpha = if !layer.mask.enabled || in_mask != layer.mask.invert {
+        1.0
+    } else {
+        0.0
+    };
+    let clip_alpha = if layer.clip_to_below {
+        clip.map_or(0.0, |image| image.get_pixel(x, y)[3] as f32 / 255.0)
+    } else {
+        1.0
+    };
+    let alpha = source_pixel[3] as f32 / 255.0 * layer.opacity * mask_alpha * clip_alpha;
+    if alpha <= 0.0 {
+        return;
+    }
+    let destination = *canvas.get_pixel(x, y);
+    let blended = blend_rgb(source_pixel, destination.0, layer.blend_mode);
+    let destination_alpha = destination[3] as f32 / 255.0;
+    let output_alpha = alpha + destination_alpha * (1.0 - alpha);
+    let mut output = [0; 4];
+    for channel in 0..3 {
+        let value = if output_alpha > 0.0 {
+            (source_pixel[channel] as f32 * alpha * (1.0 - destination_alpha)
+                + blended[channel] as f32 * alpha * destination_alpha
+                + destination[channel] as f32 * destination_alpha * (1.0 - alpha))
+                / output_alpha
         } else {
             0.0
         };
-        let x = canvas_x as u32;
-        let y = canvas_y as u32;
-        let clip_alpha = if layer.clip_to_below {
-            clip.map_or(0.0, |image| image.get_pixel(x, y)[3] as f32 / 255.0)
-        } else {
-            1.0
-        };
-        let alpha = source_pixel[3] as f32 / 255.0 * layer.opacity * mask_alpha * clip_alpha;
-        if alpha <= 0.0 {
-            continue;
-        }
-        let destination = *canvas.get_pixel(x, y);
-        let blended = blend_rgb(source_pixel.0, destination.0, layer.blend_mode);
-        let destination_alpha = destination[3] as f32 / 255.0;
-        let output_alpha = alpha + destination_alpha * (1.0 - alpha);
-        let mut output = [0; 4];
-        for channel in 0..3 {
-            let value = if output_alpha > 0.0 {
-                (source_pixel[channel] as f32 * alpha * (1.0 - destination_alpha)
-                    + blended[channel] as f32 * alpha * destination_alpha
-                    + destination[channel] as f32 * destination_alpha * (1.0 - alpha))
-                    / output_alpha
-            } else {
-                0.0
-            };
-            output[channel] = value.round().clamp(0.0, 255.0) as u8;
-        }
-        output[3] = (output_alpha * 255.0).round() as u8;
-        canvas.put_pixel(x, y, Rgba(output));
-        coverage.put_pixel(x, y, Rgba([255, 255, 255, (alpha * 255.0) as u8]));
+        output[channel] = value.round().clamp(0.0, 255.0) as u8;
     }
+    output[3] = (output_alpha * 255.0).round() as u8;
+    canvas.put_pixel(x, y, Rgba(output));
+    coverage.put_pixel(x, y, Rgba([255, 255, 255, (alpha * 255.0) as u8]));
 }
 
 pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<()> {

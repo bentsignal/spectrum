@@ -34,27 +34,25 @@ fn prism_source_files_stay_within_the_maintainability_budget() {
 }
 
 #[test]
-fn interactive_gui_limits_full_document_rendering_to_the_transitional_fallback() {
+fn interactive_gui_uses_only_bounded_document_region_rendering() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = vec![manifest.join("src/bin/prism-gui.rs")];
     rust_sources(&manifest.join("src/bin/prism_gui"), &mut files);
     let offenders: Vec<_> = files
         .into_iter()
         .filter(|path| {
-            path.file_name().is_none_or(|name| name != "compositor.rs")
-                && fs::read_to_string(path).is_ok_and(|source| {
-                    source.contains("render_document(")
-                        || source.contains("render_document_scaled(")
-                })
+            fs::read_to_string(path).is_ok_and(|source| {
+                source.contains("render_document(") || source.contains("render_document_scaled(")
+            })
         })
         .collect();
     assert!(
         offenders.is_empty(),
-        "only the transitional parity fallback may render full documents: {offenders:#?}"
+        "interactive Prism code must not allocate full-document previews: {offenders:#?}"
     );
-    let fallback = fs::read_to_string(manifest.join("src/bin/prism_gui/compositor.rs"))
-        .expect("transitional compositor should be readable");
-    assert!(fallback.contains("render_document_scaled("));
+    let compositor = fs::read_to_string(manifest.join("src/bin/prism_gui/compositor.rs"))
+        .expect("region compositor should be readable");
+    assert!(compositor.contains("render_document_region_scaled("));
 }
 
 #[test]

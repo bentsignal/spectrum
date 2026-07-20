@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 use prism_core::{
-    BlendMode, Command, Document, LayerMask, Transform, Workspace, render_document,
-    render_layer_base_scaled, render_solid_color,
+    BlendMode, Command, Document, LayerMask, RenderRegion, Transform, Workspace, render_document,
+    render_document_region_scaled, render_layer_base_scaled, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -156,6 +156,56 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         let _ = render_document(&blend_workspace.document, None)?;
         blend_render_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    let mut viewport_workspace = Workspace::new(Document::new("Viewport", 16_384, 16_384), None);
+    for index in 0..6 {
+        viewport_workspace.execute(Command::AddRectangle {
+            name: Some(format!("Viewport blend {index}")),
+            width: 16_384,
+            height: 16_384,
+            color: [60 + index * 20, 180 - index * 14, 100 + index * 17, 210],
+            corner_radius: 0.0,
+            x: 0.0,
+            y: 0.0,
+        })?;
+        let id = viewport_workspace.document.selected.unwrap();
+        viewport_workspace.execute(Command::SetBlendMode {
+            id,
+            blend_mode: BlendMode::ALL[5 + index as usize * 3],
+        })?;
+        if index == 3 {
+            viewport_workspace.execute(Command::SetClipping { id, enabled: true })?;
+        }
+        if index == 4 {
+            viewport_workspace.execute(Command::SetMask {
+                id,
+                mask: LayerMask {
+                    enabled: true,
+                    invert: true,
+                    x: 0.2,
+                    y: 0.2,
+                    width: 0.6,
+                    height: 0.6,
+                },
+            })?;
+        }
+    }
+    let viewport_region = RenderRegion {
+        x: 512,
+        y: 448,
+        width: 960,
+        height: 540,
+    };
+    let mut viewport_composite_samples = Vec::new();
+    for _ in 0..5 {
+        let started = Instant::now();
+        let rendered =
+            render_document_region_scaled(&viewport_workspace.document, 8.0, viewport_region)?;
+        if (rendered.width(), rendered.height()) != (viewport_region.width, viewport_region.height)
+        {
+            bail!("viewport compositor returned the wrong physical dimensions");
+        }
+        viewport_composite_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     let (command_median, command_p95) = sample_summary(&mut command_samples);
     let (interaction_median, interaction_p95) = sample_summary(&mut interaction_samples);
     let (text_interaction_median, text_interaction_p95) =
@@ -164,6 +214,8 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let (render_median, render_p95) = sample_summary(&mut render_samples);
     let (scaled_shape_median, scaled_shape_p95) = sample_summary(&mut scaled_shape_samples);
     let (blend_render_median, blend_render_p95) = sample_summary(&mut blend_render_samples);
+    let (viewport_composite_median, viewport_composite_p95) =
+        sample_summary(&mut viewport_composite_samples);
     let metrics = [
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
@@ -213,6 +265,13 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             p95_ms: blend_render_p95,
             budget_ms: 500.0,
             pass: blend_render_p95 <= 500.0,
+        },
+        BenchmarkMetric {
+            name: "8x_zoom_16k_document_viewport_composite",
+            median_ms: viewport_composite_median,
+            p95_ms: viewport_composite_p95,
+            budget_ms: 500.0,
+            pass: viewport_composite_p95 <= 500.0,
         },
     ];
     let passed = metrics.iter().all(|metric| metric.pass);

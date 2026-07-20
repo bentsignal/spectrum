@@ -25,23 +25,23 @@ impl PrismApp {
                 );
                 self.canvas_interaction(ui, &response, geometry);
                 if document_requires_composite_preview(&self.workspace.document) {
-                    let display_scale = geometry.pixels_per_point * ui.ctx().pixels_per_point();
-                    let texture = match self.composite_preview.ensure(
+                    let frame = match self.composite_preview.ensure(
                         ui.ctx(),
                         self.active_tab_id,
                         &self.workspace.document,
-                        display_scale,
+                        geometry,
+                        ui.ctx().pixels_per_point(),
                     ) {
-                        Ok(texture) => {
+                        Ok(frame) => {
                             self.preview_error = None;
-                            texture
+                            frame
                         }
                         Err(error) => {
                             self.preview_error = Some(error);
                             None
                         }
                     };
-                    paint_composite_preview(ui, geometry, texture.as_ref());
+                    paint_composite_preview(ui, geometry, frame.as_ref());
                 } else {
                     paint_interactive_document(
                         ui,
