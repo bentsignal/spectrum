@@ -119,7 +119,13 @@ impl LayerClipboardState {
 }
 
 fn clipboard_event(input: &egui::InputState) -> Option<(ClipboardEventKind, Option<String>)> {
-    input.events.iter().find_map(|event| match event {
+    clipboard_event_from_events(&input.events)
+}
+
+fn clipboard_event_from_events(
+    events: &[egui::Event],
+) -> Option<(ClipboardEventKind, Option<String>)> {
+    events.iter().find_map(|event| match event {
         egui::Event::Copy => Some((ClipboardEventKind::Copy, None)),
         egui::Event::Cut => Some((ClipboardEventKind::Cut, None)),
         egui::Event::Paste(text) => Some((ClipboardEventKind::Paste, Some(text.clone()))),
@@ -254,19 +260,16 @@ mod tests {
 
     #[test]
     fn event_extraction_returns_the_first_clipboard_event_and_its_paste_text() {
-        let input = egui::InputState {
-            events: vec![
-                egui::Event::Text("ignored".into()),
-                egui::Event::Paste("layer payload".into()),
-                egui::Event::Copy,
-            ],
-            ..Default::default()
-        };
+        let events = [
+            egui::Event::Text("ignored".into()),
+            egui::Event::Paste("layer payload".into()),
+            egui::Event::Copy,
+        ];
         assert_eq!(
-            clipboard_event(&input),
+            clipboard_event_from_events(&events),
             Some((ClipboardEventKind::Paste, Some("layer payload".into())))
         );
-        assert_eq!(clipboard_event(&egui::InputState::default()), None);
+        assert_eq!(clipboard_event_from_events(&[]), None);
     }
 
     #[test]
