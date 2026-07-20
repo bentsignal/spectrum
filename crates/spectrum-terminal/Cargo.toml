@@ -1,0 +1,11 @@
+[package]
+name = "spectrum-terminal"
+version = "0.1.0"
+edition.workspace = true
+description = "App-neutral pseudo-terminal sessions for Spectrum clients"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+portable-pty.workspace = true

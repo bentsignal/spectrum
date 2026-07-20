@@ -106,6 +106,10 @@ impl Workspace {
             .and_then(DurableProject::pending_publish_error)
     }
 
+    pub fn session_id(&self) -> Option<spectrum_revisions::SessionId> {
+        self.durable.as_ref().map(DurableProject::session_id)
+    }
+
     pub fn checkpoint(&self) -> Result<()> {
         if let Some(durable) = &self.durable {
             durable.checkpoint()?;

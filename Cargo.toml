@@ -4,6 +4,7 @@ members = [
     "apps/prism",
     "crates/spectrum-imaging",
     "crates/spectrum-history-ui",
+    "crates/spectrum-terminal",
     "crates/spectrum-revisions",
     "tools/workspace-guardrails",
 ]
@@ -25,6 +26,7 @@ flate2 = "1.1"
 fs2 = "0.4"
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
+portable-pty = "0.9"
 rawler = "0.7.2"
 rayon = "1.12"
 rfd = "0.17"
@@ -34,6 +36,7 @@ serde_json = "1.0"
 sha2 = "0.11"
 uuid = { version = "1.24", features = ["serde", "v4"] }
 url = "2.5"
+vt100 = "0.16"
 winit = "0.30.13"
 
 [profile.release]

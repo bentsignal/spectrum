@@ -19,15 +19,17 @@ pub(super) enum ShortcutDomain {
 pub(super) enum GlobalShortcut {
     ToolsAndActions,
     JumpToObject,
+    Terminal,
     History,
     UndoRedo,
 }
 
 impl GlobalShortcut {
     #[cfg(test)]
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::ToolsAndActions,
         Self::JumpToObject,
+        Self::Terminal,
         Self::History,
         Self::UndoRedo,
     ];
@@ -36,6 +38,7 @@ impl GlobalShortcut {
         match self {
             Self::ToolsAndActions => egui::Key::P,
             Self::JumpToObject => egui::Key::F,
+            Self::Terminal => egui::Key::J,
             Self::History => egui::Key::H,
             Self::UndoRedo => egui::Key::Z,
         }
@@ -45,6 +48,7 @@ impl GlobalShortcut {
         match self {
             Self::ToolsAndActions => "P",
             Self::JumpToObject => "F",
+            Self::Terminal => "J",
             Self::History => "H",
             Self::UndoRedo => "Z",
         }
@@ -98,6 +102,10 @@ pub(super) fn global_shortcut_pressed(input: &egui::InputState, shortcut: Global
 
 impl PrismApp {
     pub(super) fn keyboard(&mut self, context: &egui::Context) {
+        if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::Terminal)) {
+            self.toggle_terminal();
+            return;
+        }
         if self.tool_palette.is_some()
             || self.shape_palette.is_some()
             || context.egui_wants_keyboard_input()
@@ -236,6 +244,8 @@ mod tests {
         assert_eq!(GlobalShortcut::ToolsAndActions.label(), "P");
         assert_eq!(GlobalShortcut::JumpToObject.key(), egui::Key::F);
         assert_eq!(GlobalShortcut::JumpToObject.label(), "F");
+        assert_eq!(GlobalShortcut::Terminal.key(), egui::Key::J);
+        assert_eq!(GlobalShortcut::Terminal.label(), "J");
         for (index, shortcut) in GlobalShortcut::ALL.iter().enumerate() {
             for other in &GlobalShortcut::ALL[index + 1..] {
                 assert_ne!(shortcut.key(), other.key());
