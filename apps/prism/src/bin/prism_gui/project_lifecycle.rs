@@ -73,6 +73,15 @@ fn safe_project_stem(name: &str) -> String {
 }
 
 impl PrismApp {
+    pub(super) fn open_project_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Prism project", &["prism", "mica"])
+            .pick_file()
+        {
+            self.open_path(&path);
+        }
+    }
+
     pub(super) fn sync_agent_collaborations(&mut self, context: &egui::Context) {
         let now = std::time::Instant::now();
         if now < self.collaboration_poll_at {
