@@ -88,6 +88,9 @@ fn inline_text_editor_owns_existing_edits_and_click_to_type_creation() {
     assert!(!inline.contains("self.execute(Command::UpdateText"));
     assert!(inline.contains("Command::AddText"));
     assert!(inline.contains("open_new_text_editor"));
+    assert!(inline.contains("editor_visual_screen_bounds(geometry, &editor, rendered_bounds)"));
+    assert!(inline.contains("let area_id = editor.area_id();"));
+    assert!(!inline.contains("editor.tab_id, editor.layer_id"));
     assert!(!dialogs.contains("TextDialogDraft"));
     assert!(!dialogs.contains("Command::AddText"));
 }

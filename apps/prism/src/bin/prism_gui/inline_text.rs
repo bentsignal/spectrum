@@ -12,6 +12,7 @@ pub(super) struct InlineTextEditor {
     tab_id: u64,
     layer_id: u64,
     placement: Option<Pos2>,
+    creation_id: Option<u64>,
     text: String,
     font_size: f32,
     color: [u8; 4],
@@ -64,6 +65,7 @@ impl InlineTextEditor {
             tab_id,
             layer_id: layer.id,
             placement: None,
+            creation_id: None,
             text: text.clone(),
             font_size: *font_size,
             color: *color,
@@ -73,11 +75,12 @@ impl InlineTextEditor {
         })
     }
 
-    fn start_new(tab_id: u64, layer_id: u64, placement: Pos2) -> Self {
+    fn start_new(tab_id: u64, layer_id: u64, placement: Pos2, creation_id: u64) -> Self {
         Self {
             tab_id,
             layer_id,
             placement: Some(placement),
+            creation_id: Some(creation_id),
             text: String::new(),
             font_size: NEW_TEXT_FONT_SIZE,
             color: NEW_TEXT_COLOR,
@@ -89,6 +92,24 @@ impl InlineTextEditor {
 
     fn is_new(&self) -> bool {
         self.placement.is_some()
+    }
+
+    fn area_id(&self) -> egui::Id {
+        if let Some(creation_id) = self.creation_id {
+            egui::Id::new((
+                "prism-inline-text-editor",
+                self.tab_id,
+                "new-text",
+                creation_id,
+            ))
+        } else {
+            egui::Id::new((
+                "prism-inline-text-editor",
+                self.tab_id,
+                "existing-text",
+                self.layer_id,
+            ))
+        }
     }
 
     fn update_command(&self) -> Result<Command, &'static str> {
@@ -225,16 +246,32 @@ fn click_visual_screen_bounds(geometry: CanvasGeometry, placement: Pos2) -> Rect
     Rect::from_min_max(screen, screen)
 }
 
+fn editor_visual_screen_bounds(
+    geometry: CanvasGeometry,
+    editor: &InlineTextEditor,
+    rendered_bounds: Option<Rect>,
+) -> Option<Rect> {
+    if let Some(placement) = editor.placement {
+        Some(click_visual_screen_bounds(geometry, placement))
+    } else {
+        rendered_bounds
+    }
+}
+
 impl PrismApp {
     pub(super) fn open_new_text_editor(&mut self, position: Pos2) -> bool {
         self.settle_inline_text_editor();
         self.finish_interaction();
         let provisional_id = self.workspace.document.next_id;
+        let creation_id = self.next_inline_text_creation_id;
+        self.next_inline_text_creation_id =
+            self.next_inline_text_creation_id.wrapping_add(1).max(1);
         self.workspace.begin_interaction();
         self.inline_text_editor = Some(InlineTextEditor::start_new(
             self.active_tab_id,
             provisional_id,
             position,
+            creation_id,
         ));
         self.status = "New text · Command-Enter to add · Escape to cancel".into();
         self.status_error = false;
@@ -377,7 +414,7 @@ impl PrismApp {
         if editor.tab_id != self.active_tab_id {
             return;
         }
-        let visual_bounds = self
+        let rendered_bounds = self
             .workspace
             .document
             .layer(editor.layer_id)
@@ -385,12 +422,8 @@ impl PrismApp {
             .and_then(|layer| {
                 let source_geometry = self.layer_source_geometry(layer);
                 transformed_visual_screen_bounds(geometry, layer, source_geometry)
-            })
-            .or_else(|| {
-                editor
-                    .placement
-                    .map(|placement| click_visual_screen_bounds(geometry, placement))
             });
+        let visual_bounds = editor_visual_screen_bounds(geometry, &editor, rendered_bounds);
         let Some(visual_bounds) = visual_bounds else {
             self.cancel_inline_text_interaction(editor.layer_id);
             return;
@@ -399,7 +432,7 @@ impl PrismApp {
         let mut changed = false;
         let mut done_clicked = false;
         let mut cancel_clicked = false;
-        let area_id = egui::Id::new(("prism-inline-text-editor", editor.tab_id, editor.layer_id));
+        let area_id = editor.area_id();
         egui::Area::new(area_id)
             .order(egui::Order::Foreground)
             .fixed_pos(anchor)
@@ -556,7 +589,7 @@ mod tests {
     #[test]
     fn new_text_uses_one_stable_provisional_layer_and_commits_one_revision() {
         let mut workspace = workspace_for_new_text();
-        let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(123.0, 87.0));
+        let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(123.0, 87.0), 1);
         workspace.begin_interaction();
 
         editor.text = "P".into();
@@ -594,7 +627,7 @@ mod tests {
     #[test]
     fn empty_and_escape_remove_the_preview_and_restore_baseline_identity() {
         let mut workspace = workspace_for_new_text();
-        let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(200.0, 160.0));
+        let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(200.0, 160.0), 1);
         workspace.begin_interaction();
         editor.text = "Draft".into();
         refresh_new_text_preview(&mut workspace, &mut editor).unwrap();
@@ -677,13 +710,13 @@ mod tests {
         assert_eq!(take_for_workspace_change(&mut stale, 4), None);
         assert!(stale.is_none());
 
-        let mut blank_new = Some(InlineTextEditor::start_new(3, 8, Pos2::new(120.0, 90.0)));
+        let mut blank_new = Some(InlineTextEditor::start_new(3, 8, Pos2::new(120.0, 90.0), 1));
         assert_eq!(
             take_for_workspace_change(&mut blank_new, 3),
             Some((8, LifecycleAction::Cancel))
         );
 
-        let mut previewed_new = InlineTextEditor::start_new(3, 8, Pos2::new(120.0, 90.0));
+        let mut previewed_new = InlineTextEditor::start_new(3, 8, Pos2::new(120.0, 90.0), 1);
         previewed_new.text = "Ready".into();
         previewed_new.preview_matches_draft = true;
         let mut previewed_new = Some(previewed_new);
@@ -717,20 +750,46 @@ mod tests {
     }
 
     #[test]
-    fn blank_new_editor_anchor_tracks_its_click_through_zoom_and_pan() {
+    fn new_editor_anchor_stays_at_its_click_even_after_rendered_bounds_exist() {
         let geometry = CanvasGeometry {
             viewport: Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0)),
             canvas: Rect::from_min_size(Pos2::new(80.0, 45.0), Vec2::new(640.0, 480.0)),
             pixels_per_point: 2.0,
         };
         let placement = Pos2::new(140.0, 110.0);
-        let bounds = click_visual_screen_bounds(geometry, placement);
+        let editor = InlineTextEditor::start_new(3, 8, placement, 41);
+        let rendered = Rect::from_min_size(Pos2::new(620.0, 510.0), Vec2::new(180.0, 70.0));
+        let bounds = editor_visual_screen_bounds(geometry, &editor, Some(rendered)).unwrap();
         assert_eq!(bounds.center(), geometry.canvas_to_screen(placement));
+        assert_ne!(bounds, rendered);
         let anchor = editor_anchor(geometry.viewport, bounds);
         assert!(anchor.x >= geometry.viewport.left() + VIEWPORT_MARGIN);
         assert!(anchor.y >= geometry.viewport.top() + VIEWPORT_MARGIN);
         assert!(anchor.x + EDITOR_WIDTH <= geometry.viewport.right() - VIEWPORT_MARGIN);
         assert!(anchor.y + EDITOR_HEIGHT <= geometry.viewport.bottom() - VIEWPORT_MARGIN);
+
+        let existing = InlineTextEditor::start(3, &text_layer(8, false)).unwrap();
+        assert_eq!(
+            editor_visual_screen_bounds(geometry, &existing, Some(rendered)),
+            Some(rendered)
+        );
+    }
+
+    #[test]
+    fn new_editor_area_identity_is_creation_scoped_not_provisional_layer_scoped() {
+        let first = InlineTextEditor::start_new(3, 8, Pos2::new(140.0, 110.0), 41);
+        let same_creation_different_provisional =
+            InlineTextEditor::start_new(3, 99, Pos2::new(140.0, 110.0), 41);
+        let next_creation = InlineTextEditor::start_new(3, 8, Pos2::new(140.0, 110.0), 42);
+        assert_eq!(
+            first.area_id(),
+            same_creation_different_provisional.area_id()
+        );
+        assert_ne!(first.area_id(), next_creation.area_id());
+
+        let existing_8 = InlineTextEditor::start(3, &text_layer(8, false)).unwrap();
+        let existing_9 = InlineTextEditor::start(3, &text_layer(9, false)).unwrap();
+        assert_ne!(existing_8.area_id(), existing_9.area_id());
     }
 
     #[test]
