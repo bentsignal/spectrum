@@ -310,6 +310,7 @@ impl PrismApp {
     }
 
     pub(super) fn choose_tool(&mut self, tool: Tool) {
+        self.settle_inline_text_editor();
         if tool.activation() == ToolActivation::ChoiceDialog {
             self.shape_palette = Some(PaletteState::default());
             return;

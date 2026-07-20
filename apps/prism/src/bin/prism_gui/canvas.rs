@@ -96,6 +96,7 @@ impl PrismApp {
                         DANGER,
                     );
                 }
+                self.inline_text_editor_ui(ui.ctx(), geometry);
             });
     }
 
@@ -105,6 +106,9 @@ impl PrismApp {
         response: &egui::Response,
         geometry: CanvasGeometry,
     ) {
+        if !inline_text::canvas_gestures_allowed(self.inline_text_editor.as_ref()) {
+            return;
+        }
         if response.hovered() {
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
             if scroll.abs() > 0.1 {
@@ -471,7 +475,7 @@ impl PrismApp {
             }
             Tool::Text => {
                 self.text_dialog = Some(TextDialogDraft {
-                    target: TextDialogTarget::New { position },
+                    position,
                     text: "Text".into(),
                     font_size: 72.0,
                     color: [245, 246, 250, 255],

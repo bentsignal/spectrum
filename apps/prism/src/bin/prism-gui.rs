@@ -29,6 +29,8 @@ mod compositor;
 mod dialogs;
 #[path = "prism_gui/history.rs"]
 mod history;
+#[path = "prism_gui/inline_text.rs"]
+mod inline_text;
 #[path = "prism_gui/inspector.rs"]
 mod inspector;
 #[path = "prism_gui/layers.rs"]
@@ -69,15 +71,9 @@ struct NewDocumentDialog {
     height: u32,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum TextDialogTarget {
-    New { position: Pos2 },
-    Existing { id: u64 },
-}
-
 #[derive(Clone, Debug)]
 struct TextDialogDraft {
-    target: TextDialogTarget,
+    position: Pos2,
     text: String,
     font_size: f32,
     color: [u8; 4],
@@ -128,6 +124,7 @@ struct PrismApp {
     rename_layer: Option<(u64, String)>,
     new_dialog: Option<NewDocumentDialog>,
     text_dialog: Option<TextDialogDraft>,
+    inline_text_editor: Option<inline_text::InlineTextEditor>,
     font_query: String,
     delete_confirmation: Option<u64>,
     layer_drag: Option<u64>,
@@ -230,6 +227,7 @@ impl PrismApp {
             rename_layer: None,
             new_dialog: None,
             text_dialog: None,
+            inline_text_editor: None,
             font_query: String::new(),
             delete_confirmation: None,
             layer_drag: None,
@@ -258,6 +256,9 @@ impl PrismApp {
     }
 
     fn execute(&mut self, command: Command) -> bool {
+        if self.inline_text_editor.is_some() && !matches!(command, Command::SelectLayer { .. }) {
+            self.settle_inline_text_editor();
+        }
         let invalidation = canvas_invalidation(&command);
         match self.workspace.execute(command) {
             Ok(output) => {
@@ -326,6 +327,7 @@ impl PrismApp {
     fn finish_interaction(&mut self) {
         match self.workspace.commit_interaction() {
             Ok(true) => {
+                self.history.mark_stale();
                 if let Some(error) = self.workspace.pending_publish_error() {
                     self.status = format!(
                         "Edit is safe in Prism recovery storage, but the project file could not update: {error}"
@@ -350,6 +352,7 @@ impl PrismApp {
 
     fn widget_command_if(&mut self, response: &egui::Response, command: Option<Command>) {
         if response.drag_started() || response.gained_focus() {
+            self.settle_inline_text_editor();
             self.workspace.begin_interaction();
         }
         if response.changed()
@@ -374,6 +377,7 @@ impl PrismApp {
     }
 
     fn add_workspace_tab(&mut self, workspace: Workspace) {
+        self.settle_inline_text_editor();
         self.inactive_workspaces.insert(
             self.active_tab_id,
             std::mem::replace(&mut self.workspace, workspace),
@@ -396,6 +400,7 @@ impl PrismApp {
         if id == self.active_tab_id {
             return;
         }
+        self.settle_inline_text_editor();
         let Some(workspace) = self.inactive_workspaces.remove(&id) else {
             return;
         };
@@ -414,6 +419,7 @@ impl PrismApp {
     }
 
     fn close_tab(&mut self, id: u64) {
+        self.settle_inline_text_editor();
         let dirty = if id == self.active_tab_id {
             self.workspace.is_dirty()
         } else {
@@ -571,6 +577,7 @@ impl eframe::App for PrismApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.settle_inline_text_editor();
         self.finish_interaction();
         let _ = self.workspace.checkpoint();
         for workspace in self.inactive_workspaces.values() {

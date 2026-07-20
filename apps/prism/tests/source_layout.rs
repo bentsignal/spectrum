@@ -72,6 +72,23 @@ fn continuous_inspector_controls_use_gesture_transactions() {
 }
 
 #[test]
+fn inline_text_editor_uses_one_preview_transaction_and_keeps_add_text_dialog() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let inline = fs::read_to_string(manifest.join("src/bin/prism_gui/inline_text.rs"))
+        .expect("inline text editor source should be readable");
+    let dialogs = fs::read_to_string(manifest.join("src/bin/prism_gui/dialogs.rs"))
+        .expect("dialog source should be readable");
+    assert!(inline.contains("self.workspace.begin_interaction()"));
+    assert!(inline.contains("self.preview_command(command)"));
+    assert!(inline.contains("self.finish_interaction()"));
+    assert!(inline.contains("self.workspace.cancel_interaction()"));
+    assert!(inline.contains("self.layer_visual_dirty.insert(layer_id)"));
+    assert!(!inline.contains("self.execute(Command::UpdateText"));
+    assert!(dialogs.contains("self.text_dialog = Some(TextDialogDraft"));
+    assert!(dialogs.contains("Command::AddText"));
+}
+
+#[test]
 fn revision_graph_comes_from_the_shared_spectrum_surface() {
     let history = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/history.rs"),
