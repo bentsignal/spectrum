@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Adjustments, ColorGrading, HslAdjustments, SpotRemoval, ToneCurve};
 
+mod region;
+pub use region::{PixelRegion, RegionRenderError, adjusted_image_dimensions, render_image_region};
+
+#[cfg(test)]
+mod region_tests;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderOptions {
     pub max_size: Option<u32>,
@@ -172,12 +178,24 @@ fn apply_unsharp(image: &mut RgbaImage, blurred: &RgbaImage, amount: f32) {
 }
 
 fn apply_color_adjustments(image: &mut RgbaImage, a: &Adjustments) {
+    let (width, height) = image.dimensions();
+    apply_color_adjustments_region(image, a, 0, 0, width, height);
+}
+
+fn apply_color_adjustments_region(
+    image: &mut RgbaImage,
+    a: &Adjustments,
+    origin_x: u32,
+    origin_y: u32,
+    full_width: u32,
+    full_height: u32,
+) {
     if !has_color_adjustments(a) {
         return;
     }
     let width_pixels = image.width().max(1) as usize;
-    let width = width_pixels as f32;
-    let height = image.height().max(1) as f32;
+    let width = full_width.max(1) as f32;
+    let height = full_height.max(1) as f32;
     let exposure = 2.0_f32.powf(a.exposure);
     let temperature = a.temperature / 100.0;
     let tint = a.tint / 100.0;
@@ -203,8 +221,8 @@ fn apply_color_adjustments(image: &mut RgbaImage, a: &Adjustments) {
         .par_chunks_mut(4)
         .enumerate()
         .for_each(|(index, pixel)| {
-            let x = index % width_pixels;
-            let y = index / width_pixels;
+            let x = origin_x as usize + index % width_pixels;
+            let y = origin_y as usize + index / width_pixels;
             let alpha = pixel[3];
             let mut rgb = [
                 pixel[0] as f32 / 255.0,
