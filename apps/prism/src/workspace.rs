@@ -369,17 +369,33 @@ impl Workspace {
     }
 
     pub fn preview(&mut self, command: Command) -> Result<CommandOutput> {
-        self.preview_batch(vec![command])?
-            .pop()
-            .context("preview command batch produced no output")
-    }
-
-    pub fn preview_batch(&mut self, commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
         if self.interaction_before.is_none() {
             bail!("begin an interaction before applying preview commands");
         }
+        if matches!(
+            command,
+            Command::Undo | Command::Redo | Command::SelectLayer { .. }
+        ) {
+            bail!("history and selection commands cannot preview an interaction");
+        }
+        let output = apply_command(&mut self.document, command.clone())?;
+        self.interaction_commands.clear();
+        self.interaction_commands.push(command);
+        Ok(output)
+    }
+
+    pub fn preview_batch(&mut self, mut commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
         if commands.is_empty() {
             bail!("preview command batch is empty");
+        }
+        if commands.len() == 1 {
+            let command = commands
+                .pop()
+                .context("single preview batch lost its command")?;
+            return self.preview(command).map(|output| vec![output]);
+        }
+        if self.interaction_before.is_none() {
+            bail!("begin an interaction before applying preview commands");
         }
         if commands.iter().any(|command| {
             matches!(

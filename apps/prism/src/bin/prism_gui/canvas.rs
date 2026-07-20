@@ -1,6 +1,6 @@
 use super::*;
 
-const MIN_PARAGRAPH_TEXT_WIDTH: f32 = 3.0;
+const MIN_PARAGRAPH_TEXT_SCREEN_POINTS: f32 = 3.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TextDragPlacement {
@@ -290,7 +290,7 @@ impl PrismApp {
         if response.drag_stopped()
             && let Some(drag) = self.drag.take()
         {
-            self.finish_canvas_drag(drag);
+            self.finish_canvas_drag(drag, geometry);
             self.smart_guides = SmartGuides::default();
         } else if response.double_clicked()
             && let Some(pointer) = pointer
@@ -334,7 +334,8 @@ impl PrismApp {
             }
             DragAction::Draw => match (self.tool, self.shape_kind) {
                 (Tool::Text, _) => {
-                    let placement = text_drag_placement(drag.start_canvas, drag.current_canvas);
+                    let placement =
+                        text_drag_placement(geometry, drag.start_canvas, drag.current_canvas);
                     let start = geometry.canvas_to_screen(placement.position);
                     let end = geometry.canvas_to_screen(Pos2::new(
                         placement.position.x + placement.box_width.unwrap_or_default(),
@@ -434,7 +435,7 @@ impl PrismApp {
         }
     }
 
-    pub(super) fn finish_canvas_drag(&mut self, drag: DragState) {
+    pub(super) fn finish_canvas_drag(&mut self, drag: DragState, geometry: CanvasGeometry) {
         let min = drag.start_canvas.min(drag.current_canvas);
         let max = drag.start_canvas.max(drag.current_canvas);
         let size = max - min;
@@ -448,7 +449,8 @@ impl PrismApp {
             }
             DragAction::Draw => match (self.tool, self.shape_kind) {
                 (Tool::Text, _) => {
-                    let placement = text_drag_placement(drag.start_canvas, drag.current_canvas);
+                    let placement =
+                        text_drag_placement(geometry, drag.start_canvas, drag.current_canvas);
                     self.open_new_text_editor(placement.position, placement.box_width);
                 }
                 (Tool::Shape, chrome::ShapeKind::Rectangle) if size.x > 2.0 && size.y > 2.0 => {
@@ -581,9 +583,11 @@ fn canvas_interaction_position(
     Some(geometry.screen_to_canvas(screen_position))
 }
 
-fn text_drag_placement(start: Pos2, current: Pos2) -> TextDragPlacement {
+fn text_drag_placement(geometry: CanvasGeometry, start: Pos2, current: Pos2) -> TextDragPlacement {
     let width = (current.x - start.x).abs();
-    if width < MIN_PARAGRAPH_TEXT_WIDTH {
+    let screen_width =
+        (geometry.canvas_to_screen(current).x - geometry.canvas_to_screen(start).x).abs();
+    if screen_width < MIN_PARAGRAPH_TEXT_SCREEN_POINTS {
         return TextDragPlacement {
             position: start,
             box_width: None,
@@ -684,20 +688,43 @@ mod tests {
     }
 
     #[test]
-    fn text_drag_normalizes_horizontal_direction_and_ignores_drag_height() {
-        let forward = text_drag_placement(Pos2::new(100.0, 75.0), Pos2::new(340.0, 410.0));
-        let reverse = text_drag_placement(Pos2::new(340.0, 75.0), Pos2::new(100.0, -210.0));
-        assert_eq!(forward.position, Pos2::new(100.0, 75.0));
-        assert_eq!(reverse.position, Pos2::new(100.0, 75.0));
-        assert_eq!(forward.box_width, Some(240.0));
-        assert_eq!(reverse.box_width, Some(240.0));
+    fn text_drag_classification_is_screen_invariant_and_width_is_in_canvas_pixels() {
+        let viewport = Rect::from_min_size(Pos2::new(20.0, 30.0), Vec2::new(1000.0, 700.0));
+        let geometries = [
+            canvas_geometry(viewport, 800, 600, 0.75, Vec2::new(-31.0, 19.0)),
+            canvas_geometry(viewport, 800, 600, 3.25, Vec2::new(47.0, -28.0)),
+        ];
+        for geometry in geometries {
+            let start = Pos2::new(300.0, 220.0);
+            let start_screen = geometry.canvas_to_screen(start);
+            let forward_current = geometry.screen_to_canvas(start_screen + Vec2::new(8.0, 60.0));
+            let forward = text_drag_placement(geometry, start, forward_current);
+            let expected_width = 8.0 / geometry.pixels_per_point;
+            assert!((forward.position.x - start.x).abs() < 0.001);
+            assert_eq!(forward.position.y, start.y);
+            assert!((forward.box_width.unwrap() - expected_width).abs() < 0.001);
+
+            let reverse_current = geometry.screen_to_canvas(start_screen + Vec2::new(-8.0, -45.0));
+            let reverse = text_drag_placement(geometry, start, reverse_current);
+            assert!((reverse.position.x - (start.x - expected_width)).abs() < 0.001);
+            assert_eq!(reverse.position.y, start.y);
+            assert!((reverse.box_width.unwrap() - expected_width).abs() < 0.001);
+        }
     }
 
     #[test]
-    fn tiny_horizontal_text_drag_remains_point_text() {
-        let start = Pos2::new(100.0, 75.0);
-        let placement = text_drag_placement(start, Pos2::new(102.0, 410.0));
-        assert_eq!(placement.position, start);
-        assert_eq!(placement.box_width, None);
+    fn tiny_screen_motion_remains_point_text_at_varied_zoom_and_pan() {
+        let viewport = Rect::from_min_size(Pos2::new(20.0, 30.0), Vec2::new(1000.0, 700.0));
+        for geometry in [
+            canvas_geometry(viewport, 800, 600, 0.5, Vec2::new(-80.0, 24.0)),
+            canvas_geometry(viewport, 800, 600, 4.0, Vec2::new(65.0, -17.0)),
+        ] {
+            let start = Pos2::new(400.0, 300.0);
+            let start_screen = geometry.canvas_to_screen(start);
+            let current = geometry.screen_to_canvas(start_screen + Vec2::new(2.0, 80.0));
+            let placement = text_drag_placement(geometry, start, current);
+            assert_eq!(placement.position, start);
+            assert_eq!(placement.box_width, None);
+        }
     }
 }
