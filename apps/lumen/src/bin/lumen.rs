@@ -15,12 +15,16 @@ use lumen_core::{
 };
 use serde::Serialize;
 use serde_json::json;
+use spectrum_revisions::{CollaborationMode, SessionId};
 
 #[path = "lumen_cli/benchmark.rs"]
 mod benchmark;
+#[path = "lumen_cli/collaboration.rs"]
+mod collaboration;
 #[path = "lumen_cli/schema.rs"]
 mod schema;
 use benchmark::benchmark;
+use collaboration::*;
 use schema::schema;
 
 #[derive(Parser)]
@@ -31,9 +35,13 @@ use schema::schema;
     long_about = "Lumen's CLI exposes the same command engine as its native GUI. All successful output is JSON."
 )]
 struct Cli {
-    /// Catalog sidecar used by this command.
-    #[arg(short, long, global = true, default_value = "lumen.lumencatalog")]
+    /// Portable Lumen project used by this command.
+    #[arg(short, long, global = true, default_value = "untitled.lumen")]
     catalog: PathBuf,
+
+    /// Continue commands in an existing collaboration session.
+    #[arg(long, global = true)]
+    session: Option<SessionId>,
 
     #[command(subcommand)]
     command: CliCommand,
@@ -138,14 +146,17 @@ enum CliCommand {
     },
     /// Rename a chronological shoot batch in the catalog library.
     BatchRename { id: u64, name: String },
-    /// Show the persistent edit history for a photo.
+    /// Show one photo's immutable revision tree and session cursors.
     History { id: u64 },
-    /// Move one step backward in a photo's persistent history.
+    /// Move this session one photo edit backward.
     HistoryBack { id: u64 },
-    /// Move one step forward in a photo's persistent history.
+    /// Move this session one photo edit forward.
     HistoryForward { id: u64 },
-    /// Jump to a specific zero-based persistent history entry.
-    HistoryJump { id: u64, index: usize },
+    /// Jump this session to a specific revision of one photo.
+    HistoryJump {
+        id: u64,
+        revision: spectrum_revisions::RevisionId,
+    },
     /// Reset edits for one or more photos.
     Reset { ids: Vec<u64> },
     /// Copy every edit from one photo to one or more others.
@@ -212,8 +223,13 @@ enum CliCommand {
     PresetDelete { preset_id: u64 },
     /// Execute a serialized core command. Useful for agents and integrations.
     Run {
-        /// JSON object matching the tagged core Command enum.
+        /// JSON object or array matching the tagged core Command enum.
         json: String,
+    },
+    /// Start or inspect a CLI-first agent collaboration.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
     },
     /// Run deterministic tone-curve and 24 MP export performance workloads.
     Benchmark {
@@ -229,6 +245,38 @@ enum CliCommand {
     },
     /// Print the JSON command protocol and adjustment ranges.
     Schema,
+}
+
+#[derive(Clone, Subcommand)]
+enum AgentCommand {
+    /// Start from the current human position and return a persistent agent session.
+    Start {
+        /// Photo whose history this agent may extend.
+        photo_id: u64,
+        #[arg(long, value_enum)]
+        mode: CliAgentMode,
+        #[arg(long, default_value = "Agent")]
+        name: String,
+        #[arg(long)]
+        from_session: Option<SessionId>,
+    },
+    /// Inspect this agent session's mode, cursor, and follow status.
+    Status,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CliAgentMode {
+    Together,
+    Separate,
+}
+
+impl From<CliAgentMode> for CollaborationMode {
+    fn from(value: CliAgentMode) -> Self {
+        match value {
+            CliAgentMode::Together => Self::Together,
+            CliAgentMode::Separate => Self::Separate,
+        }
+    }
 }
 
 #[derive(Args, Default)]
@@ -352,11 +400,11 @@ impl BenchmarkProfile {
 
     fn command_budget_ms(self) -> f64 {
         match self {
-            Self::Interactive => 20.0,
-            // Catalog persistence is sub-millisecond in the median, but a
-            // shared hosted runner can stall one filesystem sample. Keep the
-            // workstation gate strict while allowing bounded host jitter.
-            Self::HostedCi => 100.0,
+            // A durable command atomically republishes a portable project that
+            // contains a 24 MP source asset. It runs after interaction preview,
+            // so this gate protects completion latency rather than frame time.
+            Self::Interactive => 100.0,
+            Self::HostedCi => 175.0,
         }
     }
 }
@@ -429,6 +477,10 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         return benchmark(*strict, *profile, raw_import.as_deref());
     }
 
+    if let CliCommand::Agent { command } = &cli.command {
+        return agent_command(&cli.catalog, cli.session, command.clone());
+    }
+
     if let CliCommand::Init { name, force } = &cli.command {
         if cli.catalog.exists() && !force {
             anyhow::bail!(
@@ -436,25 +488,37 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                 cli.catalog.display()
             );
         }
+        if cli.catalog.exists() {
+            fs::remove_file(&cli.catalog)
+                .with_context(|| format!("could not replace {}", cli.catalog.display()))?;
+        }
         let project = Project::new(name.clone());
-        project.save(&cli.catalog)?;
+        let workspace =
+            Workspace::create_durable(project, &cli.catalog, cli_actor(), SessionId::new())?;
         return Ok(json!({
             "ok": true,
             "action": "init",
             "catalog": cli.catalog,
-            "project": project,
+            "project": workspace.project,
         }));
     }
 
-    let project = Project::load(&cli.catalog).with_context(|| {
+    let mut workspace = match cli.session {
+        Some(session) => Workspace::open_session(&cli.catalog, session),
+        None => Workspace::open_as(&cli.catalog, cli_actor(), SessionId::new()),
+    }
+    .with_context(|| {
         format!(
             "open {} or create it first with `lumen init`",
             cli.catalog.display()
         )
     })?;
-    let mut workspace = Workspace::new(project, Some(cli.catalog.clone()));
+    let active_catalog = workspace
+        .catalog_path
+        .clone()
+        .unwrap_or_else(|| cli.catalog.clone());
 
-    let (result, should_save) = match cli.command {
+    let (result, _should_save) = match cli.command {
         CliCommand::Import { paths } => (
             output(&workspace_command(
                 &mut workspace,
@@ -465,14 +529,14 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         CliCommand::List => {
             return Ok(json!({
                 "ok": true,
-                "catalog": cli.catalog,
+                "catalog": active_catalog,
                 "project": workspace.project,
             }));
         }
         CliCommand::Get { id } => {
             return Ok(json!({
                 "ok": true,
-                "catalog": cli.catalog,
+                "catalog": active_catalog,
                 "photo": workspace.project.photo(id)?,
             }));
         }
@@ -658,32 +722,33 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             true,
         ),
         CliCommand::History { id } => {
-            let photo = workspace.project.photo(id)?;
-            return Ok(
-                json!({ "ok": true, "photo_id": id, "cursor": photo.history_cursor, "entries": photo.history }),
-            );
+            return Ok(json!({
+                "ok": true,
+                "project": active_catalog,
+                "history": workspace.history_for(id)?.context("photo history is unavailable")?,
+            }));
         }
-        CliCommand::HistoryBack { id } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::HistoryBack { id },
-            )?),
-            true,
-        ),
-        CliCommand::HistoryForward { id } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::HistoryForward { id },
-            )?),
-            true,
-        ),
-        CliCommand::HistoryJump { id, index } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::HistoryJump { id, index },
-            )?),
-            true,
-        ),
+        CliCommand::HistoryBack { id } => {
+            workspace.execute(Command::Select { id })?;
+            (
+                output(&workspace_command(&mut workspace, Command::Undo)?),
+                true,
+            )
+        }
+        CliCommand::HistoryForward { id } => {
+            workspace.execute(Command::Select { id })?;
+            (
+                output(&workspace_command(&mut workspace, Command::Redo)?),
+                true,
+            )
+        }
+        CliCommand::HistoryJump { id, revision } => {
+            workspace.move_photo_to_revision(id, revision)?;
+            (
+                json!({"ok": true, "action": "history_jump", "photo_id": id, "revision": revision}),
+                true,
+            )
+        }
         CliCommand::Reset { ids } => (
             output(&workspace_command(&mut workspace, Command::Reset { ids })?),
             true,
@@ -766,7 +831,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
         CliCommand::PresetList => {
             return Ok(json!({
                 "ok": true,
-                "catalog": cli.catalog,
+                "catalog": active_catalog,
                 "presets": workspace.project.presets,
             }));
         }
@@ -795,27 +860,21 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             true,
         ),
         CliCommand::Run { json } => {
-            let command: Command = serde_json::from_str(&json).context("invalid command JSON")?;
-            let should_save = !matches!(
-                command,
-                Command::Open { .. } | Command::Export { .. } | Command::ExportBatch { .. }
-            );
-            (
-                output(&workspace_command(&mut workspace, command)?),
-                should_save,
-            )
+            let outputs = run_commands(&mut workspace, &json)?;
+            (serde_json::to_value(outputs)?, true)
         }
-        CliCommand::Init { .. } | CliCommand::Benchmark { .. } | CliCommand::Schema => {
+        CliCommand::Init { .. }
+        | CliCommand::Agent { .. }
+        | CliCommand::Benchmark { .. }
+        | CliCommand::Schema => {
             unreachable!()
         }
     };
 
-    if should_save {
-        workspace.project.save(&cli.catalog)?;
-    }
+    workspace.checkpoint()?;
     Ok(json!({
         "result": result,
-        "catalog": cli.catalog,
+        "catalog": active_catalog,
     }))
 }
 

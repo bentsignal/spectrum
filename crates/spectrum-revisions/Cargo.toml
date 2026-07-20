@@ -1,0 +1,23 @@
+[package]
+name = "spectrum-revisions"
+version = "0.1.0"
+edition.workspace = true
+description = "App-neutral durable revision storage for Spectrum creative tools"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+fs2.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[[bin]]
+name = "revision-benchmark"
+path = "src/bin/revision-benchmark.rs"

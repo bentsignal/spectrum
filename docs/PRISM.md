@@ -11,9 +11,12 @@ masking or clipping layers, applying nondestructive adjustments, compositing,
 undoing and redoing work, saving an editable project, and exporting a finished
 image.
 
-Editable documents use the `.prism` project extension. Legacy `.mica` projects
-remain readable and writable. A project contains the canvas and layer model
-needed to resume work; flattened exports are deliberately separate outputs.
+Editable projects use the `.prism` extension. Legacy `.mica` documents remain
+readable and writable. Today the app presents one canvas document per project,
+but persistence already stores that document in an explicit revision track
+inside the portable project container. Future multi-document projects can add
+peer document tracks without changing the shared revision model or coupling
+Prism to another Spectrum app. Flattened exports remain separate outputs.
 
 ## One engine, two interfaces
 
@@ -67,7 +70,7 @@ The handoff is available without opening either GUI:
 
 ```sh
 prism from-lumen \
-  --catalog path/to/library.lumencatalog \
+  --catalog path/to/library.lumen \
   --photo 42 \
   --output path/to/composition.prism
 ```

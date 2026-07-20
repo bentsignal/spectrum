@@ -1,0 +1,264 @@
+use std::{ffi::OsString, fs, path::Path};
+
+use spectrum_revisions::{
+    Actor, ActorKind, AppendRevision, Encoding, LiveRevisionStore, NewProject, Payload, RevisionId,
+    SessionId, TrackId,
+};
+
+struct Fixture {
+    directory: tempfile::TempDir,
+    canonical: std::path::PathBuf,
+    cache: std::path::PathBuf,
+    live: LiveRevisionStore,
+    root: RevisionId,
+    track: TrackId,
+    human_session: SessionId,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().join("project.prism");
+        let cache = directory.path().join("private-cache");
+        let human_session = SessionId::new();
+        let (live, info) = LiveRevisionStore::create(
+            &canonical,
+            &cache,
+            NewProject {
+                application_id: "spectrum.test".into(),
+                application_version: "1.0.0".into(),
+                actor: actor("person:1", ActorKind::Human),
+                session_id: human_session,
+                root_label: Some("Created".into()),
+                track_kind: "test.document".into(),
+                track_label: "Document".into(),
+                initial_snapshots: vec![payload("test.snapshot", b"root")],
+                assets: Vec::new(),
+            },
+        )
+        .unwrap();
+        Self {
+            directory,
+            canonical,
+            cache,
+            live,
+            root: info.root_revision,
+            track: info.default_track_id,
+            human_session,
+        }
+    }
+
+    fn append(&mut self, session_id: SessionId, parent: RevisionId, label: &str) -> RevisionId {
+        self.live
+            .mutate(|store| {
+                store.append(AppendRevision {
+                    track_id: self.track,
+                    session_id,
+                    expected_parent: parent,
+                    application_version: "1.0.0".into(),
+                    label: Some(label.into()),
+                    command_count: 1,
+                    operation_payloads: vec![payload("test.operations", label.as_bytes())],
+                    snapshots: Vec::new(),
+                    assets: Vec::new(),
+                })
+            })
+            .unwrap()
+            .id
+    }
+}
+
+#[test]
+fn live_store_keeps_transaction_sidecars_out_of_the_project_folder() {
+    let fixture = Fixture::new();
+    drop(fixture.live);
+    let stale_publish = fixture
+        .directory
+        .path()
+        .join(".project.prism.spectrum-publish-stale.tmp");
+    fs::write(&stale_publish, b"interrupted publish").unwrap();
+    let mut live = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
+    live.mutate(|store| {
+        store.append(AppendRevision {
+            track_id: fixture.track,
+            session_id: fixture.human_session,
+            expected_parent: fixture.root,
+            application_version: "1.0.0".into(),
+            label: Some("Edit".into()),
+            command_count: 1,
+            operation_payloads: vec![payload("test.operations", b"edit")],
+            snapshots: Vec::new(),
+            assets: Vec::new(),
+        })
+    })
+    .unwrap();
+
+    assert!(fixture.canonical.is_file());
+    assert!(!sidecar(&fixture.canonical, "-wal").exists());
+    assert!(!sidecar(&fixture.canonical, "-shm").exists());
+    assert!(!stale_publish.exists());
+    assert!(sidecar(live.working_path(), "-wal").exists());
+    assert!(sidecar(live.working_path(), "-shm").exists());
+    assert_eq!(
+        fs::read(&fixture.canonical).unwrap(),
+        fs::read(live.working_path()).unwrap()
+    );
+
+    let portable = fixture.directory.path().join("portable-copy.prism");
+    fs::copy(&fixture.canonical, &portable).unwrap();
+    let reopened = LiveRevisionStore::open(
+        &portable,
+        &fixture.directory.path().join("second-private-cache"),
+    )
+    .unwrap();
+    assert_eq!(reopened.store().children(fixture.root).unwrap().len(), 1);
+    assert!(!sidecar(&portable, "-wal").exists());
+    assert!(!sidecar(&portable, "-shm").exists());
+}
+
+#[test]
+fn independent_live_connections_publish_both_branches_without_visible_sidecars() {
+    let mut fixture = Fixture::new();
+    let mut agent = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
+    let agent_session = SessionId::new();
+    agent
+        .mutate(|store| {
+            store.resume_session(
+                agent_session,
+                actor("agent:1", ActorKind::Agent),
+                fixture.root,
+            )
+        })
+        .unwrap();
+
+    let human = fixture.append(fixture.human_session, fixture.root, "Human edit");
+    let agent_revision = agent
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: fixture.track,
+                session_id: agent_session,
+                expected_parent: fixture.root,
+                application_version: "1.0.0".into(),
+                label: Some("Agent edit".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"agent")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
+        })
+        .unwrap()
+        .id;
+
+    let children = fixture.live.store().children(fixture.root).unwrap();
+    assert_eq!(children.len(), 2);
+    assert!(children.iter().any(|revision| revision.id == human));
+    assert!(
+        children
+            .iter()
+            .any(|revision| revision.id == agent_revision)
+    );
+    assert!(!sidecar(&fixture.canonical, "-wal").exists());
+    assert!(!sidecar(&fixture.canonical, "-shm").exists());
+}
+
+#[test]
+fn newer_live_cache_recovers_a_stale_published_copy() {
+    let mut fixture = Fixture::new();
+    let stale = fixture.directory.path().join("stale.prism");
+    fs::copy(&fixture.canonical, &stale).unwrap();
+    let latest = fixture.append(fixture.human_session, fixture.root, "Survives");
+    drop(fixture.live);
+
+    fs::copy(&stale, &fixture.canonical).unwrap();
+    let recovered = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
+    assert!(recovered.store().revision(latest).unwrap().is_some());
+    drop(recovered);
+
+    let separate_cache = fixture.directory.path().join("verified-cache");
+    let verified = LiveRevisionStore::open(&fixture.canonical, &separate_cache).unwrap();
+    assert!(verified.store().revision(latest).unwrap().is_some());
+}
+
+#[test]
+fn equally_advanced_returned_copy_replaces_an_inactive_local_cache() {
+    let mut fixture = Fixture::new();
+    let traveler = fixture.directory.path().join("traveler.prism");
+    fs::copy(&fixture.canonical, &traveler).unwrap();
+    let traveler_cache = fixture.directory.path().join("traveler-cache");
+    let mut remote = LiveRevisionStore::open(&traveler, &traveler_cache).unwrap();
+
+    let local = fixture.append(fixture.human_session, fixture.root, "Local branch");
+    let remote_revision = remote
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: fixture.track,
+                session_id: fixture.human_session,
+                expected_parent: fixture.root,
+                application_version: "1.0.0".into(),
+                label: Some("Returned branch".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"returned")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
+        })
+        .unwrap()
+        .id;
+    assert_eq!(
+        fixture.live.store().generation().unwrap(),
+        remote.store().generation().unwrap()
+    );
+    drop(remote);
+    drop(fixture.live);
+
+    fs::copy(&traveler, &fixture.canonical).unwrap();
+    let reopened = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
+    assert!(
+        reopened
+            .store()
+            .revision(remote_revision)
+            .unwrap()
+            .is_some()
+    );
+    assert!(reopened.store().revision(local).unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_publish_keeps_the_committed_edit_recoverable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = Fixture::new();
+    fs::set_permissions(fixture.directory.path(), fs::Permissions::from_mode(0o500)).unwrap();
+    let latest = fixture.append(fixture.human_session, fixture.root, "Locally safe");
+    assert!(fixture.live.pending_publish_error().is_some());
+    assert!(fixture.live.store().revision(latest).unwrap().is_some());
+
+    fs::set_permissions(fixture.directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    fixture.live.publish().unwrap();
+    assert!(fixture.live.pending_publish_error().is_none());
+    let verified = LiveRevisionStore::open(
+        &fixture.canonical,
+        &fixture.directory.path().join("verified-after-retry"),
+    )
+    .unwrap();
+    assert!(verified.store().revision(latest).unwrap().is_some());
+}
+
+fn actor(id: &str, kind: ActorKind) -> Actor {
+    Actor {
+        id: id.into(),
+        display_name: id.into(),
+        kind,
+    }
+}
+
+fn payload(family: &str, bytes: &[u8]) -> Payload {
+    Payload::new(Encoding::new(family, 1), bytes.to_vec())
+}
+
+fn sidecar(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut value: OsString = path.as_os_str().to_owned();
+    value.push(suffix);
+    value.into()
+}

@@ -4,13 +4,16 @@ The `lumen` binary is intended for humans, scripts, and autonomous agents. Its
 stdout is always JSON after argument parsing. Operational failures are JSON on
 stderr and return a nonzero status.
 
-The catalog is selected globally:
+The portable project is selected globally:
 
 ```sh
-lumen --catalog path/to/shoot.lumencatalog <command>
+lumen --catalog path/to/shoot.lumen <command>
 ```
 
-If omitted, it defaults to `lumen.lumencatalog` in the current directory.
+If omitted, it defaults to `untitled.lumen` in the current directory. A `.lumen`
+project is a transactional single file containing an independent revision tree
+for every photo, project metadata, and content-addressed original photos. Legacy `.lumencatalog` files are preserved
+and migrated to a sibling `.lumen` project when opened.
 
 ## Commands
 
@@ -28,9 +31,9 @@ If omitted, it defaults to `lumen.lumencatalog` in the current directory.
 | `spot <ID> [OPTIONS]` | Add or clear nondestructive repair-brush dabs |
 | `pick <ID>... --state <STATE>` | Mark photos unmarked, keep, or reject |
 | `batch-rename <ID> <NAME>` | Rename a chronological shoot batch |
-| `history <ID>` | Return persistent history and its cursor |
-| `history-back\|history-forward <ID>` | Navigate one persistent edit |
-| `history-jump <ID> <INDEX>` | Restore a particular history snapshot |
+| `history <ID>` | Return one photo's revision tree and session cursors |
+| `history-back\|history-forward <ID>` | Move this session through one photo's history |
+| `history-jump <ID> <REVISION>` | Move this session to any revision of one photo |
 | `reset <ID>...` | Restore identity edits |
 | `preset-list` | List reusable development presets |
 | `preset-save <NAME> --from <ID>` | Save one photo's non-geometric development settings |
@@ -42,7 +45,9 @@ If omitted, it defaults to `lumen.lumencatalog` in the current directory.
 | `remove <ID>...` | Remove catalog references, never source files |
 | `export <ID> <PATH>` | Render an edited file |
 | `export-batch <ID>... --directory <PATH>` | Export multiple photos as JPEG, PNG, TIFF, or WebP |
-| `run '<JSON>'` | Deserialize and execute a core command directly |
+| `run '<JSON>'` | Execute one core command or an atomic command array |
+| `agent start <ID> --mode <together\|separate>` | Start a collaboration scoped to one photo |
+| `agent status` | Inspect the session supplied with `--session` |
 | `benchmark [--strict] [--raw-import PATH]` | Measure imports, tone-curve command/preview latency, and 24 MP export |
 | `schema` | Return ranges and raw-command examples |
 
@@ -68,7 +73,7 @@ headroom for host jitter, after building the release binary.
 
 | Workload | Excellent target | Workstation budget | Hosted-CI budget | UX meaning |
 | --- | ---: | ---: | ---: | --- |
-| Tone-curve catalog load + command + save (p95) | 8 ms | 20 ms | 20 ms | Catalog work stays below a frame |
+| Portable-project load + tone-curve command + atomic 24 MP publication (p95) | 50 ms | 100 ms | 175 ms | Completion stays immediate without blocking live preview |
 | 1800×1200 curve preview (p95) | 16.7 ms | 50 ms | 125 ms | Fluid locally; CI catches relative regressions on slower shared CPUs |
 | 12-photo JPEG batch import (p95) | 50 ms | 250 ms | 500 ms | Import bookkeeping remains effectively immediate |
 | 24 MP JPEG export | 2 s | 5 s | 5 s | Fast single export; bounded batch wait |
@@ -88,25 +93,25 @@ degrees. Crop coordinates are normalized from `0` to `1`.
 Options that are omitted by `edit` remain unchanged:
 
 ```sh
-lumen --catalog shoot.lumencatalog edit 7 \
+lumen --catalog shoot.lumen edit 7 \
   --exposure -0.35 --highlights -28 --texture 12 --dehaze 8
 
-lumen --catalog shoot.lumencatalog crop 7 \
+lumen --catalog shoot.lumen crop 7 \
   --x 0.05 --y 0.05 --width 0.9 --height 0.85 --straighten 1.2
-lumen --catalog shoot.lumencatalog hsl 7 blue \
+lumen --catalog shoot.lumen hsl 7 blue \
   --hue -8 --saturation 18 --luminance -4
-lumen --catalog shoot.lumencatalog curve 7 master \
+lumen --catalog shoot.lumen curve 7 master \
   --points '0,0;0.25,0.2;0.75,0.82;1,1'
-lumen --catalog shoot.lumencatalog grade 7 highlights \
+lumen --catalog shoot.lumen grade 7 highlights \
   --hue 42 --saturation 18 --luminance 4 --balance 10
-lumen --catalog shoot.lumencatalog spot 7 \
+lumen --catalog shoot.lumen spot 7 \
   --x 0.51 --y 0.24 --radius 0.018 --opacity 0.9
-lumen --catalog shoot.lumencatalog pick 7 8 9 --state keep
-lumen --catalog shoot.lumencatalog batch-rename 1 "Night walk"
+lumen --catalog shoot.lumen pick 7 8 9 --state keep
+lumen --catalog shoot.lumen batch-rename 1 "Night walk"
 
-lumen --catalog shoot.lumencatalog preset-save "Soft color" --from 7
-lumen --catalog shoot.lumencatalog preset-apply 1 8 9 10
-lumen --catalog shoot.lumencatalog export-batch 7 8 9 10 \
+lumen --catalog shoot.lumen preset-save "Soft color" --from 7
+lumen --catalog shoot.lumen preset-apply 1 8 9 10
+lumen --catalog shoot.lumen export-batch 7 8 9 10 \
   --directory exports --format jpeg --quality 90 --max-size 3200
 ```
 
@@ -115,7 +120,7 @@ lumen --catalog shoot.lumencatalog export-batch 7 8 9 10 \
 `run` is useful when an agent already speaks the serialized command protocol:
 
 ```sh
-lumen --catalog shoot.lumencatalog run \
+lumen --catalog shoot.lumen run \
   '{"command":"adjust","id":7,"patch":{"exposure":0.4,"vibrance":12}}'
 ```
 
@@ -127,8 +132,7 @@ task-oriented subcommands are preferred when shell quoting would be fragile.
 
 - Treat photo IDs as catalog-local unsigned integers.
 - Read a photo with `get` before choosing relative edits.
-- Put a catalog and its photo folders under one shared/iCloud library directory
-  for portable relative source references. Photos outside that tree retain their
-  absolute paths.
+- Imported originals are embedded immutably and deduplicated by content hash.
 - Export to a new path. Lumen rejects unsupported output extensions.
-- The CLI persists successful mutation commands before returning success.
+- The CLI commits successful mutations to the affected photo tracks before returning success.
+- Editing one photo never moves another photo's revision cursor; multi-photo commands publish their linked revisions atomically.

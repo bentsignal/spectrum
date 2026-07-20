@@ -34,26 +34,26 @@ impl LumenApp {
                     if ui.button("Import Photos").clicked() {
                         self.import_dialog();
                     }
-                    ui.menu_button("Catalog", |ui| {
-                        if ui.button("New Catalog...").clicked() {
+                    ui.menu_button("Project", |ui| {
+                        if ui.button("New Project").clicked() {
                             ui.close();
                             self.new_catalog();
                         }
-                        if ui.button("Open Catalog...").clicked() {
+                        if ui.button("Open Project...").clicked() {
                             ui.close();
                             self.open_catalog();
                         }
-                        if ui.button("Save").clicked() {
+                        if ui.button("Move Project...").clicked() {
                             ui.close();
-                            self.save_catalog(false);
+                            self.move_project();
                         }
-                        if ui.button("Save As...").clicked() {
+                        if ui.button("History  ⌘H").clicked() {
                             ui.close();
-                            self.save_catalog(true);
+                            self.history_open = true;
                         }
                         ui.separator();
                         ui.label(
-                            RichText::new("RECENT CATALOGS")
+                            RichText::new("RECENT PROJECTS")
                                 .size(10.0)
                                 .color(Color32::GRAY),
                         );
@@ -90,18 +90,13 @@ impl LumenApp {
                         self.library_mode = true;
                     }
                     ui.separator();
-                    let (can_back, can_forward) = self
-                        .workspace
-                        .project
-                        .selected_photo()
-                        .map(|photo| (photo.can_history_back(), photo.can_history_forward()))
-                        .unwrap_or_default();
+                    let (can_back, can_forward) =
+                        (self.workspace.can_undo(), self.workspace.can_redo());
                     if ui
                         .add_enabled(can_back, egui::Button::new("Back"))
                         .on_hover_text("Go back one edit (Cmd/Ctrl+Z)")
                         .clicked()
-                        && let Some(id) = self.workspace.project.selected
-                        && self.execute_and_autosave(Command::HistoryBack { id })
+                        && self.execute(Command::Undo)
                     {
                         self.draft_id = None;
                         self.sync_draft();
@@ -110,8 +105,7 @@ impl LumenApp {
                         .add_enabled(can_forward, egui::Button::new("Forward"))
                         .on_hover_text("Go forward one edit (Cmd/Ctrl+Shift+Z)")
                         .clicked()
-                        && let Some(id) = self.workspace.project.selected
-                        && self.execute_and_autosave(Command::HistoryForward { id })
+                        && self.execute(Command::Redo)
                     {
                         self.draft_id = None;
                         self.sync_draft();

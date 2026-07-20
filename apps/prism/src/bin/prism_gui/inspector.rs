@@ -165,34 +165,48 @@ impl PrismApp {
                         let mut text = text.clone();
                         let mut font_size = *font_size;
                         let mut color = color32(*color);
-                        let mut changed = false;
                         ui.label(RichText::new("Text").size(11.0).color(MUTED));
-                        changed |= ui
-                            .add(
-                                egui::TextEdit::multiline(&mut text)
-                                    .desired_rows(3)
-                                    .desired_width(f32::INFINITY),
-                            )
-                            .changed();
-                        changed |= ui
-                            .add(
-                                egui::Slider::new(&mut font_size, 4.0..=1_000.0)
-                                    .text("Font size")
-                                    .suffix(" px"),
-                            )
-                            .changed();
-                        ui.horizontal(|ui| {
-                            ui.label("Color");
-                            changed |= ui.color_edit_button_srgba(&mut color).changed();
-                        });
-                        if changed && !text.trim().is_empty() {
-                            self.execute(Command::UpdateText {
+                        let response = ui.add(
+                            egui::TextEdit::multiline(&mut text)
+                                .desired_rows(3)
+                                .desired_width(f32::INFINITY),
+                        );
+                        self.widget_command_if(
+                            &response,
+                            (!text.trim().is_empty()).then(|| Command::UpdateText {
                                 id: layer.id,
-                                text,
+                                text: text.clone(),
                                 font_size,
                                 color: rgba(color),
-                            });
-                        }
+                            }),
+                        );
+                        let response = ui.add(
+                            egui::Slider::new(&mut font_size, 4.0..=1_000.0)
+                                .text("Font size")
+                                .suffix(" px"),
+                        );
+                        self.widget_command(
+                            &response,
+                            Command::UpdateText {
+                                id: layer.id,
+                                text: text.clone(),
+                                font_size,
+                                color: rgba(color),
+                            },
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Color");
+                            let response = ui.color_edit_button_srgba(&mut color);
+                            self.widget_command(
+                                &response,
+                                Command::UpdateText {
+                                    id: layer.id,
+                                    text,
+                                    font_size,
+                                    color: rgba(color),
+                                },
+                            );
+                        });
                     });
             }
             LayerKind::Rectangle {
@@ -208,37 +222,63 @@ impl PrismApp {
                         let mut height = *height;
                         let mut color = color32(*color);
                         let mut corner_radius = *corner_radius;
-                        let mut changed = false;
                         ui.horizontal(|ui| {
                             ui.label("Width");
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut width).range(1..=32_768))
-                                .changed();
+                            let response =
+                                ui.add(egui::DragValue::new(&mut width).range(1..=32_768));
+                            self.widget_command(
+                                &response,
+                                Command::UpdateRectangle {
+                                    id: layer.id,
+                                    width,
+                                    height,
+                                    color: rgba(color),
+                                    corner_radius,
+                                },
+                            );
                             ui.label("Height");
-                            changed |= ui
-                                .add(egui::DragValue::new(&mut height).range(1..=32_768))
-                                .changed();
+                            let response =
+                                ui.add(egui::DragValue::new(&mut height).range(1..=32_768));
+                            self.widget_command(
+                                &response,
+                                Command::UpdateRectangle {
+                                    id: layer.id,
+                                    width,
+                                    height,
+                                    color: rgba(color),
+                                    corner_radius,
+                                },
+                            );
                         });
-                        changed |= ui
-                            .add(
-                                egui::Slider::new(&mut corner_radius, 0.0..=512.0)
-                                    .text("Corner radius")
-                                    .suffix(" px"),
-                            )
-                            .changed();
-                        ui.horizontal(|ui| {
-                            ui.label("Fill");
-                            changed |= ui.color_edit_button_srgba(&mut color).changed();
-                        });
-                        if changed {
-                            self.execute(Command::UpdateRectangle {
+                        let response = ui.add(
+                            egui::Slider::new(&mut corner_radius, 0.0..=512.0)
+                                .text("Corner radius")
+                                .suffix(" px"),
+                        );
+                        self.widget_command(
+                            &response,
+                            Command::UpdateRectangle {
                                 id: layer.id,
                                 width,
                                 height,
                                 color: rgba(color),
                                 corner_radius,
-                            });
-                        }
+                            },
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Fill");
+                            let response = ui.color_edit_button_srgba(&mut color);
+                            self.widget_command(
+                                &response,
+                                Command::UpdateRectangle {
+                                    id: layer.id,
+                                    width,
+                                    height,
+                                    color: rgba(color),
+                                    corner_radius,
+                                },
+                            );
+                        });
                     });
             }
             LayerKind::Raster { path, .. } => {
@@ -304,21 +344,19 @@ impl PrismApp {
                     self.execute(Command::SetMask { id: layer.id, mask });
                 }
                 if mask.enabled {
-                    let mut changed = false;
-                    changed |= ui
-                        .add(egui::Slider::new(&mut mask.x, 0.0..=0.99).text("Mask X"))
-                        .changed();
-                    changed |= ui
-                        .add(egui::Slider::new(&mut mask.y, 0.0..=0.99).text("Mask Y"))
-                        .changed();
-                    changed |= ui
-                        .add(egui::Slider::new(&mut mask.width, 0.01..=1.0).text("Mask width"))
-                        .changed();
-                    changed |= ui
-                        .add(egui::Slider::new(&mut mask.height, 0.01..=1.0).text("Mask height"))
-                        .changed();
-                    changed |= ui.checkbox(&mut mask.invert, "Invert mask").changed();
-                    if changed {
+                    let response =
+                        ui.add(egui::Slider::new(&mut mask.x, 0.0..=0.99).text("Mask X"));
+                    self.widget_command(&response, Command::SetMask { id: layer.id, mask });
+                    let response =
+                        ui.add(egui::Slider::new(&mut mask.y, 0.0..=0.99).text("Mask Y"));
+                    self.widget_command(&response, Command::SetMask { id: layer.id, mask });
+                    let response =
+                        ui.add(egui::Slider::new(&mut mask.width, 0.01..=1.0).text("Mask width"));
+                    self.widget_command(&response, Command::SetMask { id: layer.id, mask });
+                    let response =
+                        ui.add(egui::Slider::new(&mut mask.height, 0.01..=1.0).text("Mask height"));
+                    self.widget_command(&response, Command::SetMask { id: layer.id, mask });
+                    if ui.checkbox(&mut mask.invert, "Invert mask").changed() {
                         self.execute(Command::SetMask { id: layer.id, mask });
                     }
                 }

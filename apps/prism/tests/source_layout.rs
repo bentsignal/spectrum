@@ -49,3 +49,29 @@ fn interactive_gui_never_calls_the_full_document_compositor() {
         "interactive Prism code must render cached layers, not full documents: {offenders:#?}"
     );
 }
+
+#[test]
+fn continuous_inspector_controls_use_gesture_transactions() {
+    let inspector = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/inspector.rs"),
+    )
+    .expect("inspector source should be readable");
+    assert!(
+        !inspector.contains("self.execute(Command::UpdateRectangle"),
+        "rectangle sliders must preview one transaction, not commit every rendered frame"
+    );
+    assert!(
+        !inspector.contains("self.execute(Command::UpdateText"),
+        "text editing must preview one transaction, not commit every keystroke"
+    );
+}
+
+#[test]
+fn revision_graph_comes_from_the_shared_spectrum_surface() {
+    let history = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/history.rs"),
+    )
+    .expect("history source should be readable");
+    assert!(history.contains("spectrum_history_ui"));
+    assert!(!history.contains("fn tree_layout("));
+}

@@ -129,7 +129,9 @@ impl PrismApp {
     }
 
     pub(super) fn dialogs(&mut self, context: &egui::Context) {
-        if self.delete_confirmation.is_some() {
+        if self.move_project_dialog.is_some() {
+            self.move_project_dialog(context);
+        } else if self.delete_confirmation.is_some() {
             self.delete_dialog(context);
         } else if self.rename_layer.is_some() {
             self.rename_dialog(context);

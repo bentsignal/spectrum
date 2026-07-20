@@ -3,6 +3,8 @@
 use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver},
+    time::{Duration, Instant},
 };
 
 use eframe::egui::{
@@ -11,7 +13,7 @@ use eframe::egui::{
 use image::{DynamicImage, imageops::FilterType};
 use lumen_core::{
     Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo, PickState,
-    SpotRemoval, ToneCurve, Workspace,
+    Project, SpotRemoval, ToneCurve, Workspace,
     engine::{RenderOptions, decode_photo, render_image, render_photo},
     project::is_supported_image,
 };
@@ -22,10 +24,15 @@ mod canvas;
 mod dialogs;
 #[path = "lumen_gui/helpers.rs"]
 mod helpers;
+#[path = "lumen_gui/history.rs"]
+mod history;
 #[path = "lumen_gui/inspector.rs"]
 mod inspector;
 #[path = "lumen_gui/library.rs"]
 mod library;
+#[cfg(target_os = "macos")]
+#[path = "lumen_gui/macos.rs"]
+mod macos;
 #[path = "lumen_gui/state.rs"]
 mod state;
 #[path = "lumen_gui/toolbar.rs"]
@@ -90,7 +97,6 @@ enum FilmFilter {
 
 #[derive(Clone)]
 enum CatalogSwitch {
-    New(PathBuf),
     Open(PathBuf),
 }
 
@@ -102,20 +108,54 @@ struct Histogram {
     luma: [u32; 256],
 }
 
-fn main() -> eframe::Result {
-    let initial_catalog = std::env::args_os().nth(1).map(PathBuf::from);
-    let options = eframe::NativeOptions {
+fn native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 920.0])
             .with_min_inner_size([1060.0, 680.0]),
         centered: true,
         ..Default::default()
-    };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn main() -> eframe::Result {
+    let initial_catalog = std::env::args_os().nth(1).map(PathBuf::from);
+    let (_, open_document_receiver) = mpsc::channel();
     eframe::run_native(
         "Lumen",
-        options,
-        Box::new(move |creation| Ok(Box::new(LumenApp::new(creation, initial_catalog.clone())))),
+        native_options(),
+        Box::new(move |creation| {
+            Ok(Box::new(LumenApp::new(
+                creation,
+                initial_catalog.clone(),
+                open_document_receiver,
+            )))
+        }),
     )
+}
+
+#[cfg(target_os = "macos")]
+fn main() -> eframe::Result {
+    let initial_catalog = std::env::args_os().nth(1).map(PathBuf::from);
+    let (open_document_sender, open_document_receiver) = mpsc::channel();
+    let event_loop =
+        winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+    macos::install_open_document_handler(open_document_sender);
+    let mut application = eframe::create_native(
+        "Lumen",
+        native_options(),
+        Box::new(move |creation| {
+            Ok(Box::new(LumenApp::new(
+                creation,
+                initial_catalog.clone(),
+                open_document_receiver,
+            )))
+        }),
+        &event_loop,
+    );
+    event_loop.run_app(&mut application)?;
+    Ok(())
 }
 
 struct LumenApp {
@@ -163,10 +203,19 @@ struct LumenApp {
     export_max_size: u32,
     export_directory: Option<PathBuf>,
     preset_name: String,
+    collaboration_poll_at: Instant,
+    history_open: bool,
+    history_selected: Option<spectrum_revisions::RevisionId>,
+    history_scroll_to_current: bool,
+    open_document_receiver: Receiver<PathBuf>,
 }
 
 impl LumenApp {
-    fn new(creation: &eframe::CreationContext<'_>, initial_catalog: Option<PathBuf>) -> Self {
+    fn new(
+        creation: &eframe::CreationContext<'_>,
+        initial_catalog: Option<PathBuf>,
+        open_document_receiver: Receiver<PathBuf>,
+    ) -> Self {
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = PANEL;
         visuals.window_fill = PANEL;
@@ -191,8 +240,26 @@ impl LumenApp {
             .and_then(|storage| storage.get_string(RECENT_CATALOGS_KEY))
             .and_then(|value| serde_json::from_str(&value).ok())
             .unwrap_or_default();
+        let (workspace, startup_status, startup_error) = match initial_catalog.as_deref() {
+            Some(path) => match state::open_local_workspace(path) {
+                Ok(workspace) => (workspace, format!("Opened {}", path.display()), false),
+                Err(error) => (
+                    state::create_managed_workspace(Project::default()).unwrap_or_default(),
+                    format!("Could not open project: {error:#}"),
+                    true,
+                ),
+            },
+            None => match state::create_managed_workspace(Project::default()) {
+                Ok(workspace) => (workspace, "Created a new Lumen project".into(), false),
+                Err(error) => (
+                    Workspace::default(),
+                    format!("Could not create local project: {error:#}"),
+                    true,
+                ),
+            },
+        };
         let mut app = Self {
-            workspace: Workspace::default(),
+            workspace,
             preview: None,
             preview_source: None,
             preview_fast_source: None,
@@ -206,8 +273,8 @@ impl LumenApp {
             thumbnails: HashMap::new(),
             draft: Adjustments::default(),
             draft_id: None,
-            status: "Drop photos anywhere, or choose Import Photos".into(),
-            error: false,
+            status: startup_status,
+            error: startup_error,
             zoom: 1.0,
             pan: Vec2::ZERO,
             compare_mode: CompareMode::Edited,
@@ -236,12 +303,14 @@ impl LumenApp {
             export_max_size: 0,
             export_directory: None,
             preset_name: String::new(),
+            collaboration_poll_at: Instant::now(),
+            history_open: false,
+            history_selected: None,
+            history_scroll_to_current: false,
+            open_document_receiver,
         };
-        if let Some(path) = initial_catalog
-            && app.execute(Command::Open { path: path.clone() })
-        {
+        if let Some(path) = app.workspace.catalog_path.clone() {
             app.remember_catalog(path);
-            app.reset_catalog_view(true);
         }
         app
     }
@@ -250,11 +319,16 @@ impl LumenApp {
 impl eframe::App for LumenApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
+        self.receive_open_documents(&context);
+        self.sync_agent_collaborations(&context);
         self.sync_draft();
         self.handle_drop_and_shortcuts(&context);
+        spectrum_history_ui::reserve_history_shortcut();
         self.toolbar(ui);
         self.status_bar(ui);
-        if self.library_mode {
+        if self.history_open {
+            self.history_view(ui);
+        } else if self.library_mode {
             self.library_canvas(ui);
         } else {
             self.filmstrip(ui);

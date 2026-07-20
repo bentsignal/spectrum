@@ -71,7 +71,7 @@ impl LumenApp {
         if confirm {
             self.reset_confirmation = false;
             let ids = self.selected_photo_ids();
-            if !ids.is_empty() && self.execute_and_autosave(Command::Reset { ids: ids.clone() }) {
+            if !ids.is_empty() && self.execute_and_commit(Command::Reset { ids: ids.clone() }) {
                 for id in ids {
                     self.thumbnails.remove(&id);
                 }
@@ -123,7 +123,7 @@ impl LumenApp {
         if confirm {
             self.remove_confirmation = false;
             let active_batch = self.active_batch;
-            if !ids.is_empty() && self.execute_and_autosave(Command::Remove { ids }) {
+            if !ids.is_empty() && self.execute_and_commit(Command::Remove { ids }) {
                 let active_batch =
                     active_batch.filter(|batch_id| self.workspace.project.batch(*batch_id).is_ok());
                 self.reset_catalog_view(active_batch.is_none());
@@ -156,11 +156,9 @@ impl LumenApp {
                     if ui.button("Cancel").clicked() {
                         cancel = true;
                     }
-                    if ui.button("Save Current...").clicked() {
-                        self.save_catalog(true);
-                        if self.workspace.catalog_path.is_some() {
-                            confirm = true;
-                        }
+                    if ui.button("Move Current...").clicked() {
+                        self.move_project();
+                        confirm = true;
                     }
                     if ui
                         .button(
@@ -220,7 +218,7 @@ impl LumenApp {
         }
         if save
             && let Some((id, name)) = self.rename_batch.take()
-            && !self.execute_and_autosave(Command::RenameBatch {
+            && !self.execute_and_commit(Command::RenameBatch {
                 id,
                 name: name.clone(),
             })

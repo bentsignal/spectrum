@@ -1,0 +1,16 @@
+[package]
+name = "spectrum-history-ui"
+version = "0.1.0"
+edition.workspace = true
+description = "Shared revision-history interface for Spectrum creative applications"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+egui.workspace = true
+spectrum-revisions = { path = "../spectrum-revisions" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSMenu", "NSMenuItem"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString"] }

@@ -1,10 +1,13 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use spectrum_revisions::{
+    Actor, ActorKind, Collaboration, CollaborationMode, CollaborationSync, SessionId,
+};
 
 use crate::{
-    AdjustmentPatch, Adjustments, PickState, Project,
+    AdjustmentPatch, Adjustments, DurableCatalog, PickState, Project, ProjectHistory,
     engine::{ExportFormat, RenderOptions, batch_destination, export_photo},
 };
 
@@ -127,6 +130,8 @@ pub struct Workspace {
     pub project: Project,
     pub catalog_path: Option<PathBuf>,
     pub clipboard: Option<Adjustments>,
+    durable: Option<DurableCatalog>,
+    legacy_photo_history: bool,
     undo: Vec<Project>,
     redo: Vec<Project>,
 }
@@ -143,18 +148,399 @@ impl Workspace {
             project,
             catalog_path,
             clipboard: None,
+            durable: None,
+            legacy_photo_history: true,
             undo: Vec::new(),
             redo: Vec::new(),
         }
     }
+    pub fn open_as(path: &Path, actor: Actor, session_id: SessionId) -> Result<Self> {
+        if DurableCatalog::looks_durable(path)? {
+            let (durable, project) = DurableCatalog::open(path, actor, session_id)?;
+            return Ok(Self::from_durable(path, durable, project));
+        }
+        let project = Project::load(path)?;
+        let destination = path.with_extension("lumen");
+        if destination == path {
+            bail!("legacy JSON catalogs must use .lumencatalog before migration");
+        }
+        if destination.exists() {
+            bail!(
+                "could not migrate {} because {} already exists",
+                path.display(),
+                destination.display()
+            );
+        }
+        let (durable, project) = DurableCatalog::create(&destination, &project, actor, session_id)?;
+        Ok(Self::from_durable(&destination, durable, project))
+    }
+
+    pub fn open_session(path: &Path, session_id: SessionId) -> Result<Self> {
+        if !DurableCatalog::looks_durable(path)? {
+            bail!("agent sessions require a durable Lumen project");
+        }
+        let (durable, project) = DurableCatalog::open_session(path, session_id)?;
+        Ok(Self::from_durable(path, durable, project))
+    }
+
+    pub fn create_durable(
+        project: Project,
+        path: &Path,
+        actor: Actor,
+        session_id: SessionId,
+    ) -> Result<Self> {
+        let (durable, project) = DurableCatalog::create(path, &project, actor, session_id)?;
+        Ok(Self::from_durable(path, durable, project))
+    }
+
+    pub fn start_collaboration(
+        path: &Path,
+        source_session: Option<SessionId>,
+        photo_id: u64,
+        agent: Actor,
+        mode: CollaborationMode,
+    ) -> Result<Collaboration> {
+        DurableCatalog::start_collaboration(path, source_session, photo_id, agent, mode)
+    }
+
+    pub fn collaboration(path: &Path, agent_session: SessionId) -> Result<Collaboration> {
+        DurableCatalog::collaboration(path, agent_session)
+    }
+
+    pub fn is_durable(&self) -> bool {
+        self.durable.is_some()
+    }
+
+    pub fn history(&self) -> Result<Option<ProjectHistory>> {
+        let Some(durable) = &self.durable else {
+            return Ok(None);
+        };
+        let id = self
+            .project
+            .selected
+            .context("select a photo to view its history")?;
+        Ok(Some(durable.history(id)?))
+    }
+
+    pub fn history_for(&self, photo_id: u64) -> Result<Option<ProjectHistory>> {
+        self.durable
+            .as_ref()
+            .map(|durable| durable.history(photo_id))
+            .transpose()
+    }
+
+    pub fn move_to_revision(&mut self, target: spectrum_revisions::RevisionId) -> Result<bool> {
+        let durable = self
+            .durable
+            .as_mut()
+            .context("legacy Lumen catalogs do not have a revision tree")?;
+        let photo_id = self
+            .project
+            .selected
+            .context("select a photo before navigating history")?;
+        if durable.cursor(photo_id)? == target {
+            return Ok(false);
+        }
+        self.project = durable.move_to(photo_id, target)?;
+        self.clipboard = None;
+        Ok(true)
+    }
+
+    pub fn move_photo_to_revision(
+        &mut self,
+        photo_id: u64,
+        target: spectrum_revisions::RevisionId,
+    ) -> Result<bool> {
+        self.project.photo(photo_id)?;
+        self.project.selected = Some(photo_id);
+        self.move_to_revision(target)
+    }
+
+    pub fn sync_together(&mut self) -> Result<CollaborationSync> {
+        let Some(durable) = &mut self.durable else {
+            return Ok(CollaborationSync::Idle);
+        };
+        let (sync, project) = durable.sync_together()?;
+        if let Some(project) = project {
+            self.project = project;
+            self.clipboard = None;
+        }
+        Ok(sync)
+    }
+
+    pub fn checkpoint(&self) -> Result<()> {
+        if let Some(durable) = &self.durable {
+            durable.checkpoint()?;
+        }
+        Ok(())
+    }
+
+    pub fn move_project(&mut self, destination: &Path) -> Result<PathBuf> {
+        let source = self
+            .catalog_path
+            .clone()
+            .context("this Lumen project does not have a durable location")?;
+        if source == destination {
+            return Ok(source);
+        }
+        if destination.exists() {
+            bail!(
+                "refusing to replace existing project {}",
+                destination.display()
+            );
+        }
+        if destination.extension().and_then(|value| value.to_str()) != Some("lumen") {
+            bail!("Lumen projects must use the .lumen extension");
+        }
+        if let Some(parent) = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let durable = self
+            .durable
+            .take()
+            .context("legacy catalogs must be migrated before moving")?;
+        durable.checkpoint()?;
+        let actor = durable.actor().clone();
+        let session_id = durable.session_id();
+        drop(durable);
+        let copied = match std::fs::rename(&source, destination) {
+            Ok(()) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+                std::fs::copy(&source, destination)?;
+                std::fs::File::open(destination)?.sync_all()?;
+                true
+            }
+            Err(error) => {
+                let (durable, project) = DurableCatalog::open(&source, actor, session_id)?;
+                self.durable = Some(durable);
+                self.project = project;
+                return Err(error.into());
+            }
+        };
+        match DurableCatalog::open(destination, actor.clone(), session_id) {
+            Ok((durable, project)) => {
+                self.durable = Some(durable);
+                self.project = project;
+                self.catalog_path = Some(destination.to_owned());
+            }
+            Err(error) => {
+                if copied {
+                    let _ = std::fs::remove_file(destination);
+                } else {
+                    let _ = std::fs::rename(destination, &source);
+                }
+                let (durable, project) = DurableCatalog::open(&source, actor, session_id)?;
+                self.durable = Some(durable);
+                self.project = project;
+                return Err(error).context("moved Lumen project could not be reopened");
+            }
+        }
+        if copied {
+            std::fs::remove_file(&source)?;
+        }
+        Ok(destination.to_owned())
+    }
+
+    pub fn pending_publish_error(&self) -> Option<String> {
+        self.durable
+            .as_ref()
+            .and_then(DurableCatalog::pending_publish_error)
+    }
+
     pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
+        self.durable.as_ref().map_or_else(
+            || !self.undo.is_empty(),
+            |durable| self.project.selected.is_some_and(|id| durable.can_undo(id)),
+        )
     }
     pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
+        self.durable.as_ref().map_or_else(
+            || !self.redo.is_empty(),
+            |durable| self.project.selected.is_some_and(|id| durable.can_redo(id)),
+        )
     }
 
     pub fn execute(&mut self, command: Command) -> Result<CommandOutput> {
+        match &command {
+            Command::Undo => return self.undo(),
+            Command::Redo => return self.redo(),
+            Command::HistoryBack { id } if self.durable.is_some() => {
+                let id = *id;
+                self.project = self.durable.as_mut().unwrap().undo(id)?;
+                self.project.selected = Some(id);
+                self.clipboard = None;
+                return Ok(CommandOutput::success(
+                    "history-back",
+                    format!("moved photo {id} back one edit"),
+                    vec![id],
+                ));
+            }
+            Command::HistoryForward { id } if self.durable.is_some() => {
+                let id = *id;
+                self.project = self.durable.as_mut().unwrap().redo(id)?;
+                self.project.selected = Some(id);
+                self.clipboard = None;
+                return Ok(CommandOutput::success(
+                    "history-forward",
+                    format!("moved photo {id} forward one edit"),
+                    vec![id],
+                ));
+            }
+            Command::HistoryJump { id, index } if self.durable.is_some() => {
+                let id = *id;
+                let target = self
+                    .durable
+                    .as_ref()
+                    .unwrap()
+                    .history(id)?
+                    .revisions
+                    .get(*index)
+                    .with_context(|| format!("history entry {index} does not exist"))?
+                    .id;
+                self.project = self.durable.as_mut().unwrap().move_to(id, target)?;
+                self.project.selected = Some(id);
+                self.clipboard = None;
+                return Ok(CommandOutput::success(
+                    "history-jump",
+                    format!("moved photo {id} to history entry {index}"),
+                    vec![id],
+                ));
+            }
+            Command::Open { path } => {
+                let actor = Actor {
+                    id: "local:human".into(),
+                    display_name: "Local User".into(),
+                    kind: ActorKind::Human,
+                };
+                *self = Self::open_as(path, actor, SessionId::new())?;
+                return Ok(CommandOutput::success("open", "opened project", vec![]));
+            }
+            Command::Save { path } if self.durable.is_some() => {
+                if path
+                    .as_ref()
+                    .is_some_and(|path| Some(path.as_path()) != self.catalog_path.as_deref())
+                {
+                    bail!("use Move Project to relocate a durable Lumen project");
+                }
+                self.checkpoint()?;
+                return Ok(CommandOutput::success(
+                    "save",
+                    "project is already current",
+                    vec![],
+                ));
+            }
+            Command::New { .. } if self.durable.is_some() => {
+                bail!("create a new managed Lumen project instead of replacing this project");
+            }
+            _ => {}
+        }
+        if matches!(
+            command,
+            Command::Select { .. }
+                | Command::CopyEdits { .. }
+                | Command::Export { .. }
+                | Command::ExportBatch { .. }
+        ) {
+            return self.execute_in_memory(command);
+        }
+        let replay_commands = self.replay_commands(&command)?;
+        let before = self.project.clone();
+        let clipboard = self.clipboard.clone();
+        let undo_len = self.undo.len();
+        let redo = self.redo.clone();
+        let output = match self.execute_in_memory(command) {
+            Ok(output) => output,
+            Err(error) => {
+                self.project = before;
+                self.clipboard = clipboard;
+                return Err(error);
+            }
+        };
+        if self.project == before || self.durable.is_none() {
+            return Ok(output);
+        }
+        let label = output.message.clone();
+        if let Some(durable) = &mut self.durable
+            && let Err(error) = durable.commit(&replay_commands, &before, &self.project, label)
+        {
+            self.project = before;
+            self.clipboard = clipboard;
+            self.undo.truncate(undo_len);
+            self.redo = redo;
+            return Err(error);
+        }
+        self.undo.clear();
+        self.redo.clear();
+        Ok(output)
+    }
+
+    pub fn execute_batch(&mut self, commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
+        if commands.is_empty() {
+            bail!("command batch is empty");
+        }
+        if commands.iter().any(|command| {
+            matches!(
+                command,
+                Command::New { .. }
+                    | Command::Open { .. }
+                    | Command::Save { .. }
+                    | Command::Select { .. }
+                    | Command::CopyEdits { .. }
+                    | Command::Export { .. }
+                    | Command::ExportBatch { .. }
+                    | Command::HistoryBack { .. }
+                    | Command::HistoryForward { .. }
+                    | Command::HistoryJump { .. }
+                    | Command::Undo
+                    | Command::Redo
+            )
+        }) {
+            bail!(
+                "lifecycle, selection, clipboard, export, and history navigation commands cannot be batched"
+            );
+        }
+        let before = self.project.clone();
+        let clipboard = self.clipboard.clone();
+        let mut replay = Vec::new();
+        let mut outputs = Vec::with_capacity(commands.len());
+        for command in commands {
+            replay.extend(self.replay_commands(&command)?);
+            match self.execute_in_memory(command) {
+                Ok(output) => outputs.push(output),
+                Err(error) => {
+                    self.project = before;
+                    self.clipboard = clipboard;
+                    self.undo.clear();
+                    self.redo.clear();
+                    return Err(error);
+                }
+            }
+        }
+        if self.project != before
+            && let Some(durable) = &mut self.durable
+        {
+            let label = if outputs.len() == 1 {
+                outputs[0].message.clone()
+            } else {
+                format!("Applied {} actions", outputs.len())
+            };
+            if let Err(error) = durable.commit(&replay, &before, &self.project, label) {
+                self.project = before;
+                self.clipboard = clipboard;
+                self.undo.clear();
+                self.redo.clear();
+                return Err(error);
+            }
+        }
+        self.undo.clear();
+        self.redo.clear();
+        Ok(outputs)
+    }
+
+    fn execute_in_memory(&mut self, command: Command) -> Result<CommandOutput> {
         match command {
             Command::New { name } => {
                 self.record_undo();
@@ -231,9 +617,7 @@ impl Workspace {
                 let mut next = self.project.photo(id)?.adjustments.clone();
                 patch.apply_to(&mut next);
                 self.record_undo();
-                self.project
-                    .photo_mut(id)?
-                    .commit_adjustments("Develop adjustments", next);
+                self.commit_photo_adjustments(id, "Develop adjustments", next)?;
                 Ok(CommandOutput::success(
                     "adjust",
                     format!("adjusted photo {id}"),
@@ -243,9 +627,7 @@ impl Workspace {
             Command::SetAdjustments { id, adjustments } => {
                 self.project.photo(id)?;
                 self.record_undo();
-                self.project
-                    .photo_mut(id)?
-                    .commit_adjustments("Develop adjustments", adjustments);
+                self.commit_photo_adjustments(id, "Develop adjustments", adjustments)?;
                 Ok(CommandOutput::success(
                     "adjust",
                     format!("adjusted photo {id}"),
@@ -256,9 +638,7 @@ impl Workspace {
                 self.ensure_ids(&ids)?;
                 self.record_undo();
                 for id in &ids {
-                    self.project
-                        .photo_mut(*id)?
-                        .commit_adjustments("Reset all edits", Adjustments::default());
+                    self.commit_photo_adjustments(*id, "Reset all edits", Adjustments::default())?;
                 }
                 Ok(CommandOutput::success(
                     "reset",
@@ -309,10 +689,9 @@ impl Workspace {
                 let preset = self.project.preset(preset_id)?.clone();
                 self.record_undo();
                 for id in &ids {
-                    let photo = self.project.photo_mut(*id)?;
-                    let mut next = photo.adjustments.clone();
+                    let mut next = self.project.photo(*id)?.adjustments.clone();
                     next.apply_preset(&preset.adjustments);
-                    photo.commit_adjustments(format!("Preset: {}", preset.name), next);
+                    self.commit_photo_adjustments(*id, format!("Preset: {}", preset.name), next)?;
                 }
                 Ok(CommandOutput::success(
                     "apply-preset",
@@ -346,9 +725,7 @@ impl Workspace {
                 self.ensure_ids(&ids)?;
                 self.record_undo();
                 for id in &ids {
-                    self.project
-                        .photo_mut(*id)?
-                        .commit_adjustments("Paste edits", adjustments.clone());
+                    self.commit_photo_adjustments(*id, "Paste edits", adjustments.clone())?;
                 }
                 Ok(CommandOutput::success("paste-edits", "pasted edits", ids))
             }
@@ -370,9 +747,7 @@ impl Workspace {
                 let mut next = self.project.photo(id)?.adjustments.clone();
                 next.rotation = (next.rotation + if clockwise { 90 } else { -90 }).rem_euclid(360);
                 self.record_undo();
-                self.project
-                    .photo_mut(id)?
-                    .commit_adjustments("Rotate", next);
+                self.commit_photo_adjustments(id, "Rotate", next)?;
                 Ok(CommandOutput::success(
                     "rotate",
                     format!("rotated photo {id}"),
@@ -383,9 +758,7 @@ impl Workspace {
                 let mut next = self.project.photo(id)?.adjustments.clone();
                 next.flip_horizontal = !next.flip_horizontal;
                 self.record_undo();
-                self.project
-                    .photo_mut(id)?
-                    .commit_adjustments("Flip horizontal", next);
+                self.commit_photo_adjustments(id, "Flip horizontal", next)?;
                 Ok(CommandOutput::success(
                     "flip-horizontal",
                     format!("flipped photo {id}"),
@@ -396,9 +769,7 @@ impl Workspace {
                 let mut next = self.project.photo(id)?.adjustments.clone();
                 next.flip_vertical = !next.flip_vertical;
                 self.record_undo();
-                self.project
-                    .photo_mut(id)?
-                    .commit_adjustments("Flip vertical", next);
+                self.commit_photo_adjustments(id, "Flip vertical", next)?;
                 Ok(CommandOutput::success(
                     "flip-vertical",
                     format!("flipped photo {id}"),
@@ -492,190 +863,99 @@ impl Workspace {
         }
         Ok(())
     }
+
+    fn replay_commands(&self, command: &Command) -> Result<Vec<Command>> {
+        if let Command::PasteEdits { ids } = command {
+            let adjustments = self.clipboard.clone().context("edit clipboard is empty")?;
+            return Ok(ids
+                .iter()
+                .map(|id| Command::SetAdjustments {
+                    id: *id,
+                    adjustments: adjustments.clone(),
+                })
+                .collect());
+        }
+        Ok(vec![command.clone()])
+    }
+
+    fn from_durable(path: &Path, durable: DurableCatalog, project: Project) -> Self {
+        Self {
+            project,
+            catalog_path: Some(path.to_owned()),
+            clipboard: None,
+            durable: Some(durable),
+            legacy_photo_history: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+        }
+    }
+
+    fn undo(&mut self) -> Result<CommandOutput> {
+        if let Some(durable) = &mut self.durable {
+            let id = self
+                .project
+                .selected
+                .context("select a photo before undoing")?;
+            self.project = durable.undo(id)?;
+            self.clipboard = None;
+            return Ok(CommandOutput::success(
+                "undo",
+                format!("went back one edit on photo {id}"),
+                vec![id],
+            ));
+        }
+        self.execute_in_memory(Command::Undo)
+    }
+
+    fn redo(&mut self) -> Result<CommandOutput> {
+        if let Some(durable) = &mut self.durable {
+            let id = self
+                .project
+                .selected
+                .context("select a photo before redoing")?;
+            self.project = durable.redo(id)?;
+            self.clipboard = None;
+            return Ok(CommandOutput::success(
+                "redo",
+                format!("went forward one edit on photo {id}"),
+                vec![id],
+            ));
+        }
+        self.execute_in_memory(Command::Redo)
+    }
+
+    fn commit_photo_adjustments(
+        &mut self,
+        id: u64,
+        label: impl Into<String>,
+        adjustments: Adjustments,
+    ) -> Result<()> {
+        let photo = self.project.photo_mut(id)?;
+        if self.legacy_photo_history {
+            photo.commit_adjustments(label, adjustments);
+        } else {
+            photo.adjustments = adjustments.sanitized();
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn apply_replay_command(project: &mut Project, command: Command) -> Result<()> {
+    let before = project.clone();
+    let mut workspace = Workspace::new(std::mem::take(project), None);
+    workspace.legacy_photo_history = false;
+    match workspace.execute_in_memory(command) {
+        Ok(_) => {
+            *project = workspace.project;
+            Ok(())
+        }
+        Err(error) => {
+            *project = before;
+            Err(error)
+        }
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use image::{Rgba, RgbaImage};
-    use std::{
-        fs,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    #[test]
-    fn adjustment_history_survives_navigation() {
-        let mut project = Project::new("test");
-        project.photos.push(crate::Photo::new(
-            1,
-            "test.jpg".into(),
-            "test.jpg".into(),
-            1,
-            1,
-        ));
-        let mut workspace = Workspace::new(project, None);
-        workspace
-            .execute(Command::Adjust {
-                id: 1,
-                patch: AdjustmentPatch {
-                    exposure: Some(2.0),
-                    ..Default::default()
-                },
-            })
-            .unwrap();
-        assert_eq!(
-            workspace.project.photo(1).unwrap().adjustments.exposure,
-            2.0
-        );
-        workspace.execute(Command::HistoryBack { id: 1 }).unwrap();
-        assert_eq!(
-            workspace.project.photo(1).unwrap().adjustments.exposure,
-            0.0
-        );
-        workspace
-            .execute(Command::HistoryForward { id: 1 })
-            .unwrap();
-        assert_eq!(
-            workspace.project.photo(1).unwrap().adjustments.exposure,
-            2.0
-        );
-    }
-
-    #[test]
-    fn failed_multi_import_is_transactional() {
-        let directory = std::env::temp_dir().join(format!(
-            "lumen-import-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&directory).unwrap();
-        let valid = directory.join("valid.png");
-        let invalid = directory.join("invalid.jpg");
-        RgbaImage::from_pixel(2, 2, Rgba([20, 40, 60, 255]))
-            .save(&valid)
-            .unwrap();
-        fs::write(&invalid, b"not an image").unwrap();
-        let mut workspace = Workspace::default();
-        let result = workspace.execute(Command::Import {
-            paths: vec![valid, invalid],
-        });
-        assert!(result.is_err());
-        assert!(workspace.project.photos.is_empty());
-        assert!(workspace.project.batches.is_empty());
-        assert!(!workspace.can_undo());
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn successful_import_creates_a_shoot_batch() {
-        let directory = std::env::temp_dir().join(format!(
-            "lumen-batch-import-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&directory).unwrap();
-        let first = directory.join("one.png");
-        let second = directory.join("two.png");
-        RgbaImage::from_pixel(2, 2, Rgba([20, 40, 60, 255]))
-            .save(&first)
-            .unwrap();
-        RgbaImage::from_pixel(2, 2, Rgba([60, 40, 20, 255]))
-            .save(&second)
-            .unwrap();
-        let mut workspace = Workspace::default();
-        workspace
-            .execute(Command::Import {
-                paths: vec![first, second],
-            })
-            .unwrap();
-        assert_eq!(workspace.project.batches.len(), 1);
-        let batch_id = workspace.project.batches[0].id;
-        assert!(
-            workspace
-                .project
-                .photos
-                .iter()
-                .all(|photo| photo.batch_id == Some(batch_id))
-        );
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn presets_apply_to_multiple_photos_without_geometry() {
-        let mut project = Project::new("test");
-        let mut first = crate::Photo::new(1, "one.jpg".into(), "one.jpg".into(), 1, 1);
-        first.adjustments.exposure = 1.0;
-        let mut second = crate::Photo::new(2, "two.jpg".into(), "two.jpg".into(), 1, 1);
-        second.adjustments.rotation = 90;
-        project.photos.extend([first, second]);
-        let mut workspace = Workspace::new(project, None);
-        workspace
-            .execute(Command::SavePreset {
-                name: "Bright".into(),
-                from_id: 1,
-            })
-            .unwrap();
-        workspace
-            .execute(Command::ApplyPreset {
-                preset_id: 1,
-                ids: vec![2],
-            })
-            .unwrap();
-        let second = workspace.project.photo(2).unwrap();
-        assert_eq!(second.adjustments.exposure, 1.0);
-        assert_eq!(second.adjustments.rotation, 90);
-        assert_eq!(second.history.last().unwrap().label, "Preset: Bright");
-    }
-
-    #[test]
-    fn pick_state_is_a_core_catalog_command() {
-        let mut project = Project::new("test");
-        project.photos.push(crate::Photo::new(
-            1,
-            "one.jpg".into(),
-            "one.jpg".into(),
-            1,
-            1,
-        ));
-        let mut workspace = Workspace::new(project, None);
-        workspace
-            .execute(Command::SetPick {
-                ids: vec![1],
-                state: PickState::Keep,
-            })
-            .unwrap();
-        assert_eq!(workspace.project.photo(1).unwrap().pick, PickState::Keep);
-        assert!(workspace.can_undo());
-    }
-
-    #[test]
-    fn batches_can_be_renamed_and_are_pruned_when_empty() {
-        let mut project = Project::new("test");
-        let mut photo = crate::Photo::new(1, "one.jpg".into(), "one.jpg".into(), 1, 1);
-        photo.batch_id = Some(1);
-        project.photos.push(photo);
-        project.batches.push(crate::PhotoBatch {
-            id: 1,
-            name: "Shoot 1".into(),
-            captured_date: None,
-            captured_end_date: None,
-            imported_date: "2026-07-16".into(),
-        });
-        let mut workspace = Workspace::new(project, None);
-        workspace
-            .execute(Command::RenameBatch {
-                id: 1,
-                name: "Night walk".into(),
-            })
-            .unwrap();
-        assert_eq!(workspace.project.batch(1).unwrap().name, "Night walk");
-        workspace.execute(Command::Remove { ids: vec![1] }).unwrap();
-        assert!(workspace.project.batches.is_empty());
-    }
-}
+#[path = "command_tests.rs"]
+mod tests;

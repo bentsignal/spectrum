@@ -159,6 +159,10 @@ pub fn render_document(document: &Document, max_size: Option<u32>) -> Result<Dyn
     Ok(DynamicImage::ImageRgba8(canvas))
 }
 
+pub fn render_document_thumbnail(document: &Document, max_size: u32) -> Result<DynamicImage> {
+    render_document(document, Some(max_size))
+}
+
 /// Renders one layer's source pixels without its canvas transform, opacity, or blend mode.
 /// Interactive clients can cache this result and apply transforms on the GPU.
 pub fn render_layer_preview(layer: &Layer, max_size: Option<u32>) -> Result<DynamicImage> {
