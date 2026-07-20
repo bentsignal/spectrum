@@ -287,8 +287,9 @@ impl PrismApp {
             self.canvas_double_click(geometry.screen_to_canvas(pointer));
         } else if response.clicked()
             && let Some(pointer) = pointer
+            && let Some(position) = canvas_click_position(self.tool, geometry, pointer)
         {
-            self.canvas_click(geometry.screen_to_canvas(pointer));
+            self.canvas_click(position);
         }
     }
 
@@ -474,12 +475,7 @@ impl PrismApp {
                 }
             }
             Tool::Text => {
-                self.text_dialog = Some(TextDialogDraft {
-                    position,
-                    text: "Text".into(),
-                    font_size: 72.0,
-                    color: [245, 246, 250, 255],
-                });
+                self.open_new_text_editor(position);
             }
             Tool::Shape => {
                 match self.shape_kind {
@@ -531,6 +527,17 @@ impl PrismApp {
             .find(|layer| layer_contains_point(layer, self.layer_source_geometry(layer), position))
             .map(|layer| layer.id)
     }
+}
+
+fn canvas_click_position(
+    tool: Tool,
+    geometry: CanvasGeometry,
+    screen_position: Pos2,
+) -> Option<Pos2> {
+    if tool == Tool::Text && !geometry.canvas.contains(screen_position) {
+        return None;
+    }
+    Some(geometry.screen_to_canvas(screen_position))
 }
 
 fn direct_manipulation_preview(drag: Option<DragState>) -> bool {
@@ -596,5 +603,25 @@ mod tests {
     fn rotate_uses_a_stroke_only_selection_outline() {
         assert!(!selection_outline_has_resize_handles(Tool::Rotate));
         assert!(selection_outline_has_resize_handles(Tool::Move));
+    }
+
+    #[test]
+    fn text_clicks_map_through_zoom_and_pan_and_ignore_the_pasteboard() {
+        let geometry = canvas_geometry(
+            Rect::from_min_size(Pos2::new(20.0, 30.0), Vec2::new(1000.0, 700.0)),
+            400,
+            300,
+            1.75,
+            Vec2::new(47.0, -31.0),
+        );
+        let placement = Pos2::new(123.0, 87.0);
+        let screen = geometry.canvas_to_screen(placement);
+        let mapped = canvas_click_position(Tool::Text, geometry, screen).unwrap();
+        assert!((mapped.x - placement.x).abs() < 0.001);
+        assert!((mapped.y - placement.y).abs() < 0.001);
+
+        let outside = Pos2::new(geometry.canvas.left() - 1.0, geometry.canvas.center().y);
+        assert_eq!(canvas_click_position(Tool::Text, geometry, outside), None);
+        assert!(canvas_click_position(Tool::Move, geometry, outside).is_some());
     }
 }

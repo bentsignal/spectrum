@@ -1,7 +1,6 @@
 use super::*;
 
 const NEW_DOCUMENT_NAME_ID: &str = "prism-new-document-name";
-const ADD_TEXT_CONTENT_ID: &str = "prism-add-text-content";
 const RENAME_LAYER_ID: &str = "prism-rename-layer-name";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -76,10 +75,6 @@ fn reset_modal_text_input(context: &egui::Context, id_source: &'static str) {
     context.data_mut(|data| data.remove_temp::<bool>(initialized_id));
 }
 
-fn normalized_text_submission(text: &str) -> String {
-    text.trim_end_matches(['\r', '\n']).to_owned()
-}
-
 const MODAL_BACKDROP_ALPHA: u8 = 148;
 
 fn modal_backdrop_sense() -> Sense {
@@ -101,7 +96,7 @@ fn show_modal_backdrop(context: &egui::Context) {
         });
 }
 
-fn modal_surface_present(states: [bool; 7]) -> bool {
+fn modal_surface_present(states: [bool; 6]) -> bool {
     states.into_iter().any(|present| present)
 }
 
@@ -111,23 +106,10 @@ impl PrismApp {
             self.move_project_dialog.is_some(),
             self.delete_confirmation.is_some(),
             self.rename_layer.is_some(),
-            self.text_dialog.is_some(),
             self.new_dialog.is_some(),
             self.tool_palette.is_some(),
             self.shape_palette.is_some(),
         ])
-    }
-
-    pub(super) fn open_new_text_dialog(&mut self) {
-        self.settle_inline_text_editor();
-        let width = self.workspace.document.width as f32;
-        let height = self.workspace.document.height as f32;
-        self.text_dialog = Some(TextDialogDraft {
-            position: Pos2::new(width * 0.15, height * 0.42),
-            text: "Text".into(),
-            font_size: 72.0,
-            color: [245, 246, 250, 255],
-        });
     }
 
     pub(super) fn edit_focused(&mut self) {
@@ -154,8 +136,6 @@ impl PrismApp {
             self.delete_dialog(context);
         } else if self.rename_layer.is_some() {
             self.rename_dialog(context);
-        } else if self.text_dialog.is_some() {
-            self.text_dialog(context);
         } else if self.new_dialog.is_some() {
             self.new_document_dialog(context);
         } else {
@@ -210,71 +190,6 @@ impl PrismApp {
             self.new_document(draft);
         } else if keep_open {
             self.new_dialog = Some(draft);
-        }
-    }
-
-    fn text_dialog(&mut self, context: &egui::Context) {
-        let Some(mut draft) = self.text_dialog.take() else {
-            return;
-        };
-        let mut save = false;
-        let mut keep_open = true;
-        egui::Window::new("Add text")
-            .order(egui::Order::Foreground)
-            .collapsible(false)
-            .resizable(false)
-            .fixed_size(Vec2::new(420.0, 272.0))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(context, |ui| {
-                modal_text_input(ui, &mut draft.text, ADD_TEXT_CONTENT_ID, true);
-                ui.add(
-                    egui::Slider::new(&mut draft.font_size, 8.0..=400.0)
-                        .text("Size")
-                        .suffix(" px"),
-                );
-                ui.horizontal(|ui| {
-                    ui.label("Color");
-                    let mut color = color32(draft.color);
-                    if ui.color_edit_button_srgba(&mut color).changed() {
-                        draft.color = rgba(color);
-                    }
-                });
-                match modal_action(ui) {
-                    ModalAction::Cancel => keep_open = false,
-                    ModalAction::Confirm => {
-                        save = true;
-                        keep_open = false;
-                    }
-                    ModalAction::None => {}
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if primary_button(ui, "Add text").clicked() {
-                        save = true;
-                        keep_open = false;
-                    }
-                    if quiet_button(ui, "Cancel").clicked() {
-                        keep_open = false;
-                    }
-                });
-            });
-        if !keep_open {
-            reset_modal_text_input(context, ADD_TEXT_CONTENT_ID);
-        }
-        if save {
-            draft.text = normalized_text_submission(&draft.text);
-            self.execute(Command::AddText {
-                text: draft.text,
-                name: None,
-                font_size: draft.font_size,
-                color: draft.color,
-                x: draft.position.x,
-                y: draft.position.y,
-            });
-            self.tool = Tool::Move;
-        } else if keep_open {
-            self.text_dialog = Some(draft);
-        } else {
-            self.tool = Tool::Move;
         }
     }
 
@@ -383,16 +298,6 @@ mod tests {
     }
 
     #[test]
-    fn confirming_text_drops_only_trailing_line_breaks() {
-        assert_eq!(normalized_text_submission("Title\n"), "Title");
-        assert_eq!(normalized_text_submission("Title\n\n"), "Title");
-        assert_eq!(
-            normalized_text_submission("Title\nSubtitle\n"),
-            "Title\nSubtitle"
-        );
-    }
-
-    #[test]
     fn modal_backdrop_consumes_clicks_and_drags() {
         let sense = modal_backdrop_sense();
         assert!(sense.senses_click());
@@ -402,9 +307,9 @@ mod tests {
 
     #[test]
     fn every_dialog_state_gates_the_shared_modal_surface() {
-        assert!(!modal_surface_present([false; 7]));
-        for index in 0..7 {
-            let mut states = [false; 7];
+        assert!(!modal_surface_present([false; 6]));
+        for index in 0..6 {
+            let mut states = [false; 6];
             states[index] = true;
             assert!(modal_surface_present(states));
         }
