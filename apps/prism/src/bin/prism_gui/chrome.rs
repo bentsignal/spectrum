@@ -161,6 +161,17 @@ impl PrismApp {
                             self.toggle_history();
                             ui.close();
                         }
+                        if ui
+                            .button(if self.terminal.visible() {
+                                "Hide terminal  ⌘J"
+                            } else {
+                                "Show terminal  ⌘J"
+                            })
+                            .clicked()
+                        {
+                            self.toggle_terminal();
+                            ui.close();
+                        }
                     });
                     if ui
                         .add_enabled(self.workspace.can_undo(), egui::Button::new("Back"))

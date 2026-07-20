@@ -40,11 +40,18 @@ mod renderer;
 #[path = "prism_gui/shortcuts.rs"]
 mod shortcuts;
 use compositor::*;
+#[path = "prism_gui/terminal.rs"]
+mod terminal;
+#[path = "prism_gui/terminal_input.rs"]
+mod terminal_input;
+#[path = "prism_gui/terminal_render.rs"]
+mod terminal_render;
 #[path = "prism_gui/theme.rs"]
 mod theme;
 use history::HistoryViewState;
 use project_lifecycle::MoveProjectDialog;
 use renderer::*;
+use terminal::TerminalDock;
 use theme::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -264,6 +271,7 @@ struct PrismApp {
     startup_project_ready_at: std::time::Instant,
     collaboration_poll_at: std::time::Instant,
     workspace_initialized: bool,
+    terminal: TerminalDock,
 }
 
 fn native_options() -> eframe::NativeOptions {
@@ -377,6 +385,7 @@ impl PrismApp {
                 + std::time::Duration::from_millis(250),
             collaboration_poll_at: std::time::Instant::now(),
             workspace_initialized,
+            terminal: TerminalDock::default(),
         };
         if let Some(path) = initial_project {
             if workspace_initialized {
@@ -634,6 +643,7 @@ impl PrismApp {
                             .color(if self.status_error { DANGER } else { MUTED }),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.terminal_status_control(ui);
                         if ui.small_button("Fit").clicked() {
                             self.zoom = 1.0;
                             self.pan = Vec2::ZERO;
@@ -672,15 +682,20 @@ impl eframe::App for PrismApp {
         let context = root.ctx().clone();
         self.receive_open_documents(&context);
         self.sync_agent_collaborations(&context);
+        self.poll_terminals(&context);
         self.keyboard(&context);
-        self.top_bar(root);
-        if self.history.visible {
-            self.history_view(root);
+        if self.terminal.visible() {
+            self.terminal_panel(root);
         } else {
-            self.workbench_bar(root);
-            self.status_bar(root);
-            self.right_panel(root);
-            self.canvas(root);
+            self.top_bar(root);
+            if self.history.visible {
+                self.history_view(root);
+            } else {
+                self.workbench_bar(root);
+                self.status_bar(root);
+                self.right_panel(root);
+                self.canvas(root);
+            }
         }
         self.dialogs(&context);
     }
@@ -691,6 +706,7 @@ impl eframe::App for PrismApp {
         for workspace in self.inactive_workspaces.values() {
             let _ = workspace.checkpoint();
         }
+        self.terminal.shutdown();
     }
 }
 
