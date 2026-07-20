@@ -6,26 +6,29 @@ pub(super) struct LayerVisualKey {
     adjustments: spectrum_imaging::Adjustments,
     stroke: ShapeStroke,
     pub(super) text_raster_scale: u32,
+    pub(super) shape_raster_scale: [u32; 2],
 }
 
 impl LayerVisualKey {
-    pub(super) fn new(layer: &Layer, zoom: f32) -> Self {
+    pub(super) fn new(layer: &Layer, display_scale: f32) -> Self {
         Self {
             kind: layer.kind.clone(),
             adjustments: layer.adjustments.clone(),
             stroke: layer.stroke,
-            text_raster_scale: preview_text_scale(layer, zoom),
+            text_raster_scale: preview_text_scale(layer, display_scale),
+            shape_raster_scale: prism_core::interactive_shape_scale(layer, display_scale)
+                .unwrap_or([1; 2]),
         }
     }
 }
 
 pub(super) fn desired_layer_visual_key(
     layer: &Layer,
-    zoom: f32,
+    display_scale: f32,
     interaction_active: bool,
     cached: Option<&LayerVisualKey>,
 ) -> LayerVisualKey {
-    let mut key = LayerVisualKey::new(layer, zoom);
+    let mut key = LayerVisualKey::new(layer, display_scale);
     if interaction_active
         && matches!(layer.kind, LayerKind::Text { .. })
         && let Some(cached) = cached
@@ -81,7 +84,7 @@ impl PrismApp {
         self.preview_error = None;
     }
 
-    pub(super) fn ensure_layer_visuals(&mut self, context: &egui::Context) {
+    pub(super) fn ensure_layer_visuals(&mut self, context: &egui::Context, display_scale: f32) {
         while let Ok(result) = self.layer_render_receiver.try_recv() {
             self.layer_render_in_flight = false;
             if result.tab_id != self.active_tab_id {
@@ -96,7 +99,7 @@ impl PrismApp {
                 .map(|layer| {
                     desired_layer_visual_key(
                         layer,
-                        self.zoom,
+                        display_scale,
                         self.workspace.interaction_active(),
                         self.layer_visuals
                             .get(&result.layer_id)
@@ -152,7 +155,6 @@ impl PrismApp {
             .retain(|id, _| visible_ids.contains(id));
 
         let interaction_active = self.workspace.interaction_active();
-        let required_max_size = if interaction_active { 1024 } else { 2048 };
         for layer in self
             .workspace
             .document
@@ -160,6 +162,13 @@ impl PrismApp {
             .iter()
             .filter(|layer| layer.visible)
         {
+            let key = desired_layer_visual_key(
+                layer,
+                display_scale,
+                interaction_active,
+                self.layer_visuals.get(&layer.id).map(|entry| &entry.key),
+            );
+            let required_max_size = required_preview_size(layer, &key, interaction_active);
             if reuse_cached_visual_during_interaction(
                 self.layer_visuals
                     .get(&layer.id)
@@ -171,12 +180,6 @@ impl PrismApp {
                 self.layer_render_pending.remove(&layer.id);
                 continue;
             }
-            let key = desired_layer_visual_key(
-                layer,
-                self.zoom,
-                interaction_active,
-                self.layer_visuals.get(&layer.id).map(|entry| &entry.key),
-            );
             let current = self
                 .layer_visuals
                 .get(&layer.id)
@@ -249,6 +252,7 @@ struct CachedLayerBase {
     kind: LayerKind,
     stroke: ShapeStroke,
     max_size: u32,
+    shape_raster_scale: [u32; 2],
     image: image::DynamicImage,
 }
 
@@ -268,24 +272,32 @@ pub(super) fn spawn_layer_render_worker(
             let cached = bases.get(&cache_id).filter(|cached| {
                 cached.kind == render_layer.kind
                     && cached.stroke == render_layer.stroke
+                    && cached.shape_raster_scale == request.key.shape_raster_scale
                     && cached.max_size >= request.max_size
             });
             let base = if let Some(cached) = cached {
                 Ok(cached.image.clone())
             } else {
-                prism_core::render_layer_base(&render_layer, Some(request.max_size)).inspect(
-                    |image| {
-                        bases.insert(
-                            cache_id,
-                            CachedLayerBase {
-                                kind: render_layer.kind.clone(),
-                                stroke: render_layer.stroke,
-                                max_size: request.max_size,
-                                image: image.clone(),
-                            },
-                        );
-                    },
+                prism_core::render_layer_base_scaled(
+                    &render_layer,
+                    Some(request.max_size),
+                    [
+                        request.key.shape_raster_scale[0] as f32,
+                        request.key.shape_raster_scale[1] as f32,
+                    ],
                 )
+                .inspect(|image| {
+                    bases.insert(
+                        cache_id,
+                        CachedLayerBase {
+                            kind: render_layer.kind.clone(),
+                            stroke: render_layer.stroke,
+                            max_size: request.max_size,
+                            shape_raster_scale: request.key.shape_raster_scale,
+                            image: image.clone(),
+                        },
+                    );
+                })
             };
             let source_size = source_size_before_preview(&request.layer);
             let result = base
@@ -344,6 +356,16 @@ fn preview_text_scale(layer: &Layer, zoom: f32) -> u32 {
         .max(layer.transform.scale_y.abs())
         * zoom.max(0.1);
     (target.max(1.0).ceil() as u32).next_power_of_two().min(16)
+}
+
+fn required_preview_size(layer: &Layer, key: &LayerVisualKey, interaction_active: bool) -> u32 {
+    if let Some((width, height)) = prism_core::shape_dimensions(layer) {
+        return width
+            .saturating_mul(key.shape_raster_scale[0])
+            .max(height.saturating_mul(key.shape_raster_scale[1]))
+            .clamp(1, 8_192);
+    }
+    if interaction_active { 1024 } else { 2048 }
 }
 
 pub(super) fn paint_interactive_document(

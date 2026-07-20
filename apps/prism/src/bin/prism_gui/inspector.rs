@@ -1,6 +1,28 @@
 use super::*;
 
 impl PrismApp {
+    fn rasterize_shape(&mut self, id: u64) {
+        let result = (|| {
+            let layer = self.workspace.document.layer(id)?;
+            let scale = prism_core::recommended_rasterization_scale(layer)?;
+            let asset = prism_core::rasterize_shape_asset(&self.workspace.document, id, scale)?;
+            Ok::<_, anyhow::Error>(Command::RasterizeShape {
+                id,
+                path: asset.path,
+                scale: asset.scale,
+            })
+        })();
+        match result {
+            Ok(command) => {
+                self.execute(command);
+            }
+            Err(error) => {
+                self.status = format!("Rasterization failed: {error:#}");
+                self.status_error = true;
+            }
+        }
+    }
+
     pub(super) fn inspector(&mut self, ui: &mut egui::Ui) {
         let selected = self.selected_layer().cloned();
         ui.horizontal(|ui| {
@@ -307,29 +329,54 @@ impl PrismApp {
     fn content_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
         egui::CollapsingHeader::new("Content")
             .default_open(true)
-            .show(ui, |ui| match &layer.kind {
-                LayerKind::Text {
-                    text,
-                    font_size,
-                    color,
-                } => self.text_content(ui, layer.id, text, *font_size, *color),
-                LayerKind::Rectangle {
-                    width,
-                    height,
-                    color,
-                    corner_radius,
-                } => self.rectangle_content(ui, layer.id, *width, *height, *color, *corner_radius),
-                LayerKind::Ellipse {
-                    width,
-                    height,
-                    color,
-                } => self.ellipse_content(ui, layer.id, *width, *height, *color),
-                LayerKind::Raster { path, .. } => {
-                    property_label(ui, "Linked image");
+            .show(ui, |ui| {
+                match &layer.kind {
+                    LayerKind::Text {
+                        text,
+                        font_size,
+                        color,
+                    } => self.text_content(ui, layer.id, text, *font_size, *color),
+                    LayerKind::Rectangle {
+                        width,
+                        height,
+                        color,
+                        corner_radius,
+                    } => self.rectangle_content(
+                        ui,
+                        layer.id,
+                        *width,
+                        *height,
+                        *color,
+                        *corner_radius,
+                    ),
+                    LayerKind::Ellipse {
+                        width,
+                        height,
+                        color,
+                    } => self.ellipse_content(ui, layer.id, *width, *height, *color),
+                    LayerKind::Raster { path, .. } => {
+                        property_label(ui, "Linked image");
+                        ui.label(
+                            RichText::new(path.display().to_string())
+                                .size(10.0)
+                                .color(MUTED),
+                        );
+                    }
+                }
+                if matches!(
+                    layer.kind,
+                    LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+                ) {
+                    ui.separator();
+                    if ui.button("Rasterize Shape").clicked() {
+                        self.rasterize_shape(layer.id);
+                    }
                     ui.label(
-                        RichText::new(path.display().to_string())
-                            .size(10.0)
-                            .color(MUTED),
+                        RichText::new(
+                            "Freezes editable geometry into pixels at its current scale.",
+                        )
+                        .size(9.0)
+                        .color(MUTED),
                     );
                 }
             });

@@ -2,7 +2,6 @@ use super::*;
 
 impl PrismApp {
     pub(super) fn canvas(&mut self, root: &mut egui::Ui) {
-        self.ensure_layer_visuals(root.ctx());
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(INK).inner_margin(20))
             .show(root, |ui| {
@@ -20,6 +19,10 @@ impl PrismApp {
                     self.pan = Vec2::ZERO;
                     self.fit_requested = false;
                 }
+                self.ensure_layer_visuals(
+                    ui.ctx(),
+                    geometry.pixels_per_point * ui.ctx().pixels_per_point(),
+                );
                 self.canvas_interaction(ui, &response, geometry);
                 paint_interactive_document(
                     ui,
