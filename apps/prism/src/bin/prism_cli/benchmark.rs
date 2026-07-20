@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 use prism_core::{
-    Command, Document, Transform, Workspace, render_document, render_layer_base_scaled,
-    render_solid_color,
+    BlendMode, Command, Document, LayerMask, Transform, Workspace, render_document,
+    render_layer_base_scaled, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -117,6 +117,45 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         let _ = render_layer_base_scaled(scaled_shape, None, [16.0, 16.0])?;
         scaled_shape_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    let mut blend_workspace = Workspace::new(Document::new("Blend benchmark", 960, 540), None);
+    for index in 0..12 {
+        blend_workspace.execute(Command::AddRectangle {
+            name: Some(format!("Blend {index}")),
+            width: 640,
+            height: 360,
+            color: [45 + index * 14, 190 - index * 9, 80 + index * 8, 210],
+            corner_radius: 28.0,
+            x: (index * 23) as f32 - 80.0,
+            y: (index * 17) as f32 - 60.0,
+        })?;
+        let id = blend_workspace.document.selected.unwrap();
+        blend_workspace.execute(Command::SetBlendMode {
+            id,
+            blend_mode: BlendMode::ALL[(index as usize * 2 + 1) % BlendMode::ALL.len()],
+        })?;
+        if index % 3 == 1 {
+            blend_workspace.execute(Command::SetClipping { id, enabled: true })?;
+        }
+        if index % 4 == 2 {
+            blend_workspace.execute(Command::SetMask {
+                id,
+                mask: LayerMask {
+                    enabled: true,
+                    x: 0.15,
+                    y: 0.1,
+                    width: 0.7,
+                    height: 0.8,
+                    invert: index % 8 == 6,
+                },
+            })?;
+        }
+    }
+    let mut blend_render_samples = Vec::new();
+    for _ in 0..7 {
+        let started = Instant::now();
+        let _ = render_document(&blend_workspace.document, None)?;
+        blend_render_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     let (command_median, command_p95) = sample_summary(&mut command_samples);
     let (interaction_median, interaction_p95) = sample_summary(&mut interaction_samples);
     let (text_interaction_median, text_interaction_p95) =
@@ -124,6 +163,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let (shape_median, shape_p95) = sample_summary(&mut shape_preview_samples);
     let (render_median, render_p95) = sample_summary(&mut render_samples);
     let (scaled_shape_median, scaled_shape_p95) = sample_summary(&mut scaled_shape_samples);
+    let (blend_render_median, blend_render_p95) = sample_summary(&mut blend_render_samples);
     let metrics = [
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
@@ -166,6 +206,13 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             p95_ms: scaled_shape_p95,
             budget_ms: 16.0,
             pass: scaled_shape_p95 <= 16.0,
+        },
+        BenchmarkMetric {
+            name: "960x540_12_layer_blend_mask_composite",
+            median_ms: blend_render_median,
+            p95_ms: blend_render_p95,
+            budget_ms: 500.0,
+            pass: blend_render_p95 <= 500.0,
         },
     ];
     let passed = metrics.iter().all(|metric| metric.pass);

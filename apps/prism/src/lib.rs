@@ -31,74 +31,8 @@ pub const PRISM_VERSION: u32 = 1;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BlendMode {
-    #[default]
-    Normal,
-    Multiply,
-    Screen,
-    Overlay,
-    Darken,
-    Lighten,
-    ColorDodge,
-    ColorBurn,
-    HardLight,
-    SoftLight,
-    Difference,
-    Exclusion,
-}
-
-impl BlendMode {
-    pub const ALL: [Self; 12] = [
-        Self::Normal,
-        Self::Multiply,
-        Self::Screen,
-        Self::Overlay,
-        Self::Darken,
-        Self::Lighten,
-        Self::ColorDodge,
-        Self::ColorBurn,
-        Self::HardLight,
-        Self::SoftLight,
-        Self::Difference,
-        Self::Exclusion,
-    ];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Normal => "Normal",
-            Self::Multiply => "Multiply",
-            Self::Screen => "Screen",
-            Self::Overlay => "Overlay",
-            Self::Darken => "Darken",
-            Self::Lighten => "Lighten",
-            Self::ColorDodge => "Color Dodge",
-            Self::ColorBurn => "Color Burn",
-            Self::HardLight => "Hard Light",
-            Self::SoftLight => "Soft Light",
-            Self::Difference => "Difference",
-            Self::Exclusion => "Exclusion",
-        }
-    }
-
-    pub const fn description(self) -> &'static str {
-        match self {
-            Self::Normal => "Uses the layer color without blending it with layers below.",
-            Self::Multiply => "Darkens by multiplying colors; white has no effect.",
-            Self::Screen => "Lightens like projected light; black has no effect.",
-            Self::Overlay => "Boosts contrast using Multiply on shadows and Screen on highlights.",
-            Self::Darken => "Keeps the darker value from this layer or the layers below.",
-            Self::Lighten => "Keeps the lighter value from this layer or the layers below.",
-            Self::ColorDodge => "Brightens the layers below and can create intense highlights.",
-            Self::ColorBurn => "Darkens the layers below and increases shadow contrast.",
-            Self::HardLight => "Uses a strong light based on this layer's brightness.",
-            Self::SoftLight => "Adds a gentle contrast and lighting effect.",
-            Self::Difference => "Shows the absolute difference between the two colors.",
-            Self::Exclusion => "Creates a softer, lower-contrast Difference effect.",
-        }
-    }
-}
+mod blend;
+pub use blend::{BlendMode, blend_rgb};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -898,9 +832,9 @@ fn output(action: &str, message: &str, layer_ids: Vec<u64>) -> CommandOutput {
 mod render;
 
 pub use render::{
-    export_document, load_document, measure_text, render_document, render_document_thumbnail,
-    render_layer_base, render_layer_base_scaled, render_layer_preview, render_layer_preview_scaled,
-    render_solid_color, save_document,
+    export_document, load_document, measure_text, render_document, render_document_scaled,
+    render_document_thumbnail, render_layer_base, render_layer_base_scaled, render_layer_preview,
+    render_layer_preview_scaled, render_solid_color, save_document,
 };
 
 #[cfg(test)]

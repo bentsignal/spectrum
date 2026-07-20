@@ -216,6 +216,31 @@ fn cli_rasterizes_a_shape_through_the_core_command() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn cli_exposes_extended_blend_modes_through_core_commands() {
+    let directory = std::env::temp_dir().join(format!(
+        "prism-cli-blend-{}",
+        spectrum_revisions::RevisionId::new()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("blend.prism");
+    run_prism(&["--project", project.to_str().unwrap(), "init", "Blend CLI"]);
+    run_prism(&["--project", project.to_str().unwrap(), "add-rectangle"]);
+    let result = run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "blend",
+        "1",
+        "vivid-light",
+    ]);
+    assert_eq!(result["results"][0]["action"], "set_blend_mode");
+    run_prism(&["--project", project.to_str().unwrap(), "clip", "1", "true"]);
+    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    assert_eq!(listed["document"]["layers"][0]["blend_mode"], "vivid_light");
+    assert_eq!(listed["document"]["layers"][0]["clip_to_below"], true);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 fn status(project: &Path, session: SessionId) -> Value {
     run_prism(&[
         "--project",

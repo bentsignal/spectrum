@@ -82,6 +82,7 @@ impl PrismApp {
         self.layer_visual_dirty.clear();
         self.layer_render_pending.clear();
         self.preview_error = None;
+        self.composite_preview.reset();
     }
 
     pub(super) fn ensure_layer_visuals(&mut self, context: &egui::Context, display_scale: f32) {
@@ -393,13 +394,27 @@ pub(super) fn paint_interactive_document(
     );
 }
 
-fn paint_canvas_background(ui: &egui::Ui, geometry: CanvasGeometry, background: [u8; 4]) {
-    ui.painter().rect_filled(geometry.viewport, 0.0, INK);
+pub(super) fn paint_canvas_background(
+    ui: &egui::Ui,
+    geometry: CanvasGeometry,
+    background: [u8; 4],
+) {
     if background[3] == 255 {
+        ui.painter().rect_filled(geometry.viewport, 0.0, INK);
         ui.painter()
             .rect_filled(geometry.canvas, 0.0, color32(background));
         return;
     }
+    paint_transparency_background(ui, geometry);
+    ui.painter().rect_filled(
+        geometry.canvas,
+        0.0,
+        Color32::from_rgba_unmultiplied(background[0], background[1], background[2], background[3]),
+    );
+}
+
+pub(super) fn paint_transparency_background(ui: &egui::Ui, geometry: CanvasGeometry) {
+    ui.painter().rect_filled(geometry.viewport, 0.0, INK);
     let clipped = geometry.canvas.intersect(geometry.viewport);
     let checker = 20.0;
     let cols = (clipped.width() / checker).ceil() as i32 + 1;
@@ -416,11 +431,6 @@ fn paint_canvas_background(ui: &egui::Ui, geometry: CanvasGeometry, background: 
             ui.painter().rect_filled(cell, 0.0, color);
         }
     }
-    ui.painter().rect_filled(
-        geometry.canvas,
-        0.0,
-        Color32::from_rgba_unmultiplied(background[0], background[1], background[2], background[3]),
-    );
 }
 
 fn paint_layer_visual(
