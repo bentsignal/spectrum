@@ -9,7 +9,10 @@ use fontdue::Font;
 use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
-use crate::{BlendMode, Document, Layer, LayerKind, ShapeStroke, Transform};
+use crate::{
+    BlendMode, Document, Layer, LayerKind, Transform,
+    shapes::{constrained_shape_scale, render_shape},
+};
 
 pub fn save_document(document: &Document, path: &Path) -> Result<()> {
     let extension = path.extension().and_then(|value| value.to_str());
@@ -135,16 +138,31 @@ pub fn render_document(document: &Document, max_size: Option<u32>) -> Result<Dyn
             continue;
         }
         let text_scale = text_raster_scale(layer, scale);
+        let shape_scale = if matches!(
+            layer.kind,
+            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+        ) {
+            constrained_shape_scale(
+                layer,
+                [
+                    (layer.transform.scale_x.abs() * scale).max(1.0),
+                    (layer.transform.scale_y.abs() * scale).max(1.0),
+                ],
+                document.width.max(document.height),
+            )?
+        } else {
+            [1.0; 2]
+        };
         let mut render_layer = layer.clone();
         if let LayerKind::Text { font_size, .. } = &mut render_layer.kind {
             *font_size *= text_scale;
         }
-        let source = render_layer_preview(&render_layer, None)?;
+        let source = render_layer_preview_scaled(&render_layer, None, shape_scale)?;
         let mut scaled_layer = layer.clone();
         scaled_layer.transform.x *= scale;
         scaled_layer.transform.y *= scale;
-        scaled_layer.transform.scale_x *= scale / text_scale;
-        scaled_layer.transform.scale_y *= scale / text_scale;
+        scaled_layer.transform.scale_x *= scale / text_scale / shape_scale[0];
+        scaled_layer.transform.scale_y *= scale / text_scale / shape_scale[1];
         let source = transform_layer(source, scaled_layer.transform);
         let mut coverage = RgbaImage::new(canvas_width, canvas_height);
         composite_layer(
@@ -166,7 +184,15 @@ pub fn render_document_thumbnail(document: &Document, max_size: u32) -> Result<D
 /// Renders one layer's source pixels without its canvas transform, opacity, or blend mode.
 /// Interactive clients can cache this result and apply transforms on the GPU.
 pub fn render_layer_preview(layer: &Layer, max_size: Option<u32>) -> Result<DynamicImage> {
-    let image = render_layer_base(layer, max_size)?;
+    render_layer_preview_scaled(layer, max_size, [1.0; 2])
+}
+
+pub fn render_layer_preview_scaled(
+    layer: &Layer,
+    max_size: Option<u32>,
+    shape_scale: [f32; 2],
+) -> Result<DynamicImage> {
+    let image = render_layer_base_scaled(layer, max_size, shape_scale)?;
     Ok(render_image(
         image,
         layer.adjustments.clone(),
@@ -177,6 +203,14 @@ pub fn render_layer_preview(layer: &Layer, max_size: Option<u32>) -> Result<Dyna
 /// Decodes or rasterizes a layer without development adjustments. Keeping this
 /// result cached avoids repeatedly decoding large linked images during sliders.
 pub fn render_layer_base(layer: &Layer, max_size: Option<u32>) -> Result<DynamicImage> {
+    render_layer_base_scaled(layer, max_size, [1.0; 2])
+}
+
+pub fn render_layer_base_scaled(
+    layer: &Layer,
+    max_size: Option<u32>,
+    shape_scale: [f32; 2],
+) -> Result<DynamicImage> {
     let mut image = match &layer.kind {
         LayerKind::Raster { path, .. } => image::ImageReader::open(path)
             .with_context(|| format!("could not open {}", path.display()))?
@@ -188,23 +222,9 @@ pub fn render_layer_base(layer: &Layer, max_size: Option<u32>) -> Result<Dynamic
             font_size,
             color,
         } => DynamicImage::ImageRgba8(render_text(text, *font_size, *color)?),
-        LayerKind::Rectangle {
-            width,
-            height,
-            color,
-            corner_radius,
-        } => DynamicImage::ImageRgba8(render_rectangle(
-            *width,
-            *height,
-            *color,
-            *corner_radius,
-            layer.stroke,
-        )),
-        LayerKind::Ellipse {
-            width,
-            height,
-            color,
-        } => DynamicImage::ImageRgba8(render_ellipse(*width, *height, *color, layer.stroke)),
+        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => {
+            DynamicImage::ImageRgba8(render_shape(layer, shape_scale)?)
+        }
     };
     if let Some(max_size) =
         max_size.filter(|size| *size > 0 && (image.width() > *size || image.height() > *size))
@@ -327,93 +347,6 @@ fn text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
         .max(layer.transform.scale_y.abs())
         * document_scale;
     (target.max(1.0).ceil() as u32).next_power_of_two().min(16) as f32
-}
-
-fn render_rectangle(
-    width: u32,
-    height: u32,
-    color: [u8; 4],
-    radius: f32,
-    stroke: ShapeStroke,
-) -> RgbaImage {
-    let mut output = RgbaImage::new(width, height);
-    let radius = radius.clamp(0.0, width.min(height) as f32 * 0.5);
-    for y in 0..height {
-        for x in 0..width {
-            if rounded_rect_contains(x, y, width, height, radius, 0.0) {
-                let stroke_pixel = stroke.enabled
-                    && !rounded_rect_contains(
-                        x,
-                        y,
-                        width,
-                        height,
-                        radius,
-                        stroke.width.min(width.min(height) as f32 * 0.5),
-                    );
-                output.put_pixel(x, y, Rgba(if stroke_pixel { stroke.color } else { color }));
-            }
-        }
-    }
-    output
-}
-
-fn rounded_rect_contains(x: u32, y: u32, width: u32, height: u32, radius: f32, inset: f32) -> bool {
-    let left = inset;
-    let top = inset;
-    let right = width as f32 - inset;
-    let bottom = height as f32 - inset;
-    if right <= left || bottom <= top {
-        return false;
-    }
-    let x = x as f32 + 0.5;
-    let y = y as f32 + 0.5;
-    if x < left || x > right || y < top || y > bottom {
-        return false;
-    }
-    let radius = (radius - inset)
-        .max(0.0)
-        .min((right - left).min(bottom - top) * 0.5);
-    if radius == 0.0 {
-        return true;
-    }
-    let nearest_x = x.clamp(left + radius, right - radius);
-    let nearest_y = y.clamp(top + radius, bottom - radius);
-    let dx = x - nearest_x;
-    let dy = y - nearest_y;
-    dx * dx + dy * dy <= radius * radius
-}
-
-fn render_ellipse(width: u32, height: u32, color: [u8; 4], stroke: ShapeStroke) -> RgbaImage {
-    let mut output = RgbaImage::new(width, height);
-    let center_x = width as f32 * 0.5;
-    let center_y = height as f32 * 0.5;
-    let radius_x = center_x.max(0.5);
-    let radius_y = center_y.max(0.5);
-    let inner_x = (radius_x - stroke.width).max(0.0);
-    let inner_y = (radius_y - stroke.width).max(0.0);
-    for y in 0..height {
-        for x in 0..width {
-            let dx = x as f32 + 0.5 - center_x;
-            let dy = y as f32 + 0.5 - center_y;
-            let outer = (dx / radius_x).powi(2) + (dy / radius_y).powi(2) <= 1.0;
-            if !outer {
-                continue;
-            }
-            let inner = inner_x > 0.0
-                && inner_y > 0.0
-                && (dx / inner_x).powi(2) + (dy / inner_y).powi(2) <= 1.0;
-            output.put_pixel(
-                x,
-                y,
-                Rgba(if stroke.enabled && !inner {
-                    stroke.color
-                } else {
-                    color
-                }),
-            );
-        }
-    }
-    output
 }
 
 fn transform_layer(image: DynamicImage, transform: Transform) -> RgbaImage {

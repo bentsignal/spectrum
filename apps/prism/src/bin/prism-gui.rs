@@ -189,6 +189,7 @@ fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::UpdateRectangle { id, .. }
         | Command::UpdateEllipse { id, .. }
         | Command::SetShapeStroke { id, .. }
+        | Command::RasterizeShape { id, .. }
         | Command::AdjustLayer { id, .. }
         | Command::ResetLayerAdjustments { id } => CanvasInvalidation::Layer(*id),
         Command::AddRaster { .. }
@@ -819,17 +820,27 @@ mod tests {
     }
 
     #[test]
-    fn non_text_transforms_do_not_invalidate_cached_layer_pixels() {
+    fn shape_moves_and_rotations_reuse_geometry_at_the_same_scale() {
         let mut layer = Layer::default();
         let before = LayerVisualKey::new(&layer, 1.0);
         layer.transform = Transform {
             x: 480.0,
             y: 270.0,
-            scale_x: 2.0,
-            scale_y: 1.5,
             rotation: 18.0,
+            ..Default::default()
         };
         assert_eq!(before, LayerVisualKey::new(&layer, 1.0));
+    }
+
+    #[test]
+    fn scaled_shapes_request_resolution_from_geometry() {
+        let mut layer = Layer::default();
+        let before = LayerVisualKey::new(&layer, 1.0);
+        layer.transform.scale_x = 2.1;
+        layer.transform.scale_y = 5.0;
+        let scaled = LayerVisualKey::new(&layer, 1.0);
+        assert_ne!(before, scaled);
+        assert_eq!(scaled.shape_raster_scale, [4, 8]);
     }
 
     #[test]

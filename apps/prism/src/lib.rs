@@ -12,11 +12,20 @@ use spectrum_imaging::{AdjustmentPatch, Adjustments};
 mod text;
 use text::default_text_layer_name;
 
+mod validation;
+use validation::*;
+
 mod revisions;
 pub use revisions::{DurableProject, ProjectHistory};
 
 mod workspace;
 pub use workspace::Workspace;
+
+mod shapes;
+pub use shapes::{
+    RasterizedShapeAsset, interactive_shape_scale, rasterize_shape_asset,
+    recommended_rasterization_scale, shape_dimensions,
+};
 
 pub const PRISM_VERSION: u32 = 1;
 pub const MAX_HISTORY: usize = 100;
@@ -461,6 +470,11 @@ pub enum Command {
         id: u64,
         stroke: ShapeStroke,
     },
+    RasterizeShape {
+        id: u64,
+        path: PathBuf,
+        scale: f32,
+    },
     SetClipping {
         id: u64,
         enabled: bool,
@@ -832,6 +846,39 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
             layer.stroke = stroke.sanitized();
             Ok(output("set_shape_stroke", "updated shape stroke", vec![id]))
         }
+        Command::RasterizeShape { id, path, scale } => {
+            require_finite("rasterization scale", scale)?;
+            if scale <= 0.0 {
+                bail!("rasterization scale must be positive");
+            }
+            let (shape_width, shape_height) =
+                shape_dimensions(document.layer(id)?).context("layer is not a parametric shape")?;
+            let path = fs::canonicalize(&path)
+                .with_context(|| format!("could not open rasterized shape {}", path.display()))?;
+            let (width, height) = image::image_dimensions(&path).with_context(|| {
+                format!("could not inspect rasterized shape {}", path.display())
+            })?;
+            let expected_width = (shape_width as f32 * scale).round().max(1.0) as u32;
+            let expected_height = (shape_height as f32 * scale).round().max(1.0) as u32;
+            if (width, height) != (expected_width, expected_height) {
+                bail!(
+                    "rasterized shape is {width}x{height}, expected {expected_width}x{expected_height} at {scale}x"
+                );
+            }
+            let layer = document.layer_mut(id)?;
+            layer.kind = LayerKind::Raster {
+                path,
+                original_path: None,
+            };
+            layer.transform.scale_x /= scale;
+            layer.transform.scale_y /= scale;
+            layer.stroke = ShapeStroke::default();
+            Ok(output(
+                "rasterize_shape",
+                "rasterized shape layer",
+                vec![id],
+            ))
+        }
         Command::SetClipping { id, enabled } => {
             document.layer_mut(id)?.clip_to_below = enabled;
             Ok(output("set_clipping", "updated clipping", vec![id]))
@@ -848,114 +895,12 @@ fn output(action: &str, message: &str, layer_ids: Vec<u64>) -> CommandOutput {
     }
 }
 
-fn require_finite(label: &str, value: f32) -> Result<()> {
-    if !value.is_finite() {
-        bail!("{label} must be a finite number");
-    }
-    Ok(())
-}
-
-fn validate_transform(transform: Transform) -> Result<()> {
-    for (label, value) in [
-        ("x", transform.x),
-        ("y", transform.y),
-        ("horizontal scale", transform.scale_x),
-        ("vertical scale", transform.scale_y),
-        ("rotation", transform.rotation),
-    ] {
-        require_finite(label, value)?;
-    }
-    Ok(())
-}
-
-fn validate_mask(mask: LayerMask) -> Result<()> {
-    for (label, value) in [
-        ("mask x", mask.x),
-        ("mask y", mask.y),
-        ("mask width", mask.width),
-        ("mask height", mask.height),
-    ] {
-        require_finite(label, value)?;
-    }
-    Ok(())
-}
-
-fn validate_shape_stroke(stroke: ShapeStroke) -> Result<()> {
-    require_finite("shape stroke width", stroke.width)
-}
-
-fn validate_adjustments(value: &Adjustments) -> Result<()> {
-    for (label, number) in [
-        ("exposure", value.exposure),
-        ("temperature", value.temperature),
-        ("tint", value.tint),
-        ("contrast", value.contrast),
-        ("highlights", value.highlights),
-        ("shadows", value.shadows),
-        ("whites", value.whites),
-        ("blacks", value.blacks),
-        ("texture", value.texture),
-        ("clarity", value.clarity),
-        ("dehaze", value.dehaze),
-        ("vibrance", value.vibrance),
-        ("saturation", value.saturation),
-        ("vignette", value.vignette),
-        ("sharpening", value.sharpening),
-        ("noise reduction", value.noise_reduction),
-        ("straighten", value.straighten),
-        ("color balance", value.color_grading.balance),
-    ] {
-        require_finite(label, number)?;
-    }
-    if let Some(crop) = value.crop {
-        for (label, number) in [
-            ("crop x", crop.x),
-            ("crop y", crop.y),
-            ("crop width", crop.width),
-            ("crop height", crop.height),
-        ] {
-            require_finite(label, number)?;
-        }
-    }
-    for band in value.hsl.bands() {
-        require_finite("HSL hue", band.hue)?;
-        require_finite("HSL saturation", band.saturation)?;
-        require_finite("HSL luminance", band.luminance)?;
-    }
-    for curve in [
-        &value.curves.master,
-        &value.curves.red,
-        &value.curves.green,
-        &value.curves.blue,
-    ] {
-        for point in &curve.points {
-            require_finite("curve x", point.x)?;
-            require_finite("curve y", point.y)?;
-        }
-    }
-    for grade in [
-        value.color_grading.shadows,
-        value.color_grading.midtones,
-        value.color_grading.highlights,
-    ] {
-        require_finite("grade hue", grade.hue)?;
-        require_finite("grade saturation", grade.saturation)?;
-        require_finite("grade luminance", grade.luminance)?;
-    }
-    for spot in &value.spots {
-        require_finite("spot x", spot.x)?;
-        require_finite("spot y", spot.y)?;
-        require_finite("spot radius", spot.radius)?;
-        require_finite("spot opacity", spot.opacity)?;
-    }
-    Ok(())
-}
-
 mod render;
 
 pub use render::{
     export_document, load_document, measure_text, render_document, render_document_thumbnail,
-    render_layer_base, render_layer_preview, render_solid_color, save_document,
+    render_layer_base, render_layer_base_scaled, render_layer_preview, render_layer_preview_scaled,
+    render_solid_color, save_document,
 };
 
 #[cfg(test)]

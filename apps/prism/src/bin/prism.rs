@@ -1,7 +1,6 @@
 use std::{
     path::{Path, PathBuf},
     process::ExitCode,
-    time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
@@ -11,12 +10,14 @@ use lumen_core::{
 };
 use prism_core::{
     BlendMode, Command, Document, LayerMask, ShapeStroke, Transform, Workspace, export_document,
-    render_document, render_solid_color,
 };
-use serde::Serialize;
 use serde_json::{Value, json};
-use spectrum_imaging::{AdjustmentPatch, Adjustments, RenderOptions};
+use spectrum_imaging::{AdjustmentPatch, RenderOptions};
 use spectrum_revisions::{Actor, ActorKind, CollaborationMode, SessionId};
+
+#[path = "prism_cli/benchmark.rs"]
+mod benchmark;
+use benchmark::benchmark;
 
 #[derive(Parser)]
 #[command(name = "prism", version, about = "Agent-first layered image editor")]
@@ -136,6 +137,13 @@ enum CliCommand {
         width: f32,
         #[arg(long, default_value = "ffffffff")]
         color: String,
+    },
+    /// Freeze an editable shape into an embedded raster asset.
+    RasterizeShape {
+        id: u64,
+        /// Raster pixels per shape unit. Defaults to the current transform scale.
+        #[arg(long)]
+        scale: Option<f32>,
     },
     Rename {
         id: u64,
@@ -498,6 +506,18 @@ fn run(cli: Cli) -> Result<Value> {
                         color: parse_color(&color)?,
                     },
                 })?],
+                CliCommand::RasterizeShape { id, scale } => {
+                    let layer = workspace.document.layer(id)?;
+                    let scale = scale
+                        .map(Ok)
+                        .unwrap_or_else(|| prism_core::recommended_rasterization_scale(layer))?;
+                    let asset = prism_core::rasterize_shape_asset(&workspace.document, id, scale)?;
+                    vec![workspace.execute(Command::RasterizeShape {
+                        id,
+                        path: asset.path,
+                        scale: asset.scale,
+                    })?]
+                }
                 CliCommand::Rename { id, name } => {
                     vec![workspace.execute(Command::RenameLayer { id, name })?]
                 }
@@ -816,6 +836,7 @@ fn schema() -> Value {
                 {"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0},
                 {"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0},
                 {"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}},
+                {"command": "rasterize_shape", "id": 1, "path": "/generated/shape.png", "scale": 2.0},
                 {"command": "set_transform", "id": 1, "transform": {"x": 220.0, "y": 160.0, "scale_x": 1.2, "scale_y": 1.2, "rotation": 8.0}},
                 {"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}},
                 {"command": "adjust_layer", "id": 1, "patch": {"exposure": 0.5, "contrast": 12.0}}
@@ -830,162 +851,6 @@ fn schema() -> Value {
         "color": "RRGGBB or RRGGBBAA",
         "coordinates": "canvas pixels; layer masks are normalized 0..1"
     })
-}
-
-#[derive(Serialize)]
-struct BenchmarkMetric {
-    name: &'static str,
-    median_ms: f64,
-    p95_ms: f64,
-    budget_ms: f64,
-    pass: bool,
-}
-
-fn benchmark(strict: bool) -> Result<Value> {
-    let mut command_samples = Vec::new();
-    let mut workspace = None;
-    for _ in 0..9 {
-        let mut sample = Workspace::new(Document::new("Benchmark", 1600, 1200), None);
-        let started = Instant::now();
-        for index in 0..24 {
-            sample.execute(Command::AddRectangle {
-                name: Some(format!("Layer {index}")),
-                width: 720,
-                height: 480,
-                color: [40 + index * 6, 90, 180, 180],
-                corner_radius: 24.0,
-                x: (index * 17) as f32,
-                y: (index * 11) as f32,
-            })?;
-        }
-        command_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
-        workspace = Some(sample);
-    }
-    let workspace = workspace.expect("benchmark always records at least one command sample");
-    let mut interaction_workspace = Workspace::new(workspace.document.clone(), None);
-    let interaction_layer = interaction_workspace.document.layers.last().unwrap().id;
-    interaction_workspace.begin_interaction();
-    let mut interaction_samples = Vec::new();
-    for frame in 0..240 {
-        let started = Instant::now();
-        interaction_workspace.preview(Command::SetTransform {
-            id: interaction_layer,
-            transform: Transform {
-                x: frame as f32 * 2.0,
-                y: frame as f32,
-                scale_x: 1.0 + frame as f32 / 1_000.0,
-                scale_y: 1.0 + frame as f32 / 1_000.0,
-                rotation: 0.0,
-            },
-        })?;
-        interaction_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
-    }
-    interaction_workspace.commit_interaction()?;
-    let mut text_workspace = Workspace::new(Document::new("Text benchmark", 1600, 1200), None);
-    text_workspace.execute(Command::AddText {
-        text: "Prism interaction benchmark".into(),
-        name: Some("Text".into()),
-        font_size: 144.0,
-        color: [255, 255, 255, 255],
-        x: 100.0,
-        y: 100.0,
-    })?;
-    let text_layer = text_workspace.document.selected.unwrap();
-    text_workspace.begin_interaction();
-    let mut text_interaction_samples = Vec::new();
-    for frame in 0..240 {
-        let started = Instant::now();
-        text_workspace.preview(Command::SetTransform {
-            id: text_layer,
-            transform: Transform {
-                x: 100.0 + frame as f32 * 2.0,
-                y: 100.0 + frame as f32,
-                ..Default::default()
-            },
-        })?;
-        text_interaction_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
-    }
-    text_workspace.commit_interaction()?;
-    let mut shape_preview_samples = Vec::new();
-    for frame in 0..240 {
-        let adjustments = Adjustments {
-            exposure: frame as f32 / 48.0 - 2.5,
-            contrast: frame as f32 % 100.0 - 50.0,
-            ..Default::default()
-        };
-        let started = Instant::now();
-        let _ = render_solid_color([93, 216, 199, 255], &adjustments);
-        shape_preview_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
-    }
-    let mut render_samples = Vec::new();
-    let mut rendered = None;
-    for _ in 0..7 {
-        let started = Instant::now();
-        rendered = Some(render_document(&workspace.document, None)?);
-        render_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
-    }
-    let (command_median, command_p95) = sample_summary(&mut command_samples);
-    let (interaction_median, interaction_p95) = sample_summary(&mut interaction_samples);
-    let (text_interaction_median, text_interaction_p95) =
-        sample_summary(&mut text_interaction_samples);
-    let (shape_median, shape_p95) = sample_summary(&mut shape_preview_samples);
-    let (render_median, render_p95) = sample_summary(&mut render_samples);
-    let metrics = [
-        BenchmarkMetric {
-            name: "flat_shape_adjustment_preview",
-            median_ms: shape_median,
-            p95_ms: shape_p95,
-            budget_ms: 0.5,
-            pass: shape_p95 <= 0.5,
-        },
-        BenchmarkMetric {
-            name: "live_transform_preview",
-            median_ms: interaction_median,
-            p95_ms: interaction_p95,
-            budget_ms: 8.0,
-            pass: interaction_p95 <= 8.0,
-        },
-        BenchmarkMetric {
-            name: "live_text_move_preview",
-            median_ms: text_interaction_median,
-            p95_ms: text_interaction_p95,
-            budget_ms: 1.0,
-            pass: text_interaction_p95 <= 1.0,
-        },
-        BenchmarkMetric {
-            name: "24_layer_command_batch",
-            median_ms: command_median,
-            p95_ms: command_p95,
-            budget_ms: 50.0,
-            pass: command_p95 <= 50.0,
-        },
-        BenchmarkMetric {
-            name: "1600x1200_24_layer_composite",
-            median_ms: render_median,
-            p95_ms: render_p95,
-            budget_ms: 2_000.0,
-            pass: render_p95 <= 2_000.0,
-        },
-    ];
-    let passed = metrics.iter().all(|metric| metric.pass);
-    if strict && !passed {
-        bail!("Prism benchmark exceeded a strict regression budget");
-    }
-    Ok(json!({
-        "ok": true,
-        "action": "benchmark",
-        "strict": strict,
-        "passed": passed,
-        "output": [rendered.as_ref().unwrap().width(), rendered.as_ref().unwrap().height()],
-        "metrics": metrics
-    }))
-}
-
-fn sample_summary(samples: &mut [f64]) -> (f64, f64) {
-    samples.sort_by(f64::total_cmp);
-    let median = samples[samples.len() / 2];
-    let p95_index = ((samples.len() as f64 * 0.95).ceil() as usize).saturating_sub(1);
-    (median, samples[p95_index.min(samples.len() - 1)])
 }
 
 #[cfg(test)]

@@ -42,10 +42,19 @@ human UI text.
 
 The global `--project <path>` option selects an editable `.prism` document.
 Commands cover project creation, raster/text/rectangle/ellipse layers, editable
-shape fills and inside strokes, selection and stack order, transforms, opacity and blend modes, visibility, masks and clipping,
-per-layer adjustments, canvas crop/resize, history, export, and the Lumen
-handoff. `schema`, raw `run`, and `benchmark` provide discovery, low-level agent
-control, and repeatable performance checks.
+shape fills and inside strokes, explicit shape rasterization, selection and
+stack order, transforms, opacity and blend modes, visibility, masks and
+clipping, per-layer adjustments, canvas crop/resize, history, export, and the
+Lumen handoff. `schema`, raw `run`, and `benchmark` provide discovery, low-level
+agent control, and repeatable performance checks.
+
+Rectangle and ellipse geometry stays parametric in project history. Prism
+regenerates shape pixels from fill, stroke, radius, and dimensions for the
+current display zoom and final export scale, so enlarging an editable shape does
+not enlarge an old low-resolution texture. Use `prism rasterize-shape <id>` (or
+the matching Content-panel action) only when the layer should intentionally be
+frozen into an embedded raster asset. `--scale <factor>` overrides the CLI's
+current-transform-aware raster resolution.
 
 The native properties panel presents one stable hierarchy instead of mode tabs:
 canvas settings when no object is selected, then Transform, Content, Appearance,

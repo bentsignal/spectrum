@@ -169,6 +169,53 @@ fn cli_creates_and_styles_editable_ellipses() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn cli_rasterizes_a_shape_through_the_core_command() {
+    let directory = std::env::temp_dir().join(format!(
+        "prism-cli-rasterize-{}",
+        spectrum_revisions::RevisionId::new()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("rasterize.prism");
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "init",
+        "Rasterize CLI",
+        "--width",
+        "640",
+        "--height",
+        "480",
+    ]);
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "add-rectangle",
+        "--width",
+        "20",
+        "--height",
+        "10",
+        "--radius",
+        "3",
+    ]);
+    let output = run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "rasterize-shape",
+        "1",
+        "--scale",
+        "4",
+    ]);
+    assert_eq!(output["results"][0]["action"], "rasterize_shape");
+    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let layer = &listed["document"]["layers"][0];
+    assert_eq!(layer["kind"]["type"], "raster");
+    assert_eq!(layer["transform"]["scale_x"], 0.25);
+    let path = Path::new(layer["kind"]["path"].as_str().unwrap());
+    assert_eq!(image::image_dimensions(path).unwrap(), (80, 40));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 fn status(project: &Path, session: SessionId) -> Value {
     run_prism(&[
         "--project",
