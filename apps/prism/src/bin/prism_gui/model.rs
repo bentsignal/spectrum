@@ -52,7 +52,7 @@ impl Tool {
             Self::Move => "Select on the canvas, drag to move, or pull a corner to resize.",
             Self::Rotate => "Rotation armed · drag around the focused object · Shift snaps to 15°.",
             Self::Crop => "Draw the new canvas boundary.",
-            Self::Text => "Click the canvas, then type directly beside the new text.",
+            Self::Text => "Click for point text, or drag a width for a wrapped paragraph.",
             Self::Shape => "Choose a rectangle, ellipse, or another shape to draw.",
             Self::Mask => "Draw the visible region of the focused element.",
         }

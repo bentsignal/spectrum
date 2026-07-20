@@ -933,3 +933,7 @@ mod typography_tests;
 #[cfg(test)]
 #[path = "transfer_tests.rs"]
 mod transfer_tests;
+
+#[cfg(test)]
+#[path = "workspace_interaction_tests.rs"]
+mod workspace_interaction_tests;

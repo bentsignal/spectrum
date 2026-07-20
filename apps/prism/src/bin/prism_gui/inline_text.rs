@@ -13,6 +13,7 @@ pub(super) struct InlineTextEditor {
     layer_id: u64,
     placement: Option<Pos2>,
     creation_id: Option<u64>,
+    creation_typography: Option<prism_core::TextTypography>,
     text: String,
     font_size: f32,
     color: [u8; 4],
@@ -66,6 +67,7 @@ impl InlineTextEditor {
             layer_id: layer.id,
             placement: None,
             creation_id: None,
+            creation_typography: None,
             text: text.clone(),
             font_size: *font_size,
             color: *color,
@@ -75,12 +77,22 @@ impl InlineTextEditor {
         })
     }
 
-    fn start_new(tab_id: u64, layer_id: u64, placement: Pos2, creation_id: u64) -> Self {
+    fn start_new(
+        tab_id: u64,
+        layer_id: u64,
+        placement: Pos2,
+        creation_id: u64,
+        box_width: Option<f32>,
+    ) -> Self {
         Self {
             tab_id,
             layer_id,
             placement: Some(placement),
             creation_id: Some(creation_id),
+            creation_typography: Some(prism_core::TextTypography {
+                box_width,
+                ..Default::default()
+            }),
             text: String::new(),
             font_size: NEW_TEXT_FONT_SIZE,
             color: NEW_TEXT_COLOR,
@@ -135,6 +147,19 @@ impl InlineTextEditor {
         }
     }
 
+    fn preview_commands(&self) -> Result<Vec<Command>, &'static str> {
+        let mut commands = vec![self.update_command()?];
+        if let Some(typography) = &self.creation_typography
+            && typography != &prism_core::TextTypography::default()
+        {
+            commands.push(Command::SetTextTypography {
+                id: self.layer_id,
+                typography: typography.clone(),
+            });
+        }
+        Ok(commands)
+    }
+
     fn owns(&self, tab_id: u64, layer_id: u64) -> bool {
         self.tab_id == tab_id && self.layer_id == layer_id
     }
@@ -184,15 +209,15 @@ fn refresh_new_text_preview(
     workspace.cancel_interaction();
     workspace.begin_interaction();
     editor.preview_matches_draft = false;
-    let command = match editor.update_command() {
-        Ok(command) => command,
+    let commands = match editor.preview_commands() {
+        Ok(commands) => commands,
         Err(_) => {
             editor.preview_matches_draft = true;
             return Ok(NewPreviewOutcome::Empty);
         }
     };
     workspace
-        .preview(command)
+        .preview_batch(commands)
         .map_err(|error| format!("{error:#}"))?;
     if workspace.document.selected != Some(editor.layer_id)
         || workspace.document.layer(editor.layer_id).is_err()
@@ -259,7 +284,7 @@ fn editor_visual_screen_bounds(
 }
 
 impl PrismApp {
-    pub(super) fn open_new_text_editor(&mut self, position: Pos2) -> bool {
+    pub(super) fn open_new_text_editor(&mut self, position: Pos2, box_width: Option<f32>) -> bool {
         self.settle_inline_text_editor();
         self.finish_interaction();
         let provisional_id = self.workspace.document.next_id;
@@ -272,8 +297,13 @@ impl PrismApp {
             provisional_id,
             position,
             creation_id,
+            box_width,
         ));
-        self.status = "New text · Command-Enter to add · Escape to cancel".into();
+        self.status = if let Some(width) = box_width {
+            format!("New paragraph · {width:.0} px wide · Command-Enter to add · Escape to cancel")
+        } else {
+            "New text · Command-Enter to add · Escape to cancel".into()
+        };
         self.status_error = false;
         true
     }
@@ -589,10 +619,11 @@ mod tests {
     #[test]
     fn new_text_uses_one_stable_provisional_layer_and_commits_one_revision() {
         let mut workspace = workspace_for_new_text();
-        let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(123.0, 87.0), 1);
+        let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(123.0, 87.0), 1, None);
         workspace.begin_interaction();
 
         editor.text = "P".into();
+        assert_eq!(editor.preview_commands().unwrap().len(), 1);
         assert_eq!(
             refresh_new_text_preview(&mut workspace, &mut editor).unwrap(),
             NewPreviewOutcome::Applied
@@ -625,9 +656,38 @@ mod tests {
     }
 
     #[test]
+    fn paragraph_draft_previews_width_as_an_atomic_command_batch() {
+        let mut workspace = workspace_for_new_text();
+        let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(80.0, 140.0), 1, Some(240.0));
+        editor.text = "A paragraph that wraps".into();
+        let commands = editor.preview_commands().unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(
+            commands[1],
+            Command::SetTextTypography {
+                id: 8,
+                typography: prism_core::TextTypography {
+                    box_width: Some(240.0),
+                    ..Default::default()
+                },
+            }
+        );
+
+        workspace.begin_interaction();
+        refresh_new_text_preview(&mut workspace, &mut editor).unwrap();
+        let LayerKind::Text { typography, .. } = &workspace.document.layer(8).unwrap().kind else {
+            panic!("paragraph preview should be text");
+        };
+        assert_eq!(typography.box_width, Some(240.0));
+        assert!(workspace.cancel_interaction());
+        assert!(workspace.document.layer(8).is_err());
+        assert!(!workspace.can_undo());
+    }
+
+    #[test]
     fn empty_and_escape_remove_the_preview_and_restore_baseline_identity() {
         let mut workspace = workspace_for_new_text();
-        let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(200.0, 160.0), 1);
+        let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(200.0, 160.0), 1, None);
         workspace.begin_interaction();
         editor.text = "Draft".into();
         refresh_new_text_preview(&mut workspace, &mut editor).unwrap();
@@ -710,13 +770,19 @@ mod tests {
         assert_eq!(take_for_workspace_change(&mut stale, 4), None);
         assert!(stale.is_none());
 
-        let mut blank_new = Some(InlineTextEditor::start_new(3, 8, Pos2::new(120.0, 90.0), 1));
+        let mut blank_new = Some(InlineTextEditor::start_new(
+            3,
+            8,
+            Pos2::new(120.0, 90.0),
+            1,
+            None,
+        ));
         assert_eq!(
             take_for_workspace_change(&mut blank_new, 3),
             Some((8, LifecycleAction::Cancel))
         );
 
-        let mut previewed_new = InlineTextEditor::start_new(3, 8, Pos2::new(120.0, 90.0), 1);
+        let mut previewed_new = InlineTextEditor::start_new(3, 8, Pos2::new(120.0, 90.0), 1, None);
         previewed_new.text = "Ready".into();
         previewed_new.preview_matches_draft = true;
         let mut previewed_new = Some(previewed_new);
@@ -757,7 +823,7 @@ mod tests {
             pixels_per_point: 2.0,
         };
         let placement = Pos2::new(140.0, 110.0);
-        let editor = InlineTextEditor::start_new(3, 8, placement, 41);
+        let editor = InlineTextEditor::start_new(3, 8, placement, 41, None);
         let rendered = Rect::from_min_size(Pos2::new(620.0, 510.0), Vec2::new(180.0, 70.0));
         let bounds = editor_visual_screen_bounds(geometry, &editor, Some(rendered)).unwrap();
         assert_eq!(bounds.center(), geometry.canvas_to_screen(placement));
@@ -777,10 +843,10 @@ mod tests {
 
     #[test]
     fn new_editor_area_identity_is_creation_scoped_not_provisional_layer_scoped() {
-        let first = InlineTextEditor::start_new(3, 8, Pos2::new(140.0, 110.0), 41);
+        let first = InlineTextEditor::start_new(3, 8, Pos2::new(140.0, 110.0), 41, None);
         let same_creation_different_provisional =
-            InlineTextEditor::start_new(3, 99, Pos2::new(140.0, 110.0), 41);
-        let next_creation = InlineTextEditor::start_new(3, 8, Pos2::new(140.0, 110.0), 42);
+            InlineTextEditor::start_new(3, 99, Pos2::new(140.0, 110.0), 41, None);
+        let next_creation = InlineTextEditor::start_new(3, 8, Pos2::new(140.0, 110.0), 42, None);
         assert_eq!(
             first.area_id(),
             same_creation_different_provisional.area_id()
