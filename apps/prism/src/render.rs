@@ -276,7 +276,37 @@ fn render_document_region_scaled_impl(
             ensure_region_fallback_is_bounded(&render_layer, &scaled_layer, shape_scale)?;
         }
         let source = render_layer_preview_scaled(&render_layer, None, shape_scale)?;
-        let source = transform_layer(source, scaled_layer.transform);
+        let source = if matches!(render_layer.kind, LayerKind::Text { .. }) {
+            let LayerKind::Text {
+                text: base_text,
+                font_size: base_font_size,
+                ..
+            } = &layer.kind
+            else {
+                unreachable!("render layer kind mirrors its source layer");
+            };
+            let base_geometry = measure_text_geometry(base_text, *base_font_size)?;
+            let base_pivot = base_geometry.visual_center();
+            let transformed_width = (source.width() as f32 * scaled_layer.transform.scale_x)
+                .round()
+                .max(1.0);
+            let transformed_height = (source.height() as f32 * scaled_layer.transform.scale_y)
+                .round()
+                .max(1.0);
+            let pivot = (
+                base_pivot.0 * layer.transform.scale_x * scale * source.width() as f32
+                    / transformed_width,
+                base_pivot.1 * layer.transform.scale_y * scale * source.height() as f32
+                    / transformed_height,
+            );
+            let (source, offset) =
+                crate::text_rotation::transform_text_layer(source, scaled_layer.transform, pivot);
+            scaled_layer.transform.x += offset.0;
+            scaled_layer.transform.y += offset.1;
+            source
+        } else {
+            transform_layer(source, scaled_layer.transform)
+        };
         composite_layer_region(
             &mut canvas,
             &mut coverage,
@@ -500,14 +530,38 @@ pub fn render_solid_color(color: [u8; 4], adjustments: &spectrum_imaging::Adjust
     .0
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub visual_left: f32,
+    pub visual_top: f32,
+    pub visual_width: f32,
+    pub visual_height: f32,
+}
+
+impl TextGeometry {
+    pub fn visual_center(self) -> (f32, f32) {
+        (
+            self.visual_left + self.visual_width * 0.5,
+            self.visual_top + self.visual_height * 0.5,
+        )
+    }
+}
+
 pub fn measure_text(text: &str, font_size: f32) -> Result<(u32, u32)> {
+    let geometry = measure_text_geometry(text, font_size)?;
+    Ok((geometry.width, geometry.height))
+}
+
+pub fn measure_text_geometry(text: &str, font_size: f32) -> Result<TextGeometry> {
     let font = Font::from_bytes(
         epaint_default_fonts::UBUNTU_LIGHT,
         fontdue::FontSettings::default(),
     )
     .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?;
     let layout = layout_text(&font, text, font_size);
-    Ok((layout.width, layout.height))
+    Ok(layout.geometry())
 }
 
 fn render_text(text: &str, font_size: f32, color: [u8; 4]) -> Result<RgbaImage> {
@@ -542,6 +596,8 @@ struct PositionedGlyph {
     character: char,
     x: i32,
     y: i32,
+    width: u32,
+    height: u32,
 }
 
 struct TextLayout {
@@ -550,6 +606,39 @@ struct TextLayout {
     min_y: i32,
     width: u32,
     height: u32,
+}
+
+impl TextLayout {
+    fn geometry(&self) -> TextGeometry {
+        let visual = self
+            .glyphs
+            .iter()
+            .filter(|glyph| glyph.width > 0 && glyph.height > 0)
+            .fold(None::<(i32, i32, i32, i32)>, |bounds, glyph| {
+                let left = glyph.x - self.min_x;
+                let top = glyph.y - self.min_y;
+                let right = left + glyph.width as i32;
+                let bottom = top + glyph.height as i32;
+                Some(match bounds {
+                    Some((min_x, min_y, max_x, max_y)) => (
+                        min_x.min(left),
+                        min_y.min(top),
+                        max_x.max(right),
+                        max_y.max(bottom),
+                    ),
+                    None => (left, top, right, bottom),
+                })
+            })
+            .unwrap_or((0, 0, self.width as i32, self.height as i32));
+        TextGeometry {
+            width: self.width,
+            height: self.height,
+            visual_left: visual.0 as f32,
+            visual_top: visual.1 as f32,
+            visual_width: (visual.2 - visual.0).max(1) as f32,
+            visual_height: (visual.3 - visual.1).max(1) as f32,
+        }
+    }
 }
 
 fn layout_text(font: &Font, text: &str, font_size: f32) -> TextLayout {
@@ -574,7 +663,13 @@ fn layout_text(font: &Font, text: &str, font_size: f32) -> TextLayout {
             min_y = min_y.min(y);
             max_x = max_x.max(x + metrics.width as i32);
             max_y = max_y.max(y + metrics.height as i32);
-            glyphs.push(PositionedGlyph { character, x, y });
+            glyphs.push(PositionedGlyph {
+                character,
+                x,
+                y,
+                width: metrics.width as u32,
+                height: metrics.height as u32,
+            });
             cursor_x += metrics.advance_width;
         }
         max_x = max_x.max(cursor_x.ceil() as i32);
@@ -830,5 +925,15 @@ mod text_tests {
         let source_alpha: u64 = glyph.into_iter().map(u64::from).sum();
         let rendered_alpha: u64 = rendered.pixels().map(|pixel| u64::from(pixel[3])).sum();
         assert_eq!(rendered_alpha, source_alpha);
+    }
+
+    #[test]
+    fn text_geometry_uses_visible_glyph_bounds_inside_the_line_box() {
+        let geometry = measure_text_geometry("I", 72.0).unwrap();
+
+        assert!(geometry.visual_width < geometry.width as f32);
+        assert!(geometry.visual_height < geometry.height as f32);
+        assert!(geometry.visual_center().0 > geometry.visual_left);
+        assert!(geometry.visual_center().1 > geometry.visual_top);
     }
 }

@@ -157,6 +157,7 @@ struct DragState {
     transform: Transform,
     action: DragAction,
     bounds: Option<Rect>,
+    visual_rotation_bounds: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -762,6 +763,7 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(100.0, 50.0),
             )),
+            visual_rotation_bounds: false,
         };
         let transform = drag_transform(drag, true);
         assert_eq!(transform.x, 10.0);
@@ -786,6 +788,7 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(500.0, 100.0),
             )),
+            visual_rotation_bounds: false,
         };
         let before = drag_transform(make_drag(Pos2::new(560.0, 129.0)), true);
         let after = drag_transform(make_drag(Pos2::new(560.0, 131.0)), true);
@@ -809,6 +812,7 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(100.0, 50.0),
             )),
+            visual_rotation_bounds: false,
         };
         let transform = drag_transform(drag, false);
         assert!((transform.scale_x - 1.5).abs() < 0.001);

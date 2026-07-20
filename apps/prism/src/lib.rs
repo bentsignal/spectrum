@@ -843,12 +843,14 @@ fn output(action: &str, message: &str, layer_ids: Vec<u64>) -> CommandOutput {
 }
 
 mod render;
+mod text_rotation;
 
 pub use render::{
-    RenderRegion, document_supports_region_native_zoom, export_document, load_document,
-    measure_text, render_document, render_document_region_scaled, render_document_scaled,
-    render_document_thumbnail, render_layer_base, render_layer_base_scaled, render_layer_preview,
-    render_layer_preview_scaled, render_solid_color, save_document,
+    RenderRegion, TextGeometry, document_supports_region_native_zoom, export_document,
+    load_document, measure_text, measure_text_geometry, render_document,
+    render_document_region_scaled, render_document_scaled, render_document_thumbnail,
+    render_layer_base, render_layer_base_scaled, render_layer_preview, render_layer_preview_scaled,
+    render_solid_color, save_document,
 };
 
 #[cfg(test)]
