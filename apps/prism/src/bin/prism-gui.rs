@@ -37,7 +37,6 @@ mod project_lifecycle;
 mod renderer;
 #[path = "prism_gui/shortcuts.rs"]
 mod shortcuts;
-use dialogs::*;
 use history::HistoryViewState;
 use project_lifecycle::MoveProjectDialog;
 use renderer::*;
@@ -65,24 +64,23 @@ enum Tool {
     Move,
     Crop,
     Text,
-    Rectangle,
-    Ellipse,
+    Shape,
     Mask,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolActivation {
     ImmediateDialog,
+    ChoiceDialog,
     CanvasGesture,
 }
 
 impl Tool {
-    const ALL: [(Self, &'static str, &'static str); 6] = [
+    const ALL: [(Self, &'static str, &'static str); 5] = [
         (Self::Move, "V", "Select / move"),
         (Self::Crop, "C", "Crop canvas"),
         (Self::Text, "T", "Text"),
-        (Self::Rectangle, "R", "Rectangle"),
-        (Self::Ellipse, "U", "Ellipse"),
+        (Self::Shape, "S", "Shape"),
         (Self::Mask, "M", "Layer mask"),
     ];
 
@@ -91,8 +89,7 @@ impl Tool {
             Self::Move => "Move",
             Self::Crop => "Crop canvas",
             Self::Text => "Add text",
-            Self::Rectangle => "Draw shape",
-            Self::Ellipse => "Draw ellipse",
+            Self::Shape => "Shape",
             Self::Mask => "Draw mask",
         }
     }
@@ -109,8 +106,7 @@ impl Tool {
             Self::Move => "Select on the canvas, drag to move, or pull a corner to resize.",
             Self::Crop => "Draw the new canvas boundary.",
             Self::Text => "Type the text now, then move it into place.",
-            Self::Rectangle => "Drag a shape, or click for a standard size.",
-            Self::Ellipse => "Drag an ellipse, or click for a standard circle.",
+            Self::Shape => "Choose a rectangle, ellipse, or another shape to draw.",
             Self::Mask => "Draw the visible region of the focused element.",
         }
     }
@@ -118,6 +114,7 @@ impl Tool {
     fn activation(self) -> ToolActivation {
         match self {
             Self::Text => ToolActivation::ImmediateDialog,
+            Self::Shape => ToolActivation::ChoiceDialog,
             _ => ToolActivation::CanvasGesture,
         }
     }
@@ -251,7 +248,9 @@ struct PrismApp {
     status: String,
     status_error: bool,
     tool: Tool,
-    tool_palette: Option<String>,
+    shape_kind: chrome::ShapeKind,
+    tool_palette: Option<chrome::PaletteState>,
+    shape_palette: Option<chrome::PaletteState>,
     composition_query: String,
     composition_search_focus: bool,
     composition_result_index: usize,
@@ -358,7 +357,9 @@ impl PrismApp {
             status: "Ready".into(),
             status_error: false,
             tool: Tool::Move,
+            shape_kind: chrome::ShapeKind::Rectangle,
             tool_palette: None,
+            shape_palette: None,
             composition_query: String::new(),
             composition_search_focus: false,
             composition_result_index: 0,
@@ -962,8 +963,7 @@ mod tests {
     #[test]
     fn tools_declare_whether_selection_opens_ui_or_arms_the_canvas() {
         assert_eq!(Tool::Text.activation(), ToolActivation::ImmediateDialog);
-        assert_eq!(Tool::Rectangle.activation(), ToolActivation::CanvasGesture);
-        assert_eq!(Tool::Ellipse.activation(), ToolActivation::CanvasGesture);
+        assert_eq!(Tool::Shape.activation(), ToolActivation::ChoiceDialog);
         assert_eq!(Tool::Crop.activation(), ToolActivation::CanvasGesture);
     }
 }

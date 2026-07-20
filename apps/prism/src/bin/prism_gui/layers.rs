@@ -110,7 +110,7 @@ impl PrismApp {
                         .hint_text("Jump to object…")
                         .vertical_align(egui::Align::Center),
                 );
-                let _ = command_shortcut(ui, "J");
+                let _ = command_shortcut(ui, shortcuts::GlobalShortcut::JumpToObject.label());
                 search
             })
             .inner;

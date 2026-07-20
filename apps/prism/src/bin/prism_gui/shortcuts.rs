@@ -15,6 +15,42 @@ pub(super) enum ShortcutDomain {
     FocusedObject,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GlobalShortcut {
+    ToolsAndActions,
+    JumpToObject,
+    History,
+    UndoRedo,
+}
+
+impl GlobalShortcut {
+    #[cfg(test)]
+    const ALL: [Self; 4] = [
+        Self::ToolsAndActions,
+        Self::JumpToObject,
+        Self::History,
+        Self::UndoRedo,
+    ];
+
+    pub(super) fn key(self) -> egui::Key {
+        match self {
+            Self::ToolsAndActions => egui::Key::P,
+            Self::JumpToObject => egui::Key::F,
+            Self::History => egui::Key::H,
+            Self::UndoRedo => egui::Key::Z,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::ToolsAndActions => "P",
+            Self::JumpToObject => "F",
+            Self::History => "H",
+            Self::UndoRedo => "Z",
+        }
+    }
+}
+
 pub(super) fn shortcut_domain(modifiers: egui::Modifiers) -> Option<ShortcutDomain> {
     if modifiers.command && !modifiers.alt {
         Some(ShortcutDomain::Global)
@@ -55,16 +91,20 @@ pub(super) fn focused_shortcut_pressed(input: &egui::InputState, key: egui::Key)
                 .any(|event| event_is_focused_shortcut(event, key)))
 }
 
-pub(super) fn global_shortcut_pressed(input: &egui::InputState, key: egui::Key) -> bool {
-    shortcut_domain(input.modifiers) == Some(ShortcutDomain::Global) && input.key_pressed(key)
+pub(super) fn global_shortcut_pressed(input: &egui::InputState, shortcut: GlobalShortcut) -> bool {
+    shortcut_domain(input.modifiers) == Some(ShortcutDomain::Global)
+        && input.key_pressed(shortcut.key())
 }
 
 impl PrismApp {
     pub(super) fn keyboard(&mut self, context: &egui::Context) {
-        if context.egui_wants_keyboard_input() {
+        if self.tool_palette.is_some()
+            || self.shape_palette.is_some()
+            || context.egui_wants_keyboard_input()
+        {
             return;
         }
-        if context.input(|input| global_shortcut_pressed(input, egui::Key::H)) {
+        if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::History)) {
             self.toggle_history();
             return;
         }
@@ -78,10 +118,8 @@ impl PrismApp {
                 Some(Tool::Crop)
             } else if input.key_pressed(egui::Key::T) {
                 Some(Tool::Text)
-            } else if input.key_pressed(egui::Key::R) {
-                Some(Tool::Rectangle)
-            } else if input.key_pressed(egui::Key::U) {
-                Some(Tool::Ellipse)
+            } else if input.key_pressed(egui::Key::S) {
+                Some(Tool::Shape)
             } else if input.key_pressed(egui::Key::M) {
                 Some(Tool::Mask)
             } else {
@@ -99,13 +137,13 @@ impl PrismApp {
         {
             self.execute(Command::DuplicateLayer { id });
         }
-        if context.input(|input| global_shortcut_pressed(input, egui::Key::K)) {
-            self.tool_palette = Some(String::new());
+        if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::ToolsAndActions)) {
+            self.tool_palette = Some(chrome::PaletteState::default());
         }
-        if context.input(|input| global_shortcut_pressed(input, egui::Key::J)) {
+        if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::JumpToObject)) {
             self.composition_search_focus = true;
         }
-        if context.input(|input| global_shortcut_pressed(input, egui::Key::Z)) {
+        if context.input(|input| global_shortcut_pressed(input, GlobalShortcut::UndoRedo)) {
             if context.input(|input| input.modifiers.shift) {
                 self.execute(Command::Redo);
             } else {
@@ -119,6 +157,7 @@ impl PrismApp {
         }
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.tool_palette = None;
+            self.shape_palette = None;
             self.tool = Tool::Move;
             self.drag = None;
         }
@@ -187,7 +226,20 @@ mod tests {
         });
         let context = egui::Context::default();
         context.begin_pass(input);
-        assert!(context.input(|state| global_shortcut_pressed(state, egui::Key::H)));
+        assert!(context.input(|state| global_shortcut_pressed(state, GlobalShortcut::History)));
         let _ = context.end_pass();
+    }
+
+    #[test]
+    fn global_shortcuts_match_labels_without_collisions() {
+        assert_eq!(GlobalShortcut::ToolsAndActions.key(), egui::Key::P);
+        assert_eq!(GlobalShortcut::ToolsAndActions.label(), "P");
+        assert_eq!(GlobalShortcut::JumpToObject.key(), egui::Key::F);
+        assert_eq!(GlobalShortcut::JumpToObject.label(), "F");
+        for (index, shortcut) in GlobalShortcut::ALL.iter().enumerate() {
+            for other in &GlobalShortcut::ALL[index + 1..] {
+                assert_ne!(shortcut.key(), other.key());
+            }
+        }
     }
 }

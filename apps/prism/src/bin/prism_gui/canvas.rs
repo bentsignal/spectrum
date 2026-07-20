@@ -198,8 +198,8 @@ impl PrismApp {
                     ACCENT,
                 );
             }
-            DragAction::Draw => match self.tool {
-                Tool::Rectangle | Tool::Crop | Tool::Mask => {
+            DragAction::Draw => match (self.tool, self.shape_kind) {
+                (Tool::Shape, chrome::ShapeKind::Rectangle) | (Tool::Crop, _) | (Tool::Mask, _) => {
                     let rect = Rect::from_two_pos(start, current);
                     ui.painter().rect_filled(rect, 1.0, with_alpha(ACCENT, 30));
                     ui.painter().rect_stroke(
@@ -209,7 +209,7 @@ impl PrismApp {
                         egui::StrokeKind::Inside,
                     );
                 }
-                Tool::Ellipse => {
+                (Tool::Shape, chrome::ShapeKind::Ellipse) => {
                     let rect = Rect::from_two_pos(start, current);
                     let radius = rect.size() * 0.5;
                     ui.painter().add(egui::Shape::ellipse_filled(
@@ -255,8 +255,8 @@ impl PrismApp {
         let size = max - min;
         match drag.action {
             DragAction::Move | DragAction::Resize(_) => self.finish_interaction(),
-            DragAction::Draw => match self.tool {
-                Tool::Rectangle if size.x > 2.0 && size.y > 2.0 => {
+            DragAction::Draw => match (self.tool, self.shape_kind) {
+                (Tool::Shape, chrome::ShapeKind::Rectangle) if size.x > 2.0 && size.y > 2.0 => {
                     self.execute(Command::AddRectangle {
                         name: None,
                         width: size.x.round().max(1.0) as u32,
@@ -268,7 +268,7 @@ impl PrismApp {
                     });
                     self.tool = Tool::Move;
                 }
-                Tool::Ellipse if size.x > 2.0 && size.y > 2.0 => {
+                (Tool::Shape, chrome::ShapeKind::Ellipse) if size.x > 2.0 && size.y > 2.0 => {
                     self.execute(Command::AddEllipse {
                         name: None,
                         width: size.x.round().max(1.0) as u32,
@@ -279,7 +279,7 @@ impl PrismApp {
                     });
                     self.tool = Tool::Move;
                 }
-                Tool::Crop if size.x > 2.0 && size.y > 2.0 => {
+                (Tool::Crop, _) if size.x > 2.0 && size.y > 2.0 => {
                     self.execute(Command::CropCanvas {
                         x: min.x.max(0.0).round() as u32,
                         y: min.y.max(0.0).round() as u32,
@@ -289,7 +289,7 @@ impl PrismApp {
                     self.fit_requested = true;
                     self.tool = Tool::Move;
                 }
-                Tool::Mask if size.x > 2.0 && size.y > 2.0 => {
+                (Tool::Mask, _) if size.x > 2.0 && size.y > 2.0 => {
                     if let Some(id) = drag.layer_id {
                         let width = self.workspace.document.width as f32;
                         let height = self.workspace.document.height as f32;
@@ -328,27 +328,30 @@ impl PrismApp {
                     color: [245, 246, 250, 255],
                 });
             }
-            Tool::Rectangle => {
-                self.execute(Command::AddRectangle {
-                    name: None,
-                    width: 320,
-                    height: 180,
-                    color: [93, 216, 199, 255],
-                    corner_radius: 12.0,
-                    x: position.x,
-                    y: position.y,
-                });
-                self.tool = Tool::Move;
-            }
-            Tool::Ellipse => {
-                self.execute(Command::AddEllipse {
-                    name: None,
-                    width: 240,
-                    height: 240,
-                    color: [247, 178, 102, 255],
-                    x: position.x,
-                    y: position.y,
-                });
+            Tool::Shape => {
+                match self.shape_kind {
+                    chrome::ShapeKind::Rectangle => {
+                        self.execute(Command::AddRectangle {
+                            name: None,
+                            width: 320,
+                            height: 180,
+                            color: [93, 216, 199, 255],
+                            corner_radius: 12.0,
+                            x: position.x,
+                            y: position.y,
+                        });
+                    }
+                    chrome::ShapeKind::Ellipse => {
+                        self.execute(Command::AddEllipse {
+                            name: None,
+                            width: 240,
+                            height: 240,
+                            color: [247, 178, 102, 255],
+                            x: position.x,
+                            y: position.y,
+                        });
+                    }
+                }
                 self.tool = Tool::Move;
             }
             _ => {}
