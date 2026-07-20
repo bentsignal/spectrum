@@ -507,7 +507,7 @@ impl DurableProject {
 
     fn materialize_command_assets(&self, commands: &mut [Command]) -> Result<()> {
         for command in commands {
-            if let Command::AddRaster { path, .. } = command
+            if let Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } = command
                 && let Some(reference) = AssetReference::parse(path)
             {
                 *path = self.materialize(reference)?;
@@ -625,7 +625,8 @@ impl PreparedOperations {
         let mut portable = commands.to_vec();
         let mut assets = Vec::new();
         for command in &mut portable {
-            if let Command::AddRaster { path, .. } = command {
+            if let Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } = command
+            {
                 let prepared = prepare_asset(path)?;
                 *path = prepared.reference.path();
                 assets.push(prepared.asset);
