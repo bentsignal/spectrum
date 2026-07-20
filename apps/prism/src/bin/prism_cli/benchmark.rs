@@ -2,8 +2,9 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 use prism_core::{
-    BlendMode, Command, Document, LayerMask, RenderRegion, Transform, Workspace, render_document,
-    render_document_region_scaled, render_layer_base_scaled, render_solid_color,
+    BlendMode, Command, Document, Layer, LayerKind, LayerMask, RenderRegion, ShapeStroke,
+    Transform, Workspace, render_document, render_document_region_scaled,
+    render_document_region_scaled_with_stats, render_layer_base_scaled, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -206,6 +207,73 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         }
         viewport_composite_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    let mut all_layer_document = Document::new("All-layer viewport", 16_384, 16_384);
+    all_layer_document.layers = vec![
+        Layer {
+            id: 1,
+            opacity: 0.83,
+            transform: Transform {
+                rotation: 17.0,
+                ..Default::default()
+            },
+            adjustments: Adjustments {
+                exposure: 0.28,
+                vignette: -16.0,
+                noise_reduction: 12.0,
+                sharpening: 10.0,
+                ..Default::default()
+            },
+            stroke: ShapeStroke {
+                enabled: true,
+                width: 10.0,
+                color: [244, 215, 128, 255],
+            },
+            kind: LayerKind::Ellipse {
+                width: 16_384,
+                height: 16_384,
+                color: [64, 142, 220, 218],
+            },
+            ..Layer::default()
+        },
+        Layer {
+            id: 2,
+            opacity: 0.71,
+            blend_mode: BlendMode::SoftLight,
+            clip_to_below: true,
+            transform: Transform {
+                x: 1_500.0,
+                y: 1_200.0,
+                rotation: 349.0,
+                ..Default::default()
+            },
+            kind: LayerKind::Rectangle {
+                width: 12_000,
+                height: 10_000,
+                color: [220, 82, 154, 190],
+                corner_radius: 180.0,
+            },
+            ..Layer::default()
+        },
+    ];
+    let all_layer_region = RenderRegion {
+        x: 72_000,
+        y: 72_000,
+        width: 640,
+        height: 360,
+    };
+    let mut all_layer_samples = Vec::new();
+    for _ in 0..5 {
+        let started = Instant::now();
+        let (rendered, stats) =
+            render_document_region_scaled_with_stats(&all_layer_document, 8.0, all_layer_region)?;
+        if (rendered.width(), rendered.height())
+            != (all_layer_region.width, all_layer_region.height)
+            || stats.transformed_surface_pixels != 0
+        {
+            bail!("all-layer viewport compositor violated its allocation contract");
+        }
+        all_layer_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     let (command_median, command_p95) = sample_summary(&mut command_samples);
     let (interaction_median, interaction_p95) = sample_summary(&mut interaction_samples);
     let (text_interaction_median, text_interaction_p95) =
@@ -216,6 +284,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let (blend_render_median, blend_render_p95) = sample_summary(&mut blend_render_samples);
     let (viewport_composite_median, viewport_composite_p95) =
         sample_summary(&mut viewport_composite_samples);
+    let (all_layer_median, all_layer_p95) = sample_summary(&mut all_layer_samples);
     let metrics = [
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
@@ -272,6 +341,13 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             p95_ms: viewport_composite_p95,
             budget_ms: 500.0,
             pass: viewport_composite_p95 <= 500.0,
+        },
+        BenchmarkMetric {
+            name: "8x_zoom_16k_adjusted_vector_viewport_composite",
+            median_ms: all_layer_median,
+            p95_ms: all_layer_p95,
+            budget_ms: 500.0,
+            pass: all_layer_p95 <= 500.0,
         },
     ];
     let passed = metrics.iter().all(|metric| metric.pass);

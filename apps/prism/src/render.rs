@@ -144,24 +144,22 @@ pub struct RenderRegion {
     pub height: u32,
 }
 
+/// Allocation accounting for the exact viewport compositor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RegionRenderStats {
+    pub output_pixels: u64,
+    /// Native raster/text pixels staged before viewport sampling.
+    pub source_staging_pixels: u64,
+    /// Largest adjusted procedural-shape tile produced on demand.
+    pub max_adjusted_tile_pixels: u64,
+    /// Full transformed surfaces are forbidden in the region path.
+    pub transformed_surface_pixels: u64,
+}
+
 /// Whether every visible layer can be sampled directly into a viewport region
 /// without allocating a transformed full-layer surface.
-pub fn document_supports_region_native_zoom(document: &Document) -> bool {
-    document.layers.iter().all(|layer| {
-        !layer.visible
-            || layer.opacity <= 0.0
-            || matches!(
-                &layer.kind,
-                LayerKind::Rectangle {
-                    corner_radius,
-                    ..
-                } if *corner_radius <= 0.0
-            ) && !layer.stroke.enabled
-                && layer.adjustments == spectrum_imaging::Adjustments::default()
-                && layer.transform.rotation.abs() < 0.01
-                && layer.transform.scale_x > 0.0
-                && layer.transform.scale_y > 0.0
-    })
+pub fn document_supports_region_native_zoom(_document: &Document) -> bool {
+    true
 }
 
 /// Renders a complete document at an explicit canvas-pixel scale. Interactive
@@ -182,27 +180,47 @@ pub fn render_document_scaled(document: &Document, scale: f32) -> Result<Dynamic
             height: canvas_height,
         },
         false,
+        &mut RegionRenderStats::default(),
     )
 }
 
 /// Renders an exact crop of a document at an explicit scale.
 ///
-/// This shares the export compositor and blend math, but only allocates the
-/// requested canvas region. Layer sources are still rasterized at the target
-/// scale so text and editable shapes retain high-zoom fidelity.
+/// This shares the export compositor and blend math, but allocates only the
+/// requested canvas region. Raster/text sources remain at native rasterization
+/// scale while editable shapes are sampled procedurally, including adjustment
+/// tiles with exact finite halos.
 pub fn render_document_region_scaled(
     document: &Document,
     scale: f32,
     region: RenderRegion,
 ) -> Result<DynamicImage> {
-    render_document_region_scaled_impl(document, scale, region, true)
+    render_document_region_scaled_impl(
+        document,
+        scale,
+        region,
+        true,
+        &mut RegionRenderStats::default(),
+    )
+}
+
+/// Renders a viewport crop and returns explicit allocation accounting.
+pub fn render_document_region_scaled_with_stats(
+    document: &Document,
+    scale: f32,
+    region: RenderRegion,
+) -> Result<(DynamicImage, RegionRenderStats)> {
+    let mut stats = RegionRenderStats::default();
+    let image = render_document_region_scaled_impl(document, scale, region, true, &mut stats)?;
+    Ok((image, stats))
 }
 
 fn render_document_region_scaled_impl(
     document: &Document,
     scale: f32,
     region: RenderRegion,
-    bound_fallback_layers: bool,
+    bounded_region: bool,
+    stats: &mut RegionRenderStats,
 ) -> Result<DynamicImage> {
     let (canvas_width, canvas_height) = scaled_document_dimensions(document, scale)?;
     if region.width == 0 || region.height == 0 {
@@ -222,9 +240,10 @@ fn render_document_region_scaled_impl(
     if region.width > crate::MAX_CANVAS_DIMENSION || region.height > crate::MAX_CANVAS_DIMENSION {
         bail!("document render region exceeds Prism's maximum canvas dimension");
     }
-    if bound_fallback_layers && u64::from(region.width) * u64::from(region.height) > 4_096 * 4_096 {
+    if bounded_region && u64::from(region.width) * u64::from(region.height) > 4_096 * 4_096 {
         bail!("document render region exceeds the bounded viewport area");
     }
+    stats.output_pixels = u64::from(region.width) * u64::from(region.height);
 
     let mut canvas = RgbaImage::from_pixel(region.width, region.height, Rgba(document.background));
     let mut previous_coverage: Option<RgbaImage> = None;
@@ -258,7 +277,7 @@ fn render_document_region_scaled_impl(
         scaled_layer.transform.scale_x *= scale / text_scale / shape_scale[0];
         scaled_layer.transform.scale_y *= scale / text_scale / shape_scale[1];
         let mut coverage = RgbaImage::new(region.width, region.height);
-        if bound_fallback_layers
+        if bounded_region
             && composite_solid_rectangle_region(
                 &mut canvas,
                 &mut coverage,
@@ -272,8 +291,19 @@ fn render_document_region_scaled_impl(
             previous_coverage = Some(coverage);
             continue;
         }
-        if bound_fallback_layers {
-            ensure_region_fallback_is_bounded(&render_layer, &scaled_layer, shape_scale)?;
+        if bounded_region {
+            crate::render_region::composite_layer_viewport(
+                &mut canvas,
+                &mut coverage,
+                &render_layer,
+                &scaled_layer,
+                shape_scale,
+                previous_coverage.as_ref(),
+                region,
+                stats,
+            )?;
+            previous_coverage = Some(coverage);
+            continue;
         }
         let source = render_layer_preview_scaled(&render_layer, None, shape_scale)?;
         let source = transform_layer(source, scaled_layer.transform);
@@ -288,64 +318,6 @@ fn render_document_region_scaled_impl(
         previous_coverage = Some(coverage);
     }
     Ok(DynamicImage::ImageRgba8(canvas))
-}
-
-fn ensure_region_fallback_is_bounded(
-    render_layer: &Layer,
-    scaled_layer: &Layer,
-    shape_scale: [f32; 2],
-) -> Result<()> {
-    const MAX_FALLBACK_PIXELS: u64 = 4_096 * 4_096;
-    let (base_width, base_height) = match &render_layer.kind {
-        LayerKind::Raster { path, .. } => image::image_dimensions(path)
-            .with_context(|| format!("could not inspect layer source {}", path.display()))?,
-        LayerKind::Text {
-            text, font_size, ..
-        } => measure_text(text, *font_size)?,
-        LayerKind::Rectangle { width, height, .. } | LayerKind::Ellipse { width, height, .. } => (
-            (*width as f32 * shape_scale[0]).round().max(1.0) as u32,
-            (*height as f32 * shape_scale[1]).round().max(1.0) as u32,
-        ),
-    };
-    let scaled_width = (base_width as f32 * scaled_layer.transform.scale_x)
-        .abs()
-        .round()
-        .max(1.0) as u32;
-    let scaled_height = (base_height as f32 * scaled_layer.transform.scale_y)
-        .abs()
-        .round()
-        .max(1.0) as u32;
-    let (transformed_width, transformed_height) = if scaled_layer.transform.rotation.abs() < 0.01 {
-        (scaled_width, scaled_height)
-    } else {
-        let radians = scaled_layer.transform.rotation.to_radians();
-        let (sin, cos) = radians.sin_cos();
-        (
-            (scaled_width as f32 * cos.abs() + scaled_height as f32 * sin.abs())
-                .ceil()
-                .max(1.0) as u32,
-            (scaled_width as f32 * sin.abs() + scaled_height as f32 * cos.abs())
-                .ceil()
-                .max(1.0) as u32,
-        )
-    };
-    let base_pixels = u64::from(base_width) * u64::from(base_height);
-    let scaled_pixels = u64::from(scaled_width) * u64::from(scaled_height);
-    let transformed_pixels = u64::from(transformed_width) * u64::from(transformed_height);
-    if base_width > crate::MAX_CANVAS_DIMENSION
-        || base_height > crate::MAX_CANVAS_DIMENSION
-        || transformed_width > crate::MAX_CANVAS_DIMENSION
-        || transformed_height > crate::MAX_CANVAS_DIMENSION
-        || base_pixels > MAX_FALLBACK_PIXELS
-        || scaled_pixels > MAX_FALLBACK_PIXELS
-        || transformed_pixels > MAX_FALLBACK_PIXELS
-    {
-        bail!(
-            "layer {} exceeds the bounded viewport fallback; lower zoom or simplify the layer",
-            render_layer.id
-        );
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -683,7 +655,7 @@ fn composite_layer_region(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn composite_pixel(
+pub(crate) fn composite_pixel(
     canvas: &mut RgbaImage,
     coverage: &mut RgbaImage,
     source_pixel: [u8; 4],

@@ -1,7 +1,6 @@
 use super::*;
 
 const COMPOSITOR_WORKERS: usize = 2;
-const MAX_FALLBACK_OFFSCREEN_DIMENSION: u32 = 4_096;
 
 #[derive(Clone, Debug, PartialEq)]
 struct CompositePreviewKey {
@@ -21,16 +20,7 @@ impl CompositePreviewKey {
         physical_pixels_per_point: f32,
     ) -> Option<Self> {
         let display_scale = geometry.pixels_per_point * physical_pixels_per_point;
-        let requested_units = ((display_scale.max(1.0 / 64.0) * 64.0).ceil() as u32).max(1);
-        let scale_sixty_fourths = if prism_core::document_supports_region_native_zoom(document) {
-            requested_units
-        } else {
-            let longest = document.width.max(document.height).max(1) as f32;
-            let maximum_units = ((MAX_FALLBACK_OFFSCREEN_DIMENSION as f32 / longest) * 64.0)
-                .floor()
-                .max(1.0) as u32;
-            requested_units.min(maximum_units)
-        };
+        let scale_sixty_fourths = ((display_scale.max(1.0 / 64.0) * 64.0).ceil() as u32).max(1);
         let scale = scale_sixty_fourths as f32 / 64.0;
         let region = visible_render_region(geometry, document, scale)?;
         let mut document = document.clone();
@@ -486,8 +476,8 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_layers_keep_the_safe_legacy_preview_scale_cap() {
-        let mut document = Document::new("Fallback", 16_384, 16_384);
+    fn every_layer_kind_uses_the_requested_high_zoom_scale() {
+        let mut document = Document::new("Viewport", 16_384, 16_384);
         document.layers.push(Layer {
             kind: LayerKind::Rectangle {
                 width: 16_384,
@@ -503,7 +493,7 @@ mod tests {
             pixels_per_point: 16.0,
         };
         let key = CompositePreviewKey::new(1, 0, &document, geometry, 1.0).unwrap();
-        assert_eq!(key.scale(), 0.25);
+        assert_eq!(key.scale(), 16.0);
 
         document.layers[0].kind = LayerKind::Rectangle {
             width: 16_384,
@@ -536,6 +526,34 @@ mod tests {
             &completed,
             &CompositePreviewKey::new(4, 8, &document, geometry, 1.0).unwrap()
         ));
+    }
+
+    #[test]
+    fn reset_discards_queued_work_and_invalidates_an_inflight_generation() {
+        let context = egui::Context::default();
+        let mut preview = CompositePreview::new(context);
+        let document = Document::new("Lifecycle reset", 100, 80);
+        let geometry = geometry(
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 80.0)),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 80.0)),
+        );
+        let stale = CompositePreviewKey::new(3, preview.generation, &document, geometry, 1.0)
+            .expect("visible document has a preview key");
+        preview.desired = Some((7, stale.clone()));
+        preview.pending = Some(CompositeRenderRequest {
+            sequence: 7,
+            key: stale.clone(),
+        });
+        preview.reset();
+
+        assert_eq!(preview.generation, 1);
+        assert!(preview.desired.is_none());
+        assert!(preview.pending.is_none());
+        assert!(preview.ready.is_none());
+        assert!(preview.failed.is_none());
+        let current = CompositePreviewKey::new(3, preview.generation, &document, geometry, 1.0)
+            .expect("visible document has a preview key");
+        assert!(!completed_preview_is_safe_to_display(&stale, &current));
     }
 
     #[test]

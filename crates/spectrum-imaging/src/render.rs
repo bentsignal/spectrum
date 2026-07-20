@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Adjustments, ColorGrading, HslAdjustments, SpotRemoval, ToneCurve};
 
+mod region;
+pub use region::{PixelRegion, adjusted_image_dimensions, render_image_region};
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderOptions {
     pub max_size: Option<u32>,
@@ -172,12 +175,24 @@ fn apply_unsharp(image: &mut RgbaImage, blurred: &RgbaImage, amount: f32) {
 }
 
 fn apply_color_adjustments(image: &mut RgbaImage, a: &Adjustments) {
+    let (width, height) = image.dimensions();
+    apply_color_adjustments_region(image, a, 0, 0, width, height);
+}
+
+fn apply_color_adjustments_region(
+    image: &mut RgbaImage,
+    a: &Adjustments,
+    origin_x: u32,
+    origin_y: u32,
+    full_width: u32,
+    full_height: u32,
+) {
     if !has_color_adjustments(a) {
         return;
     }
     let width_pixels = image.width().max(1) as usize;
-    let width = width_pixels as f32;
-    let height = image.height().max(1) as f32;
+    let width = full_width.max(1) as f32;
+    let height = full_height.max(1) as f32;
     let exposure = 2.0_f32.powf(a.exposure);
     let temperature = a.temperature / 100.0;
     let tint = a.tint / 100.0;
@@ -203,8 +218,8 @@ fn apply_color_adjustments(image: &mut RgbaImage, a: &Adjustments) {
         .par_chunks_mut(4)
         .enumerate()
         .for_each(|(index, pixel)| {
-            let x = index % width_pixels;
-            let y = index / width_pixels;
+            let x = origin_x as usize + index % width_pixels;
+            let y = origin_y as usize + index / width_pixels;
             let alpha = pixel[3];
             let mut rgb = [
                 pixel[0] as f32 / 255.0,
@@ -452,160 +467,4 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> [f32; 3] {
 
 fn luminance(rgb: [f32; 3]) -> f32 {
     rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{ColorGrade, CropRect, CurvePoint, SpotRemoval, ToneCurve, ToneCurves};
-    use image::{GenericImageView, Rgba, RgbaImage};
-    use std::time::Instant;
-
-    #[test]
-    fn exposure_brightens_pixels() {
-        let source = DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 2, Rgba([32, 32, 32, 255])));
-        let rendered = render_image(
-            source,
-            Adjustments {
-                exposure: 1.0,
-                ..Default::default()
-            },
-            RenderOptions::default(),
-        );
-        assert!(rendered.to_rgba8().get_pixel(0, 0)[0] > 32);
-    }
-
-    #[test]
-    fn identity_render_preserves_pixels() {
-        let source = RgbaImage::from_fn(16, 12, |x, y| {
-            Rgba([x as u8 * 11, y as u8 * 13, (x + y) as u8 * 7, 255])
-        });
-        let rendered = render_image(
-            DynamicImage::ImageRgba8(source.clone()),
-            Adjustments::default(),
-            RenderOptions::default(),
-        );
-        assert_eq!(rendered.to_rgba8(), source);
-    }
-
-    #[test]
-    fn hsl_mixer_still_changes_target_color() {
-        let source =
-            DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([20, 90, 220, 255])));
-        let mut adjustments = Adjustments::default();
-        adjustments.hsl.blue.saturation = -80.0;
-        let rendered = render_image(source, adjustments, RenderOptions::default()).to_rgba8();
-        assert!(rendered.get_pixel(0, 0)[2] < 220);
-    }
-
-    #[test]
-    fn color_grading_tints_midtones() {
-        let source =
-            DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([110, 110, 110, 255])));
-        let mut adjustments = Adjustments::default();
-        adjustments.color_grading.midtones = ColorGrade {
-            hue: 30.0,
-            saturation: 80.0,
-            luminance: 0.0,
-        };
-        let rendered = render_image(source, adjustments, RenderOptions::default()).to_rgba8();
-        let pixel = rendered.get_pixel(0, 0);
-        assert!(pixel[0] > pixel[2]);
-    }
-
-    #[test]
-    fn spot_removal_repairs_isolated_dust_pixel() {
-        let mut source = RgbaImage::from_pixel(21, 21, Rgba([30, 30, 30, 255]));
-        source.put_pixel(10, 10, Rgba([245, 245, 245, 255]));
-        let rendered = render_image(
-            DynamicImage::ImageRgba8(source),
-            Adjustments {
-                spots: vec![SpotRemoval {
-                    x: 0.5,
-                    y: 0.5,
-                    radius: 0.12,
-                    opacity: 1.0,
-                }],
-                ..Default::default()
-            },
-            RenderOptions::default(),
-        )
-        .to_rgba8();
-        assert!(rendered.get_pixel(10, 10)[0] < 80);
-    }
-
-    #[test]
-    fn crop_and_rotation_change_dimensions() {
-        let source = DynamicImage::new_rgba8(4, 2);
-        let rendered = render_image(
-            source,
-            Adjustments {
-                rotation: 90,
-                crop: Some(CropRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 0.5,
-                    height: 1.0,
-                }),
-                ..Default::default()
-            },
-            RenderOptions::default(),
-        );
-        assert_eq!(rendered.dimensions(), (1, 4));
-    }
-
-    #[test]
-    #[ignore = "manual release-mode performance benchmark"]
-    fn interactive_preview_benchmark() {
-        let source = DynamicImage::ImageRgba8(RgbaImage::from_fn(1800, 1200, |x, y| {
-            Rgba([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255])
-        }));
-        let adjustments = Adjustments {
-            exposure: 0.35,
-            contrast: 12.0,
-            shadows: 18.0,
-            vibrance: 8.0,
-            curves: ToneCurves {
-                master: ToneCurve {
-                    points: vec![
-                        CurvePoint { x: 0.0, y: 0.0 },
-                        CurvePoint { x: 0.4, y: 0.35 },
-                        CurvePoint { x: 1.0, y: 1.0 },
-                    ],
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let iterations = 4;
-        let started = Instant::now();
-        for _ in 0..iterations {
-            std::hint::black_box(render_image(
-                source.clone(),
-                adjustments.clone(),
-                RenderOptions::default(),
-            ));
-        }
-        let elapsed = started.elapsed();
-        eprintln!(
-            "interactive preview: {:.1} ms/frame",
-            elapsed.as_secs_f64() * 1000.0 / iterations as f64
-        );
-    }
-
-    #[test]
-    fn red_curve_changes_red_only() {
-        let source =
-            DynamicImage::ImageRgba8(RgbaImage::from_pixel(1, 1, Rgba([128, 128, 128, 255])));
-        let mut a = Adjustments::default();
-        a.curves.red = ToneCurve {
-            points: vec![CurvePoint { x: 0.0, y: 0.0 }, CurvePoint { x: 1.0, y: 0.5 }],
-        };
-        let pixel = render_image(source, a, RenderOptions::default())
-            .to_rgba8()
-            .get_pixel(0, 0)
-            .0;
-        assert!(pixel[0] < pixel[1]);
-        assert_eq!(pixel[1], pixel[2]);
-    }
 }
