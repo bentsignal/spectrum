@@ -78,11 +78,98 @@ fn schema_keeps_guides_and_typography_commands_together() {
         "add_guide",
         "import_font",
         "set_text_typography",
+        "insert_layer",
     ] {
         assert!(examples.iter().any(|example| example["command"] == command));
     }
     assert!(schema["alignment"].is_object());
     assert!(schema["typography"].is_object());
+    assert_eq!(schema["layer_transfer"]["version"], 1);
+    let insert = examples
+        .iter()
+        .find(|example| example["command"] == "insert_layer")
+        .unwrap();
+    assert!(matches!(
+        serde_json::from_value::<Command>(insert.clone()).unwrap(),
+        Command::InsertLayer { .. }
+    ));
+}
+
+#[test]
+fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
+    let source = temporary_project("transfer-source");
+    let destination = temporary_project("transfer-destination");
+    let transfer = temporary_project("transfer-json").with_extension("json");
+    initialize_rectangle_project(&source);
+    run(Cli {
+        project: destination.clone(),
+        session: None,
+        command: CliCommand::Init {
+            name: "Destination".into(),
+            width: 400,
+            height: 300,
+            background: "18191dff".into(),
+        },
+    })
+    .unwrap();
+
+    let copy = Cli::try_parse_from([
+        "prism",
+        "--project",
+        source.to_str().unwrap(),
+        "layer-copy",
+        "--output",
+        transfer.to_str().unwrap(),
+    ])
+    .unwrap();
+    let copied = run(copy).unwrap();
+    assert_eq!(copied["action"], "layer_copy");
+    assert_eq!(copied["version"], 1);
+    assert!(transfer.exists());
+
+    let paste = Cli::try_parse_from([
+        "prism",
+        "--project",
+        destination.to_str().unwrap(),
+        "layer-paste",
+        transfer.to_str().unwrap(),
+        "--index",
+        "0",
+    ])
+    .unwrap();
+    run(paste).unwrap();
+    let workspace = Workspace::open(&destination).unwrap();
+    assert_eq!(workspace.document.layers.len(), 1);
+    assert_eq!(workspace.document.layers[0].name, "Rectangle");
+    assert_eq!(workspace.document.selected, Some(1));
+    assert_eq!(workspace.history().unwrap().unwrap().revisions.len(), 2);
+    drop(workspace);
+
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_file(destination).unwrap();
+    std::fs::remove_file(transfer).unwrap();
+}
+
+#[test]
+fn layer_copy_refuses_to_overwrite_an_existing_transfer_file() {
+    let source = temporary_project("transfer-overwrite-source");
+    let transfer = temporary_project("transfer-overwrite-json").with_extension("json");
+    initialize_rectangle_project(&source);
+    std::fs::write(&transfer, "keep me").unwrap();
+    let cli = Cli::try_parse_from([
+        "prism",
+        "--project",
+        source.to_str().unwrap(),
+        "layer-copy",
+        "1",
+        "--output",
+        transfer.to_str().unwrap(),
+    ])
+    .unwrap();
+    assert!(run(cli).is_err());
+    assert_eq!(std::fs::read_to_string(&transfer).unwrap(), "keep me");
+    std::fs::remove_file(source).unwrap();
+    std::fs::remove_file(transfer).unwrap();
 }
 
 #[test]

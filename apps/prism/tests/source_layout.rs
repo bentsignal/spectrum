@@ -91,6 +91,26 @@ fn inline_text_editor_uses_one_preview_transaction_and_keeps_add_text_dialog() {
 }
 
 #[test]
+fn layer_transfer_core_and_cli_stay_in_dedicated_modules() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let library = fs::read_to_string(manifest.join("src/lib.rs")).unwrap();
+    let commands = fs::read_to_string(manifest.join("src/commands.rs")).unwrap();
+    let core = fs::read_to_string(manifest.join("src/transfer.rs")).unwrap();
+    let cli = fs::read_to_string(manifest.join("src/bin/prism_cli/transfer.rs")).unwrap();
+    let binary = fs::read_to_string(manifest.join("src/bin/prism.rs")).unwrap();
+
+    assert!(library.contains("mod transfer;"));
+    assert!(commands.contains("InsertLayer"));
+    assert!(core.contains("LAYER_TRANSFER_VERSION"));
+    assert!(core.contains("document-local layer ID"));
+    assert!(core.contains("document-local font ID"));
+    assert!(cli.contains("LayerCopyArgs"));
+    assert!(cli.contains("LayerPasteArgs"));
+    assert!(binary.contains("prism_cli/transfer.rs"));
+    assert!(cli.lines().count() < 200);
+}
+
+#[test]
 fn revision_graph_comes_from_the_shared_spectrum_surface() {
     let history = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/history.rs"),

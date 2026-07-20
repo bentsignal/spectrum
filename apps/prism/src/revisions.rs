@@ -20,7 +20,8 @@ const SNAPSHOT_FAMILY: &str = "spectrum.prism.document";
 const OPERATIONS_FAMILY: &str = "spectrum.prism.commands";
 const LEGACY_SNAPSHOT_VERSION: u32 = 1;
 const COMPRESSED_SNAPSHOT_VERSION: u32 = 2;
-const OPERATIONS_VERSION: u32 = 1;
+const LEGACY_OPERATIONS_VERSION: u32 = 1;
+const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 const DEFLATE_CAPABILITY: &str = "deflate";
 const SNAPSHOT_COMMAND_BUDGET: u64 = 100;
 const SNAPSHOT_OPERATION_BYTE_BUDGET: usize = 64 * 1024;
@@ -42,7 +43,8 @@ impl Compatibility for PrismCompatibility {
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && encoding.version <= OPERATIONS_VERSION
+            && (LEGACY_OPERATIONS_VERSION..=LAYER_TRANSFER_OPERATIONS_VERSION)
+                .contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
@@ -528,6 +530,23 @@ impl DurableProject {
                         *path = self.materialize(reference)?;
                     }
                 }
+                Command::InsertLayer { transfer, .. } => {
+                    if let LayerKind::Raster {
+                        path,
+                        original_path,
+                    } = &mut transfer.layer.kind
+                        && let Some(reference) = AssetReference::parse(path)
+                    {
+                        *path = self.materialize(reference)?;
+                        *original_path = None;
+                    }
+                    if let Some(font) = &mut transfer.font_asset
+                        && let Some(reference) = AssetReference::parse(&font.path)
+                    {
+                        font.path = self.materialize(reference)?;
+                        font.original_path = None;
+                    }
+                }
                 _ => {}
             }
         }
@@ -654,21 +673,49 @@ struct PreparedOperations {
 
 impl PreparedOperations {
     fn new(commands: &[Command]) -> Result<Self> {
+        let version = if commands
+            .iter()
+            .any(|command| matches!(command, Command::InsertLayer { .. }))
+        {
+            LAYER_TRANSFER_OPERATIONS_VERSION
+        } else {
+            LEGACY_OPERATIONS_VERSION
+        };
         let mut portable = commands.to_vec();
         let mut assets = Vec::new();
         for command in &mut portable {
-            if let Command::AddRaster { path, .. }
-            | Command::RasterizeShape { path, .. }
-            | Command::ImportFont { path } = command
-            {
-                let prepared = prepare_asset(path)?;
-                *path = prepared.reference.path();
-                assets.push(prepared.asset);
+            match command {
+                Command::AddRaster { path, .. }
+                | Command::RasterizeShape { path, .. }
+                | Command::ImportFont { path } => {
+                    let prepared = prepare_asset(path)?;
+                    *path = prepared.reference.path();
+                    assets.push(prepared.asset);
+                }
+                Command::InsertLayer { transfer, .. } => {
+                    if let LayerKind::Raster {
+                        path,
+                        original_path,
+                    } = &mut transfer.layer.kind
+                    {
+                        let prepared = prepare_asset(path)?;
+                        *path = prepared.reference.path();
+                        *original_path = None;
+                        assets.push(prepared.asset);
+                    }
+                    if let Some(font) = &mut transfer.font_asset {
+                        let prepared = prepare_asset(&font.path)?;
+                        font.path = prepared.reference.path();
+                        font.original_path = None;
+                        assets.push(prepared.asset);
+                    }
+                }
+                _ => {}
             }
         }
         Ok(Self {
             payload: Payload::new(
-                Encoding::new(OPERATIONS_FAMILY, OPERATIONS_VERSION),
+                Encoding::new(OPERATIONS_FAMILY, version),
                 serde_json::to_vec(&portable)?,
             ),
             assets,

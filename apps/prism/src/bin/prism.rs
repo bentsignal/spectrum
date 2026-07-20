@@ -25,6 +25,9 @@ use schema::schema;
 #[path = "prism_cli/typography.rs"]
 mod typography;
 use typography::{TypographyArgs, updated_typography};
+#[path = "prism_cli/transfer.rs"]
+mod transfer;
+use transfer::{LayerCopyArgs, LayerPasteArgs};
 
 #[derive(Parser)]
 #[command(name = "prism", version, about = "Agent-first layered image editor")]
@@ -87,6 +90,10 @@ enum CliCommand {
     },
     /// Update one text layer's font, paragraph metrics, and effects.
     Typography(TypographyArgs),
+    /// Serialize one layer and its referenced font for cross-document transfer.
+    LayerCopy(LayerCopyArgs),
+    /// Insert a layer transfer as one durable edit.
+    LayerPaste(LayerPasteArgs),
     /// Add an editable vector-style rectangle layer.
     AddRectangle {
         #[arg(long)]
@@ -520,6 +527,9 @@ fn run(cli: Cli) -> Result<Value> {
             &session_document(&cli.project, cli.session)?,
             query,
         )),
+        CliCommand::LayerCopy(arguments) => {
+            transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)
+        }
         CliCommand::Export { path, quality } => {
             let document = session_document(&cli.project, cli.session)?;
             export_document(&document, &path, quality)?;
@@ -548,6 +558,9 @@ fn run(cli: Cli) -> Result<Value> {
                         id: arguments.id,
                         typography,
                     })?]
+                }
+                CliCommand::LayerPaste(arguments) => {
+                    vec![workspace.execute(transfer::paste_command(arguments)?)?]
                 }
                 CliCommand::AddImage { path, name, x, y } => {
                     vec![workspace.execute(Command::AddRaster { path, name, x, y })?]
@@ -815,6 +828,7 @@ fn run(cli: Cli) -> Result<Value> {
                 CliCommand::Init { .. }
                 | CliCommand::List
                 | CliCommand::FontList { .. }
+                | CliCommand::LayerCopy(..)
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }
                 | CliCommand::Agent { .. }

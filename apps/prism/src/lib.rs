@@ -18,6 +18,11 @@ use text::default_text_layer_name;
 mod typography;
 pub use typography::{FontAsset, FontSlant, TextAlignment, TextEffects, TextTypography};
 
+mod transfer;
+pub use transfer::{
+    LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont,
+};
+
 mod validation;
 use validation::*;
 
@@ -682,6 +687,14 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
             document.selected = Some(new_id);
             Ok(output("duplicate_layer", "duplicated layer", vec![new_id]))
         }
+        Command::InsertLayer { transfer, index } => {
+            let id = transfer.insert_into(document, index)?;
+            Ok(output(
+                "insert_layer",
+                "inserted transferred layer",
+                vec![id],
+            ))
+        }
         Command::RenameLayer { id, name } => {
             let name = name.trim();
             if name.is_empty() {
@@ -916,3 +929,7 @@ mod alignment_tests;
 #[cfg(test)]
 #[path = "typography_tests.rs"]
 mod typography_tests;
+
+#[cfg(test)]
+#[path = "transfer_tests.rs"]
+mod transfer_tests;
