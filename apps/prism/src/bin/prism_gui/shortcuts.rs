@@ -19,15 +19,17 @@ pub(super) enum ShortcutDomain {
 pub(super) enum GlobalShortcut {
     ToolsAndActions,
     JumpToObject,
+    Terminal,
     History,
     UndoRedo,
 }
 
 impl GlobalShortcut {
     #[cfg(test)]
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::ToolsAndActions,
         Self::JumpToObject,
+        Self::Terminal,
         Self::History,
         Self::UndoRedo,
     ];
@@ -36,6 +38,7 @@ impl GlobalShortcut {
         match self {
             Self::ToolsAndActions => egui::Key::P,
             Self::JumpToObject => egui::Key::F,
+            Self::Terminal => egui::Key::J,
             Self::History => egui::Key::H,
             Self::UndoRedo => egui::Key::Z,
         }
@@ -45,6 +48,7 @@ impl GlobalShortcut {
         match self {
             Self::ToolsAndActions => "P",
             Self::JumpToObject => "F",
+            Self::Terminal => "J",
             Self::History => "H",
             Self::UndoRedo => "Z",
         }
@@ -96,8 +100,36 @@ pub(super) fn global_shortcut_pressed(input: &egui::InputState, shortcut: Global
         && input.key_pressed(shortcut.key())
 }
 
+fn terminal_shortcut_allowed(has_modal_surface: bool, shortcut_pressed: bool) -> bool {
+    !has_modal_surface && shortcut_pressed
+}
+
+fn terminal_shortcut_pressed(input: &egui::InputState) -> bool {
+    if !input.key_pressed(GlobalShortcut::Terminal.key()) || input.modifiers.alt {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        input.modifiers.mac_cmd
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Ctrl-J is a terminal control character. Require Shift for Prism's
+        // chrome action so an open terminal can always receive raw Ctrl-J.
+        input.modifiers.ctrl && input.modifiers.shift
+    }
+}
+
 impl PrismApp {
     pub(super) fn keyboard(&mut self, context: &egui::Context) {
+        let terminal_pressed = context.input(terminal_shortcut_pressed);
+        if terminal_shortcut_allowed(self.has_modal_surface(), terminal_pressed) {
+            self.toggle_terminal();
+            return;
+        }
+        if self.terminal.visible() {
+            return;
+        }
         if self.has_modal_surface() || context.egui_wants_keyboard_input() {
             return;
         }
@@ -233,10 +265,46 @@ mod tests {
         assert_eq!(GlobalShortcut::ToolsAndActions.label(), "P");
         assert_eq!(GlobalShortcut::JumpToObject.key(), egui::Key::F);
         assert_eq!(GlobalShortcut::JumpToObject.label(), "F");
+        assert_eq!(GlobalShortcut::Terminal.key(), egui::Key::J);
+        assert_eq!(GlobalShortcut::Terminal.label(), "J");
         for (index, shortcut) in GlobalShortcut::ALL.iter().enumerate() {
             for other in &GlobalShortcut::ALL[index + 1..] {
                 assert_ne!(shortcut.key(), other.key());
             }
         }
+    }
+
+    #[test]
+    fn terminal_shortcut_never_replaces_an_open_modal() {
+        assert!(!terminal_shortcut_allowed(true, true));
+        assert!(terminal_shortcut_allowed(false, true));
+        assert!(!terminal_shortcut_allowed(false, false));
+    }
+
+    #[test]
+    fn terminal_toggle_uses_a_platform_chord_that_preserves_control_j() {
+        let mut input = egui::RawInput::default();
+        #[cfg(target_os = "macos")]
+        {
+            input.modifiers.mac_cmd = true;
+            input.modifiers.command = true;
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            input.modifiers.ctrl = true;
+            input.modifiers.command = true;
+            input.modifiers.shift = true;
+        }
+        input.events.push(egui::Event::Key {
+            key: egui::Key::J,
+            physical_key: Some(egui::Key::J),
+            pressed: true,
+            repeat: false,
+            modifiers: input.modifiers,
+        });
+        let context = egui::Context::default();
+        context.begin_pass(input);
+        assert!(context.input(terminal_shortcut_pressed));
+        let _ = context.end_pass();
     }
 }
