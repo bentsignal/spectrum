@@ -1,7 +1,8 @@
 use crate::{
-    BlendMode, Document, Layer, LayerKind, LayerMask, RenderRegion, Transform,
-    document_supports_region_native_zoom, render_document_region_scaled,
-    render_document_region_scaled_with_stats, render_document_scaled,
+    BlendMode, Document, FontAsset, Layer, LayerKind, LayerMask, RenderRegion, TextAlignment,
+    TextEffects, TextTypography, Transform, document_supports_region_native_zoom,
+    render_document_region_scaled, render_document_region_scaled_with_stats,
+    render_document_scaled,
 };
 
 fn temporary_raster(label: &str, width: u32, height: u32) -> std::path::PathBuf {
@@ -46,6 +47,17 @@ fn temporary_large_grayscale_png(label: &str, width: u32, height: u32) -> std::p
     }
     stream.finish().unwrap();
     path
+}
+
+fn temporary_font(label: &str) -> (std::path::PathBuf, FontAsset) {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("prism-region-{label}-{stamp}.ttf"));
+    std::fs::write(&path, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let asset = FontAsset::import(71, &path).unwrap();
+    (path, asset)
 }
 
 #[test]
@@ -273,6 +285,78 @@ fn rotated_text_region_matches_off_center_visible_pivot_export() {
     assert_eq!(viewport.to_rgba8(), oracle);
     assert!(stats.source_staging_pixels < stats.full_source_pixels);
     assert_ne!(stats.source_staging_pixels, stats.output_pixels);
+    assert_eq!(stats.transformed_surface_pixels, 0);
+}
+
+#[test]
+fn imported_typography_effect_region_matches_rotated_export_crop() {
+    let (font_path, font) = temporary_font("typography-effects");
+    let mut document = Document::new("Typography effect parity", 620, 420);
+    document.background = [17, 24, 39, 205];
+    document.font_assets.push(font);
+    document.layers.push(Layer {
+        id: 72,
+        opacity: 0.86,
+        blend_mode: BlendMode::SoftLight,
+        transform: Transform {
+            x: 84.0,
+            y: 52.0,
+            scale_x: 1.15,
+            scale_y: 0.92,
+            rotation: 19.0,
+        },
+        kind: LayerKind::Text {
+            text: "Imported fonts wrap\nwith visible effects".into(),
+            font_size: 44.0,
+            color: [241, 207, 126, 238],
+            typography: TextTypography {
+                font_id: Some(71),
+                alignment: TextAlignment::Right,
+                line_height: 1.55,
+                tracking: 2.5,
+                box_width: Some(330.0),
+                effects: TextEffects {
+                    outline_width: 3.0,
+                    outline_color: [26, 41, 66, 220],
+                    shadow_offset_x: -8.0,
+                    shadow_offset_y: 11.0,
+                    shadow_color: [4, 7, 13, 150],
+                },
+            },
+        },
+        ..Layer::default()
+    });
+    assert!(document_supports_region_native_zoom(&document));
+    let geometry = crate::measure_text_geometry_with_typography(
+        "Imported fonts wrap\nwith visible effects",
+        44.0,
+        match &document.layers[0].kind {
+            LayerKind::Text { typography, .. } => typography,
+            _ => unreachable!(),
+        },
+        document.font_assets.first(),
+    )
+    .unwrap();
+    assert_ne!(
+        geometry.visual_center(),
+        (geometry.width as f32 * 0.5, geometry.height as f32 * 0.5)
+    );
+
+    let full = render_document_scaled(&document, 1.5).unwrap().to_rgba8();
+    let region = RenderRegion {
+        x: 205,
+        y: 116,
+        width: 123,
+        height: 91,
+    };
+    let (viewport, stats) =
+        render_document_region_scaled_with_stats(&document, 1.5, region).unwrap();
+    let oracle = image::imageops::crop_imm(&full, region.x, region.y, region.width, region.height)
+        .to_image();
+    let _ = std::fs::remove_file(font_path);
+    assert_eq!(viewport.to_rgba8(), oracle);
+    assert!(stats.source_staging_pixels < stats.full_source_pixels);
+    assert_eq!(stats.fallback_decode_bytes, 0);
     assert_eq!(stats.transformed_surface_pixels, 0);
 }
 

@@ -69,6 +69,7 @@ pub(super) struct LayerVisualEntry {
 pub(super) struct LayerRenderRequest {
     tab_id: u64,
     layer: Layer,
+    font_asset: Option<prism_core::FontAsset>,
     key: LayerVisualKey,
     max_size: u32,
 }
@@ -237,6 +238,7 @@ impl PrismApp {
                     LayerRenderRequest {
                         tab_id: self.active_tab_id,
                         layer: layer.clone(),
+                        font_asset: self.workspace.document.font_for_layer(layer).cloned(),
                         key,
                         max_size: required_max_size,
                     },
@@ -271,7 +273,9 @@ impl PrismApp {
         self.layer_visuals
             .get(&layer.id)
             .map(|entry| entry.source_geometry)
-            .or_else(|| source_geometry_before_preview(layer))
+            .or_else(|| {
+                source_geometry_before_preview(layer, self.workspace.document.font_for_layer(layer))
+            })
     }
 }
 
@@ -293,12 +297,19 @@ pub(super) fn spawn_layer_render_worker(
         while let Ok(request) = receiver.recv() {
             let cache_id = (request.tab_id, request.layer.id);
             let mut render_layer = request.layer.clone();
-            if let LayerKind::Text { font_size, .. } = &mut render_layer.kind {
+            if let LayerKind::Text {
+                font_size,
+                typography,
+                ..
+            } = &mut render_layer.kind
+            {
                 *font_size *= request.key.text_raster_scale as f32;
+                typography.scale_for_raster(request.key.text_raster_scale as f32);
             }
-            let texture_visual_bounds = source_geometry_before_preview(&render_layer)
-                .map(normalized_visual_bounds)
-                .unwrap_or_else(|| Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)));
+            let texture_visual_bounds =
+                source_geometry_before_preview(&render_layer, request.font_asset.as_ref())
+                    .map(normalized_visual_bounds)
+                    .unwrap_or_else(|| Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)));
             let cached = bases.get(&cache_id).filter(|cached| {
                 cached.kind == render_layer.kind
                     && cached.stroke == render_layer.stroke
@@ -308,13 +319,14 @@ pub(super) fn spawn_layer_render_worker(
             let base = if let Some(cached) = cached {
                 Ok(cached.image.clone())
             } else {
-                prism_core::render_layer_base_scaled(
+                prism_core::render_layer_base_scaled_with_font(
                     &render_layer,
                     Some(request.max_size),
                     [
                         request.key.shape_raster_scale[0] as f32,
                         request.key.shape_raster_scale[1] as f32,
                     ],
+                    request.font_asset.as_ref(),
                 )
                 .inspect(|image| {
                     bases.insert(
@@ -329,7 +341,8 @@ pub(super) fn spawn_layer_render_worker(
                     );
                 })
             };
-            let source_geometry = source_geometry_before_preview(&request.layer);
+            let source_geometry =
+                source_geometry_before_preview(&request.layer, request.font_asset.as_ref());
             let result = base
                 .map(|image| {
                     spectrum_imaging::render_image(
@@ -375,7 +388,10 @@ fn normalized_visual_bounds(geometry: LayerSourceGeometry) -> Rect {
     )
 }
 
-fn source_geometry_before_preview(layer: &Layer) -> Option<LayerSourceGeometry> {
+fn source_geometry_before_preview(
+    layer: &Layer,
+    font_asset: Option<&prism_core::FontAsset>,
+) -> Option<LayerSourceGeometry> {
     match &layer.kind {
         LayerKind::Raster { path, .. } => {
             image::image_dimensions(path).ok().map(|(width, height)| {
@@ -383,16 +399,21 @@ fn source_geometry_before_preview(layer: &Layer) -> Option<LayerSourceGeometry> 
             })
         }
         LayerKind::Text {
-            text, font_size, ..
-        } => prism_core::measure_text_geometry(text, *font_size)
-            .ok()
-            .map(|geometry| LayerSourceGeometry {
-                size: Vec2::new(geometry.width as f32, geometry.height as f32),
-                visual_bounds: Rect::from_min_size(
-                    Pos2::new(geometry.visual_left, geometry.visual_top),
-                    Vec2::new(geometry.visual_width, geometry.visual_height),
-                ),
-            }),
+            text,
+            font_size,
+            typography,
+            ..
+        } => prism_core::measure_text_geometry_with_typography(
+            text, *font_size, typography, font_asset,
+        )
+        .ok()
+        .map(|geometry| LayerSourceGeometry {
+            size: Vec2::new(geometry.width as f32, geometry.height as f32),
+            visual_bounds: Rect::from_min_size(
+                Pos2::new(geometry.visual_left, geometry.visual_top),
+                Vec2::new(geometry.visual_width, geometry.visual_height),
+            ),
+        }),
         LayerKind::Rectangle { width, height, .. } => Some(LayerSourceGeometry::full(Vec2::new(
             *width as f32,
             *height as f32,

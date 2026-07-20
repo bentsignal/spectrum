@@ -4,9 +4,11 @@ use anyhow::{Context, Result, bail};
 use image::{ImageFormat, Rgba, RgbaImage};
 
 use crate::{
-    Layer, LayerKind, RegionRenderStats, RenderRegion,
+    FontAsset, Layer, LayerKind, RegionRenderStats, RenderRegion, TextTypography,
     render::composite_pixel,
-    text_render::{measure_text, measure_text_geometry, render_text_region},
+    text_render::{
+        measure_text_geometry_with_typography, measure_text_with_typography, render_text_region,
+    },
 };
 
 const MAX_SOURCE_STAGING_PIXELS: u64 = 4_096 * 4_096;
@@ -32,13 +34,20 @@ pub(crate) fn composite_bounded_source_region(
     scaled_layer: &Layer,
     clip: Option<&RgbaImage>,
     region: RenderRegion,
+    font_asset: Option<&FontAsset>,
     stats: &mut RegionRenderStats,
 ) -> Result<bool> {
     if !supports_bounded_source(render_layer) {
         return Ok(false);
     }
-    let descriptor = SourceDescriptor::new(base_layer, render_layer)?;
-    let geometry = SamplingGeometry::new(base_layer, render_layer, scaled_layer, &descriptor)?;
+    let descriptor = SourceDescriptor::new(render_layer, font_asset)?;
+    let geometry = SamplingGeometry::new(
+        base_layer,
+        render_layer,
+        scaled_layer,
+        &descriptor,
+        font_asset,
+    )?;
     let Some(intersection) = geometry.intersection(region) else {
         return Ok(true);
     };
@@ -106,12 +115,14 @@ enum SourceDescriptor<'a> {
         text: &'a str,
         font_size: f32,
         color: [u8; 4],
+        typography: &'a TextTypography,
+        font_asset: Option<&'a FontAsset>,
         dimensions: (u32, u32),
     },
 }
 
 impl<'a> SourceDescriptor<'a> {
-    fn new(_base_layer: &'a Layer, render_layer: &'a Layer) -> Result<Self> {
+    fn new(render_layer: &'a Layer, font_asset: Option<&'a FontAsset>) -> Result<Self> {
         match &render_layer.kind {
             LayerKind::Raster { path, .. } => Ok(Self::Raster {
                 dimensions: image::image_dimensions(path).with_context(|| {
@@ -123,12 +134,14 @@ impl<'a> SourceDescriptor<'a> {
                 text,
                 font_size,
                 color,
-                ..
+                typography,
             } => Ok(Self::Text {
                 text,
                 font_size: *font_size,
                 color: *color,
-                dimensions: measure_text(text, *font_size)?,
+                typography,
+                font_asset,
+                dimensions: measure_text_with_typography(text, *font_size, typography, font_asset)?,
             }),
             LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => {
                 unreachable!("bounded source descriptor only accepts raster and text layers")
@@ -149,9 +162,18 @@ impl<'a> SourceDescriptor<'a> {
                 text,
                 font_size,
                 color,
+                typography,
+                font_asset,
                 ..
             } => Ok((
-                render_text_region(text, *font_size, *color, region.into())?,
+                render_text_region(
+                    text,
+                    *font_size,
+                    *color,
+                    typography,
+                    *font_asset,
+                    region.into(),
+                )?,
                 0,
             )),
         }
@@ -190,6 +212,7 @@ impl SamplingGeometry {
         render_layer: &Layer,
         scaled_layer: &Layer,
         descriptor: &SourceDescriptor<'_>,
+        font_asset: Option<&FontAsset>,
     ) -> Result<Self> {
         let (source_width, source_height) = descriptor.dimensions();
         let scaled_width = scaled_dimension(source_width, scaled_layer.transform.scale_x);
@@ -200,12 +223,19 @@ impl SamplingGeometry {
                 let LayerKind::Text {
                     text,
                     font_size: base_font_size,
+                    typography,
                     ..
                 } = &base_layer.kind
                 else {
                     unreachable!("render layer mirrors its base layer")
                 };
-                let base_pivot = measure_text_geometry(text, *base_font_size)?.visual_center();
+                let base_pivot = measure_text_geometry_with_typography(
+                    text,
+                    *base_font_size,
+                    typography,
+                    font_asset,
+                )?
+                .visual_center();
                 let font_ratio = *font_size / *base_font_size;
                 let pivot = (
                     base_pivot.0 * scaled_layer.transform.scale_x * font_ratio,

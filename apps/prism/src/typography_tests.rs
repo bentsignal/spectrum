@@ -4,7 +4,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{Command, Document, LayerKind, TextAlignment, TextTypography, Workspace};
+use crate::{
+    Command, Document, LayerKind, TextAlignment, TextEffects, TextTypography, Workspace,
+    render_document, render_layer_base_scaled_with_font,
+};
 
 fn test_directory(label: &str) -> PathBuf {
     let stamp = SystemTime::now()
@@ -214,4 +217,70 @@ fn typography_command_rejects_unknown_font_ids_and_sanitizes_metrics() {
     assert_eq!(typography.line_height, 4.0);
     assert_eq!(typography.tracking, -100.0);
     assert_eq!(typography.box_width, Some(1.0));
+}
+
+#[test]
+fn imported_font_id_changes_shared_preview_and_export_pixels() {
+    let directory = test_directory("rendered-font");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let mut workspace = Workspace::new(Document::new("Rendered font", 520, 260), None);
+    workspace
+        .execute(Command::ImportFont {
+            path: source.clone(),
+        })
+        .unwrap();
+    let font_id = workspace.document.font_assets[0].id;
+    workspace
+        .execute(Command::AddText {
+            text: "Wide WWW\nthen iii".into(),
+            name: None,
+            font_size: 52.0,
+            color: [238, 214, 151, 255],
+            x: 24.0,
+            y: 20.0,
+        })
+        .unwrap();
+    let layer_id = workspace.document.selected.unwrap();
+    workspace
+        .execute(Command::SetTextTypography {
+            id: layer_id,
+            typography: TextTypography {
+                font_id: Some(font_id),
+                alignment: TextAlignment::Center,
+                line_height: 1.45,
+                tracking: 2.0,
+                box_width: Some(360.0),
+                effects: TextEffects {
+                    outline_width: 2.0,
+                    shadow_offset_x: 5.0,
+                    shadow_offset_y: 7.0,
+                    shadow_color: [23, 31, 47, 160],
+                    ..Default::default()
+                },
+            },
+        })
+        .unwrap();
+
+    let imported_layer = workspace.document.layer(layer_id).unwrap();
+    let imported_font = workspace.document.font_for_layer(imported_layer).unwrap();
+    let imported_preview =
+        render_layer_base_scaled_with_font(imported_layer, None, [1.0; 2], Some(imported_font))
+            .unwrap();
+    let imported_export = render_document(&workspace.document, None).unwrap();
+
+    let mut fallback = workspace.document.clone();
+    let LayerKind::Text { typography, .. } = &mut fallback.layer_mut(layer_id).unwrap().kind else {
+        panic!("test layer should remain text");
+    };
+    typography.font_id = None;
+    let fallback_layer = fallback.layer(layer_id).unwrap();
+    let fallback_preview =
+        render_layer_base_scaled_with_font(fallback_layer, None, [1.0; 2], None).unwrap();
+    let fallback_export = render_document(&fallback, None).unwrap();
+
+    assert_ne!(imported_preview.to_rgba8(), fallback_preview.to_rgba8());
+    assert_ne!(imported_export.to_rgba8(), fallback_export.to_rgba8());
+    fs::remove_dir_all(directory).unwrap();
 }

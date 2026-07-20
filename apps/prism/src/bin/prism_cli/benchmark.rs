@@ -2,9 +2,10 @@ use std::{io::Write, path::PathBuf, time::Instant};
 
 use anyhow::{Result, bail};
 use prism_core::{
-    BlendMode, Command, Document, Layer, LayerKind, LayerMask, RenderRegion, Transform, Workspace,
-    render_document, render_document_region_scaled, render_document_region_scaled_with_stats,
-    render_layer_base_scaled, render_solid_color,
+    BlendMode, Command, Document, FontAsset, Layer, LayerKind, LayerMask, RenderRegion,
+    TextAlignment, TextEffects, TextTypography, Transform, Workspace, render_document,
+    render_document_region_scaled, render_document_region_scaled_with_stats,
+    render_layer_base_scaled, render_layer_base_scaled_with_font, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -117,6 +118,44 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         let started = Instant::now();
         let _ = render_layer_base_scaled(scaled_shape, None, [16.0, 16.0])?;
         scaled_shape_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
+    let typography_font = TemporaryFont::new()?;
+    let font_asset = FontAsset::import(1, &typography_font.path)?;
+    let typography_layer = Layer {
+        id: 88,
+        kind: LayerKind::Text {
+            text: "Portable typography wraps with measured rhythm and bounded effects".into(),
+            font_size: 72.0,
+            color: [245, 242, 235, 255],
+            typography: TextTypography {
+                font_id: Some(font_asset.id),
+                alignment: TextAlignment::Center,
+                line_height: 1.35,
+                tracking: 2.0,
+                box_width: Some(720.0),
+                effects: TextEffects {
+                    outline_width: 2.0,
+                    shadow_offset_x: 4.0,
+                    shadow_offset_y: 6.0,
+                    shadow_color: [0, 0, 0, 128],
+                    ..Default::default()
+                },
+            },
+        },
+        ..Layer::default()
+    };
+    let _ =
+        render_layer_base_scaled_with_font(&typography_layer, None, [1.0; 2], Some(&font_asset))?;
+    let mut typography_samples = Vec::new();
+    for _ in 0..7 {
+        let started = Instant::now();
+        let _ = render_layer_base_scaled_with_font(
+            &typography_layer,
+            None,
+            [1.0; 2],
+            Some(&font_asset),
+        )?;
+        typography_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
     let mut blend_workspace = Workspace::new(Document::new("Blend benchmark", 960, 540), None);
     for index in 0..12 {
@@ -274,6 +313,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let (shape_median, shape_p95) = sample_summary(&mut shape_preview_samples);
     let (render_median, render_p95) = sample_summary(&mut render_samples);
     let (scaled_shape_median, scaled_shape_p95) = sample_summary(&mut scaled_shape_samples);
+    let (typography_median, typography_p95) = sample_summary(&mut typography_samples);
     let (blend_render_median, blend_render_p95) = sample_summary(&mut blend_render_samples);
     let (viewport_composite_median, viewport_composite_p95) =
         sample_summary(&mut viewport_composite_samples);
@@ -322,6 +362,13 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             pass: scaled_shape_p95 <= 16.0,
         },
         BenchmarkMetric {
+            name: "portable_typography_effect_raster",
+            median_ms: typography_median,
+            p95_ms: typography_p95,
+            budget_ms: 75.0,
+            pass: typography_p95 <= 75.0,
+        },
+        BenchmarkMetric {
             name: "960x540_12_layer_blend_mask_composite",
             median_ms: blend_render_median,
             p95_ms: blend_render_p95,
@@ -359,6 +406,27 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
 
 struct TemporaryRaster {
     path: PathBuf,
+}
+
+struct TemporaryFont {
+    path: PathBuf,
+}
+
+impl TemporaryFont {
+    fn new() -> Result<Self> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("prism-benchmark-font-{stamp}.ttf"));
+        std::fs::write(&path, epaint_default_fonts::HACK_REGULAR)?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for TemporaryFont {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 impl TemporaryRaster {

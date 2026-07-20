@@ -884,10 +884,14 @@ pub use render::{
     RegionRenderStats, RenderRegion, document_supports_region_native_zoom, export_document,
     load_document, render_document, render_document_region_scaled,
     render_document_region_scaled_with_stats, render_document_scaled, render_document_thumbnail,
-    render_layer_base, render_layer_base_scaled, render_layer_preview, render_layer_preview_scaled,
+    render_layer_base, render_layer_base_scaled, render_layer_base_scaled_with_font,
+    render_layer_preview, render_layer_preview_scaled, render_layer_preview_scaled_with_font,
     render_solid_color, save_document,
 };
-pub use text_render::{TextGeometry, measure_text, measure_text_geometry};
+pub use text_render::{
+    TextGeometry, measure_text, measure_text_geometry, measure_text_geometry_with_typography,
+    measure_text_with_typography,
+};
 
 #[cfg(test)]
 #[path = "core_tests.rs"]

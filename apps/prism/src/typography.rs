@@ -229,6 +229,16 @@ impl TextTypography {
         self.effects.shadow_offset_y = self.effects.shadow_offset_y.clamp(-2_048.0, 2_048.0);
         self
     }
+
+    /// Scales document-pixel typography values for a higher-resolution raster.
+    #[doc(hidden)]
+    pub fn scale_for_raster(&mut self, scale: f32) {
+        self.tracking *= scale;
+        self.box_width = self.box_width.map(|width| width * scale);
+        self.effects.outline_width *= scale;
+        self.effects.shadow_offset_x *= scale;
+        self.effects.shadow_offset_y *= scale;
+    }
 }
 
 #[cfg(test)]
