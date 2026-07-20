@@ -203,6 +203,7 @@ impl PrismApp {
         if ui.button("Crop canvas  C").clicked() {
             self.choose_tool(Tool::Crop);
         }
+        self.guides_inspector(ui);
     }
 
     fn layer_header(&mut self, ui: &mut egui::Ui, layer: &Layer) {
@@ -340,13 +341,14 @@ impl PrismApp {
         ui.horizontal(|ui| {
             if ui.small_button("Center on canvas").clicked() {
                 let source = source.unwrap_or(Vec2::splat(1.0));
+                let geometry = prism_core::layer_geometry_with_size(layer, [source.x, source.y]);
                 self.execute(Command::SetTransform {
                     id: layer.id,
                     transform: Transform {
-                        x: (self.workspace.document.width as f32 - source.x * transform.scale_x)
-                            * 0.5,
-                        y: (self.workspace.document.height as f32 - source.y * transform.scale_y)
-                            * 0.5,
+                        x: transform.x + self.workspace.document.width as f32 * 0.5
+                            - geometry.center[0],
+                        y: transform.y + self.workspace.document.height as f32 * 0.5
+                            - geometry.center[1],
                         ..transform
                     },
                 });
@@ -362,6 +364,7 @@ impl PrismApp {
                 });
             }
         });
+        self.alignment_inspector(ui, layer);
     }
 
     fn content_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {

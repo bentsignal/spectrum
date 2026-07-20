@@ -34,6 +34,12 @@ pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 mod blend;
 pub use blend::{BlendMode, blend_rgb};
 
+mod alignment;
+pub use alignment::{
+    Alignment, AlignmentReference, Guide, GuideOrientation, LayerGeometry, align_layer_transform,
+    layer_geometry, layer_geometry_with_bounds, layer_geometry_with_size,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Transform {
@@ -210,10 +216,13 @@ pub struct Document {
     pub width: u32,
     pub height: u32,
     pub background: [u8; 4],
+    pub guides: Vec<Guide>,
+    pub snapping_enabled: bool,
     /// Bottom-to-top paint order.
     pub layers: Vec<Layer>,
     pub selected: Option<u64>,
     pub next_id: u64,
+    pub next_guide_id: u64,
 }
 
 impl Default for Document {
@@ -230,9 +239,12 @@ impl Document {
             width: width.clamp(1, MAX_CANVAS_DIMENSION),
             height: height.clamp(1, MAX_CANVAS_DIMENSION),
             background: [24, 25, 29, 255],
+            guides: Vec::new(),
+            snapping_enabled: true,
             layers: Vec::new(),
             selected: None,
             next_id: 1,
+            next_guide_id: 1,
         }
     }
 
@@ -256,6 +268,13 @@ impl Document {
         id
     }
 
+    pub fn guide(&self, id: u64) -> Result<&Guide> {
+        self.guides
+            .iter()
+            .find(|guide| guide.id == id)
+            .with_context(|| format!("guide {id} is not in this document"))
+    }
+
     fn migrate(&mut self) -> Result<()> {
         if self.version > PRISM_VERSION {
             bail!(
@@ -266,6 +285,9 @@ impl Document {
         self.version = PRISM_VERSION;
         self.width = self.width.clamp(1, MAX_CANVAS_DIMENSION);
         self.height = self.height.clamp(1, MAX_CANVAS_DIMENSION);
+        for guide in &mut self.guides {
+            guide.sanitize(self.width, self.height)?;
+        }
         for layer in &mut self.layers {
             require_finite("layer opacity", layer.opacity)?;
             validate_transform(layer.transform)?;
@@ -281,6 +303,9 @@ impl Document {
         self.next_id = self
             .next_id
             .max(self.layers.iter().map(|layer| layer.id).max().unwrap_or(0) + 1);
+        self.next_guide_id = self
+            .next_guide_id
+            .max(self.guides.iter().map(|guide| guide.id).max().unwrap_or(0) + 1);
         if self.selected.is_some_and(|id| self.layer(id).is_err()) {
             self.selected = self.layers.last().map(|layer| layer.id);
         }
@@ -393,6 +418,25 @@ pub enum Command {
         id: u64,
         degrees: f32,
     },
+    AlignLayer {
+        id: u64,
+        alignment: Alignment,
+        reference: AlignmentReference,
+    },
+    SetSnapping {
+        enabled: bool,
+    },
+    AddGuide {
+        orientation: GuideOrientation,
+        position: f32,
+    },
+    MoveGuide {
+        id: u64,
+        position: f32,
+    },
+    RemoveGuide {
+        id: u64,
+    },
     AdjustLayer {
         id: u64,
         patch: AdjustmentPatch,
@@ -426,6 +470,8 @@ pub struct CommandOutput {
     pub action: String,
     pub message: String,
     pub layer_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guide_ids: Vec<u64>,
 }
 
 fn apply_command(document: &mut Document, command: Command) -> Result<CommandOutput> {
@@ -438,6 +484,7 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
             document.width = width.clamp(1, MAX_CANVAS_DIMENSION);
             document.height = height.clamp(1, MAX_CANVAS_DIMENSION);
             document.background = background;
+            alignment::clamp_guides(document);
             Ok(output("set_canvas", "updated canvas", Vec::new()))
         }
         Command::CropCanvas {
@@ -455,6 +502,7 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
                 layer.transform.x -= x as f32;
                 layer.transform.y -= y as f32;
             }
+            alignment::crop_guides(document, x, y);
             Ok(output("crop_canvas", "cropped canvas", Vec::new()))
         }
         Command::AddRaster { path, name, x, y } => {
@@ -760,6 +808,42 @@ fn apply_command(document: &mut Document, command: Command) -> Result<CommandOut
             layer.transform.rotation = degrees.rem_euclid(360.0);
             Ok(output("set_rotation", "rotated layer", vec![id]))
         }
+        Command::AlignLayer {
+            id,
+            alignment,
+            reference,
+        } => {
+            let transform = align_layer_transform(document, id, alignment, reference)?;
+            document.layer_mut(id)?.transform = transform.sanitized();
+            Ok(output("align_layer", "aligned layer", vec![id]))
+        }
+        Command::SetSnapping { enabled } => {
+            document.snapping_enabled = enabled;
+            Ok(output(
+                "set_snapping",
+                if enabled {
+                    "enabled snapping"
+                } else {
+                    "disabled snapping"
+                },
+                Vec::new(),
+            ))
+        }
+        Command::AddGuide {
+            orientation,
+            position,
+        } => {
+            let id = alignment::add_guide(document, orientation, position)?;
+            Ok(guide_output("add_guide", "added guide", vec![id]))
+        }
+        Command::MoveGuide { id, position } => {
+            alignment::move_guide(document, id, position)?;
+            Ok(guide_output("move_guide", "moved guide", vec![id]))
+        }
+        Command::RemoveGuide { id } => {
+            alignment::remove_guide(document, id)?;
+            Ok(guide_output("remove_guide", "removed guide", vec![id]))
+        }
         Command::AdjustLayer { id, patch } => {
             let layer = document.layer_mut(id)?;
             let mut adjustments = layer.adjustments.clone();
@@ -839,6 +923,16 @@ fn output(action: &str, message: &str, layer_ids: Vec<u64>) -> CommandOutput {
         action: action.into(),
         message: message.into(),
         layer_ids,
+        guide_ids: Vec::new(),
+    }
+}
+
+fn guide_output(action: &str, message: &str, guide_ids: Vec<u64>) -> CommandOutput {
+    CommandOutput {
+        action: action.into(),
+        message: message.into(),
+        layer_ids: Vec::new(),
+        guide_ids,
     }
 }
 
@@ -868,3 +962,7 @@ mod render_region_tests;
 #[cfg(test)]
 #[path = "rotation_tests.rs"]
 mod rotation_tests;
+
+#[cfg(test)]
+#[path = "alignment_tests.rs"]
+mod alignment_tests;

@@ -65,6 +65,7 @@ impl PrismApp {
                         &self.layer_visuals,
                     );
                 }
+                self.paint_alignment_guides(ui, geometry);
                 if let Some(layer) = self.selected_layer() {
                     if selection_outline_has_resize_handles(self.tool) {
                         paint_layer_outline(
@@ -143,7 +144,16 @@ impl PrismApp {
         } else {
             None
         };
-        if let Some(handle) = resize_hover {
+        let guide_hover = if self.tool == Tool::Move {
+            hover_pointer.and_then(|pointer| self.guide_at_pointer(geometry, pointer))
+        } else {
+            None
+        };
+        if let Some(id) = guide_hover
+            && let Some(cursor) = self.guide_cursor(id)
+        {
+            ui.ctx().set_cursor_icon(cursor);
+        } else if let Some(handle) = resize_hover {
             ui.ctx().set_cursor_icon(resize_cursor(handle));
         }
         if response.drag_started()
@@ -153,7 +163,12 @@ impl PrismApp {
                 .input(|input| input.pointer.press_origin())
                 .unwrap_or(pointer);
             let canvas = geometry.screen_to_canvas(press_pointer);
-            let resize = if self.tool == Tool::Move {
+            let guide = if self.tool == Tool::Move {
+                self.guide_at_pointer(geometry, press_pointer)
+            } else {
+                None
+            };
+            let resize = if self.tool == Tool::Move && guide.is_none() {
                 self.selected_layer().and_then(|layer| {
                     resize_handle_at(
                         geometry,
@@ -165,37 +180,40 @@ impl PrismApp {
             } else {
                 None
             };
-            if self.tool == Tool::Move && resize.is_none() {
+            if self.tool == Tool::Move && resize.is_none() && guide.is_none() {
                 let hit = self.hit_test_layer(canvas);
                 if hit != self.workspace.document.selected {
                     self.execute(Command::SelectLayer { id: hit });
                 }
             }
             let selected = self.selected_layer().cloned();
-            let action = match (self.tool, resize) {
-                (Tool::Move, Some(handle)) => DragAction::Resize(handle),
-                (Tool::Move, None) => DragAction::Move,
-                (Tool::Rotate, _) => DragAction::Rotate,
+            let action = match (self.tool, resize, guide) {
+                (Tool::Move, _, Some(id)) => DragAction::Guide(id),
+                (Tool::Move, Some(handle), None) => DragAction::Resize(handle),
+                (Tool::Move, None, None) => DragAction::Move,
+                (Tool::Rotate, _, _) => DragAction::Rotate,
                 _ => DragAction::Draw,
             };
-            let editable = selected.as_ref().is_some_and(|layer| !layer.locked)
-                && matches!(
-                    action,
-                    DragAction::Move | DragAction::Rotate | DragAction::Resize(_)
-                );
+            let editable = matches!(action, DragAction::Guide(_))
+                || selected.as_ref().is_some_and(|layer| !layer.locked)
+                    && matches!(
+                        action,
+                        DragAction::Move | DragAction::Rotate | DragAction::Resize(_)
+                    );
             if editable {
                 self.workspace.begin_interaction();
             }
-            let visual_rotation_bounds = selected
-                .as_ref()
-                .is_some_and(|layer| matches!(layer.kind, LayerKind::Text { .. }));
             self.drag = Some(DragState {
                 start_canvas: canvas,
                 current_canvas: geometry.screen_to_canvas(pointer),
-                layer_id: selected
-                    .as_ref()
-                    .filter(|layer| !layer.locked)
-                    .map(|layer| layer.id),
+                layer_id: if matches!(action, DragAction::Guide(_)) {
+                    None
+                } else {
+                    selected
+                        .as_ref()
+                        .filter(|layer| !layer.locked)
+                        .map(|layer| layer.id)
+                },
                 transform: selected
                     .as_ref()
                     .map(|layer| layer.transform)
@@ -204,8 +222,8 @@ impl PrismApp {
                     .selected_layer()
                     .and_then(|layer| layer_bounds(layer, self.layer_source_geometry(layer))),
                 action,
-                visual_rotation_bounds,
             });
+            self.smart_guides = SmartGuides::default();
         }
         if response.dragged()
             && let (Some(pointer), Some(drag)) = (pointer, self.drag.as_mut())
@@ -214,28 +232,51 @@ impl PrismApp {
         }
         if response.dragged()
             && let Some(drag) = self.drag
-            && let Some(id) = drag.layer_id
-            && matches!(
-                drag.action,
-                DragAction::Move | DragAction::Rotate | DragAction::Resize(_)
-            )
         {
-            if drag.action == DragAction::Rotate {
-                let snap = ui.input(|input| input.modifiers.shift);
-                self.preview_command(Command::SetRotation {
-                    id,
-                    degrees: drag_rotation(drag, snap),
-                });
-            } else {
-                let preserve_aspect = !ui.input(|input| input.modifiers.shift);
-                let transform = drag_transform(drag, preserve_aspect);
-                self.preview_command(Command::SetTransform { id, transform });
+            match (drag.action, drag.layer_id) {
+                (DragAction::Rotate, Some(id)) => {
+                    let snap = ui.input(|input| input.modifiers.shift);
+                    self.preview_command(Command::SetRotation {
+                        id,
+                        degrees: drag_rotation(drag, snap),
+                    });
+                }
+                (DragAction::Move, Some(id)) => {
+                    let moved = self.snapped_move(
+                        id,
+                        drag_transform(drag, true),
+                        geometry.pixels_per_point,
+                    );
+                    self.smart_guides = moved.guides;
+                    self.preview_command(Command::SetTransform {
+                        id,
+                        transform: moved.transform,
+                    });
+                }
+                (DragAction::Resize(_), Some(id)) => {
+                    self.smart_guides = SmartGuides::default();
+                    let preserve_aspect = !ui.input(|input| input.modifiers.shift);
+                    self.preview_command(Command::SetTransform {
+                        id,
+                        transform: drag_transform(drag, preserve_aspect),
+                    });
+                }
+                (DragAction::Guide(_) | DragAction::Draw, _)
+                | (DragAction::Move | DragAction::Rotate | DragAction::Resize(_), None) => {}
             }
+        }
+        if response.dragged()
+            && let Some(drag) = self.drag
+            && let DragAction::Guide(id) = drag.action
+            && let Some(position) = self.guide_position(id, drag.current_canvas)
+        {
+            self.preview_command(Command::MoveGuide { id, position });
         }
         if response.drag_stopped()
             && let Some(drag) = self.drag.take()
         {
             self.finish_canvas_drag(drag);
+            self.smart_guides = SmartGuides::default();
         } else if response.double_clicked()
             && let Some(pointer) = pointer
         {
@@ -337,6 +378,17 @@ impl PrismApp {
                     ACCENT,
                 );
             }
+            DragAction::Guide(id) => {
+                if let Ok(guide) = self.workspace.document.guide(id) {
+                    ui.painter().text(
+                        current,
+                        Align2::LEFT_BOTTOM,
+                        format!("{:.1} px", guide.position),
+                        FontId::monospace(11.0),
+                        ACCENT,
+                    );
+                }
+            }
         }
     }
 
@@ -345,7 +397,9 @@ impl PrismApp {
         let max = drag.start_canvas.max(drag.current_canvas);
         let size = max - min;
         match drag.action {
-            DragAction::Move | DragAction::Resize(_) => self.finish_interaction(),
+            DragAction::Move | DragAction::Resize(_) | DragAction::Guide(_) => {
+                self.finish_interaction()
+            }
             DragAction::Rotate => {
                 self.finish_interaction();
                 self.tool = Tool::Move;
@@ -497,7 +551,6 @@ mod direct_manipulation_tests {
             transform: Transform::default(),
             action,
             bounds: None,
-            visual_rotation_bounds: false,
         }
     }
 

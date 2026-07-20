@@ -11,13 +11,16 @@ use eframe::egui::{
     TextureOptions, Vec2,
 };
 use prism_core::{
-    BlendMode, Command, Document, Layer, LayerKind, LayerMask, ShapeStroke, Transform, Workspace,
-    export_document,
+    Alignment, AlignmentReference, BlendMode, Command, Document, GuideOrientation, Layer,
+    LayerKind, LayerMask, ShapeStroke, Transform, Workspace, export_document,
 };
 use spectrum_imaging::AdjustmentPatch;
 
+#[path = "prism_gui/alignment.rs"]
+mod alignment;
 #[path = "prism_gui/canvas.rs"]
 mod canvas;
+use alignment::*;
 #[path = "prism_gui/chrome.rs"]
 mod chrome;
 #[path = "prism_gui/compositor.rs"]
@@ -33,6 +36,9 @@ mod layers;
 #[cfg(target_os = "macos")]
 #[path = "prism_gui/macos.rs"]
 mod macos;
+#[path = "prism_gui/model.rs"]
+mod model;
+use model::*;
 #[path = "prism_gui/project_lifecycle.rs"]
 mod project_lifecycle;
 #[path = "prism_gui/renderer.rs"]
@@ -53,157 +59,6 @@ use project_lifecycle::MoveProjectDialog;
 use renderer::*;
 use terminal::TerminalDock;
 use theme::*;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Tool {
-    #[default]
-    Move,
-    Rotate,
-    Crop,
-    Text,
-    Shape,
-    Mask,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ToolActivation {
-    ImmediateDialog,
-    ChoiceDialog,
-    CanvasGesture,
-}
-
-impl Tool {
-    const ALL: [(Self, &'static str, &'static str); 5] = [
-        (Self::Move, "V", "Select / move"),
-        (Self::Crop, "C", "Crop canvas"),
-        (Self::Text, "T", "Text"),
-        (Self::Shape, "S", "Shape"),
-        (Self::Mask, "M", "Layer mask"),
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Move => "Move",
-            Self::Rotate => "Rotate",
-            Self::Crop => "Crop canvas",
-            Self::Text => "Add text",
-            Self::Shape => "Shape",
-            Self::Mask => "Draw mask",
-        }
-    }
-
-    fn shortcut(self) -> &'static str {
-        if self == Self::Rotate {
-            return "R";
-        }
-        Self::ALL
-            .iter()
-            .find_map(|(tool, key, _)| (*tool == self).then_some(*key))
-            .unwrap_or_default()
-    }
-
-    fn description(self) -> &'static str {
-        match self {
-            Self::Move => "Select on the canvas, drag to move, or pull a corner to resize.",
-            Self::Rotate => "Rotation armed · drag around the focused object · Shift snaps to 15°.",
-            Self::Crop => "Draw the new canvas boundary.",
-            Self::Text => "Type the text now, then move it into place.",
-            Self::Shape => "Choose a rectangle, ellipse, or another shape to draw.",
-            Self::Mask => "Draw the visible region of the focused element.",
-        }
-    }
-
-    fn activation(self) -> ToolActivation {
-        match self {
-            Self::Text => ToolActivation::ImmediateDialog,
-            Self::Shape => ToolActivation::ChoiceDialog,
-            _ => ToolActivation::CanvasGesture,
-        }
-    }
-
-    fn matches(self, query: &str) -> bool {
-        let query = query.trim().to_ascii_lowercase();
-        query.is_empty()
-            || self.label().to_ascii_lowercase().contains(&query)
-            || self.description().to_ascii_lowercase().contains(&query)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CanvasGeometry {
-    viewport: Rect,
-    canvas: Rect,
-    pixels_per_point: f32,
-}
-
-impl CanvasGeometry {
-    fn screen_to_canvas(self, position: Pos2) -> Pos2 {
-        Pos2::new(
-            (position.x - self.canvas.left()) / self.pixels_per_point,
-            (position.y - self.canvas.top()) / self.pixels_per_point,
-        )
-    }
-
-    fn canvas_to_screen(self, position: Pos2) -> Pos2 {
-        self.canvas.min + position.to_vec2() * self.pixels_per_point
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct DragState {
-    start_canvas: Pos2,
-    current_canvas: Pos2,
-    layer_id: Option<u64>,
-    transform: Transform,
-    action: DragAction,
-    bounds: Option<Rect>,
-    visual_rotation_bounds: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DragAction {
-    Move,
-    Rotate,
-    Resize(ResizeHandle),
-    Draw,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ResizeHandle {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CanvasInvalidation {
-    None,
-    Layer(u64),
-    Structure,
-    All,
-}
-
-fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
-    match command {
-        Command::UpdateText { id, .. }
-        | Command::UpdateRectangle { id, .. }
-        | Command::UpdateEllipse { id, .. }
-        | Command::SetShapeStroke { id, .. }
-        | Command::RasterizeShape { id, .. }
-        | Command::AdjustLayer { id, .. }
-        | Command::ResetLayerAdjustments { id } => CanvasInvalidation::Layer(*id),
-        Command::AddRaster { .. }
-        | Command::AddText { .. }
-        | Command::AddRectangle { .. }
-        | Command::AddEllipse { .. }
-        | Command::DuplicateLayer { .. }
-        | Command::Undo
-        | Command::Redo => CanvasInvalidation::All,
-        Command::RemoveLayer { .. } => CanvasInvalidation::Structure,
-        _ => CanvasInvalidation::None,
-    }
-}
 
 #[derive(Clone, Debug)]
 struct NewDocumentDialog {
@@ -266,6 +121,8 @@ struct PrismApp {
     pan: Vec2,
     fit_requested: bool,
     drag: Option<DragState>,
+    smart_guides: SmartGuides,
+    alignment_reference: Option<u64>,
     rename_layer: Option<(u64, String)>,
     new_dialog: Option<NewDocumentDialog>,
     text_dialog: Option<TextDialogDraft>,
@@ -365,6 +222,8 @@ impl PrismApp {
             pan: Vec2::ZERO,
             fit_requested: true,
             drag: None,
+            smart_guides: SmartGuides::default(),
+            alignment_reference: None,
             rename_layer: None,
             new_dialog: None,
             text_dialog: None,
@@ -524,6 +383,9 @@ impl PrismApp {
         self.layer_thumbnails.clear();
         self.fit_requested = true;
         self.pan = Vec2::ZERO;
+        self.drag = None;
+        self.smart_guides = SmartGuides::default();
+        self.alignment_reference = None;
     }
 
     fn activate_tab(&mut self, id: u64) {
@@ -543,6 +405,8 @@ impl PrismApp {
         self.fit_requested = true;
         self.pan = Vec2::ZERO;
         self.drag = None;
+        self.smart_guides = SmartGuides::default();
+        self.alignment_reference = None;
     }
 
     fn close_tab(&mut self, id: u64) {
@@ -581,6 +445,8 @@ impl PrismApp {
         self.fit_requested = true;
         self.pan = Vec2::ZERO;
         self.drag = None;
+        self.smart_guides = SmartGuides::default();
+        self.alignment_reference = None;
     }
 
     fn export(&mut self) {
@@ -641,7 +507,7 @@ impl PrismApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         #[cfg(not(target_os = "macos"))]
                         self.terminal_status_control(ui);
-                        #[cfg(not(target_os = "macos"))]
+                        self.snapping_control(ui);
                         if ui.small_button("Fit").clicked() {
                             self.zoom = 1.0;
                             self.pan = Vec2::ZERO;
@@ -753,7 +619,6 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(100.0, 50.0),
             )),
-            visual_rotation_bounds: false,
         };
         let transform = drag_transform(drag, true);
         assert_eq!(transform.x, 10.0);
@@ -778,7 +643,6 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(500.0, 100.0),
             )),
-            visual_rotation_bounds: false,
         };
         let before = drag_transform(make_drag(Pos2::new(560.0, 129.0)), true);
         let after = drag_transform(make_drag(Pos2::new(560.0, 131.0)), true);
@@ -802,7 +666,6 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(100.0, 50.0),
             )),
-            visual_rotation_bounds: false,
         };
         let transform = drag_transform(drag, false);
         assert!((transform.scale_x - 1.5).abs() < 0.001);
