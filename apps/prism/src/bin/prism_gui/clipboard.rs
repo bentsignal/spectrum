@@ -119,16 +119,12 @@ impl LayerClipboardState {
 }
 
 fn clipboard_event(input: &egui::InputState) -> Option<(ClipboardEventKind, Option<String>)> {
-    input
-        .events
-        .iter()
-        .find_map(|event| match event {
-            egui::Event::Copy => Some((ClipboardEventKind::Copy, None)),
-            egui::Event::Cut => Some((ClipboardEventKind::Cut, None)),
-            egui::Event::Paste(text) => Some((ClipboardEventKind::Paste, Some(text.clone()))),
-            _ => None,
-        })
-        .collect()
+    input.events.iter().find_map(|event| match event {
+        egui::Event::Copy => Some((ClipboardEventKind::Copy, None)),
+        egui::Event::Cut => Some((ClipboardEventKind::Cut, None)),
+        egui::Event::Paste(text) => Some((ClipboardEventKind::Paste, Some(text.clone()))),
+        _ => None,
+    })
 }
 
 impl PrismApp {
@@ -254,6 +250,23 @@ mod tests {
             ClipboardEnvelope::decode(&cut).unwrap().operation,
             ClipboardOperation::Cut
         );
+    }
+
+    #[test]
+    fn event_extraction_returns_the_first_clipboard_event_and_its_paste_text() {
+        let input = egui::InputState {
+            events: vec![
+                egui::Event::Text("ignored".into()),
+                egui::Event::Paste("layer payload".into()),
+                egui::Event::Copy,
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            clipboard_event(&input),
+            Some((ClipboardEventKind::Paste, Some("layer payload".into())))
+        );
+        assert_eq!(clipboard_event(&egui::InputState::default()), None);
     }
 
     #[test]
