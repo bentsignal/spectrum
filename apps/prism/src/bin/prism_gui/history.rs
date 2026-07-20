@@ -13,6 +13,24 @@ use super::*;
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
+fn prism_history_theme() -> HistoryTheme {
+    HistoryTheme {
+        ink: INK,
+        panel: PANEL,
+        surface: SURFACE,
+        hover_surface: HOVER_SURFACE,
+        active_surface: ACTIVE_SURFACE,
+        focus_surface: SELECTED_SURFACE,
+        border: BORDER,
+        text: TEXT,
+        muted: MUTED,
+        accent: ACCENT,
+        human: Color32::from_rgb(126, 151, 186),
+        agent: ACCENT,
+        system: ACCENT_WARM,
+    }
+}
+
 pub(super) struct HistoryViewState {
     pub(super) visible: bool,
     history: Option<ProjectHistory>,
@@ -85,21 +103,21 @@ impl PrismApp {
     }
 
     pub(super) fn history_view(&mut self, root: &mut egui::Ui) {
-        let theme = HistoryTheme::default();
+        let theme = prism_history_theme();
         let context = root.ctx().clone();
         self.receive_history_preview(&context);
         self.refresh_history(false);
         self.history_details_panel(root);
         let mut clicked = None;
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(INK).inner_margin(18))
+            .frame(egui::Frame::new().fill(INK).inner_margin(12))
             .show(root, |ui| {
                 if history_header(ui, "Every completed action remains reachable", theme) {
                     self.history.mark_stale();
                 }
-                ui.add_space(12.0);
-                ui.separator();
                 ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
                 if let Some(history) = self.history.history.as_ref() {
                     let graph = HistoryGraph {
                         root: history.root,
@@ -129,28 +147,28 @@ impl PrismApp {
     fn history_details_panel(&mut self, root: &mut egui::Ui) {
         let mut close = false;
         egui::Panel::right("prism-history-details")
-            .default_size(360.0)
-            .min_size(360.0)
-            .max_size(360.0)
+            .default_size(328.0)
+            .min_size(328.0)
+            .max_size(328.0)
             .resizable(false)
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
-                    .inner_margin(18)
+                    .inner_margin(12)
                     .stroke(Stroke::new(1.0, BORDER)),
             )
             .show(root, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("HISTORY").size(14.0).strong().color(TEXT));
+                    ui.label(RichText::new("HISTORY").size(11.0).strong().color(TEXT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Canvas  ⌘H").clicked() {
+                        if quiet_button(ui, "Canvas  ⌘H").clicked() {
                             close = true;
                         }
                     });
                 });
-                ui.add_space(14.0);
+                ui.add_space(10.0);
                 self.history_preview(ui);
-                ui.add_space(16.0);
+                ui.add_space(12.0);
                 self.history_revision_details(ui);
             });
         if close {
@@ -162,9 +180,9 @@ impl PrismApp {
         let width = ui.available_width();
         let frame = egui::Frame::new()
             .fill(INK)
-            .corner_radius(8)
+            .corner_radius(RADIUS)
             .stroke(Stroke::new(1.0, BORDER))
-            .inner_margin(8);
+            .inner_margin(6);
         frame.show(ui, |ui| {
             ui.allocate_ui_with_layout(
                 Vec2::new(width - 18.0, 210.0),
@@ -208,7 +226,7 @@ impl PrismApp {
                 sessions: &history.sessions,
             },
             self.history.selected,
-            HistoryTheme::default(),
+            prism_history_theme(),
         );
     }
 

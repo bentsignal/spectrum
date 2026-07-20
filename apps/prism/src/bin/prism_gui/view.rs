@@ -12,7 +12,7 @@ pub(super) enum ToggleIcon {
 pub(super) fn icon_toggle(ui: &mut egui::Ui, enabled: bool, icon: ToggleIcon) -> egui::Response {
     let response = ui.add_sized([28.0, 26.0], egui::Button::new(""));
     let center = response.rect.center();
-    let stroke = Stroke::new(1.5, if enabled { ACCENT } else { MUTED });
+    let stroke = Stroke::new(1.5, if enabled { MUTED } else { SUBTLE });
     match icon {
         ToggleIcon::Visibility => {
             let left = center + Vec2::new(-8.0, 0.0);
@@ -232,6 +232,30 @@ pub(super) fn contrast_text(background: Color32) -> Color32 {
     }
 }
 
+pub(super) fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(RichText::new(label).strong().color(contrast_text(ACCENT)))
+            .fill(ACCENT)
+            .stroke(Stroke::new(1.0, ACCENT)),
+    )
+}
+
+pub(super) fn quiet_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(egui::Button::new(RichText::new(label).size(11.0)).frame(false))
+}
+
+pub(super) fn quiet_danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(egui::Button::new(RichText::new(label).size(11.0).color(DANGER)).frame(false))
+}
+
+pub(super) fn danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(RichText::new(label).strong().color(contrast_text(DANGER)))
+            .fill(DANGER)
+            .stroke(Stroke::new(1.0, DANGER)),
+    )
+}
+
 pub(super) fn color32(value: [u8; 4]) -> Color32 {
     Color32::from_rgba_unmultiplied(value[0], value[1], value[2], value[3])
 }
@@ -247,8 +271,8 @@ pub(super) fn with_alpha(value: Color32, alpha: u8) -> Color32 {
 fn paint_shortcut_key_background(ui: &egui::Ui, rect: Rect) {
     ui.painter().rect(
         rect,
-        4.0,
-        SURFACE,
+        2.0,
+        WORKSPACE,
         Stroke::new(1.0, BORDER),
         egui::StrokeKind::Inside,
     );
@@ -261,7 +285,7 @@ fn paint_shortcut_key(ui: &egui::Ui, rect: Rect, key: &str) {
         Align2::CENTER_CENTER,
         key,
         FontId::monospace(9.5),
-        MUTED,
+        SUBTLE,
     );
 }
 
