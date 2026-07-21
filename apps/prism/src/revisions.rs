@@ -696,12 +696,24 @@ impl PreparedSnapshot {
             assets.push(prepared.asset);
         }
         let serialized = serde_json::to_vec(&portable)?;
-        let effects_schema = document.version >= crate::PRISM_VERSION
+        let selection_schema =
+            document.version >= crate::PRISM_VERSION || document.selection.is_some();
+        let effects_schema = document.version >= LAYER_EFFECTS_SNAPSHOT_VERSION
             || document
                 .layers
                 .iter()
                 .any(|layer| !layer.style.is_empty() || layer.shape_fill.is_some());
-        let payload = if effects_schema {
+        let payload = if selection_schema {
+            let encoding = Encoding::new(SNAPSHOT_FAMILY, SELECTION_SNAPSHOT_VERSION);
+            if compressed {
+                Payload::new(
+                    encoding.requiring(DEFLATE_CAPABILITY),
+                    deflate(&serialized)?,
+                )
+            } else {
+                Payload::new(encoding, serialized)
+            }
+        } else if effects_schema {
             let encoding = Encoding::new(SNAPSHOT_FAMILY, LAYER_EFFECTS_SNAPSHOT_VERSION);
             if compressed {
                 Payload::new(
@@ -808,6 +820,16 @@ fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             Ok(payload.bytes.clone())
         }
         LAYER_EFFECTS_SNAPSHOT_VERSION
+            if payload.encoding.required_capabilities == [DEFLATE_CAPABILITY] =>
+        {
+            let mut decoded = Vec::new();
+            ZlibDecoder::new(payload.bytes.as_slice()).read_to_end(&mut decoded)?;
+            Ok(decoded)
+        }
+        SELECTION_SNAPSHOT_VERSION if payload.encoding.required_capabilities.is_empty() => {
+            Ok(payload.bytes.clone())
+        }
+        SELECTION_SNAPSHOT_VERSION
             if payload.encoding.required_capabilities == [DEFLATE_CAPABILITY] =>
         {
             let mut decoded = Vec::new();

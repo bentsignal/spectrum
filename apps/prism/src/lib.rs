@@ -63,7 +63,7 @@ pub use shapes::{
     recommended_rasterization_scale, shape_dimensions,
 };
 
-pub const PRISM_VERSION: u32 = 3;
+pub const PRISM_VERSION: u32 = 4;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 
@@ -75,6 +75,9 @@ pub use alignment::{
     Alignment, AlignmentReference, Guide, GuideOrientation, LayerGeometry, align_layer_transform,
     layer_geometry, layer_geometry_with_bounds, layer_geometry_with_size,
 };
+
+mod selection;
+pub use selection::Selection;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -235,6 +238,8 @@ pub struct Document {
     pub guides: Vec<Guide>,
     pub snapping_enabled: bool,
     pub font_assets: Vec<FontAsset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<Selection>,
     /// Bottom-to-top paint order.
     pub layers: Vec<Layer>,
     pub selected: Option<u64>,
@@ -260,6 +265,7 @@ impl Document {
             guides: Vec::new(),
             snapping_enabled: true,
             font_assets: Vec::new(),
+            selection: None,
             layers: Vec::new(),
             selected: None,
             next_id: 1,
@@ -355,6 +361,9 @@ impl Document {
                 }
             }
         }
+        self.selection = self
+            .selection
+            .and_then(|selection| selection.clipped(self.width, self.height));
         self.next_id = self
             .next_id
             .max(self.layers.iter().map(|layer| layer.id).max().unwrap_or(0) + 1);
@@ -468,3 +477,7 @@ mod durable_asset_tests;
 #[cfg(test)]
 #[path = "effect_tests.rs"]
 mod effect_tests;
+
+#[cfg(test)]
+#[path = "selection_tests.rs"]
+mod selection_tests;

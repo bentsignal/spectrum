@@ -80,7 +80,16 @@ impl PrismApp {
                     );
                 }
                 self.paint_alignment_guides(ui, geometry);
-                if let Some(layer) = self.selected_layer() {
+                let replacing_marquee = self.tool == Tool::Marquee
+                    && self
+                        .drag
+                        .is_some_and(|drag| drag.action == DragAction::Draw);
+                if !replacing_marquee && let Some(selection) = self.workspace.document.selection {
+                    paint_selection_overlay(ui, geometry, selection);
+                }
+                if self.tool != Tool::Marquee
+                    && let Some(layer) = self.selected_layer()
+                {
                     if selection_outline_has_resize_handles(self.tool) {
                         paint_layer_outline(
                             ui,
@@ -133,7 +142,7 @@ impl PrismApp {
             self.pan += response.drag_delta();
             return;
         }
-        if self.tool == Tool::Rotate && response.hovered() {
+        if matches!(self.tool, Tool::Rotate | Tool::Marquee) && response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
         let pointer = response.interact_pointer_pos();
@@ -404,6 +413,16 @@ impl PrismApp {
                         );
                     }
                 }
+                (Tool::Marquee, _) => {
+                    if let Some(selection) = selection_from_drag(
+                        self.workspace.document.width,
+                        self.workspace.document.height,
+                        drag.start_canvas,
+                        drag.current_canvas,
+                    ) {
+                        paint_selection_drag(ui, geometry, selection);
+                    }
+                }
                 (Tool::Shape, chrome::ShapeKind::Rectangle) | (Tool::Crop, _) | (Tool::Mask, _) => {
                     let rect = Rect::from_two_pos(start, current);
                     ui.painter().rect_filled(rect, 1.0, with_alpha(ACCENT, 30));
@@ -548,6 +567,18 @@ impl PrismApp {
                         self.tool = Tool::Move;
                     }
                 }
+                (Tool::Marquee, _) => {
+                    if let Some(selection) = selection_from_drag(
+                        self.workspace.document.width,
+                        self.workspace.document.height,
+                        drag.start_canvas,
+                        drag.current_canvas,
+                    ) {
+                        self.execute(Command::SetSelection {
+                            selection: Some(selection),
+                        });
+                    }
+                }
                 _ => {}
             },
         }
@@ -610,6 +641,9 @@ impl PrismApp {
                 }
                 self.tool = Tool::Move;
             }
+            Tool::Marquee => {
+                self.execute(Command::SetSelection { selection: None });
+            }
             _ => {}
         }
     }
@@ -641,7 +675,7 @@ fn canvas_interaction_position(
     geometry: CanvasGeometry,
     screen_position: Pos2,
 ) -> Option<Pos2> {
-    if tool == Tool::Text && !geometry.canvas.contains(screen_position) {
+    if matches!(tool, Tool::Text | Tool::Marquee) && !geometry.canvas.contains(screen_position) {
         return None;
     }
     Some(geometry.screen_to_canvas(screen_position))

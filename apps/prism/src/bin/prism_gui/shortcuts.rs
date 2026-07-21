@@ -205,6 +205,8 @@ impl PrismApp {
                 Some(Tool::Shape)
             } else if input.key_pressed(egui::Key::M) {
                 Some(Tool::Mask)
+            } else if input.key_pressed(egui::Key::W) {
+                Some(Tool::Marquee)
             } else {
                 None
             }

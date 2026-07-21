@@ -20,6 +20,8 @@ use raster_fixture::PreparedRasterFixture;
 #[path = "benchmark/temporary_font.rs"]
 mod temporary_font;
 use temporary_font::TemporaryFont;
+#[path = "benchmark/selection.rs"]
+mod selection;
 
 #[derive(Clone, Copy, Default, ValueEnum)]
 pub(super) enum BenchmarkProfile {
@@ -127,6 +129,7 @@ fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
 }
 
 pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value> {
+    let selection_fill = selection::measure_selection_fill()?;
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -670,6 +673,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let (cached_spot_median, cached_spot_p95) = sample_summary(&mut cached_spot_samples);
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = [
+        BenchmarkMetric {
+            name: "nondestructive_selection_fill_command",
+            median_ms: selection_fill.median_ms,
+            p95_ms: selection_fill.p95_ms,
+            budget_ms: 5.0,
+            pass: selection_fill.p95_ms <= 5.0,
+        },
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
             median_ms: shape_median,

@@ -14,6 +14,9 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             document.width = width.clamp(1, MAX_CANVAS_DIMENSION);
             document.height = height.clamp(1, MAX_CANVAS_DIMENSION);
             document.background = background;
+            document.selection = document
+                .selection
+                .and_then(|selection| selection.clipped(document.width, document.height));
             alignment::clamp_guides(document);
             Ok(output("set_canvas", "updated canvas", Vec::new()))
         }
@@ -28,6 +31,9 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             }
             document.width = width.min(document.width - x);
             document.height = height.min(document.height - y);
+            document.selection = document
+                .selection
+                .and_then(|selection| selection.cropped(x, y, document.width, document.height));
             for layer in &mut document.layers {
                 layer.transform.x -= x as f32;
                 layer.transform.y -= y as f32;
@@ -346,6 +352,50 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
                 "select_layer",
                 "selected layer",
                 id.into_iter().collect(),
+            ))
+        }
+        Command::SetSelection { selection } => {
+            document.selection = selection
+                .map(|selection| selection.validated(document.width, document.height))
+                .transpose()?;
+            Ok(output(
+                "set_selection",
+                if document.selection.is_some() {
+                    "updated rectangular selection"
+                } else {
+                    "cleared selection"
+                },
+                Vec::new(),
+            ))
+        }
+        Command::FillSelection { color, name } => {
+            let selection = document
+                .selection
+                .context("create a rectangular selection before filling")?
+                .validated(document.width, document.height)?;
+            let (x, y, width, height) = selection.bounds();
+            let id = document.allocate_id();
+            document.layers.push(Layer {
+                id,
+                name: name.unwrap_or_else(|| "Fill".into()),
+                transform: Transform {
+                    x: x as f32,
+                    y: y as f32,
+                    ..Default::default()
+                },
+                kind: LayerKind::Rectangle {
+                    width,
+                    height,
+                    color,
+                    corner_radius: 0.0,
+                },
+                ..Default::default()
+            });
+            document.selected = Some(id);
+            Ok(output(
+                "fill_selection",
+                "created nondestructive fill layer",
+                vec![id],
             ))
         }
         Command::MoveLayer { id, index } => {

@@ -305,6 +305,9 @@ impl PrismApp {
                         .size(11.0)
                         .color(MUTED),
                     );
+                    if self.tool == Tool::Marquee || self.workspace.document.selection.is_some() {
+                        self.selection_workbench_controls(ui);
+                    }
                 });
             });
     }
@@ -654,6 +657,7 @@ fn palette_results(query: &str) -> Vec<PaletteItem> {
         PaletteItem::Tool(Tool::Move),
         PaletteItem::Tool(Tool::Crop),
         PaletteItem::Tool(Tool::Mask),
+        PaletteItem::Tool(Tool::Marquee),
         PaletteItem::Tool(Tool::Text),
         PaletteItem::Tool(Tool::Shape),
         PaletteItem::PlaceImage,

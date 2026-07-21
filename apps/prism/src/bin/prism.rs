@@ -9,8 +9,8 @@ use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
 use prism_core::{
-    Alignment, AlignmentReference, BlendMode, Command, Document, GuideOrientation, LayerMask,
-    ShapeStroke, Transform, Workspace, export_document,
+    AlignmentReference, BlendMode, Command, Document, LayerMask, ShapeStroke, Transform, Workspace,
+    export_document,
 };
 use serde_json::{Value, json};
 use spectrum_imaging::{AdjustmentPatch, RenderOptions};
@@ -19,6 +19,9 @@ use spectrum_revisions::{Actor, ActorKind, SessionId};
 #[path = "prism_cli/agent.rs"]
 mod agent;
 use agent::{AgentCommand, agent_command};
+#[path = "prism_cli/alignment.rs"]
+mod alignment;
+use alignment::{CliAlignment, GuideCommand};
 #[path = "prism_cli/benchmark.rs"]
 mod benchmark;
 use benchmark::{BenchmarkProfile, benchmark};
@@ -28,6 +31,9 @@ use effects::{GradientArgs, ShadowArgs};
 #[path = "prism_cli/schema.rs"]
 mod schema;
 use schema::schema;
+#[path = "prism_cli/selection.rs"]
+mod selection;
+use selection::SelectionArgs;
 #[path = "prism_cli/typography.rs"]
 mod typography;
 use typography::{TypographyArgs, updated_typography};
@@ -207,6 +213,8 @@ enum CliCommand {
     Select {
         id: Option<u64>,
     },
+    /// Create, clear, or nondestructively fill a rectangular pixel selection.
+    Selection(SelectionArgs),
     Reorder {
         id: u64,
         index: usize,
@@ -360,62 +368,6 @@ enum CliCommand {
         #[arg(long, value_enum, default_value_t = BenchmarkProfile::Interactive)]
         profile: BenchmarkProfile,
     },
-}
-
-#[derive(Subcommand)]
-enum GuideCommand {
-    Add {
-        #[arg(value_enum)]
-        orientation: CliGuideOrientation,
-        #[arg(allow_negative_numbers = true)]
-        position: f32,
-    },
-    Move {
-        id: u64,
-        #[arg(allow_negative_numbers = true)]
-        position: f32,
-    },
-    Remove {
-        id: u64,
-    },
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum CliGuideOrientation {
-    Horizontal,
-    Vertical,
-}
-
-impl From<CliGuideOrientation> for GuideOrientation {
-    fn from(value: CliGuideOrientation) -> Self {
-        match value {
-            CliGuideOrientation::Horizontal => Self::Horizontal,
-            CliGuideOrientation::Vertical => Self::Vertical,
-        }
-    }
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum CliAlignment {
-    Left,
-    HorizontalCenter,
-    Right,
-    Top,
-    VerticalCenter,
-    Bottom,
-}
-
-impl From<CliAlignment> for Alignment {
-    fn from(value: CliAlignment) -> Self {
-        match value {
-            CliAlignment::Left => Self::Left,
-            CliAlignment::HorizontalCenter => Self::HorizontalCenter,
-            CliAlignment::Right => Self::Right,
-            CliAlignment::Top => Self::Top,
-            CliAlignment::VerticalCenter => Self::VerticalCenter,
-            CliAlignment::Bottom => Self::Bottom,
-        }
-    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -694,6 +646,9 @@ fn run(cli: Cli) -> Result<Value> {
                 }
                 CliCommand::Select { id } => {
                     vec![workspace.execute(Command::SelectLayer { id })?]
+                }
+                CliCommand::Selection(arguments) => {
+                    vec![workspace.execute(selection::command(arguments)?)?]
                 }
                 CliCommand::Reorder { id, index } => {
                     vec![workspace.execute(Command::MoveLayer { id, index })?]

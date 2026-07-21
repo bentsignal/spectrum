@@ -9,6 +9,7 @@ pub(super) enum Tool {
     Text,
     Shape,
     Mask,
+    Marquee,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,12 +19,13 @@ pub(super) enum ToolActivation {
 }
 
 impl Tool {
-    pub(super) const ALL: [(Self, &'static str, &'static str); 5] = [
+    pub(super) const ALL: [(Self, &'static str, &'static str); 6] = [
         (Self::Move, "V", "Select / move"),
         (Self::Crop, "C", "Crop canvas"),
         (Self::Text, "T", "Text"),
         (Self::Shape, "S", "Shape"),
         (Self::Mask, "M", "Layer mask"),
+        (Self::Marquee, "W", "Rectangular marquee"),
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -34,6 +36,7 @@ impl Tool {
             Self::Text => "Add text",
             Self::Shape => "Shape",
             Self::Mask => "Draw mask",
+            Self::Marquee => "Rectangular marquee",
         }
     }
 
@@ -55,6 +58,7 @@ impl Tool {
             Self::Text => "Click for point text, or drag a width for a wrapped paragraph.",
             Self::Shape => "Choose a rectangle, ellipse, or another shape to draw.",
             Self::Mask => "Draw the visible region of the focused element.",
+            Self::Marquee => "Drag a persistent document-pixel selection, then clear or fill it.",
         }
     }
 
@@ -149,11 +153,12 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::AddText { .. }
         | Command::AddRectangle { .. }
         | Command::AddEllipse { .. }
+        | Command::FillSelection { .. }
         | Command::InsertLayer { .. }
         | Command::DuplicateLayer { .. }
         | Command::Undo
         | Command::Redo => CanvasInvalidation::All,
-        Command::ImportFont { .. } => CanvasInvalidation::None,
+        Command::ImportFont { .. } | Command::SetSelection { .. } => CanvasInvalidation::None,
         Command::RemoveLayer { .. } => CanvasInvalidation::Structure,
         _ => CanvasInvalidation::None,
     }
