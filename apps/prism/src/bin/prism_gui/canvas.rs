@@ -27,11 +27,15 @@ impl PrismApp {
                     self.pan = Vec2::ZERO;
                     self.fit_requested = false;
                 }
+                self.canvas_interaction(ui, &response, geometry);
+                // Resolve the frame's gesture before deciding which preview raster work is
+                // needed. In particular, the first resize frame must reuse the existing layer
+                // texture instead of dispatching settled-resolution work for the pre-drag
+                // transform and immediately invalidating it.
                 self.ensure_layer_visuals(
                     ui.ctx(),
                     geometry.pixels_per_point * ui.ctx().pixels_per_point(),
                 );
-                self.canvas_interaction(ui, &response, geometry);
                 let direct_manipulation = direct_manipulation_preview(self.drag);
                 if document_requires_composite_preview(&self.workspace.document)
                     && !direct_manipulation

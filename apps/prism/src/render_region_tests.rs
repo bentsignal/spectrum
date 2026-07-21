@@ -5,6 +5,62 @@ use crate::{
     render_document_scaled,
 };
 
+fn alpha_centroid(image: &image::RgbaImage) -> (f32, f32) {
+    let mut weight = 0.0_f64;
+    let mut x_sum = 0.0_f64;
+    let mut y_sum = 0.0_f64;
+    for (x, y, pixel) in image.enumerate_pixels() {
+        let alpha = f64::from(pixel[3]);
+        weight += alpha;
+        x_sum += (f64::from(x) + 0.5) * alpha;
+        y_sum += (f64::from(y) + 0.5) * alpha;
+    }
+    assert!(weight > 0.0);
+    ((x_sum / weight) as f32, (y_sum / weight) as f32)
+}
+
+#[test]
+fn rotated_shape_rendering_keeps_the_live_transform_center() {
+    let mut document = Document::new("Centered shape", 320, 260);
+    document.background = [0, 0, 0, 0];
+    let layer = Layer {
+        id: 1,
+        transform: Transform {
+            x: 100.0,
+            y: 80.0,
+            rotation: 90.0,
+            ..Transform::default()
+        },
+        kind: LayerKind::Rectangle {
+            width: 100,
+            height: 40,
+            color: [255, 255, 255, 255],
+            corner_radius: 0.0,
+        },
+        ..Layer::default()
+    };
+    let expected_center = crate::layer_geometry(&layer).unwrap().center;
+    document.layers.push(layer);
+
+    let full = render_document_scaled(&document, 1.0).unwrap().to_rgba8();
+    let region = RenderRegion {
+        x: 0,
+        y: 0,
+        width: document.width,
+        height: document.height,
+    };
+    let viewport = render_document_region_scaled(&document, 1.0, region)
+        .unwrap()
+        .to_rgba8();
+
+    assert_eq!(viewport, full);
+    for image in [&full, &viewport] {
+        let center = alpha_centroid(image);
+        assert!((center.0 - expected_center[0]).abs() < 0.001);
+        assert!((center.1 - expected_center[1]).abs() < 0.001);
+    }
+}
+
 fn temporary_raster(label: &str, width: u32, height: u32) -> std::path::PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

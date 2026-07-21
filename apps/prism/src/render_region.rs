@@ -243,11 +243,11 @@ impl SamplingGeometry {
             LayerKind::Raster { .. } | LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
                 if degrees.abs() >= 0.01 =>
             {
-                let (width, height) = rotated_dimensions(scaled_width, scaled_height, degrees);
+                let bounds = centered_rotation_bounds(scaled_width, scaled_height, degrees);
                 (
-                    width,
-                    height,
-                    (0.0, 0.0),
+                    bounds.width,
+                    bounds.height,
+                    (bounds.offset_x, bounds.offset_y),
                     RotationSampling::Center { degrees },
                 )
             }
@@ -437,17 +437,44 @@ fn scaled_dimension(value: u32, scale: f32) -> u32 {
     (value as f32 * scale).round().max(1.0) as u32
 }
 
-fn rotated_dimensions(width: u32, height: u32, degrees: f32) -> (u32, u32) {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CenteredRotationBounds {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) offset_x: f32,
+    pub(crate) offset_y: f32,
+}
+
+pub(crate) fn centered_rotation_bounds(
+    width: u32,
+    height: u32,
+    degrees: f32,
+) -> CenteredRotationBounds {
     let radians = degrees.to_radians();
     let (sin, cos) = radians.sin_cos();
-    (
-        (width as f32 * cos.abs() + height as f32 * sin.abs())
-            .ceil()
-            .max(1.0) as u32,
-        (width as f32 * sin.abs() + height as f32 * cos.abs())
-            .ceil()
-            .max(1.0) as u32,
-    )
+    let stabilize = |component: f32| {
+        if component.abs() < 0.000_001 {
+            0.0
+        } else if (component.abs() - 1.0).abs() < 0.000_001 {
+            component.signum()
+        } else {
+            component
+        }
+    };
+    let sin = stabilize(sin);
+    let cos = stabilize(cos);
+    let output_width = (width as f32 * cos.abs() + height as f32 * sin.abs())
+        .ceil()
+        .max(1.0) as u32;
+    let output_height = (width as f32 * sin.abs() + height as f32 * cos.abs())
+        .ceil()
+        .max(1.0) as u32;
+    CenteredRotationBounds {
+        width: output_width,
+        height: output_height,
+        offset_x: (width as f32 - output_width as f32) * 0.5,
+        offset_y: (height as f32 - output_height as f32) * 0.5,
+    }
 }
 
 fn inverse_center_rotation(
@@ -645,5 +672,22 @@ mod tests {
         assert!(region.width < geometry.source_width);
         assert!(region.height < geometry.source_height);
         assert!(region.pixel_count() <= 320 * 180);
+    }
+
+    #[test]
+    fn centered_rotation_bounds_keep_the_source_center_fixed() {
+        for degrees in [17.0, 45.0, 90.0, 137.0, 270.0] {
+            let bounds = centered_rotation_bounds(100, 40, degrees);
+            let source_center = (50.0, 20.0);
+            let output_center = (
+                bounds.offset_x + bounds.width as f32 * 0.5,
+                bounds.offset_y + bounds.height as f32 * 0.5,
+            );
+
+            assert!((output_center.0 - source_center.0).abs() < 0.001);
+            assert!((output_center.1 - source_center.1).abs() < 0.001);
+        }
+        let right_angle = centered_rotation_bounds(100, 40, 90.0);
+        assert_eq!((right_angle.width, right_angle.height), (40, 100));
     }
 }

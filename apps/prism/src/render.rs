@@ -432,7 +432,10 @@ fn render_document_region_scaled_impl(
             scaled_layer.transform.y += offset.1;
             source
         } else {
-            transform_layer(source, scaled_layer.transform)
+            let (source, offset) = transform_layer(source, scaled_layer.transform);
+            scaled_layer.transform.x += offset.0;
+            scaled_layer.transform.y += offset.1;
+            source
         };
         if let Some(fallback_allocation) = fallback_allocation {
             let rotated_pixels = if scaled_layer.transform.rotation.abs() >= 0.01 {
@@ -600,25 +603,37 @@ pub fn render_solid_color(color: [u8; 4], adjustments: &spectrum_imaging::Adjust
     .0
 }
 
-fn transform_layer(image: DynamicImage, transform: Transform) -> RgbaImage {
+fn transform_layer(image: DynamicImage, transform: Transform) -> (RgbaImage, (f32, f32)) {
     let width = (image.width() as f32 * transform.scale_x).round().max(1.0) as u32;
     let height = (image.height() as f32 * transform.scale_y).round().max(1.0) as u32;
     let scaled = image
         .resize_exact(width, height, FilterType::Triangle)
         .to_rgba8();
     if transform.rotation.abs() < 0.01 {
-        return scaled;
+        return (scaled, (0.0, 0.0));
     }
-    rotate_rgba(&scaled, transform.rotation)
+    let bounds = crate::render_region::centered_rotation_bounds(width, height, transform.rotation);
+    (
+        rotate_rgba(
+            &scaled,
+            transform.rotation,
+            bounds.width,
+            bounds.height,
+        ),
+        (bounds.offset_x, bounds.offset_y),
+    )
 }
 
-fn rotate_rgba(source: &RgbaImage, degrees: f32) -> RgbaImage {
+fn rotate_rgba(
+    source: &RgbaImage,
+    degrees: f32,
+    output_width: u32,
+    output_height: u32,
+) -> RgbaImage {
     let radians = degrees.to_radians();
     let (sin, cos) = radians.sin_cos();
     let width = source.width() as f32;
     let height = source.height() as f32;
-    let output_width = (width * cos.abs() + height * sin.abs()).ceil().max(1.0) as u32;
-    let output_height = (width * sin.abs() + height * cos.abs()).ceil().max(1.0) as u32;
     let source_center = ((width - 1.0) * 0.5, (height - 1.0) * 0.5);
     let output_center = (
         (output_width - 1) as f32 * 0.5,
