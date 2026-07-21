@@ -14,6 +14,7 @@ use flate2::{Compression, write::ZlibEncoder};
 use fs2::FileExt;
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use spectrum_imaging::{ExactRegionSource, PixelRegion, RegionReadCapability, RegionReadiness};
+use tiff::encoder::{Compression as TiffCompression, DeflateLevel, TiffEncoder, colortype};
 
 use crate::{
     DerivedBackingCache, DerivedBackingLimits, PrepareDerivedBacking, inspect_raster_region_source,
@@ -107,12 +108,13 @@ fn prepare_ready(cache: &DerivedBackingCache, source: &Path) -> crate::DerivedRa
 }
 
 #[test]
-fn exact_planes_match_current_jpeg_webp_and_adam7_decoders() {
+fn exact_planes_match_current_jpeg_webp_tiff_and_complex_png_decoders() {
     let directory = TestDirectory::new("decoder-parity");
     let originals = test_pixels(13, 9, 37);
     let sources = [
         (directory.path().join("small.jpg"), ImageFormat::Jpeg),
         (directory.path().join("small.webp"), ImageFormat::WebP),
+        (directory.path().join("small.tiff"), ImageFormat::Tiff),
     ];
     for (path, format) in &sources {
         DynamicImage::ImageRgba8(originals.clone())
@@ -137,15 +139,49 @@ fn exact_planes_match_current_jpeg_webp_and_adam7_decoders() {
         image::LumaA([(x * 7 + y * 19) as u8, (x * 31 + y * 3) as u8])
     });
     write_adam7_8bit(&adam7_luma_alpha, 13, 9, 4, 2, luma_alpha.as_raw());
+    let adam7_one_bit = directory.path().join("small-adam7-one-bit.png");
+    let one_bit = (0..13 * 9)
+        .map(|index| u8::from(index % 3 == 0 || index % 7 == 0))
+        .collect::<Vec<_>>();
+    write_adam7_1bit(&adam7_one_bit, 13, 9, &one_bit);
+    let adam7_four_bit = directory.path().join("small-adam7-four-bit.png");
+    let four_bit = (0..13 * 9)
+        .map(|index| (index % 16) as u8)
+        .collect::<Vec<_>>();
+    write_adam7_packed(&adam7_four_bit, 13, 9, 4, 0, &four_bit, None, None);
+    let adam7_indexed_transparency = directory.path().join("small-adam7-indexed-trns.png");
+    let indexed = (0..13 * 9)
+        .map(|index| (index % 4) as u8)
+        .collect::<Vec<_>>();
+    write_adam7_packed(
+        &adam7_indexed_transparency,
+        13,
+        9,
+        2,
+        3,
+        &indexed,
+        Some(&[12, 34, 56, 78, 90, 123, 145, 167, 189, 211, 233, 255]),
+        Some(&[255, 173, 61, 0]),
+    );
+    let cmyk_tiff = directory.path().join("small-cmyk.tiff");
+    write_cmyk8_tiff(&cmyk_tiff, 13, 9);
+    let compressed_tiff = directory.path().join("incompressible-deflate.tiff");
+    write_incompressible_deflate_tiff(&compressed_tiff, 257, 257);
 
     for path in sources.iter().map(|(path, _)| path).chain([
         &opaque_lossless_webp,
         &adam7,
         &adam7_luma,
         &adam7_luma_alpha,
+        &adam7_one_bit,
+        &adam7_four_bit,
+        &adam7_indexed_transparency,
+        &cmyk_tiff,
+        &compressed_tiff,
     ]) {
         let expected = image::open(path).unwrap().to_rgba8();
-        let backing = prepare_ready(&cache(&directory.path().join("cache")), path);
+        let cache = cache(&directory.path().join("cache"));
+        let backing = prepare_ready(&cache, path);
         let actual = backing
             .read_exact_region(PixelRegion {
                 x: 0,
@@ -155,6 +191,11 @@ fn exact_planes_match_current_jpeg_webp_and_adam7_decoders() {
             })
             .unwrap();
         assert_eq!(actual, expected, "backing mismatch for {}", path.display());
+        drop(backing);
+        assert!(matches!(
+            cache.prepare(path).unwrap(),
+            PrepareDerivedBacking::Ready { created: false, .. }
+        ));
     }
 }
 
@@ -178,6 +219,53 @@ fn preparation_memory_plan_separates_publication_from_decoder_owned_buffers() {
     assert_eq!(plan.known_resident_reservation_bytes(), pixels * 7);
     assert_eq!(plan.enforced_peak_bytes(), None);
     assert_eq!(plan.full_plane_copy_bytes(), 0);
+
+    let tiff = directory.path().join("rgba.tiff");
+    DynamicImage::ImageRgba8(test_pixels(31, 17, 67))
+        .save_with_format(&tiff, ImageFormat::Tiff)
+        .unwrap();
+    let identity = cache.identify(&tiff).unwrap();
+    let plan = cache.preparation_memory_plan(&identity).unwrap();
+    assert_eq!(plan.decoded_surface_bytes(), pixels * 4);
+    let tiff_scratch = pixels * 10 + 64 * 1_024;
+    assert_eq!(plan.decoder_scratch_reservation_bytes(), tiff_scratch);
+    assert_eq!(
+        plan.known_resident_reservation_bytes(),
+        pixels * 4 + tiff_scratch
+    );
+    drop(prepare_ready(&cache, &tiff));
+    let warm_restricted = DerivedBackingCache::new(
+        cache.root(),
+        DerivedBackingLimits {
+            max_known_resident_bytes: 1,
+            ..DerivedBackingLimits::default()
+        },
+    );
+    assert!(matches!(
+        warm_restricted.prepare(&tiff).unwrap(),
+        PrepareDerivedBacking::Ready { created: false, .. }
+    ));
+    let too_small = DerivedBackingCache::new(
+        directory.path().join("tiny-resident-cache"),
+        DerivedBackingLimits {
+            max_known_resident_bytes: plan.known_resident_reservation_bytes() - 1,
+            ..DerivedBackingLimits::default()
+        },
+    );
+    assert!(too_small.prepare(&tiff).is_err());
+
+    let cmyk = directory.path().join("cmyk.tiff");
+    write_cmyk8_tiff(&cmyk, 31, 17);
+    let identity = cache.identify(&cmyk).unwrap();
+    let plan = cache.preparation_memory_plan(&identity).unwrap();
+    assert_eq!(identity.descriptor().color_encoding, "rgb8");
+    assert_eq!(plan.decoded_surface_bytes(), pixels * 3);
+    assert_eq!(plan.conversion_row_bytes(), 31 * 4);
+    assert_eq!(plan.decoder_scratch_reservation_bytes(), tiff_scratch);
+    assert_eq!(
+        plan.known_resident_reservation_bytes(),
+        pixels * 3 + tiff_scratch
+    );
 
     let rgba = directory.path().join("rgba-adam7.png");
     write_adam7_rgba8(&rgba, &test_pixels(31, 17, 41));
@@ -575,7 +663,7 @@ fn encoded_source_hashing_enforces_the_read_limit() {
 }
 
 #[test]
-fn sixteen_bit_sources_and_uninspected_tiff_stay_full_decode_only() {
+fn high_precision_png_and_tiff_stay_full_decode_only_while_rgba8_tiff_uses_a_backing() {
     let directory = TestDirectory::new("precision-policy");
     let sixteen_bit = directory.path().join("sixteen.png");
     DynamicImage::ImageRgba16(image::ImageBuffer::from_pixel(
@@ -589,13 +677,28 @@ fn sixteen_bit_sources_and_uninspected_tiff_stay_full_decode_only() {
     DynamicImage::ImageRgba8(test_pixels(6, 4, 19))
         .save_with_format(&tiff, ImageFormat::Tiff)
         .unwrap();
+    let sixteen_bit_tiff = directory.path().join("sixteen.tiff");
+    DynamicImage::ImageRgba16(image::ImageBuffer::from_pixel(
+        6,
+        4,
+        image::Rgba([123_u16, 4_567, 32_000, u16::MAX]),
+    ))
+    .save_with_format(&sixteen_bit_tiff, ImageFormat::Tiff)
+    .unwrap();
+    let float_tiff = directory.path().join("float.tiff");
+    write_rgb32f_tiff(&float_tiff, 6, 4);
 
     let sixteen_bit = inspect_raster_region_source(&sixteen_bit).unwrap().info;
     assert_eq!(sixteen_bit.capability, RegionReadCapability::FullDecodeOnly);
     assert_eq!(sixteen_bit.readiness, RegionReadiness::Unsupported);
     let tiff = inspect_raster_region_source(&tiff).unwrap().info;
-    assert_eq!(tiff.capability, RegionReadCapability::FullDecodeOnly);
-    assert_eq!(tiff.readiness, RegionReadiness::Unsupported);
+    assert_eq!(tiff.capability, RegionReadCapability::DerivedBacking);
+    assert_eq!(tiff.readiness, RegionReadiness::NeedsPreparation);
+    for path in [&sixteen_bit_tiff, &float_tiff] {
+        let inspected = inspect_raster_region_source(path).unwrap().info;
+        assert_eq!(inspected.capability, RegionReadCapability::FullDecodeOnly);
+        assert_eq!(inspected.readiness, RegionReadiness::Unsupported);
+    }
 }
 
 #[test]
@@ -636,6 +739,123 @@ fn plane_and_region_limits_are_enforced_before_large_work() {
 
 fn write_adam7_rgba8(path: &Path, pixels: &RgbaImage) {
     write_adam7_8bit(path, pixels.width(), pixels.height(), 6, 4, pixels.as_raw());
+}
+
+fn write_cmyk8_tiff(path: &Path, width: u32, height: u32) {
+    let pixels = (0..width * height)
+        .flat_map(|index| {
+            [
+                (index.wrapping_mul(17) % 256) as u8,
+                (index.wrapping_mul(31) % 256) as u8,
+                (index.wrapping_mul(7) % 256) as u8,
+                (index.wrapping_mul(3) % 96) as u8,
+            ]
+        })
+        .collect::<Vec<_>>();
+    let file = File::create(path).unwrap();
+    TiffEncoder::new(file)
+        .unwrap()
+        .write_image::<colortype::CMYK8>(width, height, &pixels)
+        .unwrap();
+}
+
+fn write_incompressible_deflate_tiff(path: &Path, width: u32, height: u32) {
+    let mut state = 0x6d2b_79f5_u32;
+    let pixels = (0..u64::from(width) * u64::from(height) * 4)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect::<Vec<_>>();
+    let file = File::create(path).unwrap();
+    TiffEncoder::new(file)
+        .unwrap()
+        .with_compression(TiffCompression::Deflate(DeflateLevel::Fast))
+        .write_image::<colortype::RGBA8>(width, height, &pixels)
+        .unwrap();
+}
+
+fn write_rgb32f_tiff(path: &Path, width: u32, height: u32) {
+    let pixels = (0..width * height)
+        .flat_map(|index| {
+            let value = index as f32 / (width * height).max(1) as f32;
+            [value, 1.0 - value, value * 0.5]
+        })
+        .collect::<Vec<_>>();
+    let file = File::create(path).unwrap();
+    TiffEncoder::new(file)
+        .unwrap()
+        .write_image::<colortype::RGB32Float>(width, height, &pixels)
+        .unwrap();
+}
+
+fn write_adam7_1bit(path: &Path, width: u32, height: u32, pixels: &[u8]) {
+    write_adam7_packed(path, width, height, 1, 0, pixels, None, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_adam7_packed(
+    path: &Path,
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+    png_color_type: u8,
+    pixels: &[u8],
+    palette: Option<&[u8]>,
+    transparency: Option<&[u8]>,
+) {
+    let mut filtered = Vec::new();
+    for &(start_x, start_y, step_x, step_y) in &[
+        (0, 0, 8, 8),
+        (4, 0, 8, 8),
+        (0, 4, 4, 8),
+        (2, 0, 4, 4),
+        (0, 2, 2, 4),
+        (1, 0, 2, 2),
+        (0, 1, 1, 2),
+    ] {
+        for y in (start_y..height).step_by(step_y) {
+            if start_x >= width {
+                continue;
+            }
+            filtered.push(0);
+            let mut packed = 0_u8;
+            let mut used = 0_u8;
+            for x in (start_x..width).step_by(step_x) {
+                packed |= (pixels[(y * width + x) as usize] & ((1_u8 << bit_depth) - 1))
+                    << (8 - bit_depth - used);
+                used += bit_depth;
+                if used == 8 {
+                    filtered.push(packed);
+                    packed = 0;
+                    used = 0;
+                }
+            }
+            if used != 0 {
+                filtered.push(packed);
+            }
+        }
+    }
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&filtered).unwrap();
+    let compressed = encoder.finish().unwrap();
+    let mut png = Vec::from(&b"\x89PNG\r\n\x1a\n"[..]);
+    let mut header = Vec::new();
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    header.extend_from_slice(&[bit_depth, png_color_type, 0, 0, 1]);
+    write_png_chunk(&mut png, b"IHDR", &header);
+    if let Some(palette) = palette {
+        write_png_chunk(&mut png, b"PLTE", palette);
+    }
+    if let Some(transparency) = transparency {
+        write_png_chunk(&mut png, b"tRNS", transparency);
+    }
+    write_png_chunk(&mut png, b"IDAT", &compressed);
+    write_png_chunk(&mut png, b"IEND", &[]);
+    fs::write(path, png).unwrap();
 }
 
 fn write_adam7_8bit(

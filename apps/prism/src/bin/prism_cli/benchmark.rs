@@ -5,12 +5,16 @@ use prism_core::{
     BlendMode, Command, Document, FontAsset, Layer, LayerKind, LayerMask, RenderRegion,
     ShapeStroke, TextAlignment, TextEffects, TextTypography, Transform, Workspace,
     region_source_scales, render_document, render_document_region_scaled,
-    render_document_region_scaled_with_stats, render_layer_base_scaled,
-    render_layer_base_scaled_with_font, render_solid_color,
+    render_document_region_scaled_with_sources_and_stats, render_document_region_scaled_with_stats,
+    render_layer_base_scaled, render_layer_base_scaled_with_font, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 use spectrum_imaging::Adjustments;
+
+#[path = "benchmark/raster_fixture.rs"]
+mod raster_fixture;
+use raster_fixture::PreparedRasterFixture;
 
 #[derive(Serialize)]
 struct BenchmarkMetric {
@@ -528,6 +532,71 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         }
         adjusted_vector_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    // Cold TIFF decode/publication is setup work and intentionally excluded
+    // from the warm viewport samples below.
+    let (cached_raster_source, cached_raster_cold_prepare) =
+        PreparedRasterFixture::prepare(2_048, 1_536)?;
+    let mut cached_spot_document = Document::new("Cached spot viewport", 4_096, 4_096);
+    cached_spot_document.layers.push(Layer {
+        id: 112,
+        opacity: 0.84,
+        blend_mode: BlendMode::Overlay,
+        transform: Transform {
+            x: 500.0,
+            y: 400.0,
+            rotation: 7.0,
+            ..Transform::default()
+        },
+        mask: LayerMask {
+            enabled: true,
+            invert: true,
+            x: 0.08,
+            y: 0.1,
+            width: 0.84,
+            height: 0.8,
+        },
+        adjustments: Adjustments {
+            exposure: 0.18,
+            sharpening: 4.0,
+            spots: vec![spectrum_imaging::SpotRemoval {
+                x: 0.5,
+                y: 0.5,
+                radius: 0.012,
+                opacity: 0.85,
+            }],
+            ..Default::default()
+        },
+        kind: LayerKind::Raster {
+            path: cached_raster_source.source_path().to_owned(),
+            original_path: None,
+        },
+        ..Layer::default()
+    });
+    let cached_spot_region = RenderRegion {
+        x: 11_800,
+        y: 9_000,
+        width: 640,
+        height: 360,
+    };
+    let mut cached_spot_samples = Vec::new();
+    for _ in 0..5 {
+        let started = Instant::now();
+        let (rendered, stats) = render_document_region_scaled_with_sources_and_stats(
+            &cached_spot_document,
+            8.0,
+            cached_spot_region,
+            &cached_raster_source,
+        )?;
+        if (rendered.width(), rendered.height())
+            != (cached_spot_region.width, cached_spot_region.height)
+            || stats.fallback_decode_bytes != 0
+            || stats.transformed_surface_pixels != 0
+            || stats.max_source_staging_pixels >= 2_048 * 1_536
+        {
+            bail!("cached spot viewport compositor regressed to full-source work");
+        }
+        cached_spot_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     let (command_median, command_p95) = sample_summary(&mut command_samples);
     let (interaction_median, interaction_p95) = sample_summary(&mut interaction_samples);
     let (text_interaction_median, text_interaction_p95) =
@@ -545,6 +614,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         sample_summary(&mut adjusted_bounded_source_samples);
     let (adjusted_vector_source_median, adjusted_vector_source_p95) =
         sample_summary(&mut adjusted_vector_source_samples);
+    let (cached_spot_median, cached_spot_p95) = sample_summary(&mut cached_spot_samples);
     let metrics = [
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
@@ -637,6 +707,13 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             budget_ms: 750.0,
             pass: adjusted_vector_source_p95 <= 750.0,
         },
+        BenchmarkMetric {
+            name: "8x_zoom_cached_spot_raster_viewport_composite",
+            median_ms: cached_spot_median,
+            p95_ms: cached_spot_p95,
+            budget_ms: 500.0,
+            pass: cached_spot_p95 <= 500.0,
+        },
     ];
     let passed = metrics.iter().all(|metric| metric.pass);
     if strict && !passed {
@@ -659,6 +736,10 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         "strict": strict,
         "passed": passed,
         "output": [rendered.as_ref().unwrap().width(), rendered.as_ref().unwrap().height()],
+        "setup": {
+            "cached_raster_cold_prepare_ms": cached_raster_cold_prepare.as_secs_f64() * 1_000.0,
+            "cached_raster_samples": "warm file-backed provider reads"
+        },
         "metrics": metrics
     }))
 }

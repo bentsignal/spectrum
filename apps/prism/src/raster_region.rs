@@ -39,12 +39,11 @@ pub fn inspect_raster_region_source(path: &Path) -> Result<RasterRegionInspectio
     let color = decoder.color_type();
     let sample_depth = image_sample_depth(color);
     let capability = match format {
-        ImageFormat::Jpeg | ImageFormat::WebP if sample_depth == SourceSampleDepth::EightBit => {
+        ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Tiff
+            if sample_depth == SourceSampleDepth::EightBit =>
+        {
             RegionReadCapability::DerivedBacking
         }
-        // TIFF is FullDecodeOnly until a provider inspects and proves its
-        // concrete strip/tile organization is independently seekable.
-        ImageFormat::Tiff => RegionReadCapability::FullDecodeOnly,
         _ => RegionReadCapability::FullDecodeOnly,
     };
     let readiness = match capability {
@@ -137,13 +136,15 @@ fn inspect_png(
         interlaced: reader.info().interlaced,
         sample_depth,
     };
+    let exact_rgba8_output = matches!(
+        inspection.color_encoding.as_str(),
+        "l8" | "la8" | "rgb8" | "rgba8"
+    );
     let capability = if inspection.sample_depth == SourceSampleDepth::SixteenBit {
         RegionReadCapability::FullDecodeOnly
-    } else if inspection.interlaced && inspection.sample_depth == SourceSampleDepth::EightBit {
+    } else if inspection.interlaced && exact_rgba8_output {
         RegionReadCapability::DerivedBacking
     } else if inspection.interlaced {
-        // Adam7 1/2/4-bit output can become exact RGBA8 after EXPAND, but the
-        // current key model intentionally defers that native/output-depth split.
         RegionReadCapability::FullDecodeOnly
     } else {
         RegionReadCapability::SequentialBounded

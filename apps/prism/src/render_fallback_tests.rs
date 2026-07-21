@@ -107,7 +107,6 @@ fn fallback_stats_account_for_full_decode_and_transformed_surfaces() {
     let jpeg_path = temporary_path("stats", "jpg");
     image::RgbImage::new(32, 24).save(&jpeg_path).unwrap();
     let interlaced_path = temporary_interlaced_png("interlaced-stats");
-    let spotted_path = temporary_raster("spotted-stats", 19, 13);
     let fixtures = [
         (
             "jpeg",
@@ -124,22 +123,6 @@ fn fallback_stats_account_for_full_decode_and_transformed_surfaces() {
             4,
             5,
             20,
-        ),
-        (
-            "spotted PNG",
-            spotted_path.clone(),
-            spectrum_imaging::Adjustments {
-                spots: vec![spectrum_imaging::SpotRemoval {
-                    x: 0.5,
-                    y: 0.5,
-                    radius: 0.15,
-                    opacity: 1.0,
-                }],
-                ..Default::default()
-            },
-            19_u64 * 13 * 4,
-            621,
-            2_964,
         ),
     ];
 
@@ -189,7 +172,7 @@ fn fallback_stats_account_for_full_decode_and_transformed_surfaces() {
         assert_eq!(stats.fallback_peak_bytes, expected_peak_bytes, "{label}");
     }
 
-    for path in [jpeg_path, interlaced_path, spotted_path] {
+    for path in [jpeg_path, interlaced_path] {
         let _ = std::fs::remove_file(path);
     }
 }
@@ -199,30 +182,14 @@ fn adjusted_anisotropic_fallback_is_rejected_before_allocation() {
     let png_path = temporary_raster("bounded-adjusted-spotted", 16_384, 1);
     let jpeg_path = png_path.with_extension("jpg");
     image::RgbImage::new(16_384, 1).save(&jpeg_path).unwrap();
-    let fixtures = [
-        (
-            "jpeg",
-            jpeg_path.clone(),
-            spectrum_imaging::Adjustments {
-                rotation: 90,
-                ..Default::default()
-            },
-        ),
-        (
-            "spotted PNG",
-            png_path.clone(),
-            spectrum_imaging::Adjustments {
-                rotation: 90,
-                spots: vec![spectrum_imaging::SpotRemoval {
-                    x: 0.5,
-                    y: 0.5,
-                    radius: 0.1,
-                    opacity: 1.0,
-                }],
-                ..Default::default()
-            },
-        ),
-    ];
+    let fixtures = [(
+        "jpeg",
+        jpeg_path.clone(),
+        spectrum_imaging::Adjustments {
+            rotation: 90,
+            ..Default::default()
+        },
+    )];
 
     for (label, path, adjustments) in fixtures {
         let mut document = Document::new(label, 16_384, 16_384);
@@ -290,8 +257,8 @@ fn rgba16_fallback_peak_is_rejected_from_header_before_decode() {
 }
 
 #[test]
-fn adjustment_intermediates_reject_near_cap_rgba8_before_decode() {
-    let path = temporary_rgba_header("bounded-adjustments", 4_096, 4_096, 8);
+fn adjustment_intermediates_reject_near_cap_rgba16_before_decode() {
+    let path = temporary_rgba_header("bounded-adjustments", 4_096, 4_096, 16);
     let mut document = Document::new("Adjustment fallback", 4_096, 4_096);
     document.layers.push(Layer {
         adjustments: spectrum_imaging::Adjustments {

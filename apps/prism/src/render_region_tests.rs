@@ -694,7 +694,7 @@ fn huge_stroked_rotated_shapes_render_without_source_staging() {
 }
 
 #[test]
-fn spots_and_non_png_rasters_do_not_claim_region_native_zoom() {
+fn spot_adjustments_are_region_native_but_unprepared_non_png_rasters_are_not() {
     let mut spotted = Document::new("Spots", 64, 64);
     spotted.layers.push(Layer {
         adjustments: spectrum_imaging::Adjustments {
@@ -714,7 +714,7 @@ fn spots_and_non_png_rasters_do_not_claim_region_native_zoom() {
         },
         ..Layer::default()
     });
-    assert!(!document_supports_region_native_zoom(&spotted));
+    assert!(document_supports_region_native_zoom(&spotted));
 
     let temporary_png = temporary_raster("unsupported-roi", 32, 24);
     let jpeg_path = temporary_png.with_extension("jpg");

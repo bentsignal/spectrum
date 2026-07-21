@@ -46,6 +46,13 @@ pub struct DerivedBackingLimits {
     pub max_dimension: u32,
     pub max_encoded_source_bytes: u64,
     pub max_plane_bytes: u64,
+    /// Maximum known concurrent resident bytes during one cold decode.
+    ///
+    /// This includes the decoder output surface, format-specific full-frame
+    /// scratch/input reservations, and row conversion storage. It does not
+    /// claim to bound opaque dependency-private allocations not exposed by the
+    /// pinned decoder implementations.
+    pub max_known_resident_bytes: u64,
     /// Logical-byte quota enforced by current writers across v2 entries and
     /// validated schema-v1 entries observed under the shared root lock.
     ///
@@ -61,11 +68,14 @@ impl Default for DerivedBackingLimits {
     fn default() -> Self {
         Self {
             // Preparation is intentionally a worker-only, full-decode operation.
-            // The 2 GiB envelope admits an exact 16,384-square RGBA8 plane,
-            // while the single builder prevents concurrent cold-decode spikes.
+            // The 2 GiB plane envelope admits an exact 16,384-square RGBA8
+            // plane. The known-resident envelope also admits the conservative
+            // TIFF compressed-strip reservation, while the single builder
+            // prevents concurrent cold-decode spikes.
             max_dimension: crate::MAX_CANVAS_DIMENSION,
             max_encoded_source_bytes: 2 * 1_024 * 1_024 * 1_024,
             max_plane_bytes: 2 * 1_024 * 1_024 * 1_024,
+            max_known_resident_bytes: 4 * 1_024 * 1_024 * 1_024,
             max_cache_bytes: 8 * 1_024 * 1_024 * 1_024,
             max_region_pixels: 4_096 * 4_096,
         }
@@ -323,6 +333,9 @@ impl DerivedBackingCache {
                 memory_plan,
             });
         }
+        if memory_plan.known_resident_reservation_bytes() > self.limits.max_known_resident_bytes {
+            bail!("derived raster preparation exceeds the known resident byte limit");
+        }
         self.ensure_cache_root()?;
         let version_root = self.version_root();
         let Some(maintenance) =
@@ -424,7 +437,8 @@ impl DerivedBackingCache {
         Ok(())
     }
 
-    /// Returns the pixel-storage peak enforced by cold preparation.
+    /// Returns the accounted storage plan for cold preparation. Preparation
+    /// separately rejects plans above `max_known_resident_bytes`.
     pub fn preparation_memory_plan(
         &self,
         identity: &DerivedBackingIdentity,

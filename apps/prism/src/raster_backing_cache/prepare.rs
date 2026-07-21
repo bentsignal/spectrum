@@ -16,6 +16,7 @@ use super::{
 };
 
 static FULL_RASTER_DECODE: OnceLock<Mutex<()>> = OnceLock::new();
+const TIFF_COMPRESSED_SEGMENT_OVERHEAD_BYTES: u64 = 64 * 1_024;
 
 pub(super) struct PreparedPlane {
     pub plane_bytes: u64,
@@ -58,6 +59,26 @@ pub(super) fn memory_plan(
         pixels
             .checked_mul(4)
             .context("WebP decoder scratch reservation overflows")?
+    } else if descriptor.decoder_contract.ends_with(":tif")
+        || descriptor.decoder_contract.ends_with(":tiff")
+    {
+        // image-tiff retains a complete decoded buffer beside the caller's
+        // output. CMYK8 requires four bytes per source pixel before RGB
+        // conversion. Its intermediate buffer must also admit an encoded
+        // strip: incompressible LZW can approach 1.5 times the raw bytes, while
+        // Deflate and PackBits add smaller bounded overhead. Reserve that
+        // conservative segment envelope plus a fixed codec/header allowance,
+        // and pass the complete reservation to ImageDecoder::set_limits below.
+        let decoded_buffer = pixels
+            .checked_mul(4)
+            .context("TIFF decoded buffer reservation overflows")?;
+        let compressed_segment = decoded_buffer
+            .checked_add(decoded_buffer.div_ceil(2))
+            .and_then(|bytes| bytes.checked_add(TIFF_COMPRESSED_SEGMENT_OVERHEAD_BYTES))
+            .context("TIFF compressed segment reservation overflows")?;
+        decoded_buffer
+            .checked_add(compressed_segment)
+            .context("TIFF decoder reservation overflows")?
     } else {
         0
     };
@@ -121,10 +142,19 @@ pub(super) fn prepare_exact_rgba8_plane(
     if decoder_contract_for(format) != identity.descriptor.decoder_contract {
         bail!("raster decoder contract changed before backing preparation");
     }
+    let expected_plan = memory_plan(&identity.descriptor, limits)?;
     let mut image_limits = image::Limits::default();
     image_limits.max_image_width = Some(identity.descriptor.width);
     image_limits.max_image_height = Some(identity.descriptor.height);
-    image_limits.max_alloc = Some(limits.max_plane_bytes);
+    image_limits.max_alloc = Some(
+        if identity.descriptor.decoder_contract.ends_with(":tif")
+            || identity.descriptor.decoder_contract.ends_with(":tiff")
+        {
+            expected_plan.decoder_scratch_reservation_bytes
+        } else {
+            limits.max_plane_bytes
+        },
+    );
     // Decoder construction is inside the process-wide permit: image 0.25.10's
     // JPEG constructor buffers the complete encoded stream before read_image.
     let _decode_permit = acquire_full_raster_decode_permit();
@@ -159,7 +189,6 @@ pub(super) fn prepare_exact_rgba8_plane(
         bail!("decoded raster changed its backing pixel layout");
     }
 
-    let expected_plan = memory_plan(&identity.descriptor, limits)?;
     write_decoded_surface(decoded, identity, plane_path, expected_plan)
 }
 

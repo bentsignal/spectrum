@@ -467,7 +467,7 @@ fn unsupported_legacy_descriptors_fail_accounting_closed() {
     );
     assert_legacy_descriptor_rejected(
         "legacy-unsupported-color",
-        "unsupported decoded color contract",
+        "unsupported descriptor capability",
         |manifest| manifest["descriptor"]["color_encoding"] = "cmyk8".into(),
     );
 }

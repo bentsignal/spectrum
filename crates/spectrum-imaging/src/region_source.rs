@@ -68,7 +68,14 @@ impl RegionSourceDescriptor {
     pub fn supports_exact_rgba8_backing(&self) -> bool {
         self.width > 0
             && self.height > 0
-            && matches!(self.sample_depth, SourceSampleDepth::EightBit)
+            && matches!(
+                self.color_encoding.as_str(),
+                "l8" | "la8" | "rgb8" | "rgba8"
+            )
+            && matches!(
+                self.sample_depth,
+                SourceSampleDepth::EightBit | SourceSampleDepth::Other(1 | 2 | 4)
+            )
             && self.exact_rgba8_plane_bytes().is_some()
     }
 }
@@ -265,6 +272,18 @@ mod tests {
             readiness: RegionReadiness::NeedsPreparation,
         };
         assert!(!info.supports_region_reads_now());
+    }
+
+    #[test]
+    fn exact_backings_accept_expanded_subbyte_pixels_but_not_high_precision_layouts() {
+        let mut descriptor = descriptor();
+        descriptor.color_encoding = "l8".into();
+        descriptor.sample_depth = SourceSampleDepth::Other(1);
+        assert!(descriptor.supports_exact_rgba8_backing());
+
+        descriptor.sample_depth = SourceSampleDepth::SixteenBit;
+        descriptor.color_encoding = "l16".into();
+        assert!(!descriptor.supports_exact_rgba8_backing());
     }
 
     #[test]

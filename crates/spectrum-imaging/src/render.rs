@@ -2,12 +2,13 @@ use image::{DynamicImage, Rgba, RgbaImage, imageops::FilterType};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{Adjustments, ColorGrading, HslAdjustments, SpotRemoval, ToneCurve};
+use crate::{Adjustments, ColorGrading, HslAdjustments, ToneCurve};
 
 mod region;
+use region::apply_spot_removals;
 pub use region::{
     PixelRegion, RegionRenderError, adjusted_image_dimensions,
-    render_image_region_at_source_resolution,
+    render_image_region_at_source_resolution, render_image_region_at_source_resolution_bounded,
 };
 
 #[cfg(test)]
@@ -330,59 +331,6 @@ fn apply_color_grading(rgb: &mut [f32; 3], grading: &ColorGrading) {
         let lift = grade.luminance / 100.0 * weight * 0.24;
         for channel in rgb.iter_mut() {
             *channel += lift;
-        }
-    }
-}
-
-fn apply_spot_removals(image: &mut RgbaImage, spots: &[SpotRemoval]) {
-    let source = image.clone();
-    let width = image.width() as i32;
-    let height = image.height() as i32;
-    let scale = width.min(height).max(1) as f32;
-    for spot in spots {
-        let cx = (spot.x * (width - 1).max(0) as f32).round() as i32;
-        let cy = (spot.y * (height - 1).max(0) as f32).round() as i32;
-        let radius = (spot.radius * scale).round().max(1.0) as i32;
-        let outer = (radius as f32 * 1.9).ceil() as i32;
-        let inner_sq = (radius as f32 * 1.2).powi(2);
-        let outer_sq = (outer as f32).powi(2);
-        let mut total = [0_u64; 3];
-        let mut count = 0_u64;
-        for y in (cy - outer).max(0)..=(cy + outer).min(height - 1) {
-            for x in (cx - outer).max(0)..=(cx + outer).min(width - 1) {
-                let distance = ((x - cx).pow(2) + (y - cy).pow(2)) as f32;
-                if distance >= inner_sq && distance <= outer_sq {
-                    let pixel = source.get_pixel(x as u32, y as u32);
-                    for channel in 0..3 {
-                        total[channel] += u64::from(pixel[channel]);
-                    }
-                    count += 1;
-                }
-            }
-        }
-        if count == 0 {
-            continue;
-        }
-        let repair = [
-            total[0] as f32 / count as f32,
-            total[1] as f32 / count as f32,
-            total[2] as f32 / count as f32,
-        ];
-        for y in (cy - radius).max(0)..=(cy + radius).min(height - 1) {
-            for x in (cx - radius).max(0)..=(cx + radius).min(width - 1) {
-                let distance = (((x - cx).pow(2) + (y - cy).pow(2)) as f32).sqrt();
-                if distance > radius as f32 {
-                    continue;
-                }
-                let feather =
-                    ((1.0 - distance / radius as f32) * 1.8).clamp(0.0, 1.0) * spot.opacity;
-                let pixel = image.get_pixel_mut(x as u32, y as u32);
-                for channel in 0..3 {
-                    pixel[channel] = (pixel[channel] as f32 * (1.0 - feather)
-                        + repair[channel] * feather
-                        + 0.5) as u8;
-                }
-            }
         }
     }
 }
