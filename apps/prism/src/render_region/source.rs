@@ -226,10 +226,22 @@ impl<'a> SourceDescriptor<'a> {
             Self::RasterPath {
                 path, dimensions, ..
             } => stage_png(path, *dimensions, region),
-            Self::RasterProvider { source, .. } => source
-                .source()
-                .read_exact_region(region.into())
-                .map_err(|error| anyhow::Error::new(DynSourceReadError(error))),
+            Self::RasterProvider { source, .. } => {
+                let image = source
+                    .source()
+                    .read_exact_region(region.into())
+                    .map_err(|error| anyhow::Error::new(DynSourceReadError(error)))?;
+                if image.dimensions() != (region.width, region.height) {
+                    bail!(
+                        "raster provider returned {}x{} pixels for a requested {}x{} region",
+                        image.width(),
+                        image.height(),
+                        region.width,
+                        region.height
+                    );
+                }
+                Ok(image)
+            }
             Self::Text {
                 text,
                 font_size,

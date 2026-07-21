@@ -366,6 +366,12 @@ fn render_document_region_scaled_impl(
             previous_coverage = Some(coverage);
             continue;
         }
+        if raster_sources.is_some() && matches!(render_layer.kind, LayerKind::Raster { .. }) {
+            bail!(
+                "raster layer {} cannot use legacy path fallback with a provider resolver",
+                render_layer.id
+            );
+        }
         let fallback_allocation = if bound_fallback_layers {
             Some(ensure_region_fallback_is_bounded(
                 &render_layer,
