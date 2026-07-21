@@ -95,7 +95,7 @@ fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
     (output_extent * inverse_scale + filter_radius * 2.0 + 2.0).ceil() as u64
 }
 
-pub(super) fn benchmark(strict: bool) -> Result<Value> {
+pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value> {
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -637,6 +637,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let (adjusted_vector_source_median, adjusted_vector_source_p95) =
         sample_summary(&mut adjusted_vector_source_samples);
     let (cached_spot_median, cached_spot_p95) = sample_summary(&mut cached_spot_samples);
+    let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = [
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
@@ -712,8 +713,8 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             name: "8x_zoom_16k_gradient_shadow_viewport_composite",
             median_ms: vector_source_median,
             p95_ms: vector_source_p95,
-            budget_ms: 500.0,
-            pass: vector_source_p95 <= 500.0,
+            budget_ms: gradient_shadow_budget_ms,
+            pass: vector_source_p95 <= gradient_shadow_budget_ms,
         },
         BenchmarkMetric {
             name: "large_adjusted_raster_text_bounded_staging",
@@ -756,6 +757,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         "ok": true,
         "action": "benchmark",
         "strict": strict,
+        "profile": profile.name(),
         "passed": passed,
         "output": [rendered.as_ref().unwrap().width(), rendered.as_ref().unwrap().height()],
         "setup": {

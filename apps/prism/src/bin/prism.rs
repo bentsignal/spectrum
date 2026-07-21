@@ -348,7 +348,37 @@ enum CliCommand {
     Benchmark {
         #[arg(long)]
         strict: bool,
+        /// Budget calibration: workstation interaction or GitHub's shared Linux runner.
+        #[arg(long, value_enum, default_value_t = BenchmarkProfile::Interactive)]
+        profile: BenchmarkProfile,
     },
+}
+
+#[derive(Clone, Copy, Default, ValueEnum)]
+enum BenchmarkProfile {
+    #[default]
+    Interactive,
+    HostedCi,
+}
+
+impl BenchmarkProfile {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive-workstation",
+            Self::HostedCi => "github-hosted-linux",
+        }
+    }
+
+    fn gradient_shadow_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 500.0,
+            // The reviewed implementation measured 880.788 ms p95 on GitHub's
+            // shared Linux runner versus 222.508 ms locally. A 1,250 ms ceiling
+            // keeps 42% host-jitter headroom while the original 2,061.886 ms
+            // regression still fails decisively.
+            Self::HostedCi => 1_250.0,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -530,7 +560,7 @@ fn run(cli: Cli) -> Result<Value> {
         } => from_lumen(&catalog, photo, &output),
         CliCommand::Agent { command } => agent_command(&cli.project, cli.session, command),
         CliCommand::Schema => Ok(schema()),
-        CliCommand::Benchmark { strict } => benchmark(strict),
+        CliCommand::Benchmark { strict, profile } => benchmark(strict, profile),
         command => {
             let mut workspace = match cli.session {
                 Some(session) => Workspace::open_session(&cli.project, session)?,
