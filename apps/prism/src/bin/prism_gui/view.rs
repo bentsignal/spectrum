@@ -119,13 +119,7 @@ fn resolved_source_geometry(
             ..
         } => prism_core::measure_text_geometry_with_typography(text, *font_size, typography, None)
             .ok()
-            .map(|geometry| LayerSourceGeometry {
-                size: Vec2::new(geometry.width as f32, geometry.height as f32),
-                visual_bounds: Rect::from_min_size(
-                    Pos2::new(geometry.visual_left, geometry.visual_top),
-                    Vec2::new(geometry.visual_width, geometry.visual_height),
-                ),
-            }),
+            .map(|geometry| text_source_geometry(geometry, typography.box_width.is_some())),
         LayerKind::Rectangle { width, height, .. } => Some(LayerSourceGeometry::full(Vec2::new(
             *width as f32,
             *height as f32,
@@ -180,13 +174,19 @@ pub(super) fn resize_handle_at(
     pointer: Pos2,
 ) -> Option<ResizeHandle> {
     let corners = rotated_layer_corners(layer, source_geometry)?;
-    let corners = [
+    let mut handles = vec![
         (ResizeHandle::TopLeft, corners[0]),
         (ResizeHandle::TopRight, corners[1]),
         (ResizeHandle::BottomRight, corners[2]),
         (ResizeHandle::BottomLeft, corners[3]),
     ];
-    corners
+    if let Some([left, right]) = paragraph_width_handle_positions(layer, source_geometry) {
+        handles.extend([
+            (ResizeHandle::ParagraphLeft, left),
+            (ResizeHandle::ParagraphRight, right),
+        ]);
+    }
+    handles
         .into_iter()
         .map(|(handle, corner)| (handle, geometry.canvas_to_screen(corner).distance(pointer)))
         .filter(|(_, distance)| *distance <= RESIZE_HANDLE_HIT_RADIUS)
@@ -198,7 +198,145 @@ pub(super) fn resize_cursor(handle: ResizeHandle) -> egui::CursorIcon {
     match handle {
         ResizeHandle::TopLeft | ResizeHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
         ResizeHandle::TopRight | ResizeHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
+        ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight => {
+            egui::CursorIcon::ResizeHorizontal
+        }
     }
+}
+
+pub(super) fn paragraph_width_handle_positions(
+    layer: &Layer,
+    source_geometry: Option<LayerSourceGeometry>,
+) -> Option<[Pos2; 2]> {
+    let LayerKind::Text { typography, .. } = &layer.kind else {
+        return None;
+    };
+    typography.box_width?;
+    let source = source_geometry?;
+    let paragraph = source.paragraph_bounds?;
+    let visual = layer_bounds(layer, Some(source))?;
+    let paragraph = transformed_source_bounds(layer.transform, paragraph);
+    Some([
+        rotated_point(
+            paragraph.left_center(),
+            visual.center(),
+            layer.transform.rotation,
+        ),
+        rotated_point(
+            paragraph.right_center(),
+            visual.center(),
+            layer.transform.rotation,
+        ),
+    ])
+}
+
+pub(super) fn paragraph_layer_bounds(
+    layer: &Layer,
+    source_geometry: Option<LayerSourceGeometry>,
+) -> Option<Rect> {
+    let LayerKind::Text { typography, .. } = &layer.kind else {
+        return None;
+    };
+    typography.box_width?;
+    let source = source_geometry?;
+    Some(transformed_source_bounds(
+        layer.transform,
+        source.paragraph_bounds?,
+    ))
+}
+
+pub(super) fn paragraph_box_width(layer: &Layer) -> Option<f32> {
+    let LayerKind::Text { typography, .. } = &layer.kind else {
+        return None;
+    };
+    typography.box_width
+}
+
+fn transformed_source_bounds(transform: Transform, source: Rect) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(
+            transform.x + source.left() * transform.scale_x,
+            transform.y + source.top() * transform.scale_y,
+        ),
+        Vec2::new(
+            source.width() * transform.scale_x,
+            source.height() * transform.scale_y,
+        ),
+    )
+}
+
+pub(super) fn paragraph_width_from_drag(drag: DragState, handle: ResizeHandle) -> Option<f32> {
+    let width = drag.paragraph_width?;
+    let direction = match handle {
+        ResizeHandle::ParagraphLeft => -1.0,
+        ResizeHandle::ParagraphRight => 1.0,
+        _ => return None,
+    };
+    let local_delta = rotate_vector(
+        drag.current_canvas - drag.start_canvas,
+        -drag.transform.rotation,
+    );
+    let scale_x = drag.transform.scale_x.max(0.01);
+    Some((width + direction * local_delta.x / scale_x).clamp(1.0, 100_000.0))
+}
+
+pub(super) fn anchored_paragraph_transform(
+    drag: DragState,
+    handle: ResizeHandle,
+    new_layer: &Layer,
+    new_source: LayerSourceGeometry,
+) -> Option<Transform> {
+    let old_visual = drag.bounds?;
+    let old_paragraph = drag.paragraph_bounds?;
+    let new_visual = layer_bounds(new_layer, Some(new_source))?;
+    let new_paragraph =
+        transformed_source_bounds(new_layer.transform, new_source.paragraph_bounds?);
+    let (old_anchor, new_anchor) = match handle {
+        ResizeHandle::ParagraphLeft => (old_paragraph.right_center(), new_paragraph.right_center()),
+        ResizeHandle::ParagraphRight => (old_paragraph.left_center(), new_paragraph.left_center()),
+        _ => return None,
+    };
+    let old_anchor = rotated_point(old_anchor, old_visual.center(), drag.transform.rotation);
+    let new_anchor = rotated_point(
+        new_anchor,
+        new_visual.center(),
+        new_layer.transform.rotation,
+    );
+    let normal = rotate_vector(Vec2::new(1.0, 0.0), drag.transform.rotation);
+    let correction = normal * (old_anchor - new_anchor).dot(normal);
+    Some(Transform {
+        x: drag.transform.x + correction.x,
+        y: drag.transform.y + correction.y,
+        ..drag.transform
+    })
+}
+
+pub(super) fn paragraph_width_preview(
+    layer: &Layer,
+    drag: DragState,
+    handle: ResizeHandle,
+    font_asset: Option<&prism_core::FontAsset>,
+) -> Option<(prism_core::TextTypography, Transform, LayerSourceGeometry)> {
+    let width = paragraph_width_from_drag(drag, handle)?;
+    let mut candidate = layer.clone();
+    candidate.transform = drag.transform;
+    let LayerKind::Text {
+        text,
+        font_size,
+        typography,
+        ..
+    } = &mut candidate.kind
+    else {
+        return None;
+    };
+    typography.box_width = Some(width);
+    let geometry =
+        prism_core::measure_text_geometry_with_typography(text, *font_size, typography, font_asset)
+            .ok()?;
+    let source = text_source_geometry(geometry, true);
+    let typography = typography.clone();
+    let transform = anchored_paragraph_transform(drag, handle, &candidate, source)?;
+    Some((typography, transform, source))
 }
 
 pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transform {
@@ -213,6 +351,12 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
     let DragAction::Resize(handle) = drag.action else {
         return drag.transform;
     };
+    if matches!(
+        handle,
+        ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight
+    ) {
+        return drag.transform;
+    }
     let Some(bounds) = drag.bounds else {
         return drag.transform;
     };
@@ -235,6 +379,7 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
         ResizeHandle::BottomRight => {
             rotated_point(bounds.left_top(), bounds.center(), drag.transform.rotation)
         }
+        ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight => return drag.transform,
     };
     let local_delta = rotate_vector(drag.current_canvas - anchor, -drag.transform.rotation);
     let signs = match handle {
@@ -242,6 +387,7 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
         ResizeHandle::TopRight => Vec2::new(1.0, -1.0),
         ResizeHandle::BottomLeft => Vec2::new(-1.0, 1.0),
         ResizeHandle::BottomRight => Vec2::new(1.0, 1.0),
+        ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight => return drag.transform,
     };
     let width = (local_delta.x * signs.x).max(minimum_width);
     let height = (local_delta.y * signs.y).max(minimum_height);
@@ -270,7 +416,7 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
     }
 }
 
-fn rotate_vector(vector: Vec2, degrees: f32) -> Vec2 {
+pub(super) fn rotate_vector(vector: Vec2, degrees: f32) -> Vec2 {
     let (sin, cos) = prism_core::rotation_sin_cos(degrees);
     Vec2::new(
         vector.x * cos - vector.y * sin,
@@ -344,6 +490,11 @@ fn paint_selection_outline(
     if show_resize_handles {
         for corner in corners {
             paint_resize_handle(ui, corner);
+        }
+        if let Some(handles) = paragraph_width_handle_positions(layer, source_geometry) {
+            for handle in handles {
+                paint_resize_handle(ui, geometry.canvas_to_screen(handle) + offset);
+            }
         }
     }
 }
@@ -524,6 +675,8 @@ mod tests {
             },
             action: DragAction::Rotate,
             bounds: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 100.0))),
+            paragraph_bounds: None,
+            paragraph_width: None,
         }
     }
 
@@ -561,6 +714,7 @@ mod tests {
         let source = LayerSourceGeometry {
             size: Vec2::new(140.0, 80.0),
             visual_bounds: Rect::from_min_size(Pos2::new(12.0, 18.0), Vec2::new(96.0, 42.0)),
+            paragraph_bounds: None,
         };
         let bounds = layer_bounds(&layer, Some(source)).unwrap();
         let corners = rotated_layer_corners(&layer, Some(source)).unwrap();
@@ -696,6 +850,8 @@ mod tests {
             },
             action: DragAction::Resize(ResizeHandle::BottomRight),
             bounds: Some(bounds),
+            paragraph_bounds: None,
+            paragraph_width: None,
         };
         let resized = drag_transform(drag, false);
         assert!((resized.scale_x - 1.2).abs() < 0.001);
@@ -715,6 +871,7 @@ mod tests {
         let source = LayerSourceGeometry {
             size: Vec2::new(140.0, 80.0),
             visual_bounds: Rect::from_min_size(Pos2::new(12.0, 18.0), Vec2::new(96.0, 42.0)),
+            paragraph_bounds: None,
         };
         let transform = Transform {
             rotation: 90.0,
@@ -729,6 +886,8 @@ mod tests {
             transform,
             action: DragAction::Resize(ResizeHandle::BottomRight),
             bounds: Some(bounds),
+            paragraph_bounds: None,
+            paragraph_width: None,
         };
 
         let resized = drag_transform(drag, false);

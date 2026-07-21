@@ -301,6 +301,23 @@ impl PrismApp {
         }
     }
 
+    fn preview_commands(&mut self, commands: Vec<Command>) -> bool {
+        let invalidations = commands.iter().map(canvas_invalidation).collect::<Vec<_>>();
+        match self.workspace.preview_batch(commands) {
+            Ok(_) => {
+                for invalidation in invalidations {
+                    self.apply_canvas_invalidation(invalidation);
+                }
+                true
+            }
+            Err(error) => {
+                self.status = format!("{error:#}");
+                self.status_error = true;
+                false
+            }
+        }
+    }
+
     fn apply_canvas_invalidation(&mut self, invalidation: CanvasInvalidation) {
         match invalidation {
             CanvasInvalidation::None => {}
@@ -619,6 +636,10 @@ mod view;
 use view::*;
 
 #[cfg(test)]
+#[path = "prism_gui/paragraph_width_tests.rs"]
+mod paragraph_width_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -657,6 +678,8 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(100.0, 50.0),
             )),
+            paragraph_bounds: None,
+            paragraph_width: None,
         };
         let transform = drag_transform(drag, true);
         assert_eq!(transform.x, 10.0);
@@ -681,6 +704,8 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(500.0, 100.0),
             )),
+            paragraph_bounds: None,
+            paragraph_width: None,
         };
         let before = drag_transform(make_drag(Pos2::new(560.0, 129.0)), true);
         let after = drag_transform(make_drag(Pos2::new(560.0, 131.0)), true);
@@ -704,6 +729,8 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(100.0, 50.0),
             )),
+            paragraph_bounds: None,
+            paragraph_width: None,
         };
         let transform = drag_transform(drag, false);
         assert!((transform.scale_x - 1.5).abs() < 0.001);

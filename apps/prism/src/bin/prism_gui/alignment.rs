@@ -485,6 +485,7 @@ mod tests {
         let source = LayerSourceGeometry {
             size: Vec2::new(180.0, 72.0),
             visual_bounds: Rect::from_min_size(Pos2::new(14.0, 19.0), Vec2::new(142.0, 39.0)),
+            paragraph_bounds: None,
         };
         let full_source = LayerSourceGeometry::full(source.size);
         assert_ne!(

@@ -47,6 +47,7 @@ pub(super) enum LayerVisual {
 pub(super) struct LayerSourceGeometry {
     pub(super) size: Vec2,
     pub(super) visual_bounds: Rect,
+    pub(super) paragraph_bounds: Option<Rect>,
 }
 
 impl LayerSourceGeometry {
@@ -54,7 +55,27 @@ impl LayerSourceGeometry {
         Self {
             size,
             visual_bounds: Rect::from_min_size(Pos2::ZERO, size),
+            paragraph_bounds: None,
         }
+    }
+}
+
+pub(super) fn text_source_geometry(
+    geometry: prism_core::TextGeometry,
+    paragraph: bool,
+) -> LayerSourceGeometry {
+    LayerSourceGeometry {
+        size: Vec2::new(geometry.width as f32, geometry.height as f32),
+        visual_bounds: Rect::from_min_size(
+            Pos2::new(geometry.visual_left, geometry.visual_top),
+            Vec2::new(geometry.visual_width, geometry.visual_height),
+        ),
+        paragraph_bounds: paragraph.then(|| {
+            Rect::from_min_size(
+                Pos2::new(geometry.layout_left, geometry.layout_top),
+                Vec2::new(geometry.layout_width, geometry.layout_height),
+            )
+        }),
     }
 }
 
@@ -407,13 +428,7 @@ fn source_geometry_before_preview(
             text, *font_size, typography, font_asset,
         )
         .ok()
-        .map(|geometry| LayerSourceGeometry {
-            size: Vec2::new(geometry.width as f32, geometry.height as f32),
-            visual_bounds: Rect::from_min_size(
-                Pos2::new(geometry.visual_left, geometry.visual_top),
-                Vec2::new(geometry.visual_width, geometry.visual_height),
-            ),
-        }),
+        .map(|geometry| text_source_geometry(geometry, typography.box_width.is_some())),
         LayerKind::Rectangle { width, height, .. } => Some(LayerSourceGeometry::full(Vec2::new(
             *width as f32,
             *height as f32,
@@ -811,6 +826,7 @@ mod tests {
         let source = LayerSourceGeometry {
             size: Vec2::new(180.0, 96.0),
             visual_bounds: Rect::from_min_size(Pos2::new(18.0, 24.0), Vec2::new(112.0, 48.0)),
+            paragraph_bounds: None,
         };
         let mut layer = Layer {
             transform: Transform {
@@ -888,6 +904,7 @@ mod tests {
         let source = LayerSourceGeometry {
             size: Vec2::new(140.0, 80.0),
             visual_bounds: Rect::from_min_size(Pos2::new(12.0, 18.0), Vec2::new(96.0, 42.0)),
+            paragraph_bounds: None,
         };
         let expected = Rect::from_min_size(Pos2::new(98.0, 63.5), Vec2::new(144.0, 31.5));
 

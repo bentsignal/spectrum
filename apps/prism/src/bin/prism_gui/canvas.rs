@@ -242,6 +242,10 @@ impl PrismApp {
                 bounds: self
                     .selected_layer()
                     .and_then(|layer| layer_bounds(layer, self.layer_source_geometry(layer))),
+                paragraph_bounds: self.selected_layer().and_then(|layer| {
+                    paragraph_layer_bounds(layer, self.layer_source_geometry(layer))
+                }),
+                paragraph_width: self.selected_layer().and_then(paragraph_box_width),
                 action,
             });
             self.smart_guides = SmartGuides::default();
@@ -273,6 +277,15 @@ impl PrismApp {
                         id,
                         transform: moved.transform,
                     });
+                }
+                (
+                    DragAction::Resize(
+                        handle @ (ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight),
+                    ),
+                    Some(id),
+                ) => {
+                    self.smart_guides = SmartGuides::default();
+                    self.preview_paragraph_width_drag(id, drag, handle);
                 }
                 (DragAction::Resize(_), Some(id)) => {
                     self.smart_guides = SmartGuides::default();
@@ -314,7 +327,7 @@ impl PrismApp {
         let start = geometry.canvas_to_screen(drag.start_canvas);
         let current = geometry.canvas_to_screen(drag.current_canvas);
         match drag.action {
-            DragAction::Resize(_) => {
+            DragAction::Resize(handle) => {
                 if let Some(id) = drag.layer_id
                     && let Ok(layer) = self.workspace.document.layer(id)
                 {
@@ -329,10 +342,17 @@ impl PrismApp {
                 ui.painter().text(
                     current,
                     Align2::LEFT_BOTTOM,
-                    if ui.input(|input| input.modifiers.shift) {
-                        "Free resize"
+                    if matches!(
+                        handle,
+                        ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight
+                    ) {
+                        paragraph_width_from_drag(drag, handle)
+                            .map(|width| format!("{width:.0} px text width"))
+                            .unwrap_or_else(|| "Text width".into())
+                    } else if ui.input(|input| input.modifiers.shift) {
+                        "Free resize".into()
                     } else {
-                        "Proportional resize · Shift for free"
+                        "Proportional resize · Shift for free".into()
                     },
                     FontId::monospace(11.0),
                     ACCENT,
@@ -515,6 +535,22 @@ impl PrismApp {
         }
     }
 
+    fn preview_paragraph_width_drag(&mut self, id: u64, drag: DragState, handle: ResizeHandle) {
+        let Ok(layer) = self.workspace.document.layer(id) else {
+            return;
+        };
+        let font_asset = self.workspace.document.font_for_layer(layer);
+        let Some((typography, transform, _)) =
+            paragraph_width_preview(layer, drag, handle, font_asset)
+        else {
+            return;
+        };
+        self.preview_commands(vec![
+            Command::SetTextTypography { id, typography },
+            Command::SetTransform { id, transform },
+        ]);
+    }
+
     pub(super) fn canvas_click(&mut self, position: Pos2) {
         match self.tool {
             Tool::Move => {
@@ -627,6 +663,8 @@ mod direct_manipulation_tests {
             transform: Transform::default(),
             action,
             bounds: None,
+            paragraph_bounds: None,
+            paragraph_width: None,
         }
     }
 
