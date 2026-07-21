@@ -6,6 +6,8 @@ pub(super) struct LayerVisualKey {
     adjustments: spectrum_imaging::Adjustments,
     stroke: ShapeStroke,
     shape_fill: Option<prism_core::ShapeFill>,
+    textured_shape_preview: bool,
+    colored_shadow_mask: bool,
     pub(super) text_raster_scale: u32,
     pub(super) shape_raster_scale: [u32; 2],
 }
@@ -17,6 +19,8 @@ impl LayerVisualKey {
             adjustments: layer.adjustments.clone(),
             stroke: layer.stroke,
             shape_fill: layer.shape_fill.clone(),
+            textured_shape_preview: textured_shape_preview(layer),
+            colored_shadow_mask: colored_shadow_mask(layer),
             text_raster_scale: preview_text_scale(layer, display_scale),
             shape_raster_scale: prism_core::interactive_shape_scale(layer, display_scale)
                 .unwrap_or([1; 2]),
@@ -84,6 +88,7 @@ pub(super) fn text_source_geometry(
 pub(super) struct LayerVisualEntry {
     key: LayerVisualKey,
     visual: LayerVisual,
+    shadow_mask: Option<TextureHandle>,
     source_geometry: LayerSourceGeometry,
     texture_visual_bounds: Rect,
     max_size: u32,
@@ -161,11 +166,21 @@ impl PrismApp {
                         pixels,
                         TextureOptions::LINEAR,
                     );
+                    let shadow_mask = result.key.colored_shadow_mask.then(|| {
+                        let mask = bounded_shadow_mask(&rgba);
+                        let mask_size = [mask.width() as usize, mask.height() as usize];
+                        context.load_texture(
+                            format!("prism-layer-shadow-mask-{}", result.layer_id),
+                            egui::ColorImage::from_rgba_unmultiplied(mask_size, mask.as_raw()),
+                            TextureOptions::LINEAR,
+                        )
+                    });
                     self.layer_visuals.insert(
                         result.layer_id,
                         LayerVisualEntry {
                             key: result.key,
                             visual: LayerVisual::Texture(texture),
+                            shadow_mask,
                             source_geometry,
                             texture_visual_bounds,
                             max_size: result.max_size,
@@ -233,20 +248,14 @@ impl PrismApp {
                 self.layer_render_pending.remove(&layer.id);
                 continue;
             }
-            if let LayerKind::Rectangle {
-                width,
-                height,
-                color,
-                ..
-            } = layer.kind
-                && !layer.stroke.enabled
-            {
+            if let Some((width, height, color)) = solid_preview(layer) {
                 let adjusted = prism_core::render_solid_color(color, &layer.adjustments);
                 self.layer_visuals.insert(
                     layer.id,
                     LayerVisualEntry {
                         key,
                         visual: LayerVisual::Solid(color32(adjusted)),
+                        shadow_mask: None,
                         source_geometry: LayerSourceGeometry::full(Vec2::new(
                             width as f32,
                             height as f32,
@@ -475,6 +484,34 @@ fn required_preview_size(layer: &Layer, key: &LayerVisualKey, interaction_active
     if interaction_active { 1024 } else { 2048 }
 }
 
+fn textured_shape_preview(layer: &Layer) -> bool {
+    matches!(
+        layer.kind,
+        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+    ) && (layer.shape_fill.is_some() || layer.style.drop_shadow.is_some())
+}
+
+fn colored_shadow_mask(layer: &Layer) -> bool {
+    layer.style.drop_shadow.is_some_and(|shadow| {
+        shadow.color[3] > 0 && shadow.color[..3].iter().any(|channel| *channel > 0)
+    })
+}
+
+fn solid_preview(layer: &Layer) -> Option<(u32, u32, [u8; 4])> {
+    if layer.stroke.enabled || textured_shape_preview(layer) {
+        return None;
+    }
+    match &layer.kind {
+        LayerKind::Rectangle {
+            width,
+            height,
+            color,
+            ..
+        } => Some((*width, *height, *color)),
+        _ => None,
+    }
+}
+
 pub(super) fn paint_interactive_document(
     ui: &egui::Ui,
     geometry: CanvasGeometry,
@@ -614,16 +651,64 @@ fn paint_layer_visual(
                 (layer.transform.rotation, None),
             );
         }
-        LayerVisual::Texture(texture) => paint_quad(
+        LayerVisual::Texture(texture) => {
+            paint_texture_shadow_preview(
+                ui,
+                geometry,
+                layer,
+                entry
+                    .shadow_mask
+                    .as_ref()
+                    .map_or(texture.id(), TextureHandle::id),
+                screen_rect,
+                uv,
+                text_rotation_pivot,
+            );
+            paint_quad(
+                ui,
+                geometry.viewport,
+                texture.id(),
+                screen_rect,
+                Some(uv),
+                Color32::from_white_alpha(alpha),
+                (layer.transform.rotation, text_rotation_pivot),
+            );
+        }
+    }
+}
+
+fn paint_texture_shadow_preview(
+    ui: &egui::Ui,
+    geometry: CanvasGeometry,
+    layer: &Layer,
+    texture: egui::TextureId,
+    rect: Rect,
+    uv: Rect,
+    rotation_pivot: Option<Pos2>,
+) {
+    let Some(shadow) = layer.style.drop_shadow else {
+        return;
+    };
+    // The direct-manipulation path deliberately bounds blurred shadows to the core
+    // compositor's 13 kernel taps. These tinted quads preserve the requested alpha
+    // where every sample overlaps, but they only approximate convolution at partially
+    // transparent edges. The exact compositor replaces this preview after the gesture.
+    for_each_shadow_preview_sample(shadow, layer.opacity, |canvas_offset, color| {
+        let screen_offset = canvas_offset * geometry.pixels_per_point;
+        let shifted_rect = Rect::from_min_max(rect.min + screen_offset, rect.max + screen_offset);
+        paint_quad(
             ui,
             geometry.viewport,
-            texture.id(),
-            screen_rect,
+            texture,
+            shifted_rect,
             Some(uv),
-            Color32::from_white_alpha(alpha),
-            (layer.transform.rotation, text_rotation_pivot),
-        ),
-    }
+            color,
+            (
+                layer.transform.rotation,
+                rotation_pivot.map(|pivot| pivot + screen_offset),
+            ),
+        );
+    });
 }
 
 fn layer_texture_bounds(layer: &Layer, entry: &LayerVisualEntry) -> Rect {

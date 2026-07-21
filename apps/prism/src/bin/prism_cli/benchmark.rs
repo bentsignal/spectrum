@@ -17,6 +17,9 @@ use spectrum_imaging::Adjustments;
 #[path = "benchmark/raster_fixture.rs"]
 mod raster_fixture;
 use raster_fixture::PreparedRasterFixture;
+#[path = "benchmark/temporary_font.rs"]
+mod temporary_font;
+use temporary_font::TemporaryFont;
 
 #[derive(Clone, Copy, Default, ValueEnum)]
 pub(super) enum BenchmarkProfile {
@@ -798,27 +801,6 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
 
 struct TemporaryRaster {
     path: PathBuf,
-}
-
-struct TemporaryFont {
-    path: PathBuf,
-}
-
-impl TemporaryFont {
-    fn new() -> Result<Self> {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("prism-benchmark-font-{stamp}.ttf"));
-        std::fs::write(&path, epaint_default_fonts::HACK_REGULAR)?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for TemporaryFont {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
 }
 
 impl TemporaryRaster {

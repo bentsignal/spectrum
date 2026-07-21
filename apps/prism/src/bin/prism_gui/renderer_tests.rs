@@ -230,7 +230,7 @@ fn text_visual_key_tracks_typography_but_not_gpu_transform() {
 }
 
 #[test]
-fn shape_visual_key_tracks_gradient_fill_but_not_layer_style() {
+fn styled_shapes_require_a_textured_preview_without_rerasterizing_style_values() {
     let layer = Layer {
         kind: LayerKind::Rectangle {
             width: 160,
@@ -241,14 +241,46 @@ fn shape_visual_key_tracks_gradient_fill_but_not_layer_style() {
         ..Layer::default()
     };
     let original = LayerVisualKey::new(&layer, 1.0);
+    assert_eq!(solid_preview(&layer), Some((160, 90, [40, 80, 120, 255])));
 
     let mut gradient = layer.clone();
     gradient.shape_fill = Some(prism_core::ShapeFill::Gradient(
         prism_core::ShapeGradient::default(),
     ));
     assert_ne!(original, LayerVisualKey::new(&gradient, 1.0));
+    assert_eq!(solid_preview(&gradient), None);
 
     let mut styled = layer;
     styled.style.drop_shadow = Some(prism_core::DropShadow::default());
-    assert_eq!(original, LayerVisualKey::new(&styled, 1.0));
+    let styled_key = LayerVisualKey::new(&styled, 1.0);
+    assert_ne!(original, styled_key);
+    assert!(styled_key.textured_shape_preview);
+    assert!(!styled_key.colored_shadow_mask);
+    assert_eq!(solid_preview(&styled), None);
+
+    styled.style.drop_shadow.as_mut().unwrap().offset_x = 80.0;
+    styled.style.drop_shadow.as_mut().unwrap().offset_y = -40.0;
+    styled.style.drop_shadow.as_mut().unwrap().blur_radius = 64.0;
+    assert_eq!(styled_key, LayerVisualKey::new(&styled, 1.0));
+
+    styled.style.drop_shadow.as_mut().unwrap().color = [120, 30, 90, 160];
+    let colored_key = LayerVisualKey::new(&styled, 1.0);
+    assert_ne!(styled_key, colored_key);
+    let mut expected_colored_key = styled_key.clone();
+    expected_colored_key.colored_shadow_mask = true;
+    assert_eq!(expected_colored_key, colored_key);
+    assert!(!styled_key.colored_shadow_mask);
+    assert!(colored_key.colored_shadow_mask);
+
+    styled.style.drop_shadow.as_mut().unwrap().offset_x = -120.0;
+    styled.style.drop_shadow.as_mut().unwrap().blur_radius = 2.0;
+    styled.style.drop_shadow.as_mut().unwrap().color = [10, 240, 80, 96];
+    assert_eq!(colored_key, LayerVisualKey::new(&styled, 1.0));
+
+    styled.style.drop_shadow.as_mut().unwrap().color[3] = 0;
+    let transparent_key = LayerVisualKey::new(&styled, 1.0);
+    let mut expected_transparent_key = colored_key;
+    expected_transparent_key.colored_shadow_mask = false;
+    assert_eq!(expected_transparent_key, transparent_key);
+    assert!(!transparent_key.colored_shadow_mask);
 }
