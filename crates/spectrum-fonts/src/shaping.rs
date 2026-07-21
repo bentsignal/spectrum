@@ -129,7 +129,7 @@ pub(crate) fn shape(bytes: &[u8], codepoints: &[u32]) -> Result<Vec<ShapedGlyph>
                         SubsetError::new("shaping produced an out-of-range glyph ID")
                     })?,
                     cluster: info.cluster,
-                    flags: sys::hb_glyph_info_get_glyph_flags(info),
+                    flags: sys::hb_glyph_info_get_glyph_flags(info) as u32,
                     x_advance: position.x_advance,
                     y_advance: position.y_advance,
                     x_offset: position.x_offset,
