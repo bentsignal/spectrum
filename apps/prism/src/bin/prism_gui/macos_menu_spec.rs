@@ -10,6 +10,8 @@ pub(super) enum NativeMenuAction {
     Cut,
     Copy,
     Paste,
+    SelectAll,
+    Deselect,
     ToggleHistory,
     ToggleTerminal,
     FitCanvas,
@@ -18,7 +20,7 @@ pub(super) enum NativeMenuAction {
 }
 
 impl NativeMenuAction {
-    pub(super) const ALL: [Self; 14] = [
+    pub(super) const ALL: [Self; 16] = [
         Self::NewDocument,
         Self::OpenDocument,
         Self::MoveProject,
@@ -28,6 +30,8 @@ impl NativeMenuAction {
         Self::Cut,
         Self::Copy,
         Self::Paste,
+        Self::SelectAll,
+        Self::Deselect,
         Self::ToggleHistory,
         Self::ToggleTerminal,
         Self::FitCanvas,
@@ -110,7 +114,7 @@ const fn action_spec(
     }
 }
 
-pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 14] = [
+pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 16] = [
     action_spec(
         NativeMenuSection::File,
         "New Document",
@@ -172,6 +176,20 @@ pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 14] = [
         "Paste",
         NativeMenuAction::Paste,
         Some(ActionKeyEquivalent::command("v")),
+        false,
+    ),
+    action_spec(
+        NativeMenuSection::Edit,
+        "Select All",
+        NativeMenuAction::SelectAll,
+        Some(ActionKeyEquivalent::command("a")),
+        true,
+    ),
+    action_spec(
+        NativeMenuSection::Edit,
+        "Deselect",
+        NativeMenuAction::Deselect,
+        Some(ActionKeyEquivalent::command("d")),
         false,
     ),
     action_spec(
@@ -244,5 +262,24 @@ mod tests {
         assert_eq!(export.section, NativeMenuSection::File);
         assert_eq!(export.title, "Export…");
         assert_eq!(export.equivalent, Some(ActionKeyEquivalent::command("e")));
+    }
+
+    #[test]
+    fn selection_actions_use_standard_edit_menu_chords() {
+        let select_all = ACTION_MENU_ITEMS
+            .iter()
+            .find(|spec| spec.action == NativeMenuAction::SelectAll)
+            .unwrap();
+        let deselect = ACTION_MENU_ITEMS
+            .iter()
+            .find(|spec| spec.action == NativeMenuAction::Deselect)
+            .unwrap();
+        assert_eq!(select_all.section, NativeMenuSection::Edit);
+        assert_eq!(
+            select_all.equivalent,
+            Some(ActionKeyEquivalent::command("a"))
+        );
+        assert_eq!(deselect.section, NativeMenuSection::Edit);
+        assert_eq!(deselect.equivalent, Some(ActionKeyEquivalent::command("d")));
     }
 }

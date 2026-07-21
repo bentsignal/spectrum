@@ -37,6 +37,10 @@ pub(super) fn selection_screen_rect(
     )
 }
 
+fn full_canvas_selection(width: u32, height: u32) -> prism_core::Selection {
+    prism_core::Selection::rectangle(0, 0, width, height)
+}
+
 fn paint_marquee(ui: &egui::Ui, rect: Rect, preview: bool) {
     if preview {
         ui.painter().rect_filled(rect, 0.0, with_alpha(ACCENT, 24));
@@ -72,6 +76,17 @@ pub(super) fn paint_selection_drag(
 }
 
 impl PrismApp {
+    pub(super) fn select_all_pixels(&mut self) {
+        let document = &self.workspace.document;
+        self.execute(Command::SetSelection {
+            selection: Some(full_canvas_selection(document.width, document.height)),
+        });
+    }
+
+    pub(super) fn deselect_pixels(&mut self) {
+        self.execute(Command::SetSelection { selection: None });
+    }
+
     pub(super) fn selection_workbench_controls(&mut self, ui: &mut egui::Ui) {
         let has_selection = self.workspace.document.selection.is_some();
         ui.separator();
@@ -89,11 +104,11 @@ impl PrismApp {
             });
         }
         if ui
-            .add_enabled(has_selection, egui::Button::new("Clear"))
-            .on_hover_text("Clear the rectangular selection")
+            .add_enabled(has_selection, egui::Button::new("Deselect"))
+            .on_hover_text("Deselect the rectangular selection")
             .clicked()
         {
-            self.execute(Command::SetSelection { selection: None });
+            self.deselect_pixels();
         }
     }
 }
@@ -144,6 +159,14 @@ mod tests {
         assert_eq!(
             selection_from_drag(100, 80, Pos2::new(-8.0, -4.0), Pos2::new(-1.0, 20.0)),
             None
+        );
+    }
+
+    #[test]
+    fn select_all_uses_the_exact_document_pixel_bounds() {
+        assert_eq!(
+            full_canvas_selection(1_920, 1_080),
+            prism_core::Selection::rectangle(0, 0, 1_920, 1_080)
         );
     }
 }
