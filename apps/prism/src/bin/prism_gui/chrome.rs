@@ -228,6 +228,7 @@ impl PrismApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let mut close = None;
+                    let close_affordance = project_lifecycle::tab_close_affordance(tabs.len());
                     for (id, name, dirty) in tabs {
                         let label = if dirty { format!("{name}  •") } else { name };
                         let response = ui
@@ -243,15 +244,16 @@ impl PrismApp {
                         if response.clicked() {
                             self.activate_tab(id);
                         }
-                        if ui
-                            .small_button("×")
-                            .on_hover_text(if dirty {
-                                "Project has not finished persisting"
-                            } else {
-                                "Close document"
-                            })
-                            .clicked()
-                        {
+                        let close_button = ui
+                            .add_enabled(close_affordance.enabled, egui::Button::new("×").small());
+                        let close_button = if !close_affordance.enabled {
+                            close_button.on_disabled_hover_text(close_affordance.hover_text)
+                        } else if dirty {
+                            close_button.on_hover_text("Project has not finished persisting")
+                        } else {
+                            close_button.on_hover_text(close_affordance.hover_text)
+                        };
+                        if close_button.clicked() {
                             close = Some(id);
                         }
                     }
