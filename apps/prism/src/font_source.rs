@@ -29,6 +29,21 @@ pub struct FontSourceSnapshot {
     pub(crate) subset_allowed: bool,
 }
 
+/// Verified full-font bytes loaded without requiring a materialized asset path.
+///
+/// Durable read-only inspection uses this representation directly from the
+/// immutable SQLite asset blob so it never publishes a cache file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedFontSource {
+    content_hash: String,
+    bytes: Vec<u8>,
+    pub(crate) family: String,
+    pub(crate) style: String,
+    pub(crate) weight: u16,
+    pub(crate) slant: FontSlant,
+    pub(crate) subset_allowed: bool,
+}
+
 impl FontSourceSnapshot {
     pub fn read(path: &Path) -> Result<Self> {
         Self::read_inner(path, None)
@@ -40,36 +55,16 @@ impl FontSourceSnapshot {
         require_regular_metadata(&opened_metadata, path)?;
         let bytes = read_bounded(file, &opened_metadata, path)?;
         let canonical_path = verify_unchanged_path(path, &opened_metadata)?;
-        let content_hash = sha256_hex(&bytes);
-        if expected_hash.is_some_and(|expected| expected != content_hash) {
-            bail!("embedded font source bytes do not match their content identity");
-        }
-
-        let face = Face::parse(&bytes, 0)
-            .with_context(|| format!("{} is not a supported OpenType font", path.display()))?;
-        require_editable_embedding(&face)?;
-        let family = font_name(&face, &[name_id::TYPOGRAPHIC_FAMILY, name_id::FAMILY])
-            .unwrap_or_else(|| "Imported Font".into());
-        let style = font_name(&face, &[name_id::TYPOGRAPHIC_SUBFAMILY, name_id::SUBFAMILY])
-            .unwrap_or_else(|| "Regular".into());
-        let slant = if face.is_italic() {
-            FontSlant::Italic
-        } else if face.is_oblique() {
-            FontSlant::Oblique
-        } else {
-            FontSlant::Normal
-        };
-        let weight = face.weight().to_number();
-        let subset_allowed = face.is_subsetting_allowed();
+        let verified = VerifiedFontSource::from_bytes(bytes, expected_hash, path)?;
         Ok(Self {
             canonical_path,
-            content_hash,
-            bytes,
-            family,
-            style,
-            weight,
-            slant,
-            subset_allowed,
+            content_hash: verified.content_hash,
+            bytes: verified.bytes,
+            family: verified.family,
+            style: verified.style,
+            weight: verified.weight,
+            slant: verified.slant,
+            subset_allowed: verified.subset_allowed,
         })
     }
 
@@ -77,13 +72,7 @@ impl FontSourceSnapshot {
         if !path.is_absolute() {
             bail!("embedded font source path is not materialized safely");
         }
-        if expected_hash.len() != 64
-            || !expected_hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            bail!("embedded font source has an invalid content identity");
-        }
+        validate_content_hash(expected_hash)?;
         Self::read_inner(path, Some(expected_hash))
     }
 
@@ -110,6 +99,82 @@ impl FontSourceSnapshot {
     pub fn subset_allowed(&self) -> bool {
         self.subset_allowed
     }
+}
+
+impl VerifiedFontSource {
+    pub(crate) fn from_embedded_bytes(bytes: Vec<u8>, expected_hash: &str) -> Result<Self> {
+        validate_content_hash(expected_hash)?;
+        Self::from_bytes(bytes, Some(expected_hash), Path::new("embedded font asset"))
+    }
+
+    fn from_bytes(bytes: Vec<u8>, expected_hash: Option<&str>, label: &Path) -> Result<Self> {
+        if bytes.is_empty() {
+            bail!("font data cannot be empty");
+        }
+        if bytes.len() > MAX_EMBEDDED_FONT_BYTES {
+            bail!("font exceeds Prism's 32 MiB embedded-font limit");
+        }
+        let content_hash = sha256_hex(&bytes);
+        if expected_hash.is_some_and(|expected| expected != content_hash) {
+            bail!("embedded font source bytes do not match their content identity");
+        }
+        let face = Face::parse(&bytes, 0)
+            .with_context(|| format!("{} is not a supported OpenType font", label.display()))?;
+        require_editable_embedding(&face)?;
+        let family = font_name(&face, &[name_id::TYPOGRAPHIC_FAMILY, name_id::FAMILY])
+            .unwrap_or_else(|| "Imported Font".into());
+        let style = font_name(&face, &[name_id::TYPOGRAPHIC_SUBFAMILY, name_id::SUBFAMILY])
+            .unwrap_or_else(|| "Regular".into());
+        let slant = if face.is_italic() {
+            FontSlant::Italic
+        } else if face.is_oblique() {
+            FontSlant::Oblique
+        } else {
+            FontSlant::Normal
+        };
+        let weight = face.weight().to_number();
+        let subset_allowed = face.is_subsetting_allowed();
+        Ok(Self {
+            content_hash,
+            bytes,
+            family,
+            style,
+            weight,
+            slant,
+            subset_allowed,
+        })
+    }
+
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    pub fn subset_allowed(&self) -> bool {
+        self.subset_allowed
+    }
+}
+
+fn validate_content_hash(expected_hash: &str) -> Result<()> {
+    if expected_hash.len() != 64
+        || !expected_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("embedded font source has an invalid content identity");
+    }
+    Ok(())
 }
 
 fn read_bounded(file: File, before: &Metadata, path: &Path) -> Result<Vec<u8>> {
@@ -251,8 +316,73 @@ fn open_no_follow(path: &Path) -> Result<File> {
     {
         bail!("refusing reparse-point font source {}", path.display());
     }
+    require_windows_final_path_matches(&absolute, &file)?;
     reject_windows_reparse_components(&absolute)?;
     Ok(file)
+}
+
+#[cfg(windows)]
+fn require_windows_final_path_matches(intended: &Path, file: &File) -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    let mut buffer = vec![0_u16; 512];
+    let final_path = loop {
+        let length = unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len().try_into().unwrap_or(u32::MAX),
+                0,
+            )
+        };
+        if length == 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("could not prove the final font source path");
+        }
+        let required = usize::try_from(length).context("final font path length overflowed")?;
+        if required < buffer.len() {
+            buffer.truncate(required);
+            break String::from_utf16(&buffer).context("final font path is not valid UTF-16")?;
+        }
+        if required > 32_767 {
+            bail!("final font handle path exceeds the Windows path limit");
+        }
+        buffer.resize(required.saturating_add(1), 0);
+    };
+    let final_path = normalize_windows_handle_path(&final_path)?;
+    let intended = intended
+        .to_str()
+        .context("intended font path is not valid Unicode")?;
+    let final_wide: Vec<u16> = final_path.encode_utf16().collect();
+    let intended_wide: Vec<u16> = intended.encode_utf16().collect();
+    let comparison = unsafe {
+        windows_sys::Win32::Globalization::CompareStringOrdinal(
+            final_wide.as_ptr(),
+            final_wide.len().try_into().unwrap_or(i32::MAX),
+            intended_wide.as_ptr(),
+            intended_wide.len().try_into().unwrap_or(i32::MAX),
+            1,
+        )
+    };
+    if comparison != windows_sys::Win32::Globalization::CSTR_EQUAL {
+        bail!(
+            "final font handle path {} does not match intended path {}",
+            final_path,
+            intended
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn normalize_windows_handle_path(path: &str) -> Result<String> {
+    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+        return Ok(format!(r"\\{path}"));
+    }
+    if let Some(path) = path.strip_prefix(r"\\?\") {
+        return Ok(path.to_owned());
+    }
+    bail!("final font handle returned an unprovable path {path}")
 }
 
 #[cfg(windows)]
@@ -373,6 +503,29 @@ mod tests {
         fs::rename(&replacement, &first).unwrap();
         let current = fs::metadata(&first).unwrap();
         assert!(!same_file(&opened, &current));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn final_handle_path_proof_rejects_a_different_intended_path() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = fs::canonicalize(std::env::temp_dir())
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(format!("prism-font-final-path-{stamp}"));
+        fs::create_dir_all(&directory).unwrap();
+        let opened_path = directory.join("opened.ttf");
+        let intended_path = directory.join("intended.ttf");
+        fs::write(&opened_path, b"same length").unwrap();
+        fs::write(&intended_path, b"same length").unwrap();
+        let opened = File::open(opened_path).unwrap();
+
+        let error = require_windows_final_path_matches(&intended_path, &opened).unwrap_err();
+
+        assert!(error.to_string().contains("does not match intended path"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

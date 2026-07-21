@@ -25,7 +25,7 @@ mod typography;
 pub use typography::{FontAsset, FontSlant, TextAlignment, TextEffects, TextTypography};
 
 mod font_source;
-pub use font_source::FontSourceSnapshot;
+pub use font_source::{FontSourceSnapshot, VerifiedFontSource};
 
 mod font_usage;
 pub use font_usage::{
@@ -42,7 +42,9 @@ mod validation;
 use validation::*;
 
 mod revisions;
-pub use revisions::{DurableProject, ProjectHistory};
+pub use revisions::{
+    DurableProject, ProjectHistory, ReadOnlyFontSource, inspect_font_source_read_only,
+};
 
 mod workspace;
 pub use workspace::Workspace;

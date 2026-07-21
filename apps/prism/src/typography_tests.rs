@@ -351,6 +351,30 @@ fn windows_font_source_rejects_reparse_point_ancestors_when_links_are_available(
     fs::remove_dir_all(directory).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_font_source_rejects_an_ancestor_junction_redirect() {
+    let directory = test_directory("windows-junction-ancestor");
+    let real_directory = directory.join("real");
+    fs::create_dir_all(&real_directory).unwrap();
+    let source = real_directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let junction = directory.join("junction");
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&real_directory)
+        .status()
+        .unwrap();
+    assert!(status.success(), "test junction should be creatable");
+
+    let error = FontSourceSnapshot::read(&junction.join("Hack-Regular.ttf")).unwrap_err();
+
+    assert!(error.to_string().contains("reparse-point"));
+    fs::remove_dir(&junction).unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
 fn set_fs_type(bytes: &mut [u8], fs_type: u16) {
     let table_count = usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
     for index in 0..table_count {

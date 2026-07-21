@@ -205,6 +205,76 @@ fn durable_font_source_keeps_store_bytes_unchanged_and_rejects_sessions() {
 }
 
 #[test]
+fn durable_font_source_ignores_newer_live_and_recovery_state_without_writes() {
+    let directory = temporary_project("font-source-invariant").with_extension("tree");
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("invariant.prism");
+    let source = directory.join("Hack-Regular.ttf");
+    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::Init {
+            name: "Immutable inspection".into(),
+            width: 320,
+            height: 200,
+            background: "18191dff".into(),
+        },
+    })
+    .unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontImport { path: source },
+    })
+    .unwrap();
+    let project_info = spectrum_revisions::RevisionStore::open_read_only(&project)
+        .unwrap()
+        .project_info()
+        .unwrap();
+    let working = directory
+        .join(".revision-cache")
+        .join(project_info.project_id.to_string())
+        .join("live.sqlite");
+    let canonical_writer = rusqlite::Connection::open(&project).unwrap();
+    canonical_writer
+        .execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA wal_autocheckpoint=0;
+             CREATE TABLE read_only_recovery_probe(value INTEGER);
+             INSERT INTO read_only_recovery_probe VALUES (1);
+             UPDATE spectrum_meta SET value = CAST('888888' AS BLOB)
+             WHERE key = 'storage_generation';",
+        )
+        .unwrap();
+    let live_writer = rusqlite::Connection::open(working).unwrap();
+    live_writer
+        .execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA wal_autocheckpoint=0;
+             CREATE TABLE newer_live_probe(value INTEGER);
+             INSERT INTO newer_live_probe VALUES (2);
+             UPDATE spectrum_meta SET value = CAST('999999' AS BLOB)
+             WHERE key = 'storage_generation';",
+        )
+        .unwrap();
+    let before = tree_snapshot(&directory);
+
+    let output = run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontSource { font_id: 1 },
+    })
+    .unwrap();
+
+    assert_eq!(output["immutable_identity_verified"], true);
+    assert_eq!(tree_snapshot(&directory), before);
+    drop(live_writer);
+    drop(canonical_writer);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn font_usage_output_limits_its_non_mutation_and_coverage_claims() {
     let output = typography::font_usage(&Document::new("Usage", 320, 200), None).unwrap();
     assert_eq!(output["action"], "font_usage");
@@ -375,6 +445,30 @@ fn temporary_project(label: &str) -> PathBuf {
     std::fs::canonicalize(std::env::temp_dir())
         .unwrap_or_else(|_| std::env::temp_dir())
         .join(format!("prism-{label}-cli-{stamp}.prism"))
+}
+
+fn tree_snapshot(root: &Path) -> Vec<(PathBuf, bool, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, snapshot: &mut Vec<(PathBuf, bool, Vec<u8>)>) {
+        let mut entries = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            let relative = path.strip_prefix(root).unwrap().to_owned();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            if metadata.is_dir() {
+                snapshot.push((relative, true, Vec::new()));
+                visit(root, &path, snapshot);
+            } else {
+                snapshot.push((relative, false, std::fs::read(path).unwrap()));
+            }
+        }
+    }
+
+    let mut snapshot = Vec::new();
+    visit(root, root, &mut snapshot);
+    snapshot
 }
 
 fn initialize_rectangle_project(project: &Path) {

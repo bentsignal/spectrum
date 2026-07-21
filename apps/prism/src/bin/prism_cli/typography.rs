@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use prism_core::{Document, TextAlignment, TextTypography};
+use prism_core::{Document, FontAsset, TextAlignment, TextTypography, VerifiedFontSource};
 use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -153,22 +153,45 @@ pub(super) fn font_usage(document: &Document, font_id: Option<u64>) -> Result<Va
 pub(super) fn font_source(document: &Document, font_id: u64) -> Result<Value> {
     let font = document.font_asset(font_id)?;
     let snapshot = font.source_snapshot()?;
-    Ok(json!({
+    Ok(font_source_value(
+        font,
+        snapshot.content_hash(),
+        snapshot.len(),
+        snapshot.subset_allowed(),
+    ))
+}
+
+pub(super) fn verified_font_source(font: &FontAsset, source: &VerifiedFontSource) -> Value {
+    font_source_value(
+        font,
+        source.content_hash(),
+        source.len(),
+        source.subset_allowed(),
+    )
+}
+
+fn font_source_value(
+    font: &FontAsset,
+    content_hash: &str,
+    source_bytes: usize,
+    subset_allowed: bool,
+) -> Value {
+    json!({
         "ok": true,
         "action": "font_source",
         "font_id": font.id,
         "family": &font.family,
         "style": &font.style,
         "source_name": &font.source_name,
-        "content_hash": snapshot.content_hash(),
-        "source_bytes": snapshot.len(),
-        "embedding_metadata_allows_subsetting": snapshot.subset_allowed(),
+        "content_hash": content_hash,
+        "source_bytes": source_bytes,
+        "embedding_metadata_allows_subsetting": subset_allowed,
         "editable_embedding_verified": true,
         "immutable_identity_verified": true,
         "font_bytes_modified": false,
         "mutates_project": false,
         "license_notice": "OpenType embedding metadata is a technical check, not a legal license conclusion"
-    }))
+    })
 }
 
 fn resolve_face(

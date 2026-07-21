@@ -69,6 +69,10 @@ pub struct ProjectHistory {
     pub sessions: Vec<Session>,
 }
 
+#[path = "readonly_font.rs"]
+mod readonly_font;
+pub use readonly_font::{ReadOnlyFontSource, inspect_font_source_read_only};
+
 impl DurableProject {
     pub fn looks_durable(path: &Path) -> Result<bool> {
         let mut file = fs::File::open(path)?;

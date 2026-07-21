@@ -146,6 +146,38 @@ impl RevisionStore {
         Ok(store)
     }
 
+    /// Open exactly the checkpointed database file without recovery or writes.
+    ///
+    /// SQLite's immutable URI mode deliberately ignores WAL/SHM sidecars. This
+    /// path never configures, migrates, checkpoints, or publishes a live cache.
+    pub fn open_read_only(path: &Path) -> RevisionResult<Self> {
+        let uri = url::Url::from_file_path(path)
+            .map_err(|_| RevisionError::Invalid("project path is not absolute".into()))?;
+        let uri = format!("{uri}?immutable=1");
+        let connection = Connection::open_with_flags(
+            uri,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        schema::verify_header(&connection)?;
+        let version = schema::container_format(&connection)?;
+        if version != schema::CONTAINER_FORMAT {
+            return Err(RevisionError::Invalid(format!(
+                "read-only inspection requires container format {}; found {version}",
+                schema::CONTAINER_FORMAT
+            )));
+        }
+        let store = Self {
+            connection,
+            path: path.to_owned(),
+        };
+        if store.meta("project_id")?.is_none() {
+            return Err(RevisionError::NotARevisionStore);
+        }
+        Ok(store)
+    }
+
     pub fn project_info(&self) -> RevisionResult<ProjectInfo> {
         project_info_in(&self.connection)
     }
@@ -159,20 +191,11 @@ impl RevisionStore {
     }
 
     pub(crate) fn inspect(path: &Path) -> RevisionResult<StoreInspection> {
-        let uri = url::Url::from_file_path(path)
-            .map_err(|_| RevisionError::Invalid("project path is not absolute".into()))?;
-        let uri = format!("{uri}?immutable=1");
-        let connection = Connection::open_with_flags(
-            uri,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_URI
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        schema::verify_header(&connection)?;
+        let store = Self::open_read_only(path)?;
         Ok(StoreInspection {
-            info: project_info_in(&connection)?,
-            generation: generation_in(&connection)?,
-            state_id: state_id_in(&connection)?,
+            info: project_info_in(&store.connection)?,
+            generation: generation_in(&store.connection)?,
+            state_id: state_id_in(&store.connection)?,
         })
     }
 

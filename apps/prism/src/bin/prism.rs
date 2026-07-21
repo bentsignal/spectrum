@@ -9,8 +9,8 @@ use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
 use prism_core::{
-    Alignment, AlignmentReference, BlendMode, Command, Document, GuideOrientation, LayerMask,
-    ShapeStroke, Transform, Workspace, export_document,
+    Alignment, AlignmentReference, BlendMode, Command, Document, DurableProject, GuideOrientation,
+    LayerMask, ShapeStroke, Transform, Workspace, export_document, inspect_font_source_read_only,
 };
 use serde_json::{Value, json};
 use spectrum_imaging::{AdjustmentPatch, RenderOptions};
@@ -526,7 +526,15 @@ fn run(cli: Cli) -> Result<Value> {
             if cli.session.is_some() {
                 bail!("font-source is read-only and does not accept --session");
             }
-            typography::font_source(&Workspace::load_read_only(&cli.project)?, font_id)
+            if DurableProject::looks_durable(&cli.project)? {
+                let inspected = inspect_font_source_read_only(&cli.project, font_id)?;
+                Ok(typography::verified_font_source(
+                    &inspected.font,
+                    &inspected.source,
+                ))
+            } else {
+                typography::font_source(&Workspace::load_read_only(&cli.project)?, font_id)
+            }
         }
         CliCommand::LayerCopy(arguments) => {
             transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)

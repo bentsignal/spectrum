@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::FontSourceSnapshot;
+use crate::{FontSourceSnapshot, VerifiedFontSource};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +71,41 @@ impl FontAsset {
 
     pub fn bytes(&self) -> Result<Vec<u8>> {
         Ok(self.source_snapshot()?.bytes().to_vec())
+    }
+
+    pub(crate) fn from_embedded_bytes(
+        id: u64,
+        source_name: String,
+        path: PathBuf,
+        bytes: Vec<u8>,
+        expected_hash: &str,
+    ) -> Result<Self> {
+        let verified = VerifiedFontSource::from_embedded_bytes(bytes, expected_hash)?;
+        Ok(Self {
+            id,
+            family: verified.family.clone(),
+            style: verified.style.clone(),
+            weight: verified.weight,
+            slant: verified.slant,
+            source_name,
+            subset_allowed: verified.subset_allowed(),
+            content_hash: verified.content_hash().to_owned(),
+            path,
+            original_path: None,
+        })
+    }
+
+    pub(crate) fn verify_embedded_bytes(&self, bytes: Vec<u8>) -> Result<VerifiedFontSource> {
+        let verified = VerifiedFontSource::from_embedded_bytes(bytes, &self.content_hash)?;
+        if verified.family != self.family
+            || verified.style != self.style
+            || verified.weight != self.weight
+            || verified.slant != self.slant
+            || verified.subset_allowed != self.subset_allowed
+        {
+            bail!("embedded font metadata does not match its immutable source snapshot");
+        }
+        Ok(verified)
     }
 }
 
