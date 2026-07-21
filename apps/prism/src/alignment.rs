@@ -96,8 +96,7 @@ pub fn layer_geometry_with_bounds(
         layer.transform.x + (source_origin[0] + source_size[0] * 0.5) * layer.transform.scale_x,
         layer.transform.y + (source_origin[1] + source_size[1] * 0.5) * layer.transform.scale_y,
     ];
-    let radians = layer.transform.rotation.to_radians();
-    let (sin, cos) = radians.sin_cos();
+    let (sin, cos) = crate::transform_math::rotation_sin_cos(layer.transform.rotation);
     let mut corners = [[0.0; 2]; 4];
     for (corner, [x, y]) in corners.iter_mut().zip([
         [-width * 0.5, -height * 0.5],

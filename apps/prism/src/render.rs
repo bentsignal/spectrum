@@ -625,8 +625,7 @@ fn rotate_rgba(
     output_width: u32,
     output_height: u32,
 ) -> RgbaImage {
-    let radians = degrees.to_radians();
-    let (sin, cos) = radians.sin_cos();
+    let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
     let width = source.width() as f32;
     let height = source.height() as f32;
     let source_center = ((width - 1.0) * 0.5, (height - 1.0) * 0.5);

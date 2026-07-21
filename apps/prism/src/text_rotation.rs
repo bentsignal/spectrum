@@ -29,8 +29,7 @@ fn rotate_rgba_about(
     degrees: f32,
     pivot: (f32, f32),
 ) -> (RgbaImage, (f32, f32)) {
-    let radians = degrees.to_radians();
-    let (sin, cos) = radians.sin_cos();
+    let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
     let rotate = |point: (f32, f32)| {
         let dx = point.0 - pivot.0;
         let dy = point.1 - pivot.1;

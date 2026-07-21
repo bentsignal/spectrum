@@ -450,19 +450,7 @@ pub(crate) fn centered_rotation_bounds(
     height: u32,
     degrees: f32,
 ) -> CenteredRotationBounds {
-    let radians = degrees.to_radians();
-    let (sin, cos) = radians.sin_cos();
-    let stabilize = |component: f32| {
-        if component.abs() < 0.000_001 {
-            0.0
-        } else if (component.abs() - 1.0).abs() < 0.000_001 {
-            component.signum()
-        } else {
-            component
-        }
-    };
-    let sin = stabilize(sin);
-    let cos = stabilize(cos);
+    let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
     let output_width = (width as f32 * cos.abs() + height as f32 * sin.abs())
         .ceil()
         .max(1.0) as u32;
@@ -486,8 +474,7 @@ fn inverse_center_rotation(
     source_height: u32,
     degrees: f32,
 ) -> Option<(u32, u32)> {
-    let radians = degrees.to_radians();
-    let (sin, cos) = radians.sin_cos();
+    let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
     let source_center = (
         (source_width as f32 - 1.0) * 0.5,
         (source_height as f32 - 1.0) * 0.5,
@@ -511,8 +498,7 @@ fn inverse_text_rotation(
     minimum: (f32, f32),
     source: (u32, u32),
 ) -> Option<(u32, u32)> {
-    let radians = degrees.to_radians();
-    let (sin, cos) = radians.sin_cos();
+    let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
     let world_x = minimum.0 + output_x as f32 + 0.5;
     let world_y = minimum.1 + output_y as f32 + 0.5;
     let dx = world_x - pivot.0;
@@ -540,8 +526,7 @@ struct TextBounds {
 }
 
 fn rotated_text_bounds(width: u32, height: u32, degrees: f32, pivot: (f32, f32)) -> TextBounds {
-    let radians = degrees.to_radians();
-    let (sin, cos) = radians.sin_cos();
+    let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
     let rotate = |point: (f32, f32)| {
         let dx = point.0 - pivot.0;
         let dy = point.1 - pivot.1;

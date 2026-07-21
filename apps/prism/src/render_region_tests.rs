@@ -56,8 +56,18 @@ fn rotated_shape_rendering_keeps_the_live_transform_center() {
     assert_eq!(viewport, full);
     for image in [&full, &viewport] {
         let center = alpha_centroid(image);
-        assert!((center.0 - expected_center[0]).abs() < 0.001);
-        assert!((center.1 - expected_center[1]).abs() < 0.001);
+        assert!(
+            (center.0 - expected_center[0]).abs() < 0.001,
+            "rotated alpha x centroid {} did not preserve live center {}",
+            center.0,
+            expected_center[0]
+        );
+        assert!(
+            (center.1 - expected_center[1]).abs() < 0.001,
+            "rotated alpha y centroid {} did not preserve live center {}",
+            center.1,
+            expected_center[1]
+        );
     }
 }
 
