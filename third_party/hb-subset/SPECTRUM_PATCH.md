@@ -40,8 +40,15 @@ switch) and retains `-std=c++11` for GNU-like compilers. MSVC also receives
 default COFF section limit in debug builds. No HarfBuzz feature, source,
 warning, or optimization setting is otherwise changed.
 
+Bindgen models two HarfBuzz enum seams with different signedness on MSVC than
+on Clang. The wrapper casts the non-negative predefined name identifier and
+subset flag bits to each generated destination type in `src/sys.rs` and
+`src/subset/flags.rs`. This preserves their underlying 32-bit values on both
+ABIs without hard-coding one platform's generated C integer alias.
+
 To audit an update, download the named `.crate`, verify the archive checksum,
-compare the unpacked payload with this directory excluding this file, the two
-patches to `src/blob.rs` and `build.rs`, and the three whitespace-only
-doc-comment lines in `src/lib.rs`; then inspect the bundled
+compare the unpacked payload with this directory excluding this file, the four
+patches to `src/blob.rs`, `build.rs`, `src/sys.rs`, and
+`src/subset/flags.rs`, and the three whitespace-only doc-comment lines in
+`src/lib.rs`; then inspect the bundled
 `harfbuzz/src/hb-version.h` and both license files again.
