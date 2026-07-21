@@ -64,7 +64,9 @@ Requirements:
 
 - macOS 13 or newer;
 - full Xcode selected by `xcode-select`, with macOS SDK, iOS SDK, Swift, and the
-  Metal toolchain installed;
+  Metal Toolchain component installed. Before any download, the script runs the
+  non-compiling `xcrun --sdk macosx metal -v` availability probe; if it fails,
+  install the component with `xcodebuild -downloadComponent MetalToolchain`;
 - Rosetta when building on arm64 against an SDK whose root `libSystem.tbd`
   advertises `arm64e-macos` but not `arm64-macos`;
 - `gettext`/`msgfmt`; and

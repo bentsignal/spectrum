@@ -135,8 +135,9 @@ macos_sdk="$(xcrun --sdk macosx --show-sdk-path)" \
 [[ -d "$macos_sdk" ]] || die "the active macOS SDK path does not exist: $macos_sdk"
 xcrun --sdk iphoneos --show-sdk-path >/dev/null \
   || die "the active Xcode is missing the iOS SDK required for GhosttyKit.xcframework"
-xcrun --find metal >/dev/null 2>&1 \
-  || die "the active Xcode is missing the Metal toolchain (install it in Xcode Settings > Components)"
+if ! xcrun --sdk macosx metal -v >/dev/null 2>&1; then
+  die "the active Xcode cannot run the Metal compiler; install the component with: xcodebuild -downloadComponent MetalToolchain"
+fi
 xcrun --find swift >/dev/null 2>&1 || die "the active Xcode is missing Swift"
 
 macos_version="$(sw_vers -productVersion)"
