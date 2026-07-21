@@ -328,6 +328,7 @@ impl PrismApp {
     fn finish_interaction(&mut self) {
         match self.workspace.commit_interaction() {
             Ok(true) => {
+                self.sync_active_raster_sources();
                 self.history.mark_stale();
                 if let Some(error) = self.workspace.pending_publish_error() {
                     self.status = format!(
@@ -559,6 +560,7 @@ impl eframe::App for PrismApp {
         #[cfg(target_os = "macos")]
         self.process_native_menu_actions(root.ctx());
         let context = root.ctx().clone();
+        self.composite_preview.begin_frame();
         self.raster_sources.poll(&context);
         self.receive_open_documents(&context);
         self.sync_agent_collaborations(&context);
@@ -581,6 +583,7 @@ impl eframe::App for PrismApp {
         self.handle_layer_clipboard_events(&context);
         #[cfg(target_os = "macos")]
         self.sync_native_menu_state(&context);
+        self.composite_preview.poll(&context);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

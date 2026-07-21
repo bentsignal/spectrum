@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     time::{Duration, Instant},
@@ -18,6 +18,8 @@ use super::PrismApp;
 
 const PREPARATION_QUEUE_CAPACITY: usize = 16;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+const MAX_GENERIC_FAILURE_ATTEMPTS: u32 = 3;
+const DERIVED_CACHE_COMPATIBILITY: &str = "derived-rgba8-schema-v2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RasterRenderMode {
@@ -132,11 +134,13 @@ enum PathPhase {
     LegacyNative,
     Provider(ResolvedRasterSource),
     Unsupported,
+    Failed {
+        diagnostic: String,
+    },
 }
 
 struct PathState {
     generation: u64,
-    required_tabs: HashSet<u64>,
     phase: PathPhase,
 }
 
@@ -167,23 +171,32 @@ pub(super) struct RasterSourceCoordinator {
     result_receiver: Receiver<PreparationResult>,
     tab_paths: HashMap<u64, HashSet<PathBuf>>,
     paths: HashMap<PathBuf, PathState>,
+    active_tab: Option<u64>,
+    active_generations: Arc<Mutex<HashMap<PathBuf, u64>>>,
     snapshot: Arc<RasterSourceSnapshot>,
     next_generation: u64,
 }
 
 impl RasterSourceCoordinator {
     pub(super) fn new(repaint: egui::Context) -> Self {
-        let cache_root = eframe::storage_dir("Prism").map(|directory| {
-            directory
-                .join("Derived Raster Backings")
-                .join(env!("CARGO_PKG_VERSION"))
-        });
+        let cache_root = eframe::storage_dir("Prism")
+            .map(|directory| derived_cache_root(&directory, env!("CARGO_PKG_VERSION")));
         let (result_sender, result_receiver) = mpsc::channel();
+        let active_generations = Arc::new(Mutex::new(HashMap::new()));
         let request_sender = cache_root.map(|root| {
             let (request_sender, request_receiver) = mpsc::sync_channel(PREPARATION_QUEUE_CAPACITY);
             let cache = DerivedBackingCache::new(root, DerivedBackingLimits::default());
+            let active_generations = Arc::clone(&active_generations);
             std::thread::spawn(move || {
                 while let Ok(request) = request_receiver.recv() {
+                    let request_is_active = active_generations
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .get(&request.path)
+                        == Some(&request.generation);
+                    if !request_is_active {
+                        continue;
+                    }
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         prepare_source(&cache, &request.path, request.identity.as_ref())
                     }))
@@ -211,6 +224,8 @@ impl RasterSourceCoordinator {
             result_receiver,
             tab_paths: HashMap::new(),
             paths: HashMap::new(),
+            active_tab: None,
+            active_generations,
             snapshot: Arc::new(RasterSourceSnapshot::empty()),
             next_generation: 0,
         }
@@ -224,6 +239,7 @@ impl RasterSourceCoordinator {
         let desired: HashSet<_> = document
             .layers
             .iter()
+            .filter(|layer| layer.visible && layer.opacity > 0.0)
             .filter_map(|layer| match &layer.kind {
                 LayerKind::Raster { path, .. } => Some(path.clone()),
                 _ => None,
@@ -232,27 +248,44 @@ impl RasterSourceCoordinator {
         if self.tab_paths.get(&tab_id) == Some(&desired) {
             return;
         }
-        let previous = self
-            .tab_paths
-            .insert(tab_id, desired.clone())
-            .unwrap_or_default();
-        let mut publish = false;
-        for path in previous.difference(&desired) {
-            if let Some(state) = self.paths.get_mut(path) {
-                state.required_tabs.remove(&tab_id);
-                if state.required_tabs.is_empty() {
-                    publish |= matches!(
-                        &state.phase,
-                        PathPhase::LegacyNative | PathPhase::Provider(_)
-                    );
-                }
-            }
+        self.tab_paths.insert(tab_id, desired);
+        if self.active_tab == Some(tab_id) {
+            self.reconcile_active_paths();
         }
-        self.paths
-            .retain(|_, state| !state.required_tabs.is_empty());
-        for path in desired.difference(&previous) {
-            if let Some(state) = self.paths.get_mut(path) {
-                state.required_tabs.insert(tab_id);
+    }
+
+    pub(super) fn set_active_tab(&mut self, tab_id: u64) {
+        if self.active_tab == Some(tab_id) {
+            return;
+        }
+        self.active_tab = Some(tab_id);
+        self.reconcile_active_paths();
+    }
+
+    pub(super) fn remove_tab(&mut self, tab_id: u64) {
+        self.tab_paths.remove(&tab_id);
+        if self.active_tab == Some(tab_id) {
+            self.active_tab = None;
+            self.reconcile_active_paths();
+        }
+    }
+
+    fn reconcile_active_paths(&mut self) {
+        let desired = self
+            .active_tab
+            .and_then(|tab_id| self.tab_paths.get(&tab_id))
+            .cloned()
+            .unwrap_or_default();
+        let removed_published = self.paths.iter().any(|(path, state)| {
+            !desired.contains(path)
+                && matches!(
+                    &state.phase,
+                    PathPhase::LegacyNative | PathPhase::Provider(_)
+                )
+        });
+        self.paths.retain(|path, _| desired.contains(path));
+        for path in desired {
+            if self.paths.contains_key(&path) {
                 continue;
             }
             self.next_generation = self
@@ -260,41 +293,25 @@ impl RasterSourceCoordinator {
                 .checked_add(1)
                 .expect("raster source generation exhausted");
             self.paths.insert(
-                path.clone(),
+                path,
                 PathState {
                     generation: self.next_generation,
-                    required_tabs: HashSet::from([tab_id]),
                     phase: PathPhase::Needed,
                 },
             );
         }
-        if publish {
+        *self
+            .active_generations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self
+            .paths
+            .iter()
+            .map(|(path, state)| (path.clone(), state.generation))
+            .collect();
+        if removed_published {
             self.publish_snapshot();
         }
         self.dispatch_ready(Instant::now());
-    }
-
-    pub(super) fn remove_tab(&mut self, tab_id: u64) {
-        let Some(paths) = self.tab_paths.remove(&tab_id) else {
-            return;
-        };
-        let mut publish = false;
-        for path in paths {
-            if let Some(state) = self.paths.get_mut(&path) {
-                state.required_tabs.remove(&tab_id);
-                if state.required_tabs.is_empty() {
-                    publish |= matches!(
-                        &state.phase,
-                        PathPhase::LegacyNative | PathPhase::Provider(_)
-                    );
-                }
-            }
-        }
-        self.paths
-            .retain(|_, state| !state.required_tabs.is_empty());
-        if publish {
-            self.publish_snapshot();
-        }
     }
 
     pub(super) fn poll(&mut self, context: &egui::Context) {
@@ -332,11 +349,15 @@ impl RasterSourceCoordinator {
             },
             PreparationOutcome::Unsupported => PathPhase::Unsupported,
             PreparationOutcome::Failed(error) => {
-                drop(error);
-                PathPhase::Retry {
-                    identity: None,
-                    attempts: result.attempts.saturating_add(1),
-                    retry_at: now + preparation_retry_delay(result.attempts.saturating_add(1)),
+                let attempts = result.attempts.saturating_add(1);
+                if attempts >= MAX_GENERIC_FAILURE_ATTEMPTS {
+                    PathPhase::Failed { diagnostic: error }
+                } else {
+                    PathPhase::Retry {
+                        identity: None,
+                        attempts,
+                        retry_at: now + preparation_retry_delay(attempts),
+                    }
                 }
             }
         };
@@ -385,6 +406,10 @@ impl RasterSourceCoordinator {
             .values()
             .filter_map(|state| match &state.phase {
                 PathPhase::Retry { retry_at, .. } => Some(retry_at.saturating_duration_since(now)),
+                PathPhase::Failed { diagnostic } => {
+                    debug_assert!(!diagnostic.is_empty());
+                    None
+                }
                 _ => None,
             })
             .min()
@@ -423,7 +448,15 @@ impl PrismApp {
     pub(super) fn sync_active_raster_sources(&mut self) {
         self.raster_sources
             .set_tab_document(self.active_tab_id, &self.workspace.document);
+        self.raster_sources.set_active_tab(self.active_tab_id);
     }
+}
+
+fn derived_cache_root(storage_directory: &Path, app_version: &str) -> PathBuf {
+    storage_directory
+        .join("Derived Raster Backings")
+        .join(DERIVED_CACHE_COMPATIBILITY)
+        .join(app_version)
 }
 
 fn prepare_source(
@@ -528,7 +561,7 @@ mod tests {
         }
     }
 
-    fn resolved(epoch: &str, drops: Option<Arc<AtomicUsize>>) -> ResolvedRasterSource {
+    pub(super) fn resolved(epoch: &str, drops: Option<Arc<AtomicUsize>>) -> ResolvedRasterSource {
         ResolvedRasterSource::new(
             RasterSourceEpoch::new(epoch.to_owned()).unwrap(),
             Arc::new(TestSource {
@@ -551,7 +584,7 @@ mod tests {
         .unwrap()
     }
 
-    fn raster_document(path: impl Into<PathBuf>) -> Document {
+    pub(super) fn raster_document(path: impl Into<PathBuf>) -> Document {
         let mut document = Document::new("Raster", 4, 4);
         document.layers.push(Layer {
             kind: LayerKind::Raster {
@@ -563,11 +596,12 @@ mod tests {
         document
     }
 
-    fn detached_coordinator() -> (RasterSourceCoordinator, Receiver<PreparationRequest>) {
+    pub(super) fn detached_coordinator() -> (RasterSourceCoordinator, Receiver<PreparationRequest>)
+    {
         detached_coordinator_with_capacity(16)
     }
 
-    fn detached_coordinator_with_capacity(
+    pub(super) fn detached_coordinator_with_capacity(
         capacity: usize,
     ) -> (RasterSourceCoordinator, Receiver<PreparationRequest>) {
         let (request_sender, request_receiver) = mpsc::sync_channel(capacity);
@@ -578,6 +612,8 @@ mod tests {
                 result_receiver,
                 tab_paths: HashMap::new(),
                 paths: HashMap::new(),
+                active_tab: None,
+                active_generations: Arc::new(Mutex::new(HashMap::new())),
                 snapshot: Arc::new(RasterSourceSnapshot::empty()),
                 next_generation: 0,
             },
@@ -591,7 +627,9 @@ mod tests {
         let second = raster_document("second.jpg");
         let (mut coordinator, requests) = detached_coordinator_with_capacity(1);
         coordinator.set_tab_document(1, &first);
+        coordinator.set_active_tab(1);
         coordinator.set_tab_document(2, &second);
+        coordinator.set_active_tab(2);
         assert!(matches!(
             &coordinator.paths[Path::new("second.jpg")].phase,
             PathPhase::Needed
@@ -611,11 +649,13 @@ mod tests {
         document.layers.push(document.layers[0].clone());
         let (mut coordinator, requests) = detached_coordinator();
         coordinator.set_tab_document(1, &document);
+        coordinator.set_active_tab(1);
         let first = requests.try_recv().unwrap();
         assert_eq!(first.path, path);
         coordinator.set_tab_document(2, &document);
         assert!(requests.try_recv().is_err());
-        assert_eq!(coordinator.paths[&path].required_tabs.len(), 2);
+        assert_eq!(coordinator.tab_paths.len(), 2);
+        assert_eq!(coordinator.paths.len(), 1);
     }
 
     #[test]
@@ -624,6 +664,7 @@ mod tests {
         let document = raster_document(path.clone());
         let (mut coordinator, requests) = detached_coordinator();
         coordinator.set_tab_document(1, &document);
+        coordinator.set_active_tab(1);
         let stale = requests.try_recv().unwrap();
         coordinator.set_tab_document(1, &Document::new("Empty", 4, 4));
         coordinator.set_tab_document(1, &document);
@@ -673,6 +714,7 @@ mod tests {
         let document = raster_document(source.clone());
         let (mut coordinator, requests) = detached_coordinator();
         coordinator.set_tab_document(1, &document);
+        coordinator.set_active_tab(1);
         let request = requests.try_recv().unwrap();
         let now = Instant::now();
         coordinator.apply_result(
@@ -698,6 +740,7 @@ mod tests {
         let document = raster_document(path.clone());
         let (mut coordinator, requests) = detached_coordinator();
         coordinator.set_tab_document(1, &document);
+        coordinator.set_active_tab(1);
         let request = requests.try_recv().unwrap();
         assert_eq!(coordinator.snapshot.epoch, 0);
         let drops = Arc::new(AtomicUsize::new(0));
@@ -726,6 +769,7 @@ mod tests {
         let png_document = raster_document(png.clone());
         let (mut coordinator, requests) = detached_coordinator();
         coordinator.set_tab_document(1, &png_document);
+        coordinator.set_active_tab(1);
         let request = requests.try_recv().unwrap();
         coordinator.apply_result(
             PreparationResult {
@@ -755,3 +799,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "raster_sources_review_tests.rs"]
+mod review_tests;

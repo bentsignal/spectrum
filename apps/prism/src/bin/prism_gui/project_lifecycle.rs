@@ -116,8 +116,14 @@ impl PrismApp {
             }
         }
 
-        for workspace in self.inactive_workspaces.values_mut() {
-            let _ = workspace.sync_together();
+        for (tab_id, workspace) in &mut self.inactive_workspaces {
+            if matches!(
+                workspace.sync_together(),
+                Ok(spectrum_revisions::CollaborationSync::Advanced { .. })
+            ) {
+                self.raster_sources
+                    .set_tab_document(*tab_id, &workspace.document);
+            }
         }
     }
 

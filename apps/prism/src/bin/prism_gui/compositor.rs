@@ -112,6 +112,7 @@ pub(super) struct CompositePreview {
     workers_available: [bool; COMPOSITOR_WORKERS],
     senders: [Sender<CompositeRenderRequest>; COMPOSITOR_WORKERS],
     receiver: Receiver<CompositeRenderResult>,
+    active_this_frame: bool,
 }
 
 fn render_composite_request(
@@ -173,7 +174,12 @@ impl CompositePreview {
             workers_available: [true; COMPOSITOR_WORKERS],
             senders,
             receiver,
+            active_this_frame: false,
         }
+    }
+
+    pub(super) fn begin_frame(&mut self) {
+        self.active_this_frame = false;
     }
 
     pub(super) fn reset(&mut self) {
@@ -182,57 +188,25 @@ impl CompositePreview {
         self.ready = None;
         self.failed = None;
         self.pending = None;
+        self.active_this_frame = false;
     }
 
-    pub(super) fn ensure(
-        &mut self,
-        context: &egui::Context,
-        tab_id: u64,
-        document: &Document,
-        geometry: CanvasGeometry,
-        physical_pixels_per_point: f32,
-        raster_sources: Arc<RasterSourceSnapshot>,
-    ) -> Result<Option<CompositeFrame>, String> {
-        let Some(desired_key) = CompositePreviewKey::new_with_sources(
-            tab_id,
-            self.generation,
-            document,
-            geometry,
-            physical_pixels_per_point,
-            raster_sources.as_ref(),
-        ) else {
-            return Ok(None);
-        };
-
-        if self
-            .desired
-            .as_ref()
-            .is_none_or(|(_, key)| key != &desired_key)
-        {
-            if self
-                .failed
-                .as_ref()
-                .is_some_and(|failure| failure.key != desired_key)
-            {
-                self.failed = None;
-            }
-            self.next_sequence = self.next_sequence.wrapping_add(1);
-            self.desired = Some((self.next_sequence, desired_key.clone()));
-            self.pending = Some(CompositeRenderRequest {
-                sequence: self.next_sequence,
-                key: desired_key.clone(),
-                raster_sources: Arc::clone(&raster_sources),
-            });
+    pub(super) fn poll(&mut self, context: &egui::Context) {
+        if !self.active_this_frame {
+            self.desired = None;
+            self.ready = None;
+            self.failed = None;
+            self.pending = None;
         }
-
+        let desired_key = self.desired.as_ref().map(|(_, key)| key.clone());
         while let Ok(response) = self.receiver.try_recv() {
             self.workers_busy[response.worker] = false;
-            if !completed_preview_is_safe_to_display(&response.key, &desired_key) {
+            if desired_key.as_ref() != Some(&response.key) {
                 continue;
             }
             let image = match response.result {
                 Ok(image) => image,
-                Err(error) if response.key == desired_key => {
+                Err(error) => {
                     let attempts = self
                         .failed
                         .as_ref()
@@ -248,13 +222,13 @@ impl CompositePreview {
                     });
                     continue;
                 }
-                Err(_) => continue,
             };
             let rgba = image.to_rgba8();
             let pixels = egui::ColorImage::from_rgba_unmultiplied(
                 [rgba.width() as usize, rgba.height() as usize],
                 rgba.as_raw(),
             );
+            let tab_id = response.key.tab_id;
             let texture = context.load_texture(
                 format!("prism-document-region-{tab_id}-{}", response.sequence),
                 pixels,
@@ -282,6 +256,51 @@ impl CompositePreview {
                 ));
             }
         }
+    }
+
+    pub(super) fn ensure(
+        &mut self,
+        context: &egui::Context,
+        tab_id: u64,
+        document: &Document,
+        geometry: CanvasGeometry,
+        physical_pixels_per_point: f32,
+        raster_sources: Arc<RasterSourceSnapshot>,
+    ) -> Result<Option<CompositeFrame>, String> {
+        let Some(desired_key) = CompositePreviewKey::new_with_sources(
+            tab_id,
+            self.generation,
+            document,
+            geometry,
+            physical_pixels_per_point,
+            raster_sources.as_ref(),
+        ) else {
+            return Ok(None);
+        };
+        self.active_this_frame = true;
+
+        if self
+            .desired
+            .as_ref()
+            .is_none_or(|(_, key)| key != &desired_key)
+        {
+            if self
+                .failed
+                .as_ref()
+                .is_some_and(|failure| failure.key != desired_key)
+            {
+                self.failed = None;
+            }
+            self.next_sequence = self.next_sequence.wrapping_add(1);
+            self.desired = Some((self.next_sequence, desired_key.clone()));
+            self.pending = Some(CompositeRenderRequest {
+                sequence: self.next_sequence,
+                key: desired_key.clone(),
+                raster_sources: Arc::clone(&raster_sources),
+            });
+        }
+
+        self.poll(context);
 
         self.queue_retry_when_ready(context, &desired_key);
         self.dispatch_pending()?;
@@ -510,7 +529,7 @@ mod tests {
         }
     }
 
-    fn provider_snapshot(
+    pub(super) fn provider_snapshot(
         path: PathBuf,
         epoch: u64,
         pixel: [u8; 4],
@@ -539,7 +558,7 @@ mod tests {
         RasterSourceSnapshot::with_test_provider(epoch, path, source)
     }
 
-    fn geometry(canvas: Rect, viewport: Rect) -> CanvasGeometry {
+    pub(super) fn geometry(canvas: Rect, viewport: Rect) -> CanvasGeometry {
         CanvasGeometry {
             viewport,
             canvas,
@@ -833,3 +852,7 @@ mod tests {
         ]
     }
 }
+
+#[cfg(test)]
+#[path = "compositor_review_tests.rs"]
+mod review_tests;
