@@ -614,12 +614,7 @@ fn transform_layer(image: DynamicImage, transform: Transform) -> (RgbaImage, (f3
     }
     let bounds = crate::render_region::centered_rotation_bounds(width, height, transform.rotation);
     (
-        rotate_rgba(
-            &scaled,
-            transform.rotation,
-            bounds.width,
-            bounds.height,
-        ),
+        rotate_rgba(&scaled, transform.rotation, bounds.width, bounds.height),
         (bounds.offset_x, bounds.offset_y),
     )
 }
