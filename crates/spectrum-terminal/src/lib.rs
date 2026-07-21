@@ -117,7 +117,73 @@ pub enum TerminalEvent {
     Error(String),
 }
 
+/// The transport contract used by a byte-stream terminal client.
+///
+/// Spectrum's portable terminal renderer consumes [`TerminalEvent::Output`]
+/// with a VT parser. Platform-native terminal surfaces (for example, a
+/// Ghostty-owned AppKit view) should remain in the owning application instead
+/// of forcing native rendering concerns through this app-neutral contract.
+pub trait TerminalSessionBackend: Send {
+    fn context(&self) -> &TerminalContext;
+    fn process_id(&self) -> Option<u32>;
+    fn write(&mut self, bytes: &[u8]) -> Result<()>;
+    fn resize(&self, size: TerminalSize) -> Result<()>;
+    fn poll(&mut self) -> Vec<TerminalEvent>;
+    fn is_running(&mut self) -> bool;
+    fn terminate(&mut self) -> Result<()>;
+}
+
+/// A terminal session presented through Spectrum's portable byte-stream API.
+///
+/// [`TerminalSession::spawn`] deliberately keeps the existing portable PTY
+/// backend as the default on every platform. Applications can inject another
+/// byte-stream implementation with [`TerminalSession::from_backend`], while a
+/// native rendered surface remains a separate, platform-gated UI concern.
 pub struct TerminalSession {
+    backend: Box<dyn TerminalSessionBackend>,
+}
+
+impl TerminalSession {
+    pub fn spawn(context: TerminalContext, size: TerminalSize) -> Result<Self> {
+        PortablePtySession::spawn(context, size).map(Self::from_backend)
+    }
+
+    pub fn from_backend(backend: impl TerminalSessionBackend + 'static) -> Self {
+        Self {
+            backend: Box::new(backend),
+        }
+    }
+
+    pub fn context(&self) -> &TerminalContext {
+        self.backend.context()
+    }
+
+    pub fn process_id(&self) -> Option<u32> {
+        self.backend.process_id()
+    }
+
+    pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        self.backend.write(bytes)
+    }
+
+    pub fn resize(&self, size: TerminalSize) -> Result<()> {
+        self.backend.resize(size)
+    }
+
+    pub fn poll(&mut self) -> Vec<TerminalEvent> {
+        self.backend.poll()
+    }
+
+    pub fn is_running(&mut self) -> bool {
+        self.backend.is_running()
+    }
+
+    pub fn terminate(&mut self) -> Result<()> {
+        self.backend.terminate()
+    }
+}
+
+struct PortablePtySession {
     context: TerminalContext,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -126,8 +192,8 @@ pub struct TerminalSession {
     exit_reported: bool,
 }
 
-impl TerminalSession {
-    pub fn spawn(context: TerminalContext, size: TerminalSize) -> Result<Self> {
+impl PortablePtySession {
+    fn spawn(context: TerminalContext, size: TerminalSize) -> Result<Self> {
         if !context.working_directory().is_dir() {
             bail!(
                 "terminal working directory does not exist: {}",
@@ -193,16 +259,18 @@ impl TerminalSession {
             exit_reported: false,
         })
     }
+}
 
-    pub fn context(&self) -> &TerminalContext {
+impl TerminalSessionBackend for PortablePtySession {
+    fn context(&self) -> &TerminalContext {
         &self.context
     }
 
-    pub fn process_id(&self) -> Option<u32> {
+    fn process_id(&self) -> Option<u32> {
         self.child.process_id()
     }
 
-    pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
+    fn write(&mut self, bytes: &[u8]) -> Result<()> {
         if self.exit_reported {
             bail!("terminal process has exited");
         }
@@ -214,13 +282,13 @@ impl TerminalSession {
             .context("could not flush terminal input")
     }
 
-    pub fn resize(&self, size: TerminalSize) -> Result<()> {
+    fn resize(&self, size: TerminalSize) -> Result<()> {
         self.master
             .resize(size.pty())
             .context("could not resize the terminal")
     }
 
-    pub fn poll(&mut self) -> Vec<TerminalEvent> {
+    fn poll(&mut self) -> Vec<TerminalEvent> {
         // Keep one UI tick bounded even when a build or other noisy process
         // has filled the queue. Remaining chunks are drained by later ticks.
         let mut events = drain_events(&self.output, POLL_BYTE_BUDGET);
@@ -245,7 +313,7 @@ impl TerminalSession {
         events
     }
 
-    pub fn is_running(&mut self) -> bool {
+    fn is_running(&mut self) -> bool {
         if self.exit_reported {
             return false;
         }
@@ -258,7 +326,7 @@ impl TerminalSession {
         }
     }
 
-    pub fn terminate(&mut self) -> Result<()> {
+    fn terminate(&mut self) -> Result<()> {
         if self.is_running() {
             self.child
                 .kill()
@@ -289,7 +357,7 @@ fn drain_events(output: &Receiver<TerminalEvent>, byte_budget: usize) -> Vec<Ter
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        let _ = self.terminate();
+        let _ = self.backend.terminate();
     }
 }
 
@@ -310,6 +378,47 @@ fn shell_command() -> CommandBuilder {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    struct TestBackend {
+        context: TerminalContext,
+        writes: Vec<Vec<u8>>,
+        size: TerminalSize,
+        events: Vec<TerminalEvent>,
+        running: bool,
+    }
+
+    impl TerminalSessionBackend for TestBackend {
+        fn context(&self) -> &TerminalContext {
+            &self.context
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            Some(42)
+        }
+
+        fn write(&mut self, bytes: &[u8]) -> Result<()> {
+            self.writes.push(bytes.to_vec());
+            Ok(())
+        }
+
+        fn resize(&self, size: TerminalSize) -> Result<()> {
+            assert_eq!(size, self.size);
+            Ok(())
+        }
+
+        fn poll(&mut self) -> Vec<TerminalEvent> {
+            std::mem::take(&mut self.events)
+        }
+
+        fn is_running(&mut self) -> bool {
+            self.running
+        }
+
+        fn terminate(&mut self) -> Result<()> {
+            self.running = false;
+            Ok(())
+        }
+    }
 
     #[test]
     fn context_values_are_never_interpolated_into_shell_source() {
@@ -345,6 +454,31 @@ mod tests {
             context.environment("SPECTRUM_CLI_DIR"),
             Some(cli_directory.as_os_str())
         );
+    }
+
+    #[test]
+    fn session_contract_delegates_without_changing_the_portable_api() {
+        let context = TerminalContext::new("backend working directory");
+        let size = TerminalSize::new(40, 120);
+        let mut session = TerminalSession::from_backend(TestBackend {
+            context: context.clone(),
+            writes: Vec::new(),
+            size,
+            events: vec![TerminalEvent::Output(b"ready".to_vec())],
+            running: true,
+        });
+
+        assert_eq!(session.context(), &context);
+        assert_eq!(session.process_id(), Some(42));
+        assert!(session.is_running());
+        session.write(b"input").unwrap();
+        session.resize(size).unwrap();
+        assert_eq!(
+            session.poll(),
+            vec![TerminalEvent::Output(b"ready".to_vec())]
+        );
+        session.terminate().unwrap();
+        assert!(!session.is_running());
     }
 
     #[test]
