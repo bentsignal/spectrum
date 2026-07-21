@@ -1,7 +1,10 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::Write,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex, MutexGuard, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -10,6 +13,7 @@ use fs2::FileExt;
 use super::*;
 
 static STAGED_ASSET_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static STAGED_ASSET_PROCESS_LOCKS: OnceLock<[Mutex<()>; 64]> = OnceLock::new();
 
 impl DurableProject {
     pub(super) fn stage_asset(&self, reference: &AssetReference, bytes: &[u8]) -> Result<PathBuf> {
@@ -30,6 +34,11 @@ fn stage_asset_in(directory: &Path, reference: &AssetReference, bytes: &[u8]) ->
         return Ok(path);
     }
 
+    // `flock` is process-scoped on macOS, so sibling threads can otherwise enter
+    // this transaction together and scavenge each other's live temporary files.
+    // Keep the file lock as the cross-process boundary and add a bounded local
+    // shard for same-process callers.
+    let _process_lock = lock_staged_asset_in_process(reference.id);
     let lock_path = directory.join(format!(".{}.lock", reference.id));
     let lock = open_entry_lock(&lock_path)?;
     FileExt::lock_exclusive(&lock)?;
@@ -54,6 +63,14 @@ fn stage_asset_in(directory: &Path, reference: &AssetReference, bytes: &[u8]) ->
         bail!("staged Prism asset {} failed validation", path.display());
     }
     Ok(path)
+}
+
+fn lock_staged_asset_in_process(id: AssetId) -> MutexGuard<'static, ()> {
+    let locks = STAGED_ASSET_PROCESS_LOCKS.get_or_init(|| std::array::from_fn(|_| Mutex::new(())));
+    let shard = usize::from(id.as_bytes()[0]) % locks.len();
+    locks[shard]
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn open_entry_lock(path: &Path) -> Result<File> {
