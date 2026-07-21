@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct LayerVisualKey {
-    kind: LayerKind,
+    pub(super) kind: LayerKind,
     adjustments: spectrum_imaging::Adjustments,
     stroke: ShapeStroke,
     pub(super) text_raster_scale: u32,
@@ -47,6 +47,7 @@ pub(super) enum LayerVisual {
 pub(super) struct LayerSourceGeometry {
     pub(super) size: Vec2,
     pub(super) visual_bounds: Rect,
+    pub(super) paragraph_bounds: Option<Rect>,
 }
 
 impl LayerSourceGeometry {
@@ -54,7 +55,27 @@ impl LayerSourceGeometry {
         Self {
             size,
             visual_bounds: Rect::from_min_size(Pos2::ZERO, size),
+            paragraph_bounds: None,
         }
+    }
+}
+
+pub(super) fn text_source_geometry(
+    geometry: prism_core::TextGeometry,
+    paragraph: bool,
+) -> LayerSourceGeometry {
+    LayerSourceGeometry {
+        size: Vec2::new(geometry.width as f32, geometry.height as f32),
+        visual_bounds: Rect::from_min_size(
+            Pos2::new(geometry.visual_left, geometry.visual_top),
+            Vec2::new(geometry.visual_width, geometry.visual_height),
+        ),
+        paragraph_bounds: paragraph.then(|| {
+            Rect::from_min_size(
+                Pos2::new(geometry.layout_left, geometry.layout_top),
+                Vec2::new(geometry.layout_width, geometry.layout_height),
+            )
+        }),
     }
 }
 
@@ -96,6 +117,7 @@ pub(super) fn reuse_cached_visual_during_interaction(
 impl PrismApp {
     pub(super) fn reset_canvas_cache(&mut self) {
         self.layer_visuals.clear();
+        self.layer_source_overrides.clear();
         self.layer_visual_dirty.clear();
         self.layer_render_pending.clear();
         self.preview_error = None;
@@ -147,6 +169,7 @@ impl PrismApp {
                             max_size: result.max_size,
                         },
                     );
+                    self.layer_source_overrides.remove(&result.layer_id);
                     self.layer_visual_dirty.remove(&result.layer_id);
                     self.preview_error = None;
                 }
@@ -270,12 +293,17 @@ impl PrismApp {
     }
 
     pub(super) fn layer_source_geometry(&self, layer: &Layer) -> Option<LayerSourceGeometry> {
-        self.layer_visuals
+        let source_override = self.layer_source_overrides.get(&layer.id);
+        let cached = self
+            .layer_visuals
             .get(&layer.id)
-            .map(|entry| entry.source_geometry)
-            .or_else(|| {
-                source_geometry_before_preview(layer, self.workspace.document.font_for_layer(layer))
-            })
+            .map(|entry| (&entry.key, entry.source_geometry));
+        current_layer_source_geometry(
+            layer,
+            source_override,
+            cached,
+            self.workspace.document.font_for_layer(layer),
+        )
     }
 }
 
@@ -388,7 +416,7 @@ fn normalized_visual_bounds(geometry: LayerSourceGeometry) -> Rect {
     )
 }
 
-fn source_geometry_before_preview(
+pub(super) fn source_geometry_before_preview(
     layer: &Layer,
     font_asset: Option<&prism_core::FontAsset>,
 ) -> Option<LayerSourceGeometry> {
@@ -407,13 +435,7 @@ fn source_geometry_before_preview(
             text, *font_size, typography, font_asset,
         )
         .ok()
-        .map(|geometry| LayerSourceGeometry {
-            size: Vec2::new(geometry.width as f32, geometry.height as f32),
-            visual_bounds: Rect::from_min_size(
-                Pos2::new(geometry.visual_left, geometry.visual_top),
-                Vec2::new(geometry.visual_width, geometry.visual_height),
-            ),
-        }),
+        .map(|geometry| text_source_geometry(geometry, typography.box_width.is_some())),
         LayerKind::Rectangle { width, height, .. } => Some(LayerSourceGeometry::full(Vec2::new(
             *width as f32,
             *height as f32,
@@ -811,6 +833,7 @@ mod tests {
         let source = LayerSourceGeometry {
             size: Vec2::new(180.0, 96.0),
             visual_bounds: Rect::from_min_size(Pos2::new(18.0, 24.0), Vec2::new(112.0, 48.0)),
+            paragraph_bounds: None,
         };
         let mut layer = Layer {
             transform: Transform {
@@ -888,6 +911,7 @@ mod tests {
         let source = LayerSourceGeometry {
             size: Vec2::new(140.0, 80.0),
             visual_bounds: Rect::from_min_size(Pos2::new(12.0, 18.0), Vec2::new(96.0, 42.0)),
+            paragraph_bounds: None,
         };
         let expected = Rect::from_min_size(Pos2::new(98.0, 63.5), Vec2::new(144.0, 31.5));
 

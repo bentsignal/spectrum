@@ -256,8 +256,13 @@ impl PrismApp {
             self.delete_confirmation = self.workspace.document.selected;
         }
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
-            if self.drag.is_some() {
+            if let Some(drag) = self.drag {
                 self.workspace.cancel_interaction();
+                restore_source_override_after_cancel(
+                    &mut self.layer_source_overrides,
+                    &self.workspace.document,
+                    drag,
+                );
             }
             self.tool_palette = None;
             self.shape_palette = None;

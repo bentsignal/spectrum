@@ -51,7 +51,10 @@ mod raster_sources;
 mod renderer;
 #[path = "prism_gui/shortcuts.rs"]
 mod shortcuts;
+#[path = "prism_gui/source_geometry.rs"]
+mod source_geometry;
 use compositor::*;
+use source_geometry::*;
 #[path = "prism_gui/terminal.rs"]
 mod terminal;
 #[path = "prism_gui/terminal_input.rs"]
@@ -93,6 +96,7 @@ struct PrismApp {
     next_tab_id: u64,
     inactive_workspaces: HashMap<u64, Workspace>,
     layer_visuals: HashMap<u64, LayerVisualEntry>,
+    layer_source_overrides: HashMap<u64, LayerSourceOverride>,
     layer_visual_dirty: HashSet<u64>,
     layer_render_pending: HashMap<u64, LayerRenderRequest>,
     layer_render_in_flight: bool,
@@ -198,6 +202,7 @@ impl PrismApp {
             next_tab_id: 2,
             inactive_workspaces: HashMap::new(),
             layer_visuals: HashMap::new(),
+            layer_source_overrides: HashMap::new(),
             layer_visual_dirty: HashSet::new(),
             layer_render_pending: HashMap::new(),
             layer_render_in_flight: false,
@@ -301,6 +306,23 @@ impl PrismApp {
         }
     }
 
+    fn preview_commands(&mut self, commands: Vec<Command>) -> bool {
+        let invalidations = commands.iter().map(canvas_invalidation).collect::<Vec<_>>();
+        match self.workspace.preview_batch(commands) {
+            Ok(_) => {
+                for invalidation in invalidations {
+                    self.apply_canvas_invalidation(invalidation);
+                }
+                true
+            }
+            Err(error) => {
+                self.status = format!("{error:#}");
+                self.status_error = true;
+                false
+            }
+        }
+    }
+
     fn apply_canvas_invalidation(&mut self, invalidation: CanvasInvalidation) {
         match invalidation {
             CanvasInvalidation::None => {}
@@ -316,11 +338,14 @@ impl PrismApp {
                     .map(|layer| layer.id)
                     .collect();
                 self.layer_visuals.retain(|id, _| active.contains(id));
+                self.layer_source_overrides
+                    .retain(|id, _| active.contains(id));
                 self.layer_render_pending
                     .retain(|id, _| active.contains(id));
                 self.layer_visual_dirty.retain(|id| active.contains(id));
             }
             CanvasInvalidation::All => {
+                self.layer_source_overrides.clear();
                 self.layer_visual_dirty
                     .extend(self.workspace.document.layers.iter().map(|layer| layer.id));
             }
@@ -619,6 +644,10 @@ mod view;
 use view::*;
 
 #[cfg(test)]
+#[path = "prism_gui/paragraph_width_tests.rs"]
+mod paragraph_width_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -657,6 +686,9 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(100.0, 50.0),
             )),
+            paragraph_bounds: None,
+            paragraph_width: None,
+            paragraph_source_override: None,
         };
         let transform = drag_transform(drag, true);
         assert_eq!(transform.x, 10.0);
@@ -681,6 +713,9 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(500.0, 100.0),
             )),
+            paragraph_bounds: None,
+            paragraph_width: None,
+            paragraph_source_override: None,
         };
         let before = drag_transform(make_drag(Pos2::new(560.0, 129.0)), true);
         let after = drag_transform(make_drag(Pos2::new(560.0, 131.0)), true);
@@ -704,6 +739,9 @@ mod tests {
                 Pos2::new(10.0, 20.0),
                 Vec2::new(100.0, 50.0),
             )),
+            paragraph_bounds: None,
+            paragraph_width: None,
+            paragraph_source_override: None,
         };
         let transform = drag_transform(drag, false);
         assert!((transform.scale_x - 1.5).abs() < 0.001);
@@ -824,7 +862,7 @@ mod tests {
             );
         }
         assert_eq!(
-            resize_cursor(ResizeHandle::TopLeft),
+            resize_cursor(ResizeHandle::TopLeft, 0.0),
             egui::CursorIcon::ResizeNwSe
         );
     }

@@ -803,6 +803,7 @@ mod tests {
         let source = LayerSourceGeometry {
             size: Vec2::new(220.0, 80.0),
             visual_bounds: Rect::from_min_size(Pos2::new(8.0, 12.0), Vec2::new(180.0, 52.0)),
+            paragraph_bounds: None,
         };
         let screen_bounds =
             transformed_visual_screen_bounds(geometry, &layer, Some(source)).unwrap();

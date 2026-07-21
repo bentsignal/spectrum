@@ -23,6 +23,11 @@ pub struct TextGeometry {
     pub visual_top: f32,
     pub visual_width: f32,
     pub visual_height: f32,
+    /// Logical paragraph layout bounds inside the returned image.
+    pub layout_left: f32,
+    pub layout_top: f32,
+    pub layout_width: f32,
+    pub layout_height: f32,
 }
 
 impl TextGeometry {
@@ -194,6 +199,7 @@ struct TextLayout {
     width: u32,
     height: u32,
     visual: PixelBounds,
+    layout_box: PixelBounds,
 }
 
 impl TextLayout {
@@ -205,6 +211,10 @@ impl TextLayout {
             visual_top: (self.visual.min_y - self.output_min_y) as f32,
             visual_width: (self.visual.max_x - self.visual.min_x).max(1) as f32,
             visual_height: (self.visual.max_y - self.visual.min_y).max(1) as f32,
+            layout_left: (self.layout_box.min_x - self.output_min_x) as f32,
+            layout_top: (self.layout_box.min_y - self.output_min_y) as f32,
+            layout_width: (self.layout_box.max_x - self.layout_box.min_x).max(1) as f32,
+            layout_height: (self.layout_box.max_y - self.layout_box.min_y).max(1) as f32,
         }
     }
 }
@@ -257,12 +267,13 @@ fn layout_text(
         .unwrap_or_else(|| advances.iter().copied().fold(1.0, f32::max))
         .max(1.0);
     let mut glyphs = Vec::new();
-    let mut logical = PixelBounds {
+    let layout_box = PixelBounds {
         min_x: 0,
         min_y: 0,
         max_x: layout_width.ceil() as i32,
         max_y: (line_height * lines.len().max(1) as f32).ceil() as i32,
     };
+    let mut logical = layout_box;
     let mut ink = None::<PixelBounds>;
     for (line_index, line) in lines.iter().enumerate() {
         let alignment_offset = match typography.alignment {
@@ -324,6 +335,7 @@ fn layout_text(
         width,
         height,
         visual,
+        layout_box,
     })
 }
 

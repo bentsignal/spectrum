@@ -101,6 +101,9 @@ pub(super) struct DragState {
     pub transform: Transform,
     pub action: DragAction,
     pub bounds: Option<Rect>,
+    pub paragraph_bounds: Option<Rect>,
+    pub paragraph_width: Option<f32>,
+    pub paragraph_source_override: Option<LayerSourceGeometry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +121,8 @@ pub(super) enum ResizeHandle {
     TopRight,
     BottomLeft,
     BottomRight,
+    ParagraphLeft,
+    ParagraphRight,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
