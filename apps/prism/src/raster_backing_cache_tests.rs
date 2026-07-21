@@ -91,6 +91,14 @@ fn cache(root: &Path) -> DerivedBackingCache {
     DerivedBackingCache::new(root, DerivedBackingLimits::default())
 }
 
+fn version_root(root: &Path) -> PathBuf {
+    root.join("v2")
+}
+
+fn entry_path(root: &Path, key: &str) -> PathBuf {
+    version_root(root).join(key)
+}
+
 fn prepare_ready(cache: &DerivedBackingCache, source: &Path) -> crate::DerivedRasterBacking {
     match cache.prepare(source).unwrap() {
         PrepareDerivedBacking::Ready { backing, .. } => backing,
@@ -434,18 +442,25 @@ fn stale_temporary_planes_are_scavenged_and_do_not_consume_quota() {
         .unwrap();
     let cache_root = directory.path().join("cache");
     fs::create_dir(&cache_root).unwrap();
+    fs::create_dir(version_root(&cache_root)).unwrap();
     let limits = DerivedBackingLimits {
-        max_cache_bytes: 256,
+        max_cache_bytes: 2_048,
         ..DerivedBackingLimits::default()
     };
     let cache = DerivedBackingCache::new(&cache_root, limits);
     let identity = cache.identify(&source).unwrap();
-    let stale = cache_root.join(format!(".tmp-{}-999-1", identity.key()));
+    let stale = version_root(&cache_root).join(format!(".tmp-{}-999-1", identity.key()));
     fs::create_dir(&stale).unwrap();
     let stale_plane = File::create(stale.join("pixels.rgba8")).unwrap();
     stale_plane.set_len(1_024).unwrap();
     drop(stale_plane);
-    let invalid = cache_root.join(".tmp-not-a-cache-build");
+    let legacy_stale = cache_root.join(format!(".tmp-{}-999-2", identity.key()));
+    fs::create_dir(&legacy_stale).unwrap();
+    File::create(legacy_stale.join("pixels.rgba8"))
+        .unwrap()
+        .set_len(1_024)
+        .unwrap();
+    let invalid = version_root(&cache_root).join(".tmp-not-a-cache-build");
     fs::create_dir(&invalid).unwrap();
     File::create(invalid.join("pixels.rgba8"))
         .unwrap()
@@ -457,6 +472,7 @@ fn stale_temporary_planes_are_scavenged_and_do_not_consume_quota() {
         PrepareDerivedBacking::Ready { created: true, .. }
     ));
     assert!(!stale.exists());
+    assert!(!legacy_stale.exists());
     assert!(invalid.exists());
 }
 
@@ -475,7 +491,7 @@ fn cache_links_are_rejected_and_scavenging_never_traverses_targets() {
     let identity = cache.identify(&source).unwrap();
     drop(prepare_ready(&cache, &source));
 
-    let plane = cache_root.join(identity.key()).join("pixels.rgba8");
+    let plane = entry_path(&cache_root, identity.key()).join("pixels.rgba8");
     let external_plane = directory.path().join("external-plane");
     fs::rename(&plane, &external_plane).unwrap();
     symlink(&external_plane, &plane).unwrap();
@@ -485,7 +501,7 @@ fn cache_links_are_rejected_and_scavenging_never_traverses_targets() {
     fs::create_dir(&external_directory).unwrap();
     let sentinel = external_directory.join("must-survive");
     fs::write(&sentinel, b"safe").unwrap();
-    let stale = cache_root.join(format!(".tmp-{}-321-7", identity.key()));
+    let stale = version_root(&cache_root).join(format!(".tmp-{}-321-7", identity.key()));
     fs::create_dir(&stale).unwrap();
     symlink(&external_directory, stale.join("outside")).unwrap();
     assert!(cache.prepare(&source).is_ok());
@@ -503,7 +519,7 @@ fn ready_and_manifest_metadata_are_bounded_before_parsing() {
     let cache = cache(&directory.path().join("cache"));
     let identity = cache.identify(&source).unwrap();
     drop(prepare_ready(&cache, &source));
-    let entry = cache.root().join(identity.key());
+    let entry = entry_path(cache.root(), identity.key());
     let ready = entry.join("ready");
     make_writable(&ready, &fs::metadata(&ready).unwrap());
     fs::write(&ready, vec![b'a'; 129]).unwrap();

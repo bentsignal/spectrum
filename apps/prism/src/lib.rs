@@ -943,6 +943,10 @@ mod raster_backing_cache_tests;
 mod raster_source_resolver_tests;
 
 #[cfg(test)]
+#[path = "raster_backing_eviction_tests.rs"]
+mod raster_backing_eviction_tests;
+
+#[cfg(test)]
 #[path = "rotation_tests.rs"]
 mod rotation_tests;
 
