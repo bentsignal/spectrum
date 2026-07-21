@@ -3,7 +3,7 @@ use std::{io::Write, path::PathBuf, time::Instant};
 use anyhow::{Result, bail};
 use prism_core::{
     BlendMode, Command, Document, FontAsset, Layer, LayerKind, LayerMask, RenderRegion,
-    TextAlignment, TextEffects, TextTypography, Transform, Workspace, render_document,
+    ShapeStroke, TextAlignment, TextEffects, TextTypography, Transform, Workspace, render_document,
     render_document_region_scaled, render_document_region_scaled_with_stats,
     render_layer_base_scaled, render_layer_base_scaled_with_font, render_solid_color,
 };
@@ -306,6 +306,79 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         }
         bounded_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    let mut vector_sources = Document::new("Vector viewport", 16_384, 16_384);
+    vector_sources.layers = vec![
+        Layer {
+            id: 110,
+            opacity: 0.83,
+            transform: Transform {
+                rotation: 17.0,
+                ..Transform::default()
+            },
+            stroke: ShapeStroke {
+                enabled: true,
+                width: 12.0,
+                color: [244, 215, 128, 255],
+            },
+            kind: LayerKind::Ellipse {
+                width: 16_384,
+                height: 16_384,
+                color: [64, 142, 220, 218],
+            },
+            ..Layer::default()
+        },
+        Layer {
+            id: 111,
+            opacity: 0.71,
+            blend_mode: BlendMode::SoftLight,
+            clip_to_below: true,
+            transform: Transform {
+                x: 1_500.0,
+                y: 1_200.0,
+                rotation: -11.0,
+                ..Transform::default()
+            },
+            mask: LayerMask {
+                enabled: true,
+                invert: true,
+                x: 0.2,
+                y: 0.2,
+                width: 0.6,
+                height: 0.6,
+            },
+            stroke: ShapeStroke {
+                enabled: true,
+                width: 10.0,
+                color: [87, 220, 231, 224],
+            },
+            kind: LayerKind::Rectangle {
+                width: 12_000,
+                height: 10_000,
+                color: [220, 82, 154, 190],
+                corner_radius: 180.0,
+            },
+            ..Layer::default()
+        },
+    ];
+    let vector_region = RenderRegion {
+        x: 72_000,
+        y: 72_000,
+        width: 640,
+        height: 360,
+    };
+    let mut vector_source_samples = Vec::new();
+    for _ in 0..5 {
+        let started = Instant::now();
+        let (rendered, stats) =
+            render_document_region_scaled_with_stats(&vector_sources, 8.0, vector_region)?;
+        if (rendered.width(), rendered.height()) != (vector_region.width, vector_region.height)
+            || stats.source_staging_pixels != 0
+            || stats.transformed_surface_pixels != 0
+        {
+            bail!("vector viewport compositor violated its allocation contract");
+        }
+        vector_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     let (command_median, command_p95) = sample_summary(&mut command_samples);
     let (interaction_median, interaction_p95) = sample_summary(&mut interaction_samples);
     let (text_interaction_median, text_interaction_p95) =
@@ -318,6 +391,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let (viewport_composite_median, viewport_composite_p95) =
         sample_summary(&mut viewport_composite_samples);
     let (bounded_source_median, bounded_source_p95) = sample_summary(&mut bounded_source_samples);
+    let (vector_source_median, vector_source_p95) = sample_summary(&mut vector_source_samples);
     let metrics = [
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
@@ -389,10 +463,28 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             budget_ms: 750.0,
             pass: bounded_source_p95 <= 750.0,
         },
+        BenchmarkMetric {
+            name: "8x_zoom_16k_stroked_vector_viewport_composite",
+            median_ms: vector_source_median,
+            p95_ms: vector_source_p95,
+            budget_ms: 500.0,
+            pass: vector_source_p95 <= 500.0,
+        },
     ];
     let passed = metrics.iter().all(|metric| metric.pass);
     if strict && !passed {
-        bail!("Prism benchmark exceeded a strict regression budget");
+        let failures = metrics
+            .iter()
+            .filter(|metric| !metric.pass)
+            .map(|metric| {
+                format!(
+                    "{} p95 {:.3} ms > {:.3} ms",
+                    metric.name, metric.p95_ms, metric.budget_ms
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!("Prism benchmark exceeded a strict regression budget: {failures}");
     }
     Ok(json!({
         "ok": true,

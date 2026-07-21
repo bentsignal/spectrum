@@ -6,6 +6,7 @@ use image::{ImageFormat, Rgba, RgbaImage};
 use crate::{
     FontAsset, Layer, LayerKind, RegionRenderStats, RenderRegion, TextTypography,
     render::composite_pixel,
+    shapes::ShapeSampler,
     text_render::{
         measure_text_geometry_with_typography, measure_text_with_typography, render_text_region,
     },
@@ -17,7 +18,10 @@ const MAX_FALLBACK_DECODE_BYTES: u64 = 64 * 1_024 * 1_024;
 pub(crate) fn supports_bounded_source(layer: &Layer) -> bool {
     matches!(
         layer.kind,
-        LayerKind::Raster { .. } | LayerKind::Text { .. }
+        LayerKind::Raster { .. }
+            | LayerKind::Text { .. }
+            | LayerKind::Rectangle { .. }
+            | LayerKind::Ellipse { .. }
     ) && layer.adjustments == spectrum_imaging::Adjustments::default()
         && layer.transform.scale_x.is_finite()
         && layer.transform.scale_y.is_finite()
@@ -32,6 +36,7 @@ pub(crate) fn composite_bounded_source_region(
     base_layer: &Layer,
     render_layer: &Layer,
     scaled_layer: &Layer,
+    shape_scale: [f32; 2],
     clip: Option<&RgbaImage>,
     region: RenderRegion,
     font_asset: Option<&FontAsset>,
@@ -40,7 +45,7 @@ pub(crate) fn composite_bounded_source_region(
     if !supports_bounded_source(render_layer) {
         return Ok(false);
     }
-    let descriptor = SourceDescriptor::new(render_layer, font_asset)?;
+    let descriptor = SourceDescriptor::new(render_layer, shape_scale, font_asset)?;
     let geometry = SamplingGeometry::new(
         base_layer,
         render_layer,
@@ -51,28 +56,38 @@ pub(crate) fn composite_bounded_source_region(
     let Some(intersection) = geometry.intersection(region) else {
         return Ok(true);
     };
-    let Some(staging_region) = required_source_region(&geometry, intersection) else {
-        return Ok(true);
+    let source = match &descriptor {
+        SourceDescriptor::Shape { sampler } => SampleSource::shape(*sampler),
+        SourceDescriptor::Raster { .. } | SourceDescriptor::Text { .. } => {
+            let Some(staging_region) = required_source_region(&geometry, intersection) else {
+                return Ok(true);
+            };
+            let staging_pixels = staging_region.pixel_count();
+            if staging_pixels > MAX_SOURCE_STAGING_PIXELS {
+                bail!(
+                    "layer {} requires more than the bounded source staging budget",
+                    render_layer.id
+                );
+            }
+            let (image, fallback_decode_bytes) = descriptor.stage(staging_region)?;
+            stats.source_staging_pixels =
+                stats.source_staging_pixels.saturating_add(staging_pixels);
+            stats.source_staging_bytes = stats
+                .source_staging_bytes
+                .saturating_add(staging_pixels.saturating_mul(4));
+            stats.max_source_staging_pixels = stats.max_source_staging_pixels.max(staging_pixels);
+            stats.fallback_decode_bytes = stats
+                .fallback_decode_bytes
+                .saturating_add(fallback_decode_bytes);
+            SampleSource::Pixels {
+                image,
+                region: staging_region,
+            }
+        }
     };
-    let staging_pixels = staging_region.pixel_count();
-    if staging_pixels > MAX_SOURCE_STAGING_PIXELS {
-        bail!(
-            "layer {} requires more than the bounded source staging budget",
-            render_layer.id
-        );
-    }
-    let (staging, fallback_decode_bytes) = descriptor.stage(staging_region)?;
-    stats.source_staging_pixels = stats.source_staging_pixels.saturating_add(staging_pixels);
-    stats.source_staging_bytes = stats
-        .source_staging_bytes
-        .saturating_add(staging_pixels.saturating_mul(4));
-    stats.max_source_staging_pixels = stats.max_source_staging_pixels.max(staging_pixels);
     stats.full_source_pixels = stats
         .full_source_pixels
         .saturating_add(u64::from(geometry.source_width) * u64::from(geometry.source_height));
-    stats.fallback_decode_bytes = stats
-        .fallback_decode_bytes
-        .saturating_add(fallback_decode_bytes);
 
     for canvas_y in intersection.top..intersection.bottom {
         for canvas_x in intersection.left..intersection.right {
@@ -82,8 +97,7 @@ pub(crate) fn composite_bounded_source_region(
                 continue;
             };
             let source_pixel = sample_triangle_resize(
-                &staging,
-                staging_region,
+                &source,
                 (geometry.source_width, geometry.source_height),
                 (geometry.scaled_width, geometry.scaled_height),
                 (scaled_x, scaled_y),
@@ -119,10 +133,17 @@ enum SourceDescriptor<'a> {
         font_asset: Option<&'a FontAsset>,
         dimensions: (u32, u32),
     },
+    Shape {
+        sampler: ShapeSampler<'a>,
+    },
 }
 
 impl<'a> SourceDescriptor<'a> {
-    fn new(render_layer: &'a Layer, font_asset: Option<&'a FontAsset>) -> Result<Self> {
+    fn new(
+        render_layer: &'a Layer,
+        shape_scale: [f32; 2],
+        font_asset: Option<&'a FontAsset>,
+    ) -> Result<Self> {
         match &render_layer.kind {
             LayerKind::Raster { path, .. } => Ok(Self::Raster {
                 dimensions: image::image_dimensions(path).with_context(|| {
@@ -143,15 +164,16 @@ impl<'a> SourceDescriptor<'a> {
                 font_asset,
                 dimensions: measure_text_with_typography(text, *font_size, typography, font_asset)?,
             }),
-            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => {
-                unreachable!("bounded source descriptor only accepts raster and text layers")
-            }
+            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => Ok(Self::Shape {
+                sampler: ShapeSampler::new(render_layer, shape_scale)?,
+            }),
         }
     }
 
     fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::Raster { dimensions, .. } | Self::Text { dimensions, .. } => *dimensions,
+            Self::Shape { sampler } => sampler.dimensions(),
         }
     }
 
@@ -176,6 +198,32 @@ impl<'a> SourceDescriptor<'a> {
                 )?,
                 0,
             )),
+            Self::Shape { .. } => unreachable!("procedural shapes are sampled without staging"),
+        }
+    }
+}
+
+enum SampleSource<'a> {
+    Constant([u8; 4]),
+    Pixels {
+        image: RgbaImage,
+        region: SourceRegion,
+    },
+    Shape(ShapeSampler<'a>),
+}
+
+impl<'a> SampleSource<'a> {
+    fn shape(sampler: ShapeSampler<'a>) -> Self {
+        sampler
+            .uniform_pixel()
+            .map_or(Self::Shape(sampler), |pixel| Self::Constant(pixel.0))
+    }
+
+    fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
+        match self {
+            Self::Constant(pixel) => *pixel,
+            Self::Pixels { image, region } => image.get_pixel(x - region.x, y - region.y).0,
+            Self::Shape(sampler) => sampler.pixel(x, y).0,
         }
     }
 }
@@ -259,7 +307,9 @@ impl SamplingGeometry {
                 (0.0, 0.0),
                 RotationSampling::None,
             ),
-            LayerKind::Raster { .. } if degrees.abs() >= 0.01 => {
+            LayerKind::Raster { .. } | LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+                if degrees.abs() >= 0.01 =>
+            {
                 let (width, height) = rotated_dimensions(scaled_width, scaled_height, degrees);
                 (
                     width,
@@ -268,15 +318,12 @@ impl SamplingGeometry {
                     RotationSampling::Center { degrees },
                 )
             }
-            LayerKind::Raster { .. } => (
+            LayerKind::Raster { .. } | LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => (
                 scaled_width,
                 scaled_height,
                 (0.0, 0.0),
                 RotationSampling::None,
             ),
-            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => {
-                unreachable!("bounded source geometry only accepts raster and text layers")
-            }
         };
         Ok(Self {
             source_width,
@@ -509,19 +556,16 @@ fn png_pixel(bytes: &[u8], color_type: png::ColorType) -> [u8; 4] {
 }
 
 fn sample_triangle_resize(
-    staging: &RgbaImage,
-    staging_region: SourceRegion,
+    source_pixels: &SampleSource<'_>,
     source: (u32, u32),
     output: (u32, u32),
     coordinate: (u32, u32),
 ) -> [u8; 4] {
+    if let SampleSource::Constant(pixel) = source_pixels {
+        return *pixel;
+    }
     if source == output {
-        return staging
-            .get_pixel(
-                coordinate.0 - staging_region.x,
-                coordinate.1 - staging_region.y,
-            )
-            .0;
+        return source_pixels.pixel(coordinate.0, coordinate.1);
     }
     let x_weights = triangle_weights(source.0, output.0, coordinate.0);
     let y_weights = triangle_weights(source.1, output.1, coordinate.1);
@@ -529,7 +573,7 @@ fn sample_triangle_resize(
     for source_x in x_weights.start..x_weights.end {
         let mut vertical = [0.0_f32; 4];
         for source_y in y_weights.start..y_weights.end {
-            let pixel = staging.get_pixel(source_x - staging_region.x, source_y - staging_region.y);
+            let pixel = source_pixels.pixel(source_x, source_y);
             let weight =
                 triangle_weight(source_y, y_weights.center, y_weights.scale) / y_weights.sum;
             for channel in 0..4 {
@@ -717,6 +761,63 @@ fn rotated_text_bounds(width: u32, height: u32, degrees: f32, pivot: (f32, f32))
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Layer, LayerKind, ShapeStroke};
+
+    #[test]
+    fn uniform_rectangles_bypass_procedural_and_triangle_sampling() {
+        let color = [37, 91, 173, 211];
+        let layer = Layer {
+            kind: LayerKind::Rectangle {
+                width: 16_384,
+                height: 16_384,
+                color,
+                corner_radius: 0.0,
+            },
+            ..Layer::default()
+        };
+        let source = SampleSource::shape(ShapeSampler::new(&layer, [1.0; 2]).unwrap());
+        assert!(matches!(&source, SampleSource::Constant(pixel) if *pixel == color));
+        assert_eq!(
+            sample_triangle_resize(
+                &source,
+                (16_384, 16_384),
+                (131_072, 131_072),
+                (79_123, 62_417),
+            ),
+            color
+        );
+
+        for layer in [
+            Layer {
+                kind: LayerKind::Rectangle {
+                    width: 128,
+                    height: 96,
+                    color,
+                    corner_radius: 8.0,
+                },
+                ..Layer::default()
+            },
+            Layer {
+                stroke: ShapeStroke {
+                    enabled: true,
+                    width: 3.0,
+                    color: [240, 220, 180, 255],
+                },
+                kind: LayerKind::Rectangle {
+                    width: 128,
+                    height: 96,
+                    color,
+                    corner_radius: 0.0,
+                },
+                ..Layer::default()
+            },
+        ] {
+            assert!(matches!(
+                SampleSource::shape(ShapeSampler::new(&layer, [1.0; 2]).unwrap()),
+                SampleSource::Shape(_)
+            ));
+        }
+    }
 
     #[test]
     fn source_bounds_include_triangle_filter_support() {

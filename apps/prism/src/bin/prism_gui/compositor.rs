@@ -486,9 +486,18 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_layers_keep_the_safe_legacy_preview_scale_cap() {
-        let mut document = Document::new("Fallback", 16_384, 16_384);
+    fn procedural_vector_layers_use_the_requested_high_zoom_scale() {
+        let mut document = Document::new("Vector viewport", 16_384, 16_384);
         document.layers.push(Layer {
+            transform: Transform {
+                rotation: 17.0,
+                ..Transform::default()
+            },
+            stroke: ShapeStroke {
+                enabled: true,
+                width: 12.0,
+                color: [93, 216, 199, 255],
+            },
             kind: LayerKind::Rectangle {
                 width: 16_384,
                 height: 16_384,
@@ -503,16 +512,19 @@ mod tests {
             pixels_per_point: 16.0,
         };
         let key = CompositePreviewKey::new(1, 0, &document, geometry, 1.0).unwrap();
-        assert_eq!(key.scale(), 0.25);
+        assert_eq!(key.scale(), 16.0);
 
-        document.layers[0].kind = LayerKind::Rectangle {
+        document.layers[0].kind = LayerKind::Ellipse {
             width: 16_384,
             height: 16_384,
             color: [255, 255, 255, 255],
-            corner_radius: 0.0,
         };
         let key = CompositePreviewKey::new(1, 0, &document, geometry, 1.0).unwrap();
         assert_eq!(key.scale(), 16.0);
+
+        document.layers[0].adjustments.exposure = 0.25;
+        let key = CompositePreviewKey::new(1, 0, &document, geometry, 1.0).unwrap();
+        assert_eq!(key.scale(), 0.25);
     }
 
     #[test]

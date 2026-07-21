@@ -1,6 +1,6 @@
 use crate::{
-    BlendMode, Document, FontAsset, Layer, LayerKind, LayerMask, RenderRegion, TextAlignment,
-    TextEffects, TextTypography, Transform, document_supports_region_native_zoom,
+    BlendMode, Document, FontAsset, Layer, LayerKind, LayerMask, RenderRegion, ShapeStroke,
+    TextAlignment, TextEffects, TextTypography, Transform, document_supports_region_native_zoom,
     render_document_region_scaled, render_document_region_scaled_with_stats,
     render_document_scaled,
 };
@@ -71,13 +71,19 @@ fn viewport_regions_match_the_export_oracle_for_every_blend_mode() {
                 transform: Transform {
                     x: -4.0,
                     y: -3.0,
+                    rotation: 7.0,
                     ..Default::default()
+                },
+                stroke: ShapeStroke {
+                    enabled: true,
+                    width: 2.0,
+                    color: [236, 221, 142, 224],
                 },
                 kind: LayerKind::Rectangle {
                     width: 34,
                     height: 27,
                     color: [46, 188, 112, 207],
-                    corner_radius: 0.0,
+                    corner_radius: 4.0,
                 },
                 ..Layer::default()
             },
@@ -88,6 +94,7 @@ fn viewport_regions_match_the_export_oracle_for_every_blend_mode() {
                 transform: Transform {
                     x: 9.0,
                     y: 7.0,
+                    rotation: -11.0,
                     ..Default::default()
                 },
                 mask: LayerMask {
@@ -99,11 +106,15 @@ fn viewport_regions_match_the_export_oracle_for_every_blend_mode() {
                     invert: index % 2 == 0,
                 },
                 clip_to_below: index % 3 == 0,
-                kind: LayerKind::Rectangle {
+                stroke: ShapeStroke {
+                    enabled: true,
+                    width: 1.5,
+                    color: [83, 214, 231, 190],
+                },
+                kind: LayerKind::Ellipse {
                     width: 27,
                     height: 22,
                     color: [214, 76, 193, 166],
-                    corner_radius: 0.0,
                 },
                 ..Layer::default()
             },
@@ -126,8 +137,8 @@ fn viewport_regions_match_the_export_oracle_for_every_blend_mode() {
 }
 
 #[test]
-fn transformed_fallback_region_matches_exact_export_crop() {
-    let mut document = Document::new("Fallback parity", 64, 48);
+fn transformed_vector_region_matches_exact_export_crop() {
+    let mut document = Document::new("Vector parity", 64, 48);
     document.background = [28, 39, 57, 173];
     document.layers = vec![
         Layer {
@@ -136,7 +147,13 @@ fn transformed_fallback_region_matches_exact_export_crop() {
             transform: Transform {
                 x: -6.0,
                 y: 4.0,
+                rotation: -9.0,
                 ..Default::default()
+            },
+            stroke: ShapeStroke {
+                enabled: true,
+                width: 3.0,
+                color: [229, 213, 126, 240],
             },
             kind: LayerKind::Rectangle {
                 width: 45,
@@ -166,6 +183,11 @@ fn transformed_fallback_region_matches_exact_export_crop() {
                 invert: true,
             },
             clip_to_below: true,
+            stroke: ShapeStroke {
+                enabled: true,
+                width: 2.5,
+                color: [65, 218, 231, 204],
+            },
             kind: LayerKind::Ellipse {
                 width: 31,
                 height: 25,
@@ -174,7 +196,7 @@ fn transformed_fallback_region_matches_exact_export_crop() {
             ..Layer::default()
         },
     ];
-    assert!(!document_supports_region_native_zoom(&document));
+    assert!(document_supports_region_native_zoom(&document));
     let full = render_document_scaled(&document, 1.5).unwrap().to_rgba8();
     let region = RenderRegion {
         x: 7,
@@ -458,7 +480,7 @@ fn high_zoom_region_is_bounded_by_the_viewport_not_the_document() {
 }
 
 #[test]
-fn unsupported_huge_layers_fail_before_full_source_allocation() {
+fn huge_stroked_rotated_shapes_render_without_source_staging() {
     let mut document = Document::new(
         "Guarded fallback",
         crate::MAX_CANVAS_DIMENSION,
@@ -467,6 +489,15 @@ fn unsupported_huge_layers_fail_before_full_source_allocation() {
     document.layers.push(Layer {
         id: 9,
         blend_mode: BlendMode::Screen,
+        transform: Transform {
+            rotation: 11.0,
+            ..Transform::default()
+        },
+        stroke: ShapeStroke {
+            enabled: true,
+            width: 12.0,
+            color: [244, 216, 132, 255],
+        },
         kind: LayerKind::Rectangle {
             width: crate::MAX_CANVAS_DIMENSION,
             height: crate::MAX_CANVAS_DIMENSION,
@@ -475,19 +506,23 @@ fn unsupported_huge_layers_fail_before_full_source_allocation() {
         },
         ..Layer::default()
     });
-    assert!(!document_supports_region_native_zoom(&document));
-    let error = render_document_region_scaled(
+    assert!(document_supports_region_native_zoom(&document));
+    let (rendered, stats) = render_document_region_scaled_with_stats(
         &document,
         8.0,
         RenderRegion {
-            x: 0,
-            y: 0,
+            x: 60_000,
+            y: 60_000,
             width: 320,
             height: 180,
         },
     )
-    .unwrap_err();
-    assert!(format!("{error:#}").contains("bounded viewport fallback"));
+    .unwrap();
+    assert_eq!((rendered.width(), rendered.height()), (320, 180));
+    assert_eq!(stats.source_staging_pixels, 0);
+    assert_eq!(stats.source_staging_bytes, 0);
+    assert_eq!(stats.transformed_surface_pixels, 0);
+    assert!(stats.full_source_pixels > 4_096 * 4_096);
 }
 
 #[test]
