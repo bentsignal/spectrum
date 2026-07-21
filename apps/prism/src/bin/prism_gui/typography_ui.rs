@@ -15,7 +15,7 @@ struct FontUsageAnalysisKey {
 
 pub(super) struct CachedFontUsageAnalysis {
     key: FontUsageAnalysisKey,
-    analysis: prism_core::FontUsageAnalysis,
+    plan: prism_core::FontSubsetPlan,
 }
 
 fn font_usage_analysis_key(
@@ -30,6 +30,33 @@ fn font_usage_analysis_key(
         font_id: font.id,
         content_hash: font.content_hash.clone(),
     }
+}
+
+fn byte_size_label(bytes: u64) -> String {
+    if bytes < 1_024 {
+        format!("{bytes} B")
+    } else if bytes < 1_048_576 {
+        format!("{:.1} KiB", bytes as f64 / 1_024.0)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
+    }
+}
+
+fn reduction_percent(source_bytes: u64, reduction_bytes: u64) -> u64 {
+    if source_bytes == 0 {
+        return 0;
+    }
+    ((u128::from(reduction_bytes) * 100 + u128::from(source_bytes) / 2) / u128::from(source_bytes))
+        .min(100) as u64
+}
+
+fn candidate_size_label(source_bytes: u64, candidate: &prism_core::FontSubsetCandidate) -> String {
+    format!(
+        "Candidate {} · saves {} ({}%)",
+        byte_size_label(candidate.bytes),
+        byte_size_label(candidate.reduction_bytes),
+        reduction_percent(source_bytes, candidate.reduction_bytes)
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -363,15 +390,25 @@ impl PrismApp {
         if !cached_is_current {
             self.font_usage_analysis = None;
         }
-        if ui.small_button("Analyze subset retention").clicked() {
-            match prism_core::analyze_font_usage(&self.workspace.document, font_id) {
-                Ok(analysis) => {
-                    self.status = format!(
-                        "Analyzed {} Unicode scalars for subset retention",
-                        analysis.usage.codepoints.len()
+        if ui.small_button("Preview optimized-copy savings").clicked() {
+            match prism_core::plan_font_subset(&self.workspace.document, font_id) {
+                Ok(plan) => {
+                    self.status = plan.candidate.as_ref().map_or_else(
+                        || {
+                            format!(
+                                "Optimized font candidate has {} blocker(s)",
+                                plan.candidate_blockers.len()
+                            )
+                        },
+                        |candidate| {
+                            format!(
+                                "Previewed optimized font candidate: {} smaller",
+                                byte_size_label(candidate.reduction_bytes)
+                            )
+                        },
                     );
                     self.status_error = false;
-                    self.font_usage_analysis = Some(CachedFontUsageAnalysis { key, analysis });
+                    self.font_usage_analysis = Some(CachedFontUsageAnalysis { key, plan });
                 }
                 Err(error) => {
                     self.status = error.to_string();
@@ -380,7 +417,8 @@ impl PrismApp {
             }
         }
         if let Some(cached) = &self.font_usage_analysis {
-            let analysis = &cached.analysis;
+            let plan = &cached.plan;
+            let analysis = &plan.analysis;
             ui.label(
                 RichText::new(format!(
                     "{} Unicode scalars · {} variation sequences · {} text layers",
@@ -411,6 +449,40 @@ impl PrismApp {
                 "Embedding metadata disallows subsetting · verify the font license"
             };
             ui.label(RichText::new(policy).size(10.0).color(MUTED));
+            if let Some(candidate) = &plan.candidate {
+                ui.label(
+                    RichText::new(candidate_size_label(analysis.source_bytes, candidate))
+                        .size(10.0)
+                        .strong()
+                        .color(TEXT),
+                )
+                .on_hover_text(format!(
+                    "Deterministic candidate SHA-256: {}",
+                    candidate.content_hash
+                ));
+                ui.label(
+                    RichText::new(format!(
+                        "Verified with {} per-line shaping sample(s)",
+                        plan.shaping_samples.len()
+                    ))
+                    .size(10.0)
+                    .color(MUTED),
+                );
+            } else {
+                ui.label(
+                    RichText::new("No safe optimized font candidate")
+                        .size(10.0)
+                        .strong()
+                        .color(DANGER),
+                );
+                for blocker in &plan.candidate_blockers {
+                    ui.label(
+                        RichText::new(format!("• {blocker}"))
+                            .size(9.0)
+                            .color(DANGER),
+                    );
+                }
+            }
             ui.label(
                 RichText::new(format!("Source: {}", analysis.source_name))
                     .size(10.0)
@@ -421,10 +493,19 @@ impl PrismApp {
                 |path| path.display().to_string(),
             ));
             ui.label(
-                RichText::new("Unicode cmaps only; excludes symbol cmaps, shaping, and fallback")
+                RichText::new(
+                    "Analysis only · editable project unchanged · no smaller copy created",
+                )
+                .size(9.0)
+                .strong()
+                .color(MUTED),
+            );
+            ui.label(
+                RichText::new("A history-safe compact-copy export is still required to create one")
                     .size(9.0)
                     .color(MUTED),
-            );
+            )
+            .on_hover_text(plan.physical_replacement_blockers.join("\n"));
         }
     }
 
@@ -657,6 +738,22 @@ mod tests {
             before_replacement,
             font_usage_analysis_key(3, &workspace, &replaced_font)
         );
+    }
+
+    #[test]
+    fn optimized_candidate_summary_is_precise_without_promising_an_export() {
+        let candidate = prism_core::FontSubsetCandidate {
+            content_hash: "candidate".into(),
+            bytes: 2_048,
+            reduction_bytes: 6_144,
+        };
+        assert_eq!(
+            candidate_size_label(8_192, &candidate),
+            "Candidate 2.0 KiB · saves 6.0 KiB (75%)"
+        );
+        assert_eq!(byte_size_label(900), "900 B");
+        assert_eq!(byte_size_label(2_621_440), "2.5 MiB");
+        assert_eq!(reduction_percent(0, 0), 0);
     }
 
     #[test]

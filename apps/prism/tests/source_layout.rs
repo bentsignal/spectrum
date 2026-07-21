@@ -72,7 +72,7 @@ fn continuous_inspector_controls_use_gesture_transactions() {
 }
 
 #[test]
-fn font_subset_analysis_is_button_gated_and_revision_cached() {
+fn font_subset_plan_preview_is_button_gated_revision_cached_and_explicitly_read_only() {
     let typography = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/typography_ui.rs"),
     )
@@ -84,12 +84,15 @@ fn font_subset_analysis_is_button_gated_and_revision_cached() {
         .unwrap();
     let controls = &typography[start..end];
     let button = controls
-        .find("small_button(\"Analyze subset retention\").clicked()")
+        .find("small_button(\"Preview optimized-copy savings\").clicked()")
         .unwrap();
-    let analysis = controls.find("analyze_font_usage(").unwrap();
-    assert!(button < analysis);
-    assert_eq!(controls.matches("analyze_font_usage(").count(), 1);
-    assert!(!controls.contains("prism_core::font_usage("));
+    let plan = controls.find("plan_font_subset(").unwrap();
+    assert!(button < plan);
+    assert_eq!(controls.matches("plan_font_subset(").count(), 1);
+    assert!(!controls.contains("self.execute("));
+    assert!(controls.contains("editable project unchanged"));
+    assert!(controls.contains("no smaller copy created"));
+    assert!(controls.contains("history-safe compact-copy export"));
     for stable_key_part in [
         "active_tab_id",
         "document_identity",
