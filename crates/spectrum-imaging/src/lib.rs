@@ -16,4 +16,5 @@ pub use region_source::{
 pub use render::{
     ExportFormat, PixelRegion, RegionRenderError, RenderOptions, adjusted_image_dimensions,
     render_image, render_image_region_at_source_resolution,
+    render_image_region_at_source_resolution_bounded,
 };

@@ -52,8 +52,7 @@ impl RasterSourceSnapshot {
             .iter()
             .filter(|layer| layer.visible && layer.opacity > 0.0)
         {
-            if !layer.adjustments.spots.is_empty()
-                || !layer.transform.scale_x.is_finite()
+            if !layer.transform.scale_x.is_finite()
                 || !layer.transform.scale_y.is_finite()
                 || layer.transform.scale_x <= 0.0
                 || layer.transform.scale_y <= 0.0

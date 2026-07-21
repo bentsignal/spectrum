@@ -13,6 +13,8 @@ use crate::{
 
 const MAX_PNG_SCANLINE_BYTES: u64 = 64 * 1_024 * 1_024;
 const MAX_SOURCE_STAGING_PIXELS: u64 = 4_096 * 4_096;
+const MAX_ADJUSTED_STAGING_BYTES: u64 = 256 * 1_024 * 1_024;
+const BLUR_RGBA_SURFACES: u64 = 12;
 
 #[derive(Debug)]
 struct SourceReadError(anyhow::Error);
@@ -171,23 +173,27 @@ impl<'a> SourceDescriptor<'a> {
             });
         }
 
-        let adjusted_pixels = adjusted_region.pixel_count();
+        let base_dimensions = self.base_dimensions();
+        let adjusted_staging_limit = adjusted_staging_pixel_limit(self.adjustments());
+        let (image, adjusted_staging_pixels) =
+            spectrum_imaging::render_image_region_at_source_resolution_bounded(
+                base_dimensions.0,
+                base_dimensions.1,
+                self.adjustments().clone(),
+                adjusted_region.into(),
+                adjusted_staging_limit,
+                |requested| {
+                    self.stage_base(requested.into(), stats)
+                        .map_err(SourceReadError)
+                },
+            )
+            .map_err(anyhow::Error::new)?;
         stats.adjusted_staging_pixels = stats
             .adjusted_staging_pixels
-            .saturating_add(adjusted_pixels);
-        stats.max_adjusted_staging_pixels = stats.max_adjusted_staging_pixels.max(adjusted_pixels);
-        let base_dimensions = self.base_dimensions();
-        let image = spectrum_imaging::render_image_region_at_source_resolution(
-            base_dimensions.0,
-            base_dimensions.1,
-            self.adjustments().clone(),
-            adjusted_region.into(),
-            |requested| {
-                self.stage_base(requested.into(), stats)
-                    .map_err(SourceReadError)
-            },
-        )
-        .map_err(anyhow::Error::new)?;
+            .saturating_add(adjusted_staging_pixels);
+        stats.max_adjusted_staging_pixels = stats
+            .max_adjusted_staging_pixels
+            .max(adjusted_staging_pixels);
         Ok(SampleSource::Pixels {
             image,
             region: adjusted_region,
@@ -264,6 +270,21 @@ impl<'a> SourceDescriptor<'a> {
             }
         }
     }
+}
+
+fn adjusted_staging_pixel_limit(adjustments: &spectrum_imaging::Adjustments) -> u64 {
+    // image::blur can retain the input plus eleven RGBA-sized working/output
+    // surfaces; spot repair retains one immutable RGBA source beside its output.
+    // Keep known imaging-owned adjusted intermediates inside the same 256 MiB
+    // envelope as the legacy fallback while retaining the 4096-square ceiling.
+    let surfaces = if adjustments.noise_reduction > 0.0 || adjustments.sharpening > 0.0 {
+        BLUR_RGBA_SURFACES
+    } else if adjustments.spots.is_empty() {
+        1
+    } else {
+        2
+    };
+    MAX_SOURCE_STAGING_PIXELS.min(MAX_ADJUSTED_STAGING_BYTES / (4 * surfaces))
 }
 
 pub(super) enum SampleSource<'a> {

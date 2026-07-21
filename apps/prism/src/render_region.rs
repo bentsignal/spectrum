@@ -80,8 +80,7 @@ pub(crate) fn supports_bounded_source(
             | LayerKind::Text { .. }
             | LayerKind::Rectangle { .. }
             | LayerKind::Ellipse { .. }
-    ) && layer.adjustments.spots.is_empty()
-        && source::layer_supports_region_reads(layer, raster_sources)
+    ) && source::layer_supports_region_reads(layer, raster_sources)
         && layer.transform.scale_x.is_finite()
         && layer.transform.scale_y.is_finite()
         && layer.transform.scale_x > 0.0

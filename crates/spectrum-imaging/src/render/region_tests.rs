@@ -568,32 +568,94 @@ fn source_errors_and_wrong_dimensions_are_reported() {
 }
 
 #[test]
-fn spots_are_rejected_before_reading_source_pixels() {
-    let called = RefCell::new(false);
-    let error = render_image_region_at_source_resolution(
-        16,
-        12,
+fn spot_regions_match_full_render_and_request_only_the_required_repair_rings() {
+    let source = patterned_source(96, 72);
+    let adjustments = Adjustments {
+        exposure: 0.2,
+        noise_reduction: 8.0,
+        sharpening: 7.0,
+        spots: vec![
+            SpotRemoval {
+                x: 0.48,
+                y: 0.52,
+                radius: 0.09,
+                opacity: 0.8,
+            },
+            SpotRemoval {
+                x: 0.54,
+                y: 0.48,
+                radius: 0.07,
+                opacity: 0.65,
+            },
+        ],
+        ..Default::default()
+    };
+    let full = render_image(
+        DynamicImage::ImageRgba8(source.clone()),
+        adjustments.clone(),
+        RenderOptions::default(),
+    )
+    .to_rgba8();
+    let region = PixelRegion {
+        x: 39,
+        y: 29,
+        width: 20,
+        height: 16,
+    };
+    let requested = RefCell::new(None);
+    let actual = render_image_region_at_source_resolution(
+        source.width(),
+        source.height(),
+        adjustments,
+        region,
+        |region| {
+            *requested.borrow_mut() = Some(region);
+            Ok::<_, Infallible>(
+                image::imageops::crop_imm(&source, region.x, region.y, region.width, region.height)
+                    .to_image(),
+            )
+        },
+    )
+    .unwrap();
+    let expected =
+        image::imageops::crop_imm(&full, region.x, region.y, region.width, region.height)
+            .to_image();
+    assert_eq!(actual, expected);
+    let requested = requested.into_inner().unwrap();
+    assert!(requested.x < region.x);
+    assert!(requested.y < region.y);
+    assert!(requested.width < source.width());
+    assert!(requested.height < source.height());
+}
+
+#[test]
+fn spot_repair_rings_respect_the_adjusted_staging_limit_before_source_reads() {
+    let called = Cell::new(false);
+    let error = render_image_region_at_source_resolution_bounded(
+        512,
+        384,
         Adjustments {
             spots: vec![SpotRemoval {
                 x: 0.5,
                 y: 0.5,
-                radius: 0.1,
+                radius: 0.25,
                 opacity: 1.0,
             }],
             ..Default::default()
         },
         PixelRegion {
-            x: 2,
-            y: 2,
-            width: 4,
-            height: 3,
+            x: 250,
+            y: 186,
+            width: 12,
+            height: 12,
         },
+        4_096,
         |requested| {
-            *called.borrow_mut() = true;
+            called.set(true);
             Ok::<_, Infallible>(RgbaImage::new(requested.width, requested.height))
         },
     )
     .unwrap_err();
-    assert!(matches!(error, RegionRenderError::UnsupportedSpots));
-    assert!(!called.into_inner());
+    assert!(matches!(error, RegionRenderError::ExceedsStagingPixelLimit));
+    assert!(!called.get());
 }

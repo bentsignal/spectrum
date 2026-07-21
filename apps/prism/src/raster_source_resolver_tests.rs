@@ -51,6 +51,7 @@ struct MemorySource {
     pixels: RgbaImage,
     fail: bool,
     returned_dimensions: Option<(u32, u32)>,
+    reads: Option<Arc<AtomicUsize>>,
 }
 
 impl MemorySource {
@@ -72,11 +73,17 @@ impl MemorySource {
             pixels,
             fail,
             returned_dimensions: None,
+            reads: None,
         }
     }
 
     fn returning(mut self, width: u32, height: u32) -> Self {
         self.returned_dimensions = Some((width, height));
+        self
+    }
+
+    fn counting_reads(mut self, reads: Arc<AtomicUsize>) -> Self {
+        self.reads = Some(reads);
         self
     }
 }
@@ -89,6 +96,9 @@ impl ExactRegionSource for MemorySource {
     }
 
     fn read_exact_region(&self, region: PixelRegion) -> Result<RgbaImage, Self::Error> {
+        if let Some(reads) = &self.reads {
+            reads.fetch_add(1, Ordering::Relaxed);
+        }
         if self.fail {
             return Err(MemoryReadError::Forced);
         }
@@ -374,22 +384,76 @@ fn missing_provider_never_falls_back_to_a_valid_path() {
 }
 
 #[test]
-fn spotted_provider_never_falls_back_to_a_valid_path() {
-    let path = valid_raster_path("spotted-provider", 8, 6);
+fn spotted_provider_matches_export_without_redecoding_or_full_source_staging() {
+    let source = opaque_pixels(512, 384);
+    let path = std::env::temp_dir().join(format!(
+        "prism-provider-spotted-parity-{}-{}.tiff",
+        std::process::id(),
+        512_384
+    ));
+    source
+        .save_with_format(&path, image::ImageFormat::Tiff)
+        .unwrap();
+    let reads = Arc::new(AtomicUsize::new(0));
     let resolver = MemoryResolver::one(
         path.clone(),
         21,
         "memory:spotted:v1",
-        MemorySource::new(opaque_pixels(8, 6), false),
+        MemorySource::new(source, false).counting_reads(Arc::clone(&reads)),
     );
-    let mut document = raster_document(path.clone(), 8, 6);
-    document.layers[0].adjustments.spots = vec![spectrum_imaging::SpotRemoval::default()];
-
-    let error = render_full_provider_region(&document, &resolver).unwrap_err();
+    let mut document = raster_document(path.clone(), 900, 700);
+    document.layers[0].blend_mode = BlendMode::Overlay;
+    document.layers[0].opacity = 0.82;
+    document.layers[0].mask = LayerMask {
+        enabled: true,
+        invert: true,
+        x: 0.15,
+        y: 0.1,
+        width: 0.72,
+        height: 0.8,
+    };
+    document.layers[0].transform = Transform {
+        x: 24.0,
+        y: 18.0,
+        scale_x: 1.35,
+        scale_y: 1.2,
+        rotation: 13.0,
+    };
+    document.layers[0].adjustments = spectrum_imaging::Adjustments {
+        exposure: 0.15,
+        sharpening: 6.0,
+        spots: vec![spectrum_imaging::SpotRemoval {
+            x: 0.52,
+            y: 0.48,
+            radius: 0.03,
+            opacity: 0.9,
+        }],
+        ..Default::default()
+    };
+    let full = render_document_scaled(&document, 1.5).unwrap().to_rgba8();
+    let region = RenderRegion {
+        x: 480,
+        y: 330,
+        width: 160,
+        height: 120,
+    };
+    assert!(document_supports_region_native_zoom_with_sources(
+        &document, &resolver
+    ));
+    for expected_reads in 1..=2 {
+        let (actual, stats) =
+            render_document_region_scaled_with_sources_and_stats(&document, 1.5, region, &resolver)
+                .unwrap();
+        let expected =
+            image::imageops::crop_imm(&full, region.x, region.y, region.width, region.height)
+                .to_image();
+        assert_eq!(actual.to_rgba8(), expected);
+        assert_eq!(stats.fallback_decode_bytes, 0);
+        assert_eq!(stats.transformed_surface_pixels, 0);
+        assert!(stats.max_source_staging_pixels < 512 * 384);
+        assert_eq!(reads.load(Ordering::Relaxed), expected_reads);
+    }
     let _ = std::fs::remove_file(path);
-    assert!(
-        format!("{error:#}").contains("cannot use legacy path fallback with a provider resolver")
-    );
 }
 
 #[test]
