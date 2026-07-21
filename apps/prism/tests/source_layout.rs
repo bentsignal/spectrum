@@ -198,3 +198,26 @@ fn revision_graph_comes_from_the_shared_spectrum_surface() {
     assert!(history.contains("spectrum_history_ui"));
     assert!(!history.contains("fn tree_layout("));
 }
+
+#[test]
+fn native_macos_menu_disables_winit_replacement_before_launch() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = fs::read_to_string(manifest.join("src/bin/prism_gui/macos.rs"))
+        .expect("macOS integration source should be readable");
+    let disable_default = source
+        .find("event_loop_builder.with_default_menu(false)")
+        .expect("Prism must own the process-wide macOS menu");
+    let build = source
+        .find("event_loop_builder.build()")
+        .expect("event loop builder should remain explicit");
+    let install = source
+        .find("install_app_integration(open_document_sender, native_menu_sender)")
+        .expect("Prism menu should be installed after creating the event loop");
+    assert!(disable_default < build && build < install);
+
+    let binary = fs::read_to_string(manifest.join("src/bin/prism-gui.rs"))
+        .expect("Prism GUI entry point should be readable");
+    assert!(!binary.contains("with_default_menu("));
+    assert!(binary.contains("#[cfg(not(target_os = \"macos\"))]\nfn main()"));
+    assert!(binary.contains("eframe::run_native("));
+}

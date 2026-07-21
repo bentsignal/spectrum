@@ -40,6 +40,9 @@ mod layers;
 #[cfg(target_os = "macos")]
 #[path = "prism_gui/macos.rs"]
 mod macos;
+#[cfg(target_os = "macos")]
+#[path = "prism_gui/macos_menu_spec.rs"]
+mod macos_menu_spec;
 #[path = "prism_gui/model.rs"]
 mod model;
 use model::*;

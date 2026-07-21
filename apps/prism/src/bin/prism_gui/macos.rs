@@ -16,54 +16,16 @@ use objc2_app_kit::{
     NSApplication, NSApplicationDelegate, NSEventModifierFlags, NSMenu, NSMenuItem,
 };
 use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
+use winit::platform::macos::EventLoopBuilderExtMacOS;
 
 use super::*;
+use crate::macos_menu_spec::{
+    ACTION_MENU_ITEMS, ActionKeyEquivalent, KeyModifiers, NativeMenuAction, NativeMenuSection,
+};
 
 static OPEN_DOCUMENT_SENDER: OnceLock<Sender<PathBuf>> = OnceLock::new();
 static NATIVE_MENU_SENDER: OnceLock<Sender<NativeMenuAction>> = OnceLock::new();
 static APP_REPAINT: OnceLock<egui::Context> = OnceLock::new();
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(isize)]
-pub(super) enum NativeMenuAction {
-    NewDocument = 44_001,
-    OpenDocument,
-    MoveProject,
-    Export,
-    Undo,
-    Redo,
-    Cut,
-    Copy,
-    Paste,
-    ToggleHistory,
-    ToggleTerminal,
-    FitCanvas,
-    ZoomIn,
-    ZoomOut,
-}
-
-impl NativeMenuAction {
-    const ALL: [Self; 14] = [
-        Self::NewDocument,
-        Self::OpenDocument,
-        Self::MoveProject,
-        Self::Export,
-        Self::Undo,
-        Self::Redo,
-        Self::Cut,
-        Self::Copy,
-        Self::Paste,
-        Self::ToggleHistory,
-        Self::ToggleTerminal,
-        Self::FitCanvas,
-        Self::ZoomIn,
-        Self::ZoomOut,
-    ];
-
-    fn from_tag(tag: isize) -> Option<Self> {
-        Self::ALL.into_iter().find(|action| *action as isize == tag)
-    }
-}
 
 fn clipboard_viewport_command(action: NativeMenuAction) -> Option<egui::ViewportCommand> {
     match action {
@@ -278,8 +240,12 @@ fn install_app_integration(
 pub(super) fn run(initial_project: Option<PathBuf>) -> eframe::Result {
     let (open_document_sender, open_document_receiver) = mpsc::channel();
     let (native_menu_sender, native_menu_receiver) = mpsc::channel();
-    let event_loop =
-        winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+    let mut event_loop_builder =
+        winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event();
+    // winit otherwise replaces this process-wide menu in applicationDidFinishLaunching,
+    // after `install_app_integration` has installed Prism's File/Edit/View menus.
+    event_loop_builder.with_default_menu(false);
+    let event_loop = event_loop_builder.build()?;
     install_app_integration(open_document_sender, native_menu_sender);
     let mut application = eframe::create_native(
         "Prism",
@@ -312,10 +278,18 @@ fn key(key: &'static str) -> KeyEquivalent {
     }
 }
 
-fn shifted_key(key: &'static str) -> KeyEquivalent {
-    KeyEquivalent {
-        key,
-        modifiers: NSEventModifierFlags::Command | NSEventModifierFlags::Shift,
+impl From<ActionKeyEquivalent> for KeyEquivalent {
+    fn from(value: ActionKeyEquivalent) -> Self {
+        let modifiers = match value.modifiers {
+            KeyModifiers::Command => NSEventModifierFlags::Command,
+            KeyModifiers::CommandShift => {
+                NSEventModifierFlags::Command | NSEventModifierFlags::Shift
+            }
+        };
+        Self {
+            key: value.key,
+            modifiers,
+        }
     }
 }
 
@@ -345,17 +319,43 @@ fn action_item(
     target: &AnyObject,
     title: &str,
     action: NativeMenuAction,
-    equivalent: Option<KeyEquivalent>,
+    equivalent: Option<ActionKeyEquivalent>,
 ) -> Retained<NSMenuItem> {
     let item = menu_item(
         marker,
         title,
         Some(sel!(performPrismMenuAction:)),
-        equivalent,
+        equivalent.map(Into::into),
     );
     item.setTag(action as isize);
     unsafe { item.setTarget(Some(target)) };
     item
+}
+
+fn action_submenu(
+    marker: MainThreadMarker,
+    menu_bar: &NSMenu,
+    target: &AnyObject,
+    section: NativeMenuSection,
+) -> Retained<NSMenu> {
+    let menu = submenu(marker, menu_bar, section.title());
+    menu.setAutoenablesItems(false);
+    for spec in ACTION_MENU_ITEMS
+        .into_iter()
+        .filter(|spec| spec.section == section)
+    {
+        if spec.separator_before {
+            menu.addItem(&NSMenuItem::separatorItem(marker));
+        }
+        menu.addItem(&action_item(
+            marker,
+            target,
+            spec.title,
+            spec.action,
+            spec.equivalent,
+        ));
+    }
+    menu
 }
 
 fn submenu(marker: MainThreadMarker, menu_bar: &NSMenu, title: &str) -> Retained<NSMenu> {
@@ -412,115 +412,9 @@ fn install_main_menu(application: &NSApplication, target: &AnyObject, marker: Ma
     ));
     application.setServicesMenu(Some(&services_menu));
 
-    let file_menu = submenu(marker, &menu_bar, "File");
-    file_menu.setAutoenablesItems(false);
-    file_menu.addItem(&action_item(
-        marker,
-        target,
-        "New Document",
-        NativeMenuAction::NewDocument,
-        Some(key("n")),
-    ));
-    file_menu.addItem(&action_item(
-        marker,
-        target,
-        "Open…",
-        NativeMenuAction::OpenDocument,
-        Some(key("o")),
-    ));
-    file_menu.addItem(&NSMenuItem::separatorItem(marker));
-    file_menu.addItem(&action_item(
-        marker,
-        target,
-        "Move Project…",
-        NativeMenuAction::MoveProject,
-        None,
-    ));
-    file_menu.addItem(&action_item(
-        marker,
-        target,
-        "Export…",
-        NativeMenuAction::Export,
-        Some(key("e")),
-    ));
-
-    let edit_menu = submenu(marker, &menu_bar, "Edit");
-    edit_menu.setAutoenablesItems(false);
-    edit_menu.addItem(&action_item(
-        marker,
-        target,
-        "Undo",
-        NativeMenuAction::Undo,
-        Some(key("z")),
-    ));
-    edit_menu.addItem(&action_item(
-        marker,
-        target,
-        "Redo",
-        NativeMenuAction::Redo,
-        Some(shifted_key("z")),
-    ));
-    edit_menu.addItem(&NSMenuItem::separatorItem(marker));
-    edit_menu.addItem(&action_item(
-        marker,
-        target,
-        "Cut",
-        NativeMenuAction::Cut,
-        Some(key("x")),
-    ));
-    edit_menu.addItem(&action_item(
-        marker,
-        target,
-        "Copy",
-        NativeMenuAction::Copy,
-        Some(key("c")),
-    ));
-    edit_menu.addItem(&action_item(
-        marker,
-        target,
-        "Paste",
-        NativeMenuAction::Paste,
-        Some(key("v")),
-    ));
-
-    let view_menu = submenu(marker, &menu_bar, "View");
-    view_menu.setAutoenablesItems(false);
-    view_menu.addItem(&action_item(
-        marker,
-        target,
-        "Show History",
-        NativeMenuAction::ToggleHistory,
-        Some(shifted_key("h")),
-    ));
-    view_menu.addItem(&action_item(
-        marker,
-        target,
-        "Show Terminal",
-        NativeMenuAction::ToggleTerminal,
-        Some(key("j")),
-    ));
-    view_menu.addItem(&NSMenuItem::separatorItem(marker));
-    view_menu.addItem(&action_item(
-        marker,
-        target,
-        "Fit Canvas",
-        NativeMenuAction::FitCanvas,
-        Some(key("0")),
-    ));
-    view_menu.addItem(&action_item(
-        marker,
-        target,
-        "Zoom In",
-        NativeMenuAction::ZoomIn,
-        Some(key("+")),
-    ));
-    view_menu.addItem(&action_item(
-        marker,
-        target,
-        "Zoom Out",
-        NativeMenuAction::ZoomOut,
-        Some(key("-")),
-    ));
+    action_submenu(marker, &menu_bar, target, NativeMenuSection::File);
+    action_submenu(marker, &menu_bar, target, NativeMenuSection::Edit);
+    action_submenu(marker, &menu_bar, target, NativeMenuSection::View);
 
     let window_menu = submenu(marker, &menu_bar, "Window");
     window_menu.addItem(&menu_item(
@@ -701,6 +595,30 @@ mod tests {
     }
 
     #[test]
+    fn export_and_move_project_follow_workspace_and_path_state() {
+        let untitled = NativeMenuState {
+            workspace_ready: true,
+            ..Default::default()
+        };
+        assert!(untitled.allows(NativeMenuAction::Export));
+        assert!(!untitled.allows(NativeMenuAction::MoveProject));
+
+        let saved = NativeMenuState {
+            can_move_project: true,
+            ..untitled
+        };
+        assert!(saved.allows(NativeMenuAction::Export));
+        assert!(saved.allows(NativeMenuAction::MoveProject));
+
+        let modal = NativeMenuState {
+            modal_open: true,
+            ..saved
+        };
+        assert!(!modal.allows(NativeMenuAction::Export));
+        assert!(!modal.allows(NativeMenuAction::MoveProject));
+    }
+
+    #[test]
     fn queued_actions_wake_the_ui_after_successful_delivery() {
         let (sender, receiver) = mpsc::channel();
         let mut woke = false;
@@ -710,21 +628,25 @@ mod tests {
     }
 
     #[test]
-    fn focused_editors_and_terminal_keep_undo_shortcuts() {
+    fn focused_text_and_terminal_own_clipboard_but_not_prism_history() {
         let focused = NativeMenuState {
             workspace_ready: true,
             can_undo: true,
+            can_redo: true,
             keyboard_focus: true,
             ..Default::default()
         };
         let terminal = NativeMenuState {
             workspace_ready: true,
             can_undo: true,
+            can_redo: true,
             terminal_visible: true,
             ..Default::default()
         };
         assert!(!focused.allows(NativeMenuAction::Undo));
+        assert!(!focused.allows(NativeMenuAction::Redo));
         assert!(!terminal.allows(NativeMenuAction::Undo));
+        assert!(!terminal.allows(NativeMenuAction::Redo));
         assert!(terminal.allows(NativeMenuAction::ToggleTerminal));
         assert!(focused.allows(NativeMenuAction::Cut));
         assert!(focused.allows(NativeMenuAction::Copy));
@@ -791,14 +713,35 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_menu_titles_remain_static() {
-        let state = NativeMenuState::default();
+    fn dynamic_panel_titles_follow_visibility_and_clipboard_titles_stay_static() {
+        let visible = NativeMenuState {
+            history_visible: true,
+            terminal_visible: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            visible.title(NativeMenuAction::ToggleHistory),
+            Some("Hide History")
+        );
+        assert_eq!(
+            visible.title(NativeMenuAction::ToggleTerminal),
+            Some("Hide Terminal")
+        );
+        let hidden = NativeMenuState::default();
+        assert_eq!(
+            hidden.title(NativeMenuAction::ToggleHistory),
+            Some("Show History")
+        );
+        assert_eq!(
+            hidden.title(NativeMenuAction::ToggleTerminal),
+            Some("Show Terminal")
+        );
         for action in [
             NativeMenuAction::Cut,
             NativeMenuAction::Copy,
             NativeMenuAction::Paste,
         ] {
-            assert_eq!(state.title(action), None);
+            assert_eq!(hidden.title(action), None);
         }
     }
 }
