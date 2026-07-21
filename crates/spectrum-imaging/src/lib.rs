@@ -9,5 +9,5 @@ pub use adjustments::{
 };
 pub use render::{
     ExportFormat, PixelRegion, RegionRenderError, RenderOptions, adjusted_image_dimensions,
-    render_image, render_image_region,
+    render_image, render_image_region_at_source_resolution,
 };

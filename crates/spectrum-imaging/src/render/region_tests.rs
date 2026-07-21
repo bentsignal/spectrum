@@ -1,4 +1,7 @@
-use std::{cell::RefCell, convert::Infallible};
+use std::{
+    cell::{Cell, RefCell},
+    convert::Infallible,
+};
 
 use image::{DynamicImage, Rgba, RgbaImage};
 
@@ -21,7 +24,7 @@ fn render_region_from_image(
     adjustments: Adjustments,
     region: PixelRegion,
 ) -> RgbaImage {
-    render_image_region(
+    render_image_region_at_source_resolution(
         source.width(),
         source.height(),
         adjustments,
@@ -40,6 +43,177 @@ fn render_region_from_image(
         },
     )
     .unwrap()
+}
+
+#[test]
+fn source_resolution_contract_matches_default_options_and_accepts_a_consuming_reader() {
+    let source = patterned_source(40, 24);
+    let adjustments = Adjustments {
+        exposure: 0.25,
+        ..Default::default()
+    };
+    let expected = render_image(
+        DynamicImage::ImageRgba8(source.clone()),
+        adjustments.clone(),
+        RenderOptions::default(),
+    )
+    .to_rgba8();
+    let resized = render_image(
+        DynamicImage::ImageRgba8(source.clone()),
+        adjustments.clone(),
+        RenderOptions { max_size: Some(10) },
+    );
+    assert_eq!(
+        adjusted_image_dimensions(source.width(), source.height(), &adjustments),
+        Some(expected.dimensions())
+    );
+    assert_ne!((resized.width(), resized.height()), expected.dimensions());
+
+    let source_dimensions = source.dimensions();
+    let actual = render_image_region_at_source_resolution(
+        source_dimensions.0,
+        source_dimensions.1,
+        adjustments,
+        PixelRegion {
+            x: 0,
+            y: 0,
+            width: source_dimensions.0,
+            height: source_dimensions.1,
+        },
+        move |requested| {
+            assert_eq!(
+                requested,
+                PixelRegion {
+                    x: 0,
+                    y: 0,
+                    width: source_dimensions.0,
+                    height: source_dimensions.1,
+                }
+            );
+            Ok::<_, Infallible>(source)
+        },
+    )
+    .unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn invalid_dimensions_and_regions_fail_before_the_reader_is_invoked() {
+    let adjustments = Adjustments::default();
+    assert_eq!(adjusted_image_dimensions(0, 8, &adjustments), None);
+    assert_eq!(adjusted_image_dimensions(8, 0, &adjustments), None);
+    assert_eq!(adjusted_image_dimensions(0, 0, &adjustments), None);
+
+    let cases = [
+        (
+            0,
+            8,
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            true,
+        ),
+        (
+            8,
+            0,
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            true,
+        ),
+        (
+            8,
+            6,
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 1,
+            },
+            false,
+        ),
+        (
+            8,
+            6,
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 0,
+            },
+            false,
+        ),
+        (
+            8,
+            6,
+            PixelRegion {
+                x: u32::MAX,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+            false,
+        ),
+        (
+            8,
+            6,
+            PixelRegion {
+                x: 0,
+                y: u32::MAX,
+                width: 1,
+                height: 2,
+            },
+            false,
+        ),
+        (
+            8,
+            6,
+            PixelRegion {
+                x: 7,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+            false,
+        ),
+        (
+            8,
+            6,
+            PixelRegion {
+                x: 0,
+                y: 5,
+                width: 1,
+                height: 2,
+            },
+            false,
+        ),
+    ];
+    for (source_width, source_height, region, invalid_source) in cases {
+        let called = Cell::new(false);
+        let error = render_image_region_at_source_resolution(
+            source_width,
+            source_height,
+            adjustments.clone(),
+            region,
+            |requested| {
+                called.set(true);
+                Ok::<_, Infallible>(RgbaImage::new(requested.width, requested.height))
+            },
+        )
+        .unwrap_err();
+        if invalid_source {
+            assert!(matches!(error, RegionRenderError::InvalidSourceDimensions));
+        } else {
+            assert!(matches!(error, RegionRenderError::InvalidRegion(_)));
+        }
+        assert!(!called.get(), "reader was invoked for {region:?}");
+    }
 }
 
 #[test]
@@ -126,7 +300,7 @@ fn geometry_matrix_matches_full_render_at_interior_and_edges() {
             .to_rgba8();
             assert_eq!(
                 full.dimensions(),
-                adjusted_image_dimensions(source.width(), source.height(), &adjustments)
+                adjusted_image_dimensions(source.width(), source.height(), &adjustments).unwrap()
             );
             let regions = [
                 PixelRegion {
@@ -252,7 +426,7 @@ fn synthetic_large_source_is_read_once_and_never_in_full() {
         ..Default::default()
     };
     let requests = RefCell::new(Vec::new());
-    let rendered = render_image_region(
+    let rendered = render_image_region_at_source_resolution(
         source_dimensions.0,
         source_dimensions.1,
         adjustments,
@@ -298,19 +472,21 @@ fn source_errors_and_wrong_dimensions_are_reported() {
         width: 4,
         height: 3,
     };
-    let error = render_image_region(8, 6, Adjustments::default(), region, |_| {
-        Err::<RgbaImage, _>("decoder stopped")
-    })
-    .unwrap_err();
+    let error =
+        render_image_region_at_source_resolution(8, 6, Adjustments::default(), region, |_| {
+            Err::<RgbaImage, _>("decoder stopped")
+        })
+        .unwrap_err();
     assert!(matches!(
         error,
         RegionRenderError::Source("decoder stopped")
     ));
 
-    let error = render_image_region(8, 6, Adjustments::default(), region, |_| {
-        Ok::<_, Infallible>(RgbaImage::new(1, 1))
-    })
-    .unwrap_err();
+    let error =
+        render_image_region_at_source_resolution(8, 6, Adjustments::default(), region, |_| {
+            Ok::<_, Infallible>(RgbaImage::new(1, 1))
+        })
+        .unwrap_err();
     assert!(matches!(
         error,
         RegionRenderError::SourceRegionDimensions { .. }
@@ -320,7 +496,7 @@ fn source_errors_and_wrong_dimensions_are_reported() {
 #[test]
 fn spots_are_rejected_before_reading_source_pixels() {
     let called = RefCell::new(false);
-    let error = render_image_region(
+    let error = render_image_region_at_source_resolution(
         16,
         12,
         Adjustments {

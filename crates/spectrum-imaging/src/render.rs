@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::{Adjustments, ColorGrading, HslAdjustments, SpotRemoval, ToneCurve};
 
 mod region;
-pub use region::{PixelRegion, RegionRenderError, adjusted_image_dimensions, render_image_region};
+pub use region::{
+    PixelRegion, RegionRenderError, adjusted_image_dimensions,
+    render_image_region_at_source_resolution,
+};
 
 #[cfg(test)]
 mod region_tests;

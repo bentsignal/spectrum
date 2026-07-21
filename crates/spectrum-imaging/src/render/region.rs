@@ -57,22 +57,26 @@ impl<E: Error + 'static> Error for RegionRenderError<E> {
     }
 }
 
-/// Renders an exact crop of an adjusted image from one bounded source read.
+/// Renders an exact source-resolution crop from one bounded source read.
 ///
 /// The source callback receives the base-image rectangle needed for `region`,
 /// including finite filter halos. It must return pixels whose local origin is
-/// the requested rectangle's `(x, y)`. Development geometry and pixel effects
-/// otherwise follow [`super::render_image`] semantics. Spot removal is rejected
-/// until its non-local repair sampling has a bounded exact implementation.
-pub fn render_image_region<E, S>(
+/// the requested rectangle's `(x, y)`.
+///
+/// This matches [`super::render_image`] called with `RenderOptions::default()`.
+/// It deliberately has no `max_size` equivalent: callers that need a resized
+/// preview must resize separately or use the full-image renderer. Spot removal
+/// is rejected until its non-local repair sampling has a bounded exact
+/// implementation.
+pub fn render_image_region_at_source_resolution<E, S>(
     source_width: u32,
     source_height: u32,
     adjustments: Adjustments,
     region: PixelRegion,
-    mut read_source_region: S,
+    read_source_region: S,
 ) -> Result<RgbaImage, RegionRenderError<E>>
 where
-    S: FnMut(PixelRegion) -> Result<RgbaImage, E>,
+    S: FnOnce(PixelRegion) -> Result<RgbaImage, E>,
 {
     if source_width == 0 || source_height == 0 {
         return Err(RegionRenderError::InvalidSourceDimensions);
@@ -134,15 +138,21 @@ where
     Ok(crop_region(&pixels, sharpen_region, region))
 }
 
-/// Dimensions after development rotation, straighten, and crop.
+/// Source-resolution dimensions after development rotation, straighten, and crop.
+///
+/// Returns `None` when either source axis is zero, matching the region
+/// renderer's source validation.
 pub fn adjusted_image_dimensions(
     source_width: u32,
     source_height: u32,
     adjustments: &Adjustments,
-) -> (u32, u32) {
+) -> Option<(u32, u32)> {
+    if source_width == 0 || source_height == 0 {
+        return None;
+    }
     let adjustments = adjustments.clone().sanitized();
-    let geometry = AdjustedGeometry::new(source_width.max(1), source_height.max(1), &adjustments);
-    (geometry.output_width, geometry.output_height)
+    let geometry = AdjustedGeometry::new(source_width, source_height, &adjustments);
+    Some((geometry.output_width, geometry.output_height))
 }
 
 #[derive(Clone, Copy)]
