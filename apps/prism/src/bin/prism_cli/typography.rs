@@ -130,6 +130,26 @@ pub(super) fn font_list(document: &Document, query: Option<String>) -> Value {
     })
 }
 
+pub(super) fn font_usage(document: &Document, font_id: Option<u64>) -> Result<Value> {
+    let fonts = match font_id {
+        Some(font_id) => vec![prism_core::analyze_font_usage(document, font_id)?],
+        None => prism_core::analyze_all_font_usage(document)?,
+    };
+    Ok(json!({
+        "ok": true,
+        "action": "font_usage",
+        "analysis_scope": "unicode_cmap_subset_retention",
+        "font_bytes_modified": false,
+        "editable_font_bytes_preserved": true,
+        "limitations": [
+            "does not inspect symbol or other non-Unicode cmaps",
+            "does not model shaping, renderer fallback, or legal license terms",
+            "opening --session retains Prism's standard session-resume behavior"
+        ],
+        "fonts": fonts,
+    }))
+}
+
 fn resolve_face(
     document: &Document,
     family: &str,

@@ -18,6 +18,12 @@ use text::default_text_layer_name;
 mod typography;
 pub use typography::{FontAsset, FontSlant, TextAlignment, TextEffects, TextTypography};
 
+mod font_usage;
+pub use font_usage::{
+    FontUsage, FontUsageAnalysis, UnicodeVariationSequence, analyze_all_font_usage,
+    analyze_font_usage, font_usage,
+};
+
 mod transfer;
 pub use transfer::{
     LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont,

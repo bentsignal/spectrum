@@ -6,7 +6,8 @@ use std::{
 
 use crate::{
     Command, Document, LayerKind, TextAlignment, TextEffects, TextTypography, Workspace,
-    render_document, render_layer_base_scaled_with_font,
+    analyze_all_font_usage, analyze_font_usage, font_usage, render_document,
+    render_layer_base_scaled_with_font,
 };
 
 fn test_directory(label: &str) -> PathBuf {
@@ -282,5 +283,79 @@ fn imported_font_id_changes_shared_preview_and_export_pixels() {
 
     assert_ne!(imported_preview.to_rgba8(), fallback_preview.to_rgba8());
     assert_ne!(imported_export.to_rgba8(), fallback_export.to_rgba8());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn font_usage_analysis_is_sorted_deduplicated_and_non_mutating() {
+    let directory = test_directory("font-usage");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let mut workspace = Workspace::new(Document::new("Font usage", 520, 260), None);
+    workspace
+        .execute(Command::ImportFont {
+            path: source.clone(),
+        })
+        .unwrap();
+    let font_id = workspace.document.font_assets[0].id;
+    for text in ["BA\u{fe0f}\nA".to_owned(), format!(" A{}", '\u{10ffff}')] {
+        workspace
+            .execute(Command::AddText {
+                text,
+                name: None,
+                font_size: 32.0,
+                color: [255; 4],
+                x: 0.0,
+                y: 0.0,
+            })
+            .unwrap();
+        let id = workspace.document.selected.unwrap();
+        workspace
+            .execute(Command::SetTextTypography {
+                id,
+                typography: TextTypography {
+                    font_id: Some(font_id),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+    }
+    let before = workspace.document.clone();
+    let usage = font_usage(&workspace.document, font_id).unwrap();
+    assert_eq!(usage.layer_ids, vec![1, 2]);
+    assert_eq!(usage.codepoints, vec![32, 65, 66, 0x10ffff]);
+    assert_eq!(
+        usage.variation_sequences,
+        vec![crate::UnicodeVariationSequence {
+            base_codepoint: 65,
+            selector_codepoint: 0xfe0f,
+        }]
+    );
+    assert!(usage.unpaired_variation_selectors.is_empty());
+
+    let analysis = analyze_font_usage(&workspace.document, font_id).unwrap();
+    assert_eq!(analysis.usage, usage);
+    assert_eq!(
+        analysis.source_bytes,
+        epaint_default_fonts::HACK_REGULAR.len() as u64
+    );
+    assert_eq!(analysis.missing_codepoints, vec![0x10ffff]);
+    assert_eq!(
+        analysis.missing_variation_sequences,
+        usage.variation_sequences
+    );
+    assert_eq!(analysis.source_name, "Hack-Regular.ttf");
+    let canonical_source = fs::canonicalize(&source).unwrap();
+    assert_eq!(
+        analysis.original_path.as_deref(),
+        Some(canonical_source.as_path())
+    );
+    assert_eq!(
+        analyze_all_font_usage(&workspace.document).unwrap(),
+        vec![analysis]
+    );
+    assert_eq!(workspace.document, before);
+
     fs::remove_dir_all(directory).unwrap();
 }

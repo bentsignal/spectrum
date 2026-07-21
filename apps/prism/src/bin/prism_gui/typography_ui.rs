@@ -5,6 +5,34 @@ const BUNDLED_STYLE: &str = "Regular";
 const BUNDLED_WEIGHT: u16 = 300;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct FontUsageAnalysisKey {
+    tab_id: u64,
+    document_identity: u64,
+    document_generation: u64,
+    font_id: u64,
+    content_hash: String,
+}
+
+pub(super) struct CachedFontUsageAnalysis {
+    key: FontUsageAnalysisKey,
+    analysis: prism_core::FontUsageAnalysis,
+}
+
+fn font_usage_analysis_key(
+    tab_id: u64,
+    workspace: &Workspace,
+    font: &prism_core::FontAsset,
+) -> FontUsageAnalysisKey {
+    FontUsageAnalysisKey {
+        tab_id,
+        document_identity: workspace.document_identity(),
+        document_generation: workspace.document_generation(),
+        font_id: font.id,
+        content_hash: font.content_hash.clone(),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct FontFaceChoice {
     id: Option<u64>,
     family: String,
@@ -308,6 +336,95 @@ impl PrismApp {
                 id,
                 typography: with_font_id(current, font_id),
             });
+            return;
+        }
+
+        if let Some(font_id) = current.font_id {
+            self.font_usage_controls(ui, font_id);
+        }
+    }
+
+    fn font_usage_controls(&mut self, ui: &mut egui::Ui, font_id: u64) {
+        let Some(font) = self
+            .workspace
+            .document
+            .font_assets
+            .iter()
+            .find(|font| font.id == font_id)
+        else {
+            return;
+        };
+        let key = font_usage_analysis_key(self.active_tab_id, &self.workspace, font);
+        ui.add_space(4.0);
+        let cached_is_current = self
+            .font_usage_analysis
+            .as_ref()
+            .is_some_and(|cached| cached.key == key);
+        if !cached_is_current {
+            self.font_usage_analysis = None;
+        }
+        if ui.small_button("Analyze subset retention").clicked() {
+            match prism_core::analyze_font_usage(&self.workspace.document, font_id) {
+                Ok(analysis) => {
+                    self.status = format!(
+                        "Analyzed {} Unicode scalars for subset retention",
+                        analysis.usage.codepoints.len()
+                    );
+                    self.status_error = false;
+                    self.font_usage_analysis = Some(CachedFontUsageAnalysis { key, analysis });
+                }
+                Err(error) => {
+                    self.status = error.to_string();
+                    self.status_error = true;
+                }
+            }
+        }
+        if let Some(cached) = &self.font_usage_analysis {
+            let analysis = &cached.analysis;
+            ui.label(
+                RichText::new(format!(
+                    "{} Unicode scalars · {} variation sequences · {} text layers",
+                    analysis.usage.codepoints.len(),
+                    analysis.usage.variation_sequences.len(),
+                    analysis.usage.layer_ids.len()
+                ))
+                .size(10.0)
+                .color(MUTED),
+            );
+            let size_kib = analysis.source_bytes.div_ceil(1024);
+            let missing = analysis.missing_codepoints.len()
+                + analysis.missing_variation_sequences.len()
+                + analysis.usage.unpaired_variation_selectors.len();
+            let coverage = if missing == 0 {
+                "Unicode cmap retention verified".to_owned()
+            } else {
+                format!("{missing} Unicode cmap mappings need attention")
+            };
+            ui.label(
+                RichText::new(format!("{coverage} · {size_kib} KiB source"))
+                    .size(10.0)
+                    .color(MUTED),
+            );
+            let policy = if analysis.embedding_metadata_allows_subsetting {
+                "Embedding metadata allows subsetting · verify the font license"
+            } else {
+                "Embedding metadata disallows subsetting · verify the font license"
+            };
+            ui.label(RichText::new(policy).size(10.0).color(MUTED));
+            ui.label(
+                RichText::new(format!("Source: {}", analysis.source_name))
+                    .size(10.0)
+                    .color(MUTED),
+            )
+            .on_hover_text(analysis.original_path.as_ref().map_or_else(
+                || "Original path unavailable".into(),
+                |path| path.display().to_string(),
+            ));
+            ui.label(
+                RichText::new("Unicode cmaps only; excludes symbol cmaps, shaping, and fallback")
+                    .size(9.0)
+                    .color(MUTED),
+            );
         }
     }
 
@@ -512,6 +629,34 @@ mod tests {
                 shadow_color: [7, 8, 9, 10],
             },
         }
+    }
+
+    #[test]
+    fn font_analysis_cache_key_tracks_document_tab_revision_and_font_identity() {
+        let font = font(7, "Test", "Regular", 400);
+        let mut workspace = Workspace::new(Document::new("Cache", 320, 200), None);
+        let initial = font_usage_analysis_key(3, &workspace, &font);
+        assert_eq!(initial.document_generation, 0);
+        let replacement = Workspace::new(Document::new("Cache", 320, 200), None);
+        assert_ne!(initial, font_usage_analysis_key(3, &replacement, &font));
+
+        workspace
+            .execute(Command::SetCanvas {
+                width: 321,
+                height: 200,
+                background: [24, 25, 29, 255],
+            })
+            .unwrap();
+        assert_ne!(initial, font_usage_analysis_key(3, &workspace, &font));
+        assert_ne!(initial, font_usage_analysis_key(4, &workspace, &font));
+
+        let before_replacement = font_usage_analysis_key(3, &workspace, &font);
+        let mut replaced_font = font;
+        replaced_font.content_hash = "replacement-hash".into();
+        assert_ne!(
+            before_replacement,
+            font_usage_analysis_key(3, &workspace, &replaced_font)
+        );
     }
 
     #[test]

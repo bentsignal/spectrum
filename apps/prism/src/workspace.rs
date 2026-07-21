@@ -1,4 +1,7 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_DOCUMENT_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
 pub struct Workspace {
     pub document: Document,
@@ -7,6 +10,8 @@ pub struct Workspace {
     undo: Vec<Document>,
     redo: Vec<Document>,
     dirty: bool,
+    document_identity: u64,
+    document_generation: u64,
     interaction_before: Option<Document>,
     interaction_commands: Vec<Command>,
 }
@@ -26,6 +31,8 @@ impl Workspace {
             undo: Vec::new(),
             redo: Vec::new(),
             dirty: false,
+            document_identity: next_document_identity(),
+            document_generation: 0,
             interaction_before: None,
             interaction_commands: Vec::new(),
         }
@@ -110,6 +117,17 @@ impl Workspace {
         self.durable.as_ref().map(DurableProject::session_id)
     }
 
+    /// Changes whenever this workspace's live document may have changed.
+    /// GUI caches can use this without walking the document on every frame.
+    pub fn document_generation(&self) -> u64 {
+        self.document_generation
+    }
+
+    /// Process-local identity that changes when a different document replaces this workspace.
+    pub fn document_identity(&self) -> u64 {
+        self.document_identity
+    }
+
     pub fn checkpoint(&self) -> Result<()> {
         if let Some(durable) = &self.durable {
             durable.checkpoint()?;
@@ -137,6 +155,7 @@ impl Workspace {
         }
         self.document = durable.move_to(target)?;
         self.dirty = false;
+        self.bump_document_generation();
         Ok(true)
     }
 
@@ -151,6 +170,7 @@ impl Workspace {
         if let Some(document) = document {
             self.document = document;
             self.dirty = false;
+            self.bump_document_generation();
         }
         Ok(sync)
     }
@@ -202,6 +222,7 @@ impl Workspace {
         self.document = load_document(&path)?;
         self.project_path = Some(path.clone());
         self.dirty = false;
+        self.bump_document_generation();
         Ok(path)
     }
 
@@ -289,6 +310,7 @@ impl Workspace {
         self.durable = Some(durable);
         self.document = document;
         self.project_path = Some(destination.to_owned());
+        self.bump_document_generation();
         if copied {
             fs::remove_file(&source).with_context(|| {
                 format!(
@@ -307,7 +329,14 @@ impl Workspace {
         match command {
             Command::Undo => self.undo(),
             Command::Redo => self.redo(),
-            command @ Command::SelectLayer { .. } => apply_command(&mut self.document, command),
+            command @ Command::SelectLayer { .. } => {
+                let before = self.document.selected;
+                let output = apply_command(&mut self.document, command)?;
+                if self.document.selected != before {
+                    self.bump_document_generation();
+                }
+                Ok(output)
+            }
             command => self
                 .execute_batch(vec![command])?
                 .pop()
@@ -348,6 +377,7 @@ impl Workspace {
             return Ok(outputs);
         }
         self.record_edit(before);
+        self.bump_document_generation();
         Ok(outputs)
     }
 
@@ -373,6 +403,7 @@ impl Workspace {
             .commit_prepared(prepared, &candidate, label)?;
         self.document = candidate;
         self.dirty = false;
+        self.bump_document_generation();
         Ok(outputs)
     }
 
@@ -399,6 +430,7 @@ impl Workspace {
         let output = apply_command(&mut self.document, command.clone())?;
         self.interaction_commands.clear();
         self.interaction_commands.push(command);
+        self.bump_document_generation();
         Ok(output)
     }
 
@@ -438,6 +470,7 @@ impl Workspace {
             }
         }
         self.interaction_commands = commands;
+        self.bump_document_generation();
         Ok(outputs)
     }
 
@@ -470,6 +503,7 @@ impl Workspace {
         } else {
             self.record_edit(before);
         }
+        self.bump_document_generation();
         Ok(true)
     }
 
@@ -479,6 +513,7 @@ impl Workspace {
         };
         self.interaction_commands.clear();
         self.document = before;
+        self.bump_document_generation();
         true
     }
 
@@ -494,6 +529,8 @@ impl Workspace {
             undo: Vec::new(),
             redo: Vec::new(),
             dirty: false,
+            document_identity: next_document_identity(),
+            document_generation: 0,
             interaction_before: None,
             interaction_commands: Vec::new(),
         }
@@ -512,12 +549,14 @@ impl Workspace {
         if let Some(durable) = &mut self.durable {
             self.document = durable.undo()?;
             self.dirty = false;
+            self.bump_document_generation();
             return Ok(output("undo", "went back one edit", Vec::new()));
         }
         let previous = self.undo.pop().context("nothing to undo")?;
         self.redo
             .push(std::mem::replace(&mut self.document, previous));
         self.dirty = true;
+        self.bump_document_generation();
         Ok(output("undo", "went back one edit", Vec::new()))
     }
 
@@ -525,11 +564,21 @@ impl Workspace {
         if let Some(durable) = &mut self.durable {
             self.document = durable.redo()?;
             self.dirty = false;
+            self.bump_document_generation();
             return Ok(output("redo", "went forward one edit", Vec::new()));
         }
         let next = self.redo.pop().context("nothing to redo")?;
         self.undo.push(std::mem::replace(&mut self.document, next));
         self.dirty = true;
+        self.bump_document_generation();
         Ok(output("redo", "went forward one edit", Vec::new()))
     }
+
+    fn bump_document_generation(&mut self) {
+        self.document_generation = self.document_generation.wrapping_add(1);
+    }
+}
+
+fn next_document_identity() -> u64 {
+    NEXT_DOCUMENT_IDENTITY.fetch_add(1, Ordering::Relaxed)
 }

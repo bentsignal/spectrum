@@ -70,6 +70,35 @@ fn font_list_cli_accepts_an_optional_query() {
 }
 
 #[test]
+fn font_usage_cli_accepts_an_optional_asset_filter() {
+    let cli = Cli::try_parse_from([
+        "prism",
+        "--project",
+        "type.prism",
+        "font-usage",
+        "--font-id",
+        "12",
+    ])
+    .unwrap();
+    let CliCommand::FontUsage { font_id } = cli.command else {
+        panic!("font-usage subcommand should parse");
+    };
+    assert_eq!(font_id, Some(12));
+}
+
+#[test]
+fn font_usage_output_limits_its_non_mutation_and_coverage_claims() {
+    let output = typography::font_usage(&Document::new("Usage", 320, 200), None).unwrap();
+    assert_eq!(output["action"], "font_usage");
+    assert_eq!(output["analysis_scope"], "unicode_cmap_subset_retention");
+    assert_eq!(output["font_bytes_modified"], false);
+    assert!(output.get("mutates_project").is_none());
+    assert_eq!(output["editable_font_bytes_preserved"], true);
+    assert_eq!(output["limitations"].as_array().unwrap().len(), 3);
+    assert_eq!(output["fonts"], serde_json::json!([]));
+}
+
+#[test]
 fn schema_keeps_guides_and_typography_commands_together() {
     let schema = schema();
     let examples = schema["command_protocol"]["examples"].as_array().unwrap();
@@ -84,6 +113,10 @@ fn schema_keeps_guides_and_typography_commands_together() {
     }
     assert!(schema["alignment"].is_object());
     assert!(schema["typography"].is_object());
+    assert!(schema["typography"]["optimization_analysis"].is_string());
+    assert!(schema["typography"]["optimization_limitations"].is_string());
+    assert!(schema["typography"]["embedding_metadata"].is_string());
+    assert!(schema["typography"]["editable_default"].is_string());
     assert_eq!(schema["layer_transfer"]["version"], 1);
     let insert = examples
         .iter()
