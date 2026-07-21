@@ -63,7 +63,9 @@ pub(super) fn memory_plan(
     };
     // image 0.25.10's JPEG decoder constructor reads the entire encoded source
     // into a Vec. Identity preparation already enforces this configured limit.
-    let encoded_input_reservation_bytes = if descriptor.decoder_contract.ends_with(":jpeg") {
+    let encoded_input_reservation_bytes = if descriptor.decoder_contract.ends_with(":jpg")
+        || descriptor.decoder_contract.ends_with(":jpeg")
+    {
         limits.max_encoded_source_bytes
     } else {
         0
