@@ -2756,6 +2756,7 @@ dependencies = [
  "epaint_default_fonts",
  "flate2",
  "fontdue",
+ "fs2",
  "image",
  "lumen-photo",
  "objc2 0.6.4",
@@ -2773,6 +2774,7 @@ dependencies = [
  "spectrum-terminal",
  "ttf-parser 0.21.1",
  "vt100",
+ "windows-sys 0.61.2",
  "winit",
 ]
 

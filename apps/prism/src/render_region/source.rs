@@ -5,6 +5,7 @@ use image::{Rgba, RgbaImage};
 
 use crate::{
     FontAsset, Layer, LayerKind, RegionRenderStats, RenderRegion, TextTypography,
+    raster_region::inspect_raster_region_source,
     shapes::ShapeSampler,
     text_render::{measure_text_with_typography, render_text_region},
 };
@@ -29,7 +30,8 @@ impl Error for SourceReadError {
 
 pub(super) fn layer_supports_region_reads(layer: &Layer) -> bool {
     match &layer.kind {
-        LayerKind::Raster { path, .. } => png_supports_region_reads(path),
+        LayerKind::Raster { path, .. } => inspect_raster_region_source(path)
+            .is_ok_and(|source| source.info.supports_region_reads_now()),
         LayerKind::Text { .. } | LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => true,
     }
 }
@@ -265,12 +267,6 @@ impl From<spectrum_imaging::PixelRegion> for SourceRegion {
             height: region.height,
         }
     }
-}
-
-fn png_supports_region_reads(path: &Path) -> bool {
-    png_reader(path).ok().is_some_and(|reader| {
-        !reader.info().interlaced && reader.info().bit_depth != png::BitDepth::Sixteen
-    })
 }
 
 fn stage_png(path: &Path, dimensions: (u32, u32), region: SourceRegion) -> Result<RgbaImage> {
