@@ -10,6 +10,8 @@ use super::{APPLICATION_ID, AssetReference, PrismCompatibility, decode_snapshot}
 pub struct ReadOnlyFontSource {
     pub font: FontAsset,
     pub source: VerifiedFontSource,
+    pub embedded_font_count: usize,
+    pub next_font_id: u64,
 }
 
 pub fn inspect_font_source_read_only(path: &Path, font_id: u64) -> Result<ReadOnlyFontSource> {
@@ -54,7 +56,12 @@ pub fn inspect_font_source_read_only(path: &Path, font_id: u64) -> Result<ReadOn
     let font = document.font_asset(font_id)?.clone();
     let asset = font_asset(&store, &font.path)?;
     let source = font.verify_embedded_bytes(asset.bytes)?;
-    Ok(ReadOnlyFontSource { font, source })
+    Ok(ReadOnlyFontSource {
+        font,
+        source,
+        embedded_font_count: document.font_assets.len(),
+        next_font_id: document.next_font_id,
+    })
 }
 
 fn replay_font_import(store: &RevisionStore, document: &mut Document, path: &Path) -> Result<()> {

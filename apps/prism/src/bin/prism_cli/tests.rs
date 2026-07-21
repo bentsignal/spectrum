@@ -275,6 +275,89 @@ fn durable_font_source_ignores_newer_live_and_recovery_state_without_writes() {
 }
 
 #[test]
+fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
+    let directory = temporary_project("font-source-transfer").with_extension("tree");
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("transfer-destination.prism");
+    let source = directory.join("Hack-Regular.ttf");
+    let transfer_path = directory.join("font-layer.json");
+    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let mut source_workspace = Workspace::new(Document::new("Transfer source", 320, 200), None);
+    source_workspace
+        .execute(Command::ImportFont {
+            path: source.clone(),
+        })
+        .unwrap();
+    let font_id = source_workspace.document.font_assets[0].id;
+    source_workspace
+        .execute(Command::AddText {
+            text: "Transferred type".into(),
+            name: None,
+            font_size: 48.0,
+            color: [255, 255, 255, 255],
+            x: 20.0,
+            y: 30.0,
+        })
+        .unwrap();
+    let layer_id = source_workspace.document.selected.unwrap();
+    source_workspace
+        .execute(Command::SetTextTypography {
+            id: layer_id,
+            typography: prism_core::TextTypography {
+                font_id: Some(font_id),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+    let transfer = prism_core::LayerTransfer::from_selected(&source_workspace.document).unwrap();
+    std::fs::write(&transfer_path, transfer.to_json().unwrap()).unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::Init {
+            name: "Transfer destination".into(),
+            width: 320,
+            height: 200,
+            background: "18191dff".into(),
+        },
+    })
+    .unwrap();
+    for _ in 0..2 {
+        run(Cli {
+            project: project.clone(),
+            session: None,
+            command: CliCommand::LayerPaste(LayerPasteArgs {
+                input: transfer_path.clone(),
+                index: None,
+            }),
+        })
+        .unwrap();
+    }
+    let before = tree_snapshot(&directory);
+
+    let output = run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontSource { font_id: 1 },
+    })
+    .unwrap();
+    let inspected = prism_core::inspect_font_source_read_only(&project, 1).unwrap();
+
+    assert_eq!(output["family"], "Hack");
+    assert_eq!(output["style"], "Regular");
+    assert_eq!(output["source_name"], "Hack-Regular.ttf");
+    assert_eq!(
+        output["content_hash"],
+        spectrum_revisions::AssetId::for_bytes(epaint_default_fonts::HACK_REGULAR).to_string()
+    );
+    assert_eq!(inspected.embedded_font_count, 1);
+    assert_eq!(inspected.next_font_id, 2);
+    assert_eq!(inspected.font.id, 1);
+    assert_eq!(tree_snapshot(&directory), before);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn font_usage_output_limits_its_non_mutation_and_coverage_claims() {
     let output = typography::font_usage(&Document::new("Usage", 320, 200), None).unwrap();
     assert_eq!(output["action"], "font_usage");

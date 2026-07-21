@@ -299,12 +299,24 @@ const _: () = assert!(
         != 0
 );
 
+#[cfg(all(test, windows))]
+std::thread_local! {
+    static WINDOWS_AFTER_SCAN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
 #[cfg(windows)]
 fn open_no_follow(path: &Path) -> Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 
     let absolute = absolute_lexical_path(path)?;
     reject_windows_reparse_components(&absolute)?;
+    #[cfg(test)]
+    WINDOWS_AFTER_SCAN_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(WINDOWS_NO_FOLLOW_FLAGS)
@@ -349,10 +361,34 @@ fn require_windows_final_path_matches(intended: &Path, file: &File) -> Result<()
         }
         buffer.resize(required.saturating_add(1), 0);
     };
-    let final_path = normalize_windows_handle_path(&final_path)?;
     let intended = intended
         .to_str()
         .context("intended font path is not valid Unicode")?;
+    let final_path = normalize_windows_proof_path(&final_path)?;
+    let intended_path = normalize_windows_proof_path(intended)?;
+    if !windows_proof_paths_match_normalized(&intended_path, &final_path) {
+        bail!(
+            "final font handle path {} does not match intended path {}",
+            final_path,
+            intended_path
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_proof_paths_match(intended: &str, final_path: &str) -> Result<bool> {
+    // Do not expand aliases on the intended side. GetFinalPathNameByHandleW's
+    // normalized long path must prove the same spelling after prefix/separator
+    // normalization. An 8.3 input therefore fails unless Windows itself reports
+    // that exact alias as the final normalized handle path.
+    let intended = normalize_windows_proof_path(intended)?;
+    let final_path = normalize_windows_proof_path(final_path)?;
+    Ok(windows_proof_paths_match_normalized(&intended, &final_path))
+}
+
+#[cfg(windows)]
+fn windows_proof_paths_match_normalized(intended: &str, final_path: &str) -> bool {
     let final_wide: Vec<u16> = final_path.encode_utf16().collect();
     let intended_wide: Vec<u16> = intended.encode_utf16().collect();
     let comparison = unsafe {
@@ -364,25 +400,50 @@ fn require_windows_final_path_matches(intended: &Path, file: &File) -> Result<()
             1,
         )
     };
-    if comparison != windows_sys::Win32::Globalization::CSTR_EQUAL {
-        bail!(
-            "final font handle path {} does not match intended path {}",
-            final_path,
-            intended
-        );
-    }
-    Ok(())
+    comparison == windows_sys::Win32::Globalization::CSTR_EQUAL
 }
 
 #[cfg(windows)]
-fn normalize_windows_handle_path(path: &str) -> Result<String> {
-    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
-        return Ok(format!(r"\\{path}"));
+fn normalize_windows_proof_path(path: &str) -> Result<String> {
+    let path = path.replace('/', "\\");
+    let path = if path
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"\\?\UNC\"))
+    {
+        format!(r"\\{}", &path[8..])
+    } else if path
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"\\?\"))
+    {
+        path[4..].to_owned()
+    } else {
+        path
+    };
+    let unc = path.starts_with(r"\\");
+    let components = path
+        .split('\\')
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    if components
+        .iter()
+        .any(|component| matches!(*component, "." | ".."))
+    {
+        bail!("Windows font proof path contains traversal components");
     }
-    if let Some(path) = path.strip_prefix(r"\\?\") {
-        return Ok(path.to_owned());
+    if unc {
+        if components.len() < 3 {
+            bail!("Windows UNC font proof path is incomplete");
+        }
+        return Ok(format!(r"\\{}", components.join("\\")));
     }
-    bail!("final font handle returned an unprovable path {path}")
+    if components.first().is_none_or(|drive| {
+        let bytes = drive.as_bytes();
+        bytes.len() != 2 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic()
+    }) || components.len() < 2
+    {
+        bail!("Windows font proof path is not an absolute DOS or UNC path");
+    }
+    Ok(components.join("\\"))
 }
 
 #[cfg(windows)]
@@ -526,6 +587,81 @@ mod tests {
         let error = require_windows_final_path_matches(&intended_path, &opened).unwrap_err();
 
         assert!(error.to_string().contains("does not match intended path"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_proof_normalizes_prefixes_separators_and_unicode_case_symmetrically() {
+        assert!(
+            windows_proof_paths_match(r"C:\Fonts\Source.ttf", r"\\?\C:\Fonts\Source.ttf").unwrap()
+        );
+        assert!(
+            windows_proof_paths_match(r"\\?\C:\Fonts\Source.ttf", r"C:\Fonts\Source.ttf").unwrap()
+        );
+        assert!(
+            windows_proof_paths_match(
+                r"\\server\share\Fonts\Source.ttf",
+                r"\\?\UNC\server\share\Fonts\Source.ttf"
+            )
+            .unwrap()
+        );
+        assert!(
+            windows_proof_paths_match(
+                r"\\?\UNC\server\share\Fonts\Source.ttf",
+                r"//SERVER/share/fonts/source.TTF"
+            )
+            .unwrap()
+        );
+        assert!(
+            windows_proof_paths_match(r"C:/École/Police.ttf", r"\\?\c:\éCOLE\POLICE.TTF").unwrap()
+        );
+        assert!(
+            !windows_proof_paths_match(
+                r"C:\PROGRA~1\Fonts\Source.ttf",
+                r"\\?\C:\Program Files\Fonts\Source.ttf"
+            )
+            .unwrap()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn final_handle_proof_rejects_an_ancestor_junction_swapped_after_scan() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = fs::canonicalize(std::env::temp_dir())
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(format!("prism-font-junction-swap-{stamp}"));
+        let intended_directory = directory.join("intended");
+        let saved_directory = directory.join("saved-intended");
+        let redirect_directory = directory.join("redirect");
+        fs::create_dir_all(&intended_directory).unwrap();
+        fs::create_dir_all(&redirect_directory).unwrap();
+        fs::write(intended_directory.join("font.ttf"), b"same length").unwrap();
+        fs::write(redirect_directory.join("font.ttf"), b"same length").unwrap();
+        let intended_for_hook = intended_directory.clone();
+        let saved_for_hook = saved_directory.clone();
+        let redirect_for_hook = redirect_directory.clone();
+        WINDOWS_AFTER_SCAN_HOOK.with(|hook| {
+            hook.replace(Some(Box::new(move || {
+                fs::rename(&intended_for_hook, &saved_for_hook).unwrap();
+                let status = std::process::Command::new("cmd")
+                    .args(["/C", "mklink", "/J"])
+                    .arg(&intended_for_hook)
+                    .arg(&redirect_for_hook)
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "test junction should be creatable");
+            })));
+        });
+
+        let error = open_no_follow(&intended_directory.join("font.ttf")).unwrap_err();
+
+        assert!(error.to_string().contains("does not match intended path"));
+        fs::remove_dir(&intended_directory).unwrap();
         fs::remove_dir_all(directory).unwrap();
     }
 }
