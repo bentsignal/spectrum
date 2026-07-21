@@ -56,8 +56,7 @@ pub(crate) fn ensure_region_fallback_is_bounded(
     let (transformed_width, transformed_height) = if scaled_layer.transform.rotation.abs() < 0.01 {
         (scaled_width, scaled_height)
     } else {
-        let (sin, cos) =
-            crate::transform_math::rotation_sin_cos(scaled_layer.transform.rotation);
+        let (sin, cos) = crate::transform_math::rotation_sin_cos(scaled_layer.transform.rotation);
         (
             (scaled_width as f32 * cos.abs() + scaled_height as f32 * sin.abs())
                 .ceil()
