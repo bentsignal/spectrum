@@ -43,3 +43,21 @@ fn revision_graph_and_macos_shortcut_use_the_shared_spectrum_surface() {
     assert!(app.contains("spectrum_history_ui::reserve_history_shortcut()"));
     assert!(app.contains("macos::install_open_document_handler"));
 }
+
+#[test]
+fn lumen_branding_is_wired_to_runtime_and_native_packages() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repository = manifest.join("../..");
+    let app = fs::read_to_string(manifest.join("src/bin/lumen-gui.rs")).unwrap();
+    let plist = fs::read_to_string(repository.join("packaging/macos/Info.plist")).unwrap();
+    let macos = fs::read_to_string(repository.join("scripts/package-macos.sh")).unwrap();
+    let linux = fs::read_to_string(repository.join("scripts/package-linux.sh")).unwrap();
+    let windows = fs::read_to_string(repository.join("scripts/package-windows.ps1")).unwrap();
+
+    assert!(app.contains("with_icon(lumen_icon())"));
+    assert!(app.contains("lumen-violet-final-clean.png"));
+    assert!(plist.contains("<string>Lumen.icns</string>"));
+    assert!(macos.contains("lumen-violet-final-clean.png"));
+    assert!(linux.contains("com.bentsignal.Lumen.png"));
+    assert!(windows.contains("Lumen.png"));
+}

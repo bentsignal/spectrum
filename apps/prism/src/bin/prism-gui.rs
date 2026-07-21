@@ -160,10 +160,18 @@ fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1500.0, 940.0])
-            .with_min_inner_size([980.0, 640.0]),
+            .with_min_inner_size([980.0, 640.0])
+            .with_icon(prism_icon()),
         centered: true,
         ..Default::default()
     }
+}
+
+fn prism_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!(
+        "../../../../assets/branding/cropped-prism.png"
+    ))
+    .expect("bundled Prism icon must be a valid PNG")
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -617,6 +625,13 @@ mod paragraph_width_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_prism_icon_uses_the_user_cropped_artwork() {
+        let icon = prism_icon();
+        assert_eq!([icon.width, icon.height], [400, 400]);
+        assert_eq!(icon.rgba.len(), 400 * 400 * 4);
+    }
 
     #[test]
     fn fitted_canvas_preserves_aspect_ratio() {

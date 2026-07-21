@@ -8,6 +8,8 @@
 	<string>prism-gui</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.bentsignal.prism</string>
+	<key>CFBundleIconFile</key>
+	<string>Prism.icns</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
