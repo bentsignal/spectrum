@@ -1,6 +1,6 @@
 use std::{io::Write, path::PathBuf, time::Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use prism_core::{
     BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
@@ -809,7 +809,12 @@ impl TemporaryFont {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("prism-benchmark-font-{stamp}.ttf"));
+        // macOS reports `/var/folders/...`, where `/var` is a symlink. The production
+        // font reader correctly rejects symlinked ancestors, so construct this trusted
+        // benchmark fixture beneath the canonical temp root instead.
+        let temp_root = std::fs::canonicalize(std::env::temp_dir())
+            .context("could not canonicalize the benchmark font temp directory")?;
+        let path = temp_root.join(format!("prism-benchmark-font-{stamp}.ttf"));
         std::fs::write(&path, epaint_default_fonts::HACK_REGULAR)?;
         Ok(Self { path })
     }
@@ -878,5 +883,14 @@ mod staging_bound_tests {
         assert_eq!(triangle_source_extent(100.0, 1.0), 104);
         assert_eq!(triangle_source_extent(100.0, 2.0), 54);
         assert_eq!(triangle_source_extent(100.0, 0.5), 206);
+    }
+
+    #[test]
+    fn temporary_font_uses_the_canonical_temp_root() {
+        let font = TemporaryFont::new().unwrap();
+        assert_eq!(
+            font.path.parent().unwrap(),
+            std::fs::canonicalize(std::env::temp_dir()).unwrap()
+        );
     }
 }
