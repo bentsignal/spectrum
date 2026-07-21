@@ -1,5 +1,6 @@
 /target/
+/apps/prism/native/ghostty-proof/.build/
+/apps/prism/native/ghostty-proof/Artifacts/
 *.lumencatalog.tmp
 .DS_Store
 Thumbs.db
-

@@ -1,0 +1,52 @@
+# Prism Ghostty proof-of-life supply-chain and artifact contract.
+#
+# Values in this file are data consumed by scripts/build-prism-ghostty-macos.sh.
+# Keep every value on one KEY=VALUE line with no shell quoting. The build script
+# parses known keys without sourcing this file.
+LOCK_FORMAT=1
+
+# Official Ghostty v1.3.1 release. GHOSTTY_TAG_OBJECT is the annotated tag
+# object returned for refs/tags/v1.3.1; GHOSTTY_REVISION is that tag's peeled
+# source commit. They are provenance metadata. The verified SHA-256 of
+# Ghostty's official release archive is the downloaded source trust anchor;
+# the archive does not contain a manifest that binds it to the Git objects.
+GHOSTTY_VERSION=1.3.1
+GHOSTTY_TAG=v1.3.1
+GHOSTTY_TAG_OBJECT=22efb0be2bbea73e5339f5426fa3b20edabcaa11
+GHOSTTY_REVISION=332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28
+GHOSTTY_SOURCE_URL=https://release.files.ghostty.org/1.3.1/ghostty-1.3.1.tar.gz
+GHOSTTY_SOURCE_SHA256=3349d25600ffbda281197a18314f7d18791969cffe9474f0ff16a45a9ebfccdb
+
+# Ghostty 1.3.x is guaranteed by upstream to build with exactly Zig 0.15.2.
+# These URLs and checksums come from Zig's official download index. Official
+# Zig 0.15.2 predates Xcode 26.4's arm64e-only root TBD label (Ghostty #11991;
+# fixed in Zig 0.16 by Zig PR #31673, without a 0.15 backport). The official
+# archives remain the reproducible toolchains for compatible arm64 SDKs and
+# native x86_64 hosts. On affected arm64 SDKs the script instead requires the
+# already-installed Homebrew zig@0.15 bottle, which carries Homebrew's patch for
+# this SDK incompatibility. The build also uses llvm-libtool-darwin from the
+# bottle's llvm@20 dependency because Apple's libtool drops unaligned Zig
+# archive members. Those local installations are trusted input rather than
+# checksum-pinned artifacts: the script constrains their formulas, versions,
+# fixed paths, resolved keg binaries, poured-bottle receipts, and LLVM
+# architecture, but never installs or builds them.
+ZIG_VERSION=0.15.2
+ZIG_ARM64_URL=https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz
+ZIG_ARM64_SHA256=3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b
+ZIG_X86_64_URL=https://ziglang.org/download/0.15.2/zig-x86_64-macos-0.15.2.tar.xz
+ZIG_X86_64_SHA256=375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f
+HOMEBREW_ZIG_FORMULA=zig@0.15
+HOMEBREW_ZIG_ARM64_PATH=/opt/homebrew/opt/zig@0.15/bin/zig
+HOMEBREW_LLVM_FORMULA=llvm@20
+HOMEBREW_LLVM_VERSION=20.1.8
+HOMEBREW_LLVM_ARCH=arm64
+HOMEBREW_LLVM_LIBTOOL_PATH=/opt/homebrew/opt/llvm@20/bin/llvm-libtool-darwin
+
+# Upstream Ghostty 1.3.1 builds its macOS library for Ventura or newer.
+MINIMUM_MACOS_VERSION=13.0
+
+# Ghostty 1.3.1's XCFramework step writes relative to the source root; its
+# resources install relative to the explicit Zig prefix supplied by the script.
+GHOSTTY_XCFRAMEWORK_PATH=macos/GhosttyKit.xcframework
+GHOSTTY_RESOURCES_PATH=share
+GHOSTTY_RESOURCE_SENTINEL=terminfo/78/xterm-ghostty
