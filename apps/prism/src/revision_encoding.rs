@@ -8,9 +8,11 @@ pub(super) const OPERATIONS_FAMILY: &str = "spectrum.prism.commands";
 pub(super) const LEGACY_SNAPSHOT_VERSION: u32 = 1;
 pub(super) const COMPRESSED_SNAPSHOT_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_SNAPSHOT_VERSION: u32 = 3;
+pub(super) const SELECTION_SNAPSHOT_VERSION: u32 = 4;
 pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
+pub(super) const SELECTION_OPERATIONS_VERSION: u32 = 4;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -27,13 +29,17 @@ impl Compatibility for PrismCompatibility {
                     encoding.required_capabilities.is_empty()
                         || encoding.required_capabilities == [DEFLATE_CAPABILITY]
                 }
+                SELECTION_SNAPSHOT_VERSION => {
+                    encoding.required_capabilities.is_empty()
+                        || encoding.required_capabilities == [DEFLATE_CAPABILITY]
+                }
                 _ => false,
             }
     }
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=LAYER_EFFECTS_OPERATIONS_VERSION)
+            && (LEGACY_OPERATIONS_VERSION..=SELECTION_OPERATIONS_VERSION)
                 .contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
@@ -41,6 +47,13 @@ impl Compatibility for PrismCompatibility {
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
     if commands.iter().any(|command| {
+        matches!(
+            command,
+            Command::SetSelection { .. } | Command::FillSelection { .. }
+        )
+    }) {
+        SELECTION_OPERATIONS_VERSION
+    } else if commands.iter().any(|command| {
         matches!(
             command,
             Command::SetLayerStyle { .. } | Command::SetShapeFill { .. }
@@ -92,7 +105,8 @@ pub(super) fn validate_operations_version(
 mod tests {
     use super::*;
     use crate::{
-        DropShadow, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, Layer, LayerStyle, LayerTransfer,
+        DropShadow, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, Layer, LayerStyle,
+        LayerTransfer, Selection,
     };
 
     #[test]
@@ -121,6 +135,39 @@ mod tests {
         assert_eq!(operations_version(&commands), LEGACY_OPERATIONS_VERSION);
         assert!(validate_operations_version(&commands, LEGACY_OPERATIONS_VERSION).is_ok());
         assert!(validate_operations_version(&commands, LAYER_EFFECTS_OPERATIONS_VERSION).is_ok());
+        assert!(validate_operations_version(&commands, SELECTION_OPERATIONS_VERSION).is_ok());
+    }
+
+    #[test]
+    fn selection_commands_require_the_v4_operation_envelope() {
+        for command in [
+            Command::SetSelection {
+                selection: Some(Selection::rectangle(4, 5, 20, 10)),
+            },
+            Command::FillSelection {
+                color: [10, 20, 30, 255],
+                name: None,
+            },
+        ] {
+            assert_eq!(
+                operations_version(std::slice::from_ref(&command)),
+                SELECTION_OPERATIONS_VERSION
+            );
+            assert!(
+                validate_operations_version(
+                    std::slice::from_ref(&command),
+                    LAYER_EFFECTS_OPERATIONS_VERSION,
+                )
+                .is_err()
+            );
+            assert!(
+                validate_operations_version(
+                    std::slice::from_ref(&command),
+                    SELECTION_OPERATIONS_VERSION,
+                )
+                .is_ok()
+            );
+        }
     }
 
     #[test]

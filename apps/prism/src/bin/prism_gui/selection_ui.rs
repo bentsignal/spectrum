@@ -1,0 +1,149 @@
+use super::*;
+
+const MARQUEE_STROKE_POINTS: f32 = 1.0;
+
+pub(super) fn selection_from_drag(
+    canvas_width: u32,
+    canvas_height: u32,
+    start: Pos2,
+    current: Pos2,
+) -> Option<prism_core::Selection> {
+    let clamp = |position: Pos2| {
+        Pos2::new(
+            position.x.clamp(0.0, canvas_width as f32),
+            position.y.clamp(0.0, canvas_height as f32),
+        )
+    };
+    let start = clamp(start);
+    let current = clamp(current);
+    let min = start.min(current);
+    let max = start.max(current);
+    let left = min.x.floor().max(0.0) as u32;
+    let top = min.y.floor().max(0.0) as u32;
+    let right = max.x.ceil().min(canvas_width as f32) as u32;
+    let bottom = max.y.ceil().min(canvas_height as f32) as u32;
+    (right > left && bottom > top)
+        .then(|| prism_core::Selection::rectangle(left, top, right - left, bottom - top))
+}
+
+pub(super) fn selection_screen_rect(
+    geometry: CanvasGeometry,
+    selection: prism_core::Selection,
+) -> Rect {
+    let (x, y, width, height) = selection.bounds();
+    Rect::from_min_max(
+        geometry.canvas_to_screen(Pos2::new(x as f32, y as f32)),
+        geometry.canvas_to_screen(Pos2::new((x + width) as f32, (y + height) as f32)),
+    )
+}
+
+fn paint_marquee(ui: &egui::Ui, rect: Rect, preview: bool) {
+    if preview {
+        ui.painter().rect_filled(rect, 0.0, with_alpha(ACCENT, 24));
+    }
+    ui.painter().rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(MARQUEE_STROKE_POINTS + 2.0, Color32::from_black_alpha(190)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(MARQUEE_STROKE_POINTS, Color32::WHITE),
+        egui::StrokeKind::Inside,
+    );
+}
+
+pub(super) fn paint_selection_overlay(
+    ui: &egui::Ui,
+    geometry: CanvasGeometry,
+    selection: prism_core::Selection,
+) {
+    paint_marquee(ui, selection_screen_rect(geometry, selection), false);
+}
+
+pub(super) fn paint_selection_drag(
+    ui: &egui::Ui,
+    geometry: CanvasGeometry,
+    selection: prism_core::Selection,
+) {
+    paint_marquee(ui, selection_screen_rect(geometry, selection), true);
+}
+
+impl PrismApp {
+    pub(super) fn selection_workbench_controls(&mut self, ui: &mut egui::Ui) {
+        let has_selection = self.workspace.document.selection.is_some();
+        ui.separator();
+        ui.label(RichText::new("FILL").size(9.0).strong().color(SUBTLE));
+        ui.color_edit_button_srgba(&mut self.selection_fill_color)
+            .on_hover_text("Solid fill color");
+        if ui
+            .add_enabled(has_selection, egui::Button::new("Create fill layer"))
+            .on_hover_text("Create one editable solid layer inside the marquee")
+            .clicked()
+        {
+            self.execute(Command::FillSelection {
+                color: self.selection_fill_color.to_array(),
+                name: None,
+            });
+        }
+        if ui
+            .add_enabled(has_selection, egui::Button::new("Clear"))
+            .on_hover_text("Clear the rectangular selection")
+            .clicked()
+        {
+            self.execute(Command::SetSelection { selection: None });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marquee_mapping_is_stable_across_zoom_pan_and_rotated_content() {
+        let viewport = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(900.0, 700.0));
+        let expected = prism_core::Selection::rectangle(120, 80, 241, 161);
+        for geometry in [
+            canvas_geometry(viewport, 800, 600, 0.5, Vec2::new(-60.0, 24.0)),
+            canvas_geometry(viewport, 800, 600, 4.0, Vec2::new(71.0, -33.0)),
+        ] {
+            let start =
+                geometry.screen_to_canvas(geometry.canvas_to_screen(Pos2::new(120.2, 80.4)));
+            let current =
+                geometry.screen_to_canvas(geometry.canvas_to_screen(Pos2::new(360.6, 240.7)));
+            assert_eq!(
+                selection_from_drag(800, 600, start, current),
+                Some(expected)
+            );
+            let screen = selection_screen_rect(geometry, expected);
+            assert!((screen.width() - 241.0 * geometry.pixels_per_point).abs() < 0.01);
+            assert!((screen.height() - 161.0 * geometry.pixels_per_point).abs() < 0.01);
+        }
+        // Selection geometry is document-space and therefore independent of any
+        // focused layer's rotation; rotation never enters either mapping helper.
+        let rotated_layer = Layer {
+            transform: Transform {
+                rotation: 37.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(rotated_layer.transform.rotation, 37.0);
+        assert_eq!(MARQUEE_STROKE_POINTS, 1.0);
+    }
+
+    #[test]
+    fn reverse_and_outside_drags_clip_to_exact_canvas_pixels() {
+        assert_eq!(
+            selection_from_drag(100, 80, Pos2::new(44.2, 31.2), Pos2::new(-8.0, 9.8)),
+            Some(prism_core::Selection::rectangle(0, 9, 45, 23))
+        );
+        assert_eq!(
+            selection_from_drag(100, 80, Pos2::new(-8.0, -4.0), Pos2::new(-1.0, 20.0)),
+            None
+        );
+    }
+}

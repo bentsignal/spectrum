@@ -54,8 +54,11 @@ mod project_lifecycle;
 mod raster_sources;
 #[path = "prism_gui/renderer.rs"]
 mod renderer;
+#[path = "prism_gui/selection_ui.rs"]
+mod selection_ui;
 #[path = "prism_gui/shadow_preview.rs"]
 mod shadow_preview;
+use selection_ui::*;
 #[path = "prism_gui/shortcuts.rs"]
 mod shortcuts;
 use shadow_preview::{bounded_shadow_mask, for_each_shadow_preview_sample};
@@ -120,6 +123,7 @@ struct PrismApp {
     shape_kind: chrome::ShapeKind,
     tool_palette: Option<chrome::PaletteState>,
     shape_palette: Option<chrome::PaletteState>,
+    selection_fill_color: Color32,
     inspector_section: inspector::InspectorSection,
     composition_query: String,
     composition_search_focus: bool,
@@ -226,6 +230,7 @@ impl PrismApp {
             shape_kind: chrome::ShapeKind::Rectangle,
             tool_palette: None,
             shape_palette: None,
+            selection_fill_color: Color32::from_rgba_unmultiplied(93, 216, 199, 255),
             inspector_section: inspector::InspectorSection::default(),
             composition_query: String::new(),
             composition_search_focus: false,

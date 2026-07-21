@@ -495,14 +495,14 @@ fn durable_project_uses_sparse_compressed_snapshots() {
         .unwrap();
     assert_eq!(legacy_snapshot_count, 1);
     assert_eq!(compressed_snapshot_count, 0);
-    let effects_snapshot_count: u32 = connection
+    let selection_snapshot_count: u32 = connection
         .query_row(
-            "SELECT count(*) FROM snapshots WHERE version = 3",
+            "SELECT count(*) FROM snapshots WHERE version = 4",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(effects_snapshot_count, 2);
+    assert_eq!(selection_snapshot_count, 2);
     drop(connection);
     let project_bytes = std::fs::metadata(&project_path).unwrap().len();
     eprintln!("250-action compact Prism project: {project_bytes} bytes");

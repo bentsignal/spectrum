@@ -322,7 +322,7 @@ fn durable_effect_edits_use_the_version_three_operation_envelope() {
     assert_eq!(effect_versions, 2);
     let effect_snapshots: u32 = connection
         .query_row(
-            "SELECT count(*) FROM snapshots WHERE version = 3",
+            "SELECT count(*) FROM snapshots WHERE version = 4",
             [],
             |row| row.get(0),
         )

@@ -8,6 +8,57 @@ fn colors_accept_rgb_and_rgba() {
 }
 
 #[test]
+fn selection_cli_persists_and_fills_without_touching_existing_layers() {
+    let project = temporary_project("selection");
+    let project_arg = project.to_str().unwrap();
+    for arguments in [
+        vec!["init", "Selection CLI", "--width", "80", "--height", "60"],
+        vec![
+            "add-rectangle",
+            "--width",
+            "12",
+            "--height",
+            "10",
+            "--x",
+            "30",
+            "--y",
+            "20",
+        ],
+        vec!["selection", "rectangle", "4", "5", "20", "10"],
+        vec!["selection", "fill", "--color", "12345678", "--name", "Wash"],
+    ] {
+        let mut cli = vec!["prism", "--project", project_arg];
+        cli.extend(arguments);
+        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+    }
+    let document = Workspace::load_read_only(&project).unwrap();
+    assert_eq!(
+        document.selection,
+        Some(prism_core::Selection::rectangle(4, 5, 20, 10))
+    );
+    assert_eq!(document.layers.len(), 2);
+    assert_eq!(document.layers[0].name, "Rectangle");
+    assert_eq!(document.layers[1].name, "Wash");
+    assert_eq!(
+        (
+            document.layers[1].transform.x,
+            document.layers[1].transform.y
+        ),
+        (4.0, 5.0)
+    );
+    assert!(matches!(
+        document.layers[1].kind,
+        prism_core::LayerKind::Rectangle {
+            width: 20,
+            height: 10,
+            color: [0x12, 0x34, 0x56, 0x78],
+            corner_radius: 0.0,
+        }
+    ));
+    std::fs::remove_file(project).unwrap();
+}
+
+#[test]
 fn benchmark_cli_defaults_to_interactive_and_accepts_hosted_ci() {
     let default = Cli::try_parse_from(["prism", "benchmark", "--strict"]).unwrap();
     let CliCommand::Benchmark {
@@ -473,6 +524,7 @@ fn schema_keeps_guides_and_typography_commands_together() {
         assert!(examples.iter().any(|example| example["command"] == command));
     }
     assert!(schema["alignment"].is_object());
+    assert!(schema["selection"].is_object());
     assert!(schema["typography"].is_object());
     assert!(schema["typography"]["subset_plan"].is_string());
     assert!(schema["typography"]["optimization_analysis"].is_string());

@@ -5,7 +5,7 @@ use spectrum_imaging::AdjustmentPatch;
 
 use crate::{
     Alignment, AlignmentReference, BlendMode, GuideOrientation, LayerMask, LayerStyle,
-    LayerTransfer, ShapeFill, ShapeStroke, TextTypography, Transform,
+    LayerTransfer, Selection, ShapeFill, ShapeStroke, TextTypography, Transform,
 };
 
 #[derive(Clone, Debug, Serialize)]
@@ -105,6 +105,13 @@ pub enum Command {
     },
     SelectLayer {
         id: Option<u64>,
+    },
+    SetSelection {
+        selection: Option<Selection>,
+    },
+    FillSelection {
+        color: [u8; 4],
+        name: Option<String>,
     },
     MoveLayer {
         id: u64,
