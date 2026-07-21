@@ -291,13 +291,23 @@ impl PrismApp {
     }
 
     pub(super) fn layer_source_geometry(&self, layer: &Layer) -> Option<LayerSourceGeometry> {
-        self.layer_visuals
+        let cached = self
+            .layer_visuals
             .get(&layer.id)
-            .map(|entry| entry.source_geometry)
-            .or_else(|| {
-                source_geometry_before_preview(layer, self.workspace.document.font_for_layer(layer))
-            })
+            .map(|entry| (&entry.key, entry.source_geometry));
+        current_layer_source_geometry(layer, cached, self.workspace.document.font_for_layer(layer))
     }
+}
+
+pub(super) fn current_layer_source_geometry(
+    layer: &Layer,
+    cached: Option<(&LayerVisualKey, LayerSourceGeometry)>,
+    font_asset: Option<&prism_core::FontAsset>,
+) -> Option<LayerSourceGeometry> {
+    cached
+        .filter(|(key, _)| key.kind == layer.kind)
+        .map(|(_, geometry)| geometry)
+        .or_else(|| source_geometry_before_preview(layer, font_asset))
 }
 
 struct CachedLayerBase {

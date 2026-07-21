@@ -851,7 +851,7 @@ mod tests {
             );
         }
         assert_eq!(
-            resize_cursor(ResizeHandle::TopLeft),
+            resize_cursor(ResizeHandle::TopLeft, 0.0),
             egui::CursorIcon::ResizeNwSe
         );
     }

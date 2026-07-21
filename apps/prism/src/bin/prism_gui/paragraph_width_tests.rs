@@ -111,6 +111,56 @@ fn paragraph_midpoints_are_zoom_invariant_and_exclusive_to_paragraph_text() {
 }
 
 #[test]
+fn paragraph_cursor_tracks_the_transformed_local_x_axis() {
+    for handle in [ResizeHandle::ParagraphLeft, ResizeHandle::ParagraphRight] {
+        assert_eq!(
+            resize_cursor(handle, 0.0),
+            egui::CursorIcon::ResizeHorizontal
+        );
+        assert_eq!(resize_cursor(handle, 45.0), egui::CursorIcon::ResizeNwSe);
+        assert_eq!(
+            resize_cursor(handle, 90.0),
+            egui::CursorIcon::ResizeVertical
+        );
+    }
+}
+
+#[test]
+fn rapid_previews_and_a_new_drag_ignore_stale_cached_text_geometry() {
+    let stale_layer = paragraph_layer(Transform::default(), 180.0);
+    let stale_key = LayerVisualKey::new(&stale_layer, 1.0);
+    let stale_source = source_for(&stale_layer);
+
+    let mut current = paragraph_layer(Transform::default(), 300.0);
+    let current_source =
+        current_layer_source_geometry(&current, Some((&stale_key, stale_source)), None).unwrap();
+    assert_eq!(current_source.paragraph_bounds.unwrap().width(), 300.0);
+
+    let mut drag = width_drag(&current, current_source, ResizeHandle::ParagraphRight);
+    drag.current_canvas += Vec2::new(40.0, 0.0);
+    let (typography, transform, _) =
+        paragraph_width_preview(&current, drag, ResizeHandle::ParagraphRight, None).unwrap();
+    let LayerKind::Text {
+        typography: current_typography,
+        ..
+    } = &mut current.kind
+    else {
+        unreachable!();
+    };
+    *current_typography = typography;
+    current.transform = transform;
+
+    let latest_source =
+        current_layer_source_geometry(&current, Some((&stale_key, stale_source)), None).unwrap();
+    assert_eq!(latest_source.paragraph_bounds.unwrap().width(), 340.0);
+    let new_drag = width_drag(&current, latest_source, ResizeHandle::ParagraphRight);
+    assert_eq!(
+        paragraph_width_from_drag(new_drag, ResizeHandle::ParagraphRight),
+        Some(340.0)
+    );
+}
+
+#[test]
 fn rotated_width_drag_uses_local_x_and_preserves_typography_and_scale() {
     let layer = paragraph_layer(
         Transform {

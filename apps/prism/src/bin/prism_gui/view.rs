@@ -194,12 +194,17 @@ pub(super) fn resize_handle_at(
         .map(|(handle, _)| handle)
 }
 
-pub(super) fn resize_cursor(handle: ResizeHandle) -> egui::CursorIcon {
+pub(super) fn resize_cursor(handle: ResizeHandle, rotation: f32) -> egui::CursorIcon {
     match handle {
         ResizeHandle::TopLeft | ResizeHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
         ResizeHandle::TopRight | ResizeHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
         ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight => {
-            egui::CursorIcon::ResizeHorizontal
+            match ((rotation.rem_euclid(180.0) / 45.0).round() as u32) % 4 {
+                0 => egui::CursorIcon::ResizeHorizontal,
+                1 => egui::CursorIcon::ResizeNwSe,
+                2 => egui::CursorIcon::ResizeVertical,
+                _ => egui::CursorIcon::ResizeNeSw,
+            }
         }
     }
 }

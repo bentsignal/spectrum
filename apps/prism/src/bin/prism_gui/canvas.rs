@@ -172,7 +172,13 @@ impl PrismApp {
         {
             ui.ctx().set_cursor_icon(cursor);
         } else if let Some(handle) = resize_hover {
-            ui.ctx().set_cursor_icon(resize_cursor(handle));
+            let rotation = self
+                .drag
+                .filter(|drag| matches!(drag.action, DragAction::Resize(_)))
+                .map(|drag| drag.transform.rotation)
+                .or_else(|| self.selected_layer().map(|layer| layer.transform.rotation))
+                .unwrap_or_default();
+            ui.ctx().set_cursor_icon(resize_cursor(handle, rotation));
         }
         if response.drag_started()
             && let Some(pointer) = pointer
