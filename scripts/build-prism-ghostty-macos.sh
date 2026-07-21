@@ -116,6 +116,7 @@ require_command codesign
 require_command curl
 require_command ditto
 require_command ln
+require_command lipo
 require_command mktemp
 require_command nm
 require_command plutil
@@ -173,6 +174,9 @@ ghostty_sha="$(lock_value GHOSTTY_SOURCE_SHA256)"
 zig_version="$(lock_value ZIG_VERSION)"
 homebrew_zig_formula="$(lock_value HOMEBREW_ZIG_FORMULA)"
 homebrew_zig_arm64_path="$(lock_value HOMEBREW_ZIG_ARM64_PATH)"
+homebrew_llvm_formula="$(lock_value HOMEBREW_LLVM_FORMULA)"
+homebrew_llvm_version="$(lock_value HOMEBREW_LLVM_VERSION)"
+homebrew_llvm_arch="$(lock_value HOMEBREW_LLVM_ARCH)"
 homebrew_llvm_libtool_path="$(lock_value HOMEBREW_LLVM_LIBTOOL_PATH)"
 minimum_macos="$(lock_value MINIMUM_MACOS_VERSION)"
 xcframework_relative="$(lock_value GHOSTTY_XCFRAMEWORK_PATH)"
@@ -180,6 +184,7 @@ resources_relative="$(lock_value GHOSTTY_RESOURCES_PATH)"
 resource_sentinel="$(lock_value GHOSTTY_RESOURCE_SENTINEL)"
 
 [[ "$lock_format" == "1" ]] || die "unsupported lock format: $lock_format"
+[[ "$ghostty_version" == "1.3.1" ]] || die "this proof expects Ghostty 1.3.1"
 [[ "$ghostty_tag" == "v$ghostty_version" ]] || die "Ghostty tag/version mismatch in lock file"
 [[ "$ghostty_tag_object" =~ ^[0-9a-f]{40}$ ]] \
   || die "invalid Ghostty annotated tag object in lock file"
@@ -192,6 +197,12 @@ resource_sentinel="$(lock_value GHOSTTY_RESOURCE_SENTINEL)"
   || die "this proof expects Homebrew's zig@0.15 patched toolchain formula"
 [[ "$homebrew_zig_arm64_path" == "/opt/homebrew/opt/zig@0.15/bin/zig" ]] \
   || die "unexpected Homebrew Zig path in lock file: $homebrew_zig_arm64_path"
+[[ "$homebrew_llvm_formula" == "llvm@20" ]] \
+  || die "this proof expects Homebrew's llvm@20 archive tool formula"
+[[ "$homebrew_llvm_version" == "20.1.8" ]] \
+  || die "this proof expects Homebrew LLVM 20.1.8"
+[[ "$homebrew_llvm_arch" == "arm64" ]] \
+  || die "this proof expects an arm64 Homebrew LLVM bottle"
 [[ "$homebrew_llvm_libtool_path" == "/opt/homebrew/opt/llvm@20/bin/llvm-libtool-darwin" ]] \
   || die "unexpected Homebrew LLVM libtool path in lock file: $homebrew_llvm_libtool_path"
 [[ "$minimum_macos" == "13.0" ]] || die "this proof expects Ghostty's macOS 13.0 deployment target"
@@ -247,8 +258,31 @@ case "$machine_arch" in
       actual_zig_version="$("$zig_binary" version)"
       [[ "$actual_zig_version" == "$zig_version" ]] \
         || die "wrong Homebrew Zig version at $zig_binary (expected $zig_version, got $actual_zig_version); install the exact bottle with: $homebrew_zig_install"
+      homebrew_llvm_install="brew install --force-bottle $homebrew_llvm_formula"
+      actual_homebrew_llvm_prefix="$(brew --prefix "$homebrew_llvm_formula" 2>/dev/null || true)"
+      expected_homebrew_llvm_prefix="${homebrew_llvm_libtool_path%/bin/llvm-libtool-darwin}"
+      [[ "$actual_homebrew_llvm_prefix" == "$expected_homebrew_llvm_prefix" ]] \
+        || die "the Ghostty archive workaround requires $homebrew_llvm_formula at $expected_homebrew_llvm_prefix; install it with: $homebrew_llvm_install"
       [[ -x "$homebrew_llvm_libtool_path" ]] \
-        || die "Homebrew Zig's LLVM archive tool is missing: $homebrew_llvm_libtool_path"
+        || die "Homebrew Zig's LLVM archive tool is missing; install it with: $homebrew_llvm_install"
+      resolved_homebrew_llvm_prefix="$(realpath "$actual_homebrew_llvm_prefix")"
+      resolved_llvm_libtool="$(realpath "$homebrew_llvm_libtool_path")"
+      expected_resolved_llvm_libtool="$(realpath "$resolved_homebrew_llvm_prefix/bin/llvm-libtool-darwin")"
+      [[ "$resolved_llvm_libtool" == "$expected_resolved_llvm_libtool" ]] \
+        || die "Homebrew LLVM libtool resolves outside the installed $homebrew_llvm_formula keg; reinstall it with: $homebrew_llvm_install"
+      homebrew_llvm_receipt="$resolved_homebrew_llvm_prefix/INSTALL_RECEIPT.json"
+      [[ -f "$homebrew_llvm_receipt" ]] \
+        || die "Homebrew LLVM has no installation receipt; reinstall the bottle with: $homebrew_llvm_install"
+      llvm_poured_from_bottle="$(plutil -extract poured_from_bottle raw -o - "$homebrew_llvm_receipt" 2>/dev/null || true)"
+      [[ "$llvm_poured_from_bottle" == "true" ]] \
+        || die "Homebrew LLVM was not poured from a bottle; reinstall it with: $homebrew_llvm_install"
+      actual_homebrew_llvm_arch="$(lipo -archs "$resolved_llvm_libtool" 2>/dev/null || true)"
+      [[ "$actual_homebrew_llvm_arch" == "$homebrew_llvm_arch" ]] \
+        || die "wrong Homebrew LLVM architecture at $homebrew_llvm_libtool_path (expected $homebrew_llvm_arch, got ${actual_homebrew_llvm_arch:-unknown})"
+      actual_homebrew_llvm_version="$("$resolved_llvm_libtool" --version 2>/dev/null \
+        | awk 'NR == 1 && $1 == "Homebrew" && $2 == "LLVM" && $3 == "version" { print $4; exit }')"
+      [[ "$actual_homebrew_llvm_version" == "$homebrew_llvm_version" ]] \
+        || die "wrong Homebrew LLVM version at $homebrew_llvm_libtool_path (expected $homebrew_llvm_version, got ${actual_homebrew_llvm_version:-unknown}); install the exact bottle with: $homebrew_llvm_install"
     fi
     ;;
   x86_64)
@@ -267,6 +301,9 @@ ghostty_archive="$downloads_dir/ghostty-$ghostty_version.tar.gz"
 download_verified "$ghostty_url" "$ghostty_sha" "$ghostty_archive"
 
 ghostty_source="$sources_dir/ghostty-$ghostty_version"
+if [[ -e "$ghostty_source" || -L "$ghostty_source" ]]; then
+  safe_remove_tree "$ghostty_source"
+fi
 extract_once "$ghostty_archive" "$ghostty_sha" "ghostty-$ghostty_version" \
   "$ghostty_source" gz
 if [[ "$zig_source_kind" == "official" ]]; then
@@ -287,6 +324,9 @@ if [[ "$zig_source_kind" == "official" ]]; then
 fi
 
 ghostty_prefix="$install_root/ghostty-$ghostty_version"
+if [[ -e "$ghostty_prefix" || -L "$ghostty_prefix" ]]; then
+  safe_remove_tree "$ghostty_prefix"
+fi
 mkdir -p "$ghostty_prefix"
 zig_build_path="$PATH"
 if [[ "$zig_source_kind" == "homebrew" ]]; then
@@ -377,5 +417,6 @@ echo "Xcode: $xcode_version ($xcode_build) from $xcode_developer_dir"
 echo "Zig: $zig_version ($zig_arch toolchain on $machine_arch host)"
 if [[ "$zig_source_kind" == "homebrew" ]]; then
   echo "  compatibility mode: Homebrew patched $homebrew_zig_formula bottle at $zig_binary"
+  echo "  archive tool: $homebrew_llvm_formula $homebrew_llvm_version at $resolved_llvm_libtool"
 fi
 echo "Run manually when ready: open '$bundle'"

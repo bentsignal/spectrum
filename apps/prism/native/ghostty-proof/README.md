@@ -76,7 +76,9 @@ continue to use the checksummed official Zig archives. Unlike those archives,
 the local Homebrew bottles are trusted input rather than checksum-pinned
 artifacts; the script verifies Zig's formula prefix, resolved keg binary,
 exact reported version, and `poured_from_bottle` installation receipt before
-downloading Ghostty.
+downloading Ghostty. It separately verifies LLVM's locked formula and version,
+formula prefix, resolved keg binary, bottle receipt, arm64 architecture, and
+reported tool version.
 
 ## Build
 
@@ -107,11 +109,15 @@ The script never calls `xcode-select --switch` and does not alter global Xcode
 selection.
 
 The script is noninteractive. It verifies every downloaded archive before
-extraction, uses Ghostty's required Zig toolchain (with the narrow
+extraction. Downloads and the official Zig toolchain may remain cached, but
+every invocation removes and re-extracts the exact Ghostty source tree and
+clears its exact install prefix before building. This prevents a prior build's
+generated XCFramework or resources from satisfying the current build's output
+checks. The script uses Ghostty's required Zig toolchain (with the narrow
 Homebrew-patched route above), limits the Ghostty build to two jobs, stages a
-SwiftPM build against the generated XCFramework, copies Ghostty's resources and
-license into the proof app, and applies an ad-hoc local signature. It does not
-launch the app.
+SwiftPM build against the generated XCFramework, copies Ghostty's resources
+and license into the proof app, and applies an ad-hoc local signature. It does
+not launch the app.
 
 Expected output:
 
@@ -138,19 +144,22 @@ After the build succeeds:
 open target/ghostty-proof/dist/PrismGhosttyProof.app
 ```
 
-Check only the proof claims:
+Acceptance status for the user-tested Xcode 26.5 build:
 
-1. A shell prompt appears and accepts ordinary text, Return, arrows, Command-C,
-   and Command-V.
-2. Rapid window resize keeps terminal content attached to the view without
-   stale backing-scale artifacts.
-3. Moving the window between Retina-scaled displays updates rendering scale.
-4. The surface gains focus on click and continues rendering command output.
-5. Minimizing, hiding, and restoring the window suspends and resumes Ghostty
-   visibility without losing the live shell.
-6. Closing an idle shell exits cleanly; closing with a foreground process asks
-   before stopping it.
-7. Activity Monitor shows no runaway idle or occluded repaint loop.
+- [x] A shell prompt accepted `ls`, Return, and rendered its output.
+- [x] Rapid window resize remained visually attached without an observed stale
+  backing-scale artifact.
+- [ ] Arrow-key input and Command-C/Command-V clipboard behavior are unverified.
+- [ ] Moving the window between Retina-scaled displays and checking scale
+  updates is unverified.
+- [ ] Focus-on-click while command output continues is unverified.
+- [ ] Minimize, hide, and restore visibility behavior is unverified.
+- [ ] Idle close and the foreground-process confirmation path are unverified.
+- [ ] Activity Monitor inspection for runaway idle or occluded repaint is
+  unverified.
+
+Only the two checked items are completed evidence. The remaining entries are a
+pending manual acceptance checklist, not proof claims.
 
 Do not use this harness to evaluate IME, VoiceOver, terminal selection, OSC 52,
 or Prism/eframe child-view and overlay behavior; those paths are deliberately
