@@ -3,9 +3,10 @@ use std::{io::Write, path::PathBuf, time::Instant};
 use anyhow::{Result, bail};
 use prism_core::{
     BlendMode, Command, Document, FontAsset, Layer, LayerKind, LayerMask, RenderRegion,
-    ShapeStroke, TextAlignment, TextEffects, TextTypography, Transform, Workspace, render_document,
-    render_document_region_scaled, render_document_region_scaled_with_stats,
-    render_layer_base_scaled, render_layer_base_scaled_with_font, render_solid_color,
+    ShapeStroke, TextAlignment, TextEffects, TextTypography, Transform, Workspace,
+    region_source_scales, render_document, render_document_region_scaled,
+    render_document_region_scaled_with_stats, render_layer_base_scaled,
+    render_layer_base_scaled_with_font, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -20,13 +21,73 @@ struct BenchmarkMetric {
     pass: bool,
 }
 
-// spectrum-imaging expands adjusted regions by four pixels for denoise and two
-// more for sharpening; benchmark staging may not exceed that documented halo.
-const DEVELOPMENT_FILTER_HALO: u64 = 6;
+// spectrum-imaging expands adjusted regions by four source pixels for denoise
+// and two more for sharpening.
+const DEVELOPMENT_FILTER_HALO: f64 = 6.0;
 
-fn bounded_staging_budget(region: RenderRegion) -> u64 {
-    (u64::from(region.width) + DEVELOPMENT_FILTER_HALO * 2)
-        * (u64::from(region.height) + DEVELOPMENT_FILTER_HALO * 2)
+fn bounded_staging_budget(
+    document: &Document,
+    document_scale: f32,
+    region: RenderRegion,
+) -> Result<u64> {
+    document
+        .layers
+        .iter()
+        .filter(|layer| layer.visible && layer.opacity > 0.0)
+        .map(|layer| layer_staging_budget(document, layer, document_scale, region))
+        .try_fold(0, |maximum, budget| -> Result<u64> {
+            Ok(maximum.max(budget?))
+        })
+}
+
+fn layer_staging_budget(
+    document: &Document,
+    layer: &Layer,
+    document_scale: f32,
+    region: RenderRegion,
+) -> Result<u64> {
+    let scales = region_source_scales(document, layer, document_scale)?;
+    let (rotated_width, rotated_height) = inverse_rotation_aabb(
+        f64::from(region.width),
+        f64::from(region.height),
+        layer.transform.rotation,
+    );
+    let adjusted_width = triangle_source_extent(rotated_width, scales.outer_transform[0]);
+    let adjusted_height = triangle_source_extent(rotated_height, scales.outer_transform[1]);
+    let adjusted_pixels = adjusted_width.saturating_mul(adjusted_height);
+
+    // The development pipeline expands in adjusted coordinates before inverse
+    // straighten sampling. Ignoring straighten's compensating zoom keeps this
+    // an upper bound, and the extra two pixels cover its bilinear support.
+    let halo = DEVELOPMENT_FILTER_HALO * 2.0;
+    let (source_width, source_height) = inverse_rotation_aabb(
+        adjusted_width as f64 + halo,
+        adjusted_height as f64 + halo,
+        layer.adjustments.straighten,
+    );
+    let bilinear_support = u64::from(layer.adjustments.straighten.abs() > 0.01) * 2;
+    let source_width = source_width.ceil() as u64 + bilinear_support;
+    let source_height = source_height.ceil() as u64 + bilinear_support;
+    let source_pixels = source_width.saturating_mul(source_height);
+
+    // Quarter-turn development rotations only swap the axes, so they do not
+    // change the pixel-area bound.
+    Ok(adjusted_pixels.max(source_pixels))
+}
+
+fn inverse_rotation_aabb(width: f64, height: f64, degrees: f32) -> (f64, f64) {
+    let radians = f64::from(degrees).to_radians();
+    let (sin, cos) = radians.sin_cos();
+    (
+        width * cos.abs() + height * sin.abs(),
+        width * sin.abs() + height * cos.abs(),
+    )
+}
+
+fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
+    let inverse_scale = 1.0 / f64::from(outer_scale.abs().max(f32::EPSILON));
+    let filter_radius = inverse_scale.max(1.0);
+    (output_extent * inverse_scale + filter_radius * 2.0 + 2.0).ceil() as u64
 }
 
 pub(super) fn benchmark(strict: bool) -> Result<Value> {
@@ -315,7 +376,9 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         width: 960,
         height: 540,
     };
-    let bounded_staging_budget = bounded_staging_budget(bounded_region);
+    let bounded_staging_budget = bounded_staging_budget(&bounded_sources, 1.0, bounded_region)?;
+    let adjusted_bounded_staging_budget =
+        bounded_staging_budget(&adjusted_bounded_sources, 1.0, bounded_region)?;
     let mut bounded_source_samples = Vec::new();
     for _ in 0..3 {
         let started = Instant::now();
@@ -347,8 +410,8 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             || stats.full_source_pixels <= 4_096 * 4_096
             || stats.source_staging_pixels >= stats.full_source_pixels
             || stats.adjusted_staging_pixels == 0
-            || stats.max_source_staging_pixels > bounded_staging_budget
-            || stats.max_adjusted_staging_pixels > bounded_staging_budget
+            || stats.max_source_staging_pixels > adjusted_bounded_staging_budget
+            || stats.max_adjusted_staging_pixels > adjusted_bounded_staging_budget
             || stats.fallback_decode_bytes != 0
             || stats.transformed_surface_pixels != 0
         {
@@ -431,7 +494,9 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         width: 640,
         height: 360,
     };
-    let vector_staging_budget = bounded_staging_budget(vector_region);
+    let vector_staging_budget = bounded_staging_budget(&vector_sources, 8.0, vector_region)?;
+    let adjusted_vector_staging_budget =
+        bounded_staging_budget(&adjusted_vector_sources, 8.0, vector_region)?;
     let mut vector_source_samples = Vec::new();
     for _ in 0..5 {
         let started = Instant::now();
@@ -454,8 +519,8 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             render_document_region_scaled_with_stats(&adjusted_vector_sources, 8.0, vector_region)?;
         if (rendered.width(), rendered.height()) != (vector_region.width, vector_region.height)
             || stats.adjusted_staging_pixels == 0
-            || stats.max_source_staging_pixels > vector_staging_budget
-            || stats.max_adjusted_staging_pixels > vector_staging_budget
+            || stats.max_source_staging_pixels > adjusted_vector_staging_budget
+            || stats.max_adjusted_staging_pixels > adjusted_vector_staging_budget
             || stats.transformed_surface_pixels != 0
         {
             bail!("adjusted vector viewport compositor violated its allocation contract");
@@ -657,4 +722,27 @@ fn sample_summary(samples: &mut [f64]) -> (f64, f64) {
     let median = samples[samples.len() / 2];
     let p95_index = ((samples.len() as f64 * 0.95).ceil() as usize).saturating_sub(1);
     (median, samples[p95_index.min(samples.len() - 1)])
+}
+
+#[cfg(test)]
+mod staging_bound_tests {
+    use super::*;
+
+    #[test]
+    fn inverse_rotation_uses_the_source_space_aabb() {
+        let (width, height) = inverse_rotation_aabb(960.0, 540.0, 90.0);
+        assert!((width - 540.0).abs() < 0.001);
+        assert!((height - 960.0).abs() < 0.001);
+
+        let (width, height) = inverse_rotation_aabb(960.0, 540.0, 45.0);
+        assert!(width > 960.0);
+        assert!(height > 960.0);
+    }
+
+    #[test]
+    fn triangle_support_tracks_upscale_and_downscale() {
+        assert_eq!(triangle_source_extent(100.0, 1.0), 104);
+        assert_eq!(triangle_source_extent(100.0, 2.0), 54);
+        assert_eq!(triangle_source_extent(100.0, 0.5), 206);
+    }
 }
