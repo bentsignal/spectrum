@@ -130,7 +130,7 @@ impl LayerTransfer {
         Ok(id)
     }
 
-    fn validate_envelope(&self) -> Result<()> {
+    pub(crate) fn validate_envelope(&self) -> Result<()> {
         if self.format != LAYER_TRANSFER_FORMAT {
             bail!("unsupported Prism layer transfer format {}", self.format);
         }

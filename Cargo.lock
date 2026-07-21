@@ -2872,6 +2872,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spectrum-fonts",
  "spectrum-history-ui",
  "spectrum-imaging",
  "spectrum-revisions",

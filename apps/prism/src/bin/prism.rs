@@ -9,8 +9,8 @@ use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
 use prism_core::{
-    Alignment, AlignmentReference, BlendMode, Command, Document, DurableProject, GuideOrientation,
-    LayerMask, ShapeStroke, Transform, Workspace, export_document, inspect_font_source_read_only,
+    Alignment, AlignmentReference, BlendMode, Command, Document, GuideOrientation, LayerMask,
+    ShapeStroke, Transform, Workspace, export_document,
 };
 use serde_json::{Value, json};
 use spectrum_imaging::{AdjustmentPatch, RenderOptions};
@@ -102,6 +102,10 @@ enum CliCommand {
     },
     /// Verify and inspect one immutable embedded source-font snapshot.
     FontSource {
+        font_id: u64,
+    },
+    /// Prove an in-memory subset candidate and report why physical replacement is not yet safe.
+    FontSubsetPlan {
         font_id: u64,
     },
     /// Update one text layer's font, paragraph metrics, and effects.
@@ -523,18 +527,10 @@ fn run(cli: Cli) -> Result<Value> {
             typography::font_usage(&session_document(&cli.project, cli.session)?, font_id)
         }
         CliCommand::FontSource { font_id } => {
-            if cli.session.is_some() {
-                bail!("font-source is read-only and does not accept --session");
-            }
-            if DurableProject::looks_durable(&cli.project)? {
-                let inspected = inspect_font_source_read_only(&cli.project, font_id)?;
-                Ok(typography::verified_font_source(
-                    &inspected.font,
-                    &inspected.source,
-                ))
-            } else {
-                typography::font_source(&Workspace::load_read_only(&cli.project)?, font_id)
-            }
+            typography::font_source_command(&cli.project, cli.session, font_id)
+        }
+        CliCommand::FontSubsetPlan { font_id } => {
+            typography::font_subset_plan_command(&cli.project, cli.session, font_id)
         }
         CliCommand::LayerCopy(arguments) => {
             transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)
@@ -845,6 +841,7 @@ fn run(cli: Cli) -> Result<Value> {
                 | CliCommand::FontList { .. }
                 | CliCommand::FontUsage { .. }
                 | CliCommand::FontSource { .. }
+                | CliCommand::FontSubsetPlan { .. }
                 | CliCommand::LayerCopy(..)
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }
