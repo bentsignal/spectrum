@@ -116,9 +116,18 @@ fn is_variation_selector(character: char) -> bool {
 
 pub fn analyze_font_usage(document: &Document, font_id: u64) -> Result<FontUsageAnalysis> {
     let font = document.font_asset(font_id)?;
-    let usage = font_usage(document, font_id)?;
     let bytes = font.bytes()?;
-    let face = Face::parse(&bytes, 0)
+    analyze_font_usage_with_source(document, font_id, &bytes)
+}
+
+pub(crate) fn analyze_font_usage_with_source(
+    document: &Document,
+    font_id: u64,
+    bytes: &[u8],
+) -> Result<FontUsageAnalysis> {
+    let font = document.font_asset(font_id)?;
+    let usage = font_usage(document, font_id)?;
+    let face = Face::parse(bytes, 0)
         .with_context(|| format!("embedded font {} is not valid OpenType data", font.id))?;
     let missing_codepoints = usage
         .codepoints

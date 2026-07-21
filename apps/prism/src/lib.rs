@@ -33,6 +33,12 @@ pub use font_usage::{
     analyze_font_usage, font_usage,
 };
 
+mod font_subset_plan;
+pub use font_subset_plan::{
+    FontShapingSample, FontSubsetCandidate, FontSubsetPlan, plan_font_subset,
+    plan_font_subset_with_verified_source,
+};
+
 mod transfer;
 pub use transfer::{
     LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont,
@@ -43,7 +49,8 @@ use validation::*;
 
 mod revisions;
 pub use revisions::{
-    DurableProject, ProjectHistory, ReadOnlyFontSource, inspect_font_source_read_only,
+    DurableProject, ProjectHistory, ReadOnlyFontSource, ReadOnlyFontSubsetInput,
+    inspect_font_source_read_only, inspect_font_subset_read_only,
 };
 
 mod workspace;
@@ -274,7 +281,7 @@ impl Document {
             .with_context(|| format!("layer {id} is not in this document"))
     }
 
-    fn allocate_id(&mut self) -> u64 {
+    pub(crate) fn allocate_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         id

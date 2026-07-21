@@ -73,7 +73,10 @@ pub struct ProjectHistory {
 
 #[path = "readonly_font.rs"]
 mod readonly_font;
-pub use readonly_font::{ReadOnlyFontSource, inspect_font_source_read_only};
+pub use readonly_font::{
+    ReadOnlyFontSource, ReadOnlyFontSubsetInput, inspect_font_source_read_only,
+    inspect_font_subset_read_only,
+};
 
 impl DurableProject {
     pub fn looks_durable(path: &Path) -> Result<bool> {

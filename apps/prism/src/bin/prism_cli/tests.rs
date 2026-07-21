@@ -127,6 +127,92 @@ fn font_source_cli_requires_one_embedded_asset() {
 }
 
 #[test]
+fn font_subset_plan_cli_requires_one_embedded_asset() {
+    let cli = Cli::try_parse_from(["prism", "--project", "type.prism", "font-subset-plan", "12"])
+        .unwrap();
+    let CliCommand::FontSubsetPlan { font_id } = cli.command else {
+        panic!("font-subset-plan subcommand should parse");
+    };
+    assert_eq!(font_id, 12);
+}
+
+#[test]
+fn durable_font_subset_plan_replays_tail_text_without_writes() {
+    let directory = temporary_project("font-subset-plan").with_extension("tree");
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("subset-plan.prism");
+    let source = directory.join("Hack-Regular.ttf");
+    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let mut workspace = Workspace::create_durable(
+        Document::new("Subset plan", 320, 200),
+        &project,
+        cli_actor(),
+        spectrum_revisions::SessionId::new(),
+    )
+    .unwrap();
+    workspace
+        .execute(Command::ImportFont { path: source })
+        .unwrap();
+    let font_id = workspace.document.font_assets[0].id;
+    workspace
+        .execute(Command::AddText {
+            text: "BA\nAV".into(),
+            name: None,
+            font_size: 48.0,
+            color: [255; 4],
+            x: 20.0,
+            y: 30.0,
+        })
+        .unwrap();
+    let layer_id = workspace.document.selected.unwrap();
+    workspace
+        .execute(Command::SetTextTypography {
+            id: layer_id,
+            typography: prism_core::TextTypography {
+                font_id: Some(font_id),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+    drop(workspace);
+    let before = tree_snapshot(&directory);
+
+    let output = run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontSubsetPlan { font_id },
+    })
+    .unwrap();
+    let session_error = run(Cli {
+        project,
+        session: Some(spectrum_revisions::SessionId::new()),
+        command: CliCommand::FontSubsetPlan { font_id },
+    })
+    .unwrap_err();
+
+    assert_eq!(output["action"], "font_subset_plan");
+    assert_eq!(output["mutates_project"], false);
+    assert_eq!(output["font_bytes_modified"], false);
+    assert_eq!(output["candidate_bytes_emitted"], false);
+    assert_eq!(
+        output["plan"]["analysis"]["usage"]["layer_ids"],
+        json!([layer_id])
+    );
+    assert_eq!(
+        output["plan"]["shaping_samples"][0]["codepoints"],
+        json!([66, 65])
+    );
+    assert_eq!(output["plan"]["physical_replacement_supported"], false);
+    assert!(
+        session_error
+            .to_string()
+            .contains("does not accept --session")
+    );
+    assert_eq!(tree_snapshot(&directory), before);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn font_source_output_proves_identity_without_mutating_the_document() {
     let directory = temporary_project("font-source").with_extension("assets");
     std::fs::create_dir_all(&directory).unwrap();
@@ -388,6 +474,7 @@ fn schema_keeps_guides_and_typography_commands_together() {
     }
     assert!(schema["alignment"].is_object());
     assert!(schema["typography"].is_object());
+    assert!(schema["typography"]["subset_plan"].is_string());
     assert!(schema["typography"]["optimization_analysis"].is_string());
     assert!(schema["typography"]["optimization_limitations"].is_string());
     assert!(schema["typography"]["embedding_metadata"].is_string());

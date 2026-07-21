@@ -1,7 +1,13 @@
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use prism_core::{Document, FontAsset, TextAlignment, TextTypography, VerifiedFontSource};
+use prism_core::{
+    Document, DurableProject, FontAsset, TextAlignment, TextTypography, VerifiedFontSource,
+    Workspace, inspect_font_source_read_only, inspect_font_subset_read_only,
+};
 use serde_json::{Value, json};
+use spectrum_revisions::SessionId;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(super) enum CliTextAlignment {
@@ -161,6 +167,22 @@ pub(super) fn font_source(document: &Document, font_id: u64) -> Result<Value> {
     ))
 }
 
+pub(super) fn font_source_command(
+    project: &Path,
+    session: Option<SessionId>,
+    font_id: u64,
+) -> Result<Value> {
+    if session.is_some() {
+        bail!("font-source is read-only and does not accept --session");
+    }
+    if DurableProject::looks_durable(project)? {
+        let inspected = inspect_font_source_read_only(project, font_id)?;
+        Ok(verified_font_source(&inspected.font, &inspected.source))
+    } else {
+        font_source(&Workspace::load_read_only(project)?, font_id)
+    }
+}
+
 pub(super) fn verified_font_source(font: &FontAsset, source: &VerifiedFontSource) -> Value {
     font_source_value(
         font,
@@ -168,6 +190,49 @@ pub(super) fn verified_font_source(font: &FontAsset, source: &VerifiedFontSource
         source.len(),
         source.subset_allowed(),
     )
+}
+
+pub(super) fn font_subset_plan(document: &Document, font_id: u64) -> Result<Value> {
+    subset_plan_value(prism_core::plan_font_subset(document, font_id)?)
+}
+
+pub(super) fn font_subset_plan_command(
+    project: &Path,
+    session: Option<SessionId>,
+    font_id: u64,
+) -> Result<Value> {
+    if session.is_some() {
+        bail!("font-subset-plan is read-only and does not accept --session");
+    }
+    if DurableProject::looks_durable(project)? {
+        let inspected = inspect_font_subset_read_only(project, font_id)?;
+        verified_font_subset_plan(&inspected.document, font_id, &inspected.source)
+    } else {
+        font_subset_plan(&Workspace::load_read_only(project)?, font_id)
+    }
+}
+
+pub(super) fn verified_font_subset_plan(
+    document: &Document,
+    font_id: u64,
+    source: &VerifiedFontSource,
+) -> Result<Value> {
+    subset_plan_value(prism_core::plan_font_subset_with_verified_source(
+        document, font_id, source,
+    )?)
+}
+
+fn subset_plan_value(plan: prism_core::FontSubsetPlan) -> Result<Value> {
+    Ok(json!({
+        "ok": true,
+        "action": "font_subset_plan",
+        "mutates_project": false,
+        "font_bytes_modified": false,
+        "candidate_bytes_emitted": false,
+        "storage_decision": "a history-preserving reduction requires a separate fresh-database compact-copy transaction; appending a subset cannot remove retained full-font assets",
+        "license_notice": "OpenType embedding metadata is a technical check, not a legal license conclusion",
+        "plan": plan,
+    }))
 }
 
 fn font_source_value(
