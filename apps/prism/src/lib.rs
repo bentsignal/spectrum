@@ -890,6 +890,7 @@ fn guide_output(action: &str, message: &str, guide_ids: Vec<u64>) -> CommandOutp
 
 mod raster_backing_cache;
 mod raster_region;
+mod raster_sources;
 mod render;
 mod render_fallback;
 mod render_region;
@@ -901,13 +902,15 @@ pub use raster_backing_cache::{
     DerivedBackingReadError, DerivedRasterBacking, PrepareDerivedBacking,
 };
 pub use raster_region::{RasterRegionInspection, inspect_raster_region_source};
+pub use raster_sources::{RasterSourceEpoch, RasterSourceResolver, ResolvedRasterSource};
 pub use render::{
-    RegionRenderStats, RenderRegion, document_supports_region_native_zoom, export_document,
-    load_document, render_document, render_document_region_scaled,
-    render_document_region_scaled_with_stats, render_document_scaled, render_document_thumbnail,
-    render_layer_base, render_layer_base_scaled, render_layer_base_scaled_with_font,
-    render_layer_preview, render_layer_preview_scaled, render_layer_preview_scaled_with_font,
-    render_solid_color, save_document,
+    RegionRenderStats, RenderRegion, document_supports_region_native_zoom,
+    document_supports_region_native_zoom_with_sources, export_document, load_document,
+    render_document, render_document_region_scaled, render_document_region_scaled_with_sources,
+    render_document_region_scaled_with_sources_and_stats, render_document_region_scaled_with_stats,
+    render_document_scaled, render_document_thumbnail, render_layer_base, render_layer_base_scaled,
+    render_layer_base_scaled_with_font, render_layer_preview, render_layer_preview_scaled,
+    render_layer_preview_scaled_with_font, render_solid_color, save_document,
 };
 pub use render_region::{RegionSourceScales, region_source_scales};
 pub use text_render::{
@@ -934,6 +937,10 @@ mod render_fallback_tests;
 #[cfg(test)]
 #[path = "raster_backing_cache_tests.rs"]
 mod raster_backing_cache_tests;
+
+#[cfg(test)]
+#[path = "raster_source_resolver_tests.rs"]
+mod raster_source_resolver_tests;
 
 #[cfg(test)]
 #[path = "rotation_tests.rs"]

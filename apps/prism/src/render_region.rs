@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use image::RgbaImage;
 
 use crate::{
-    Document, FontAsset, Layer, LayerKind, RegionRenderStats, RenderRegion,
+    Document, FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
     render::composite_pixel, shapes::constrained_shape_scale,
     text_render::measure_text_geometry_with_typography,
 };
@@ -70,7 +70,10 @@ fn text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
     (target.max(1.0).ceil() as u32).next_power_of_two().min(16) as f32
 }
 
-pub(crate) fn supports_bounded_source(layer: &Layer) -> bool {
+pub(crate) fn supports_bounded_source(
+    layer: &Layer,
+    raster_sources: Option<&dyn RasterSourceResolver>,
+) -> bool {
     matches!(
         layer.kind,
         LayerKind::Raster { .. }
@@ -78,7 +81,7 @@ pub(crate) fn supports_bounded_source(layer: &Layer) -> bool {
             | LayerKind::Rectangle { .. }
             | LayerKind::Ellipse { .. }
     ) && layer.adjustments.spots.is_empty()
-        && source::layer_supports_region_reads(layer)
+        && source::layer_supports_region_reads(layer, raster_sources)
         && layer.transform.scale_x.is_finite()
         && layer.transform.scale_y.is_finite()
         && layer.transform.scale_x > 0.0
@@ -96,12 +99,13 @@ pub(crate) fn composite_bounded_source_region(
     clip: Option<&RgbaImage>,
     region: RenderRegion,
     font_asset: Option<&FontAsset>,
+    raster_sources: Option<&dyn RasterSourceResolver>,
     stats: &mut RegionRenderStats,
 ) -> Result<bool> {
-    if !supports_bounded_source(render_layer) {
+    if !supports_bounded_source(render_layer, raster_sources) {
         return Ok(false);
     }
-    let descriptor = SourceDescriptor::new(render_layer, shape_scale, font_asset)?;
+    let descriptor = SourceDescriptor::new(render_layer, shape_scale, font_asset, raster_sources)?;
     let geometry = SamplingGeometry::new(
         base_layer,
         render_layer,

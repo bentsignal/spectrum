@@ -9,8 +9,9 @@ pub use adjustments::{
     HslBand, SpotRemoval, ToneCurve, ToneCurves,
 };
 pub use region_source::{
-    ExactRegionSource, RegionReadCapability, RegionReadiness, RegionRequestError,
-    RegionSourceDescriptor, RegionSourceInfo, SourceSampleDepth, validate_region_request,
+    DynExactRegionSource, ExactRegionSource, RegionReadCapability, RegionReadiness,
+    RegionRequestError, RegionSourceDescriptor, RegionSourceInfo, SourceSampleDepth,
+    validate_region_request,
 };
 pub use render::{
     ExportFormat, PixelRegion, RegionRenderError, RenderOptions, adjusted_image_dimensions,

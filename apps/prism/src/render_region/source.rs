@@ -4,7 +4,8 @@ use anyhow::{Context, Result, bail};
 use image::{Rgba, RgbaImage};
 
 use crate::{
-    FontAsset, Layer, LayerKind, RegionRenderStats, RenderRegion, TextTypography,
+    FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
+    ResolvedRasterSource, TextTypography,
     raster_region::inspect_raster_region_source,
     shapes::ShapeSampler,
     text_render::{measure_text_with_typography, render_text_region},
@@ -28,17 +29,49 @@ impl Error for SourceReadError {
     }
 }
 
-pub(super) fn layer_supports_region_reads(layer: &Layer) -> bool {
+#[derive(Debug)]
+struct DynSourceReadError(Box<dyn Error + Send + Sync + 'static>);
+
+impl fmt::Display for DynSourceReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self.0.as_ref(), formatter)
+    }
+}
+
+impl Error for DynSourceReadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+pub(super) fn layer_supports_region_reads(
+    layer: &Layer,
+    raster_sources: Option<&dyn RasterSourceResolver>,
+) -> bool {
     match &layer.kind {
-        LayerKind::Raster { path, .. } => inspect_raster_region_source(path)
-            .is_ok_and(|source| source.info.supports_region_reads_now()),
+        LayerKind::Raster { path, .. } => raster_sources.map_or_else(
+            || {
+                inspect_raster_region_source(path)
+                    .is_ok_and(|source| source.info.supports_region_reads_now())
+            },
+            |sources| {
+                sources
+                    .resolve(path)
+                    .is_some_and(|source| source.source().info().supports_region_reads_now())
+            },
+        ),
         LayerKind::Text { .. } | LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => true,
     }
 }
 
 pub(super) enum SourceDescriptor<'a> {
-    Raster {
+    RasterPath {
         path: &'a Path,
+        dimensions: (u32, u32),
+        adjustments: &'a spectrum_imaging::Adjustments,
+    },
+    RasterProvider {
+        source: ResolvedRasterSource,
         dimensions: (u32, u32),
         adjustments: &'a spectrum_imaging::Adjustments,
     },
@@ -62,15 +95,32 @@ impl<'a> SourceDescriptor<'a> {
         render_layer: &'a Layer,
         shape_scale: [f32; 2],
         font_asset: Option<&'a FontAsset>,
+        raster_sources: Option<&dyn RasterSourceResolver>,
     ) -> Result<Self> {
         match &render_layer.kind {
-            LayerKind::Raster { path, .. } => Ok(Self::Raster {
-                dimensions: image::image_dimensions(path).with_context(|| {
-                    format!("could not inspect layer source {}", path.display())
-                })?,
-                path,
-                adjustments: &render_layer.adjustments,
-            }),
+            LayerKind::Raster { path, .. } => {
+                if let Some(source) = raster_sources.and_then(|sources| sources.resolve(path)) {
+                    let dimensions = {
+                        let descriptor = &source.source().info().descriptor;
+                        (descriptor.width, descriptor.height)
+                    };
+                    return Ok(Self::RasterProvider {
+                        dimensions,
+                        source,
+                        adjustments: &render_layer.adjustments,
+                    });
+                }
+                if raster_sources.is_some() {
+                    bail!("raster source is not ready in the resolver snapshot");
+                }
+                Ok(Self::RasterPath {
+                    dimensions: image::image_dimensions(path).with_context(|| {
+                        format!("could not inspect layer source {}", path.display())
+                    })?,
+                    path,
+                    adjustments: &render_layer.adjustments,
+                })
+            }
             LayerKind::Text {
                 text,
                 font_size,
@@ -146,14 +196,17 @@ impl<'a> SourceDescriptor<'a> {
 
     fn base_dimensions(&self) -> (u32, u32) {
         match self {
-            Self::Raster { dimensions, .. } | Self::Text { dimensions, .. } => *dimensions,
+            Self::RasterPath { dimensions, .. }
+            | Self::RasterProvider { dimensions, .. }
+            | Self::Text { dimensions, .. } => *dimensions,
             Self::Shape { sampler, .. } => sampler.dimensions(),
         }
     }
 
     fn adjustments(&self) -> &spectrum_imaging::Adjustments {
         match self {
-            Self::Raster { adjustments, .. }
+            Self::RasterPath { adjustments, .. }
+            | Self::RasterProvider { adjustments, .. }
             | Self::Text { adjustments, .. }
             | Self::Shape { adjustments, .. } => adjustments,
         }
@@ -170,9 +223,25 @@ impl<'a> SourceDescriptor<'a> {
             .saturating_add(pixels.saturating_mul(4));
         stats.max_source_staging_pixels = stats.max_source_staging_pixels.max(pixels);
         match self {
-            Self::Raster {
+            Self::RasterPath {
                 path, dimensions, ..
             } => stage_png(path, *dimensions, region),
+            Self::RasterProvider { source, .. } => {
+                let image = source
+                    .source()
+                    .read_exact_region(region.into())
+                    .map_err(|error| anyhow::Error::new(DynSourceReadError(error)))?;
+                if image.dimensions() != (region.width, region.height) {
+                    bail!(
+                        "raster provider returned {}x{} pixels for a requested {}x{} region",
+                        image.width(),
+                        image.height(),
+                        region.width,
+                        region.height
+                    );
+                }
+                Ok(image)
+            }
             Self::Text {
                 text,
                 font_size,

@@ -9,7 +9,7 @@ use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
 use crate::{
-    Document, FontAsset, Layer, LayerKind, Transform, blend_rgb,
+    Document, FontAsset, Layer, LayerKind, RasterSourceResolver, Transform, blend_rgb,
     render_fallback::{MAX_REGION_FALLBACK_PEAK_BYTES, ensure_region_fallback_is_bounded},
     shapes::render_shape,
     text_render::{measure_text_geometry_with_typography, render_text},
@@ -172,10 +172,29 @@ pub struct RegionRenderStats {
 /// Whether every visible layer can be sampled directly into a viewport region
 /// without allocating a transformed full-layer surface.
 pub fn document_supports_region_native_zoom(document: &Document) -> bool {
+    document_supports_region_native_zoom_impl(document, None)
+}
+
+/// Returns whether an immutable, memory-only raster source snapshot can serve
+/// every visible layer at the requested viewport scale.
+///
+/// Unlike [`document_supports_region_native_zoom`], this never inspects raster
+/// paths. A missing provider is conservatively treated as not region-native.
+pub fn document_supports_region_native_zoom_with_sources(
+    document: &Document,
+    raster_sources: &dyn RasterSourceResolver,
+) -> bool {
+    document_supports_region_native_zoom_impl(document, Some(raster_sources))
+}
+
+fn document_supports_region_native_zoom_impl(
+    document: &Document,
+    raster_sources: Option<&dyn RasterSourceResolver>,
+) -> bool {
     document.layers.iter().all(|layer| {
         !layer.visible
             || layer.opacity <= 0.0
-            || crate::render_region::supports_bounded_source(layer)
+            || crate::render_region::supports_bounded_source(layer, raster_sources)
     })
 }
 
@@ -197,6 +216,7 @@ pub fn render_document_scaled(document: &Document, scale: f32) -> Result<Dynamic
             height: canvas_height,
         },
         false,
+        None,
         &mut RegionRenderStats::default(),
     )
 }
@@ -216,6 +236,26 @@ pub fn render_document_region_scaled(
         scale,
         region,
         true,
+        None,
+        &mut RegionRenderStats::default(),
+    )
+}
+
+/// Renders a viewport crop using exact raster providers from one immutable
+/// resolver snapshot. Resolved providers are never replaced by path reads if
+/// a provider operation fails.
+pub fn render_document_region_scaled_with_sources(
+    document: &Document,
+    scale: f32,
+    region: RenderRegion,
+    raster_sources: &dyn RasterSourceResolver,
+) -> Result<DynamicImage> {
+    render_document_region_scaled_impl(
+        document,
+        scale,
+        region,
+        true,
+        Some(raster_sources),
         &mut RegionRenderStats::default(),
     )
 }
@@ -227,7 +267,27 @@ pub fn render_document_region_scaled_with_stats(
     region: RenderRegion,
 ) -> Result<(DynamicImage, RegionRenderStats)> {
     let mut stats = RegionRenderStats::default();
-    let image = render_document_region_scaled_impl(document, scale, region, true, &mut stats)?;
+    let image =
+        render_document_region_scaled_impl(document, scale, region, true, None, &mut stats)?;
+    Ok((image, stats))
+}
+
+/// Renders a provider-backed viewport crop with allocation counters.
+pub fn render_document_region_scaled_with_sources_and_stats(
+    document: &Document,
+    scale: f32,
+    region: RenderRegion,
+    raster_sources: &dyn RasterSourceResolver,
+) -> Result<(DynamicImage, RegionRenderStats)> {
+    let mut stats = RegionRenderStats::default();
+    let image = render_document_region_scaled_impl(
+        document,
+        scale,
+        region,
+        true,
+        Some(raster_sources),
+        &mut stats,
+    )?;
     Ok((image, stats))
 }
 
@@ -236,6 +296,7 @@ fn render_document_region_scaled_impl(
     scale: f32,
     region: RenderRegion,
     bound_fallback_layers: bool,
+    raster_sources: Option<&dyn RasterSourceResolver>,
     stats: &mut RegionRenderStats,
 ) -> Result<DynamicImage> {
     let (canvas_width, canvas_height) = scaled_document_dimensions(document, scale)?;
@@ -298,11 +359,18 @@ fn render_document_region_scaled_impl(
                 previous_coverage.as_ref(),
                 region,
                 font_asset,
+                raster_sources,
                 stats,
             )?
         {
             previous_coverage = Some(coverage);
             continue;
+        }
+        if raster_sources.is_some() && matches!(render_layer.kind, LayerKind::Raster { .. }) {
+            bail!(
+                "raster layer {} cannot use legacy path fallback with a provider resolver",
+                render_layer.id
+            );
         }
         let fallback_allocation = if bound_fallback_layers {
             Some(ensure_region_fallback_is_bounded(
