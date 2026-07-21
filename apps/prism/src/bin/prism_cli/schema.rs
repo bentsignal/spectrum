@@ -26,6 +26,10 @@ pub(super) fn schema() -> Value {
         "command_protocol": {
             "encoding": "serde tagged JSON",
             "tag": "command",
+            "operations_family": "spectrum.prism.commands",
+            "supported_operation_versions": (1..=prism_core::PRISM_COMMAND_OPERATIONS_VERSION).collect::<Vec<_>>(),
+            "selection_operations_version": 4,
+            "crop_to_selection_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "gui_interactions": {
@@ -53,8 +57,9 @@ pub(super) fn schema() -> Value {
         "selection": {
             "rectangle": "selection rectangle <x> <y> <width> <height> uses integer document pixels and clips at canvas edges",
             "clear": "selection clear removes the persistent marquee",
+            "crop": "selection crop atomically crops the canvas to the current marquee and clears the selection in one revision",
             "fill": "selection fill [--color <RRGGBBAA>] [--name <label>] creates one new editable solid rectangle layer without changing source pixels",
-            "history": "each completed marquee, clear, or fill is one command and one durable revision"
+            "history": "each completed marquee, clear, fill, or crop is one command and one durable revision"
         },
         "typography": {
             "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot, verifies editable OpenType embedding metadata, and transactionally embeds those exact bytes as a content-addressed project asset; Windows final-handle proof rejects junction and 8.3 aliases unless the normalized handle path exactly matches",
@@ -101,6 +106,7 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "set_snapping", "enabled": true}),
         json!({"command": "set_selection", "selection": {"type": "rectangle", "x": 120, "y": 80, "width": 640, "height": 360}}),
         json!({"command": "fill_selection", "color": [93,216,199,255], "name": "Selection fill"}),
+        json!({"command": "crop_to_selection"}),
         json!({"command": "add_guide", "orientation": "vertical", "position": 960.0}),
         json!({"command": "move_guide", "id": 1, "position": 800.0}),
         json!({"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}}),

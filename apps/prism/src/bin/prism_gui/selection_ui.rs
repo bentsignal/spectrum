@@ -41,6 +41,14 @@ fn full_canvas_selection(width: u32, height: u32) -> prism_core::Selection {
     prism_core::Selection::rectangle(0, 0, width, height)
 }
 
+fn can_crop_to_selection(
+    selection: Option<prism_core::Selection>,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> bool {
+    selection.is_some_and(|selection| selection.bounds() != (0, 0, canvas_width, canvas_height))
+}
+
 fn paint_marquee(ui: &egui::Ui, rect: Rect, preview: bool) {
     if preview {
         ui.painter().rect_filled(rect, 0.0, with_alpha(ACCENT, 24));
@@ -89,6 +97,11 @@ impl PrismApp {
 
     pub(super) fn selection_workbench_controls(&mut self, ui: &mut egui::Ui) {
         let has_selection = self.workspace.document.selection.is_some();
+        let can_crop = can_crop_to_selection(
+            self.workspace.document.selection,
+            self.workspace.document.width,
+            self.workspace.document.height,
+        );
         ui.separator();
         ui.label(RichText::new("FILL").size(9.0).strong().color(SUBTLE));
         ui.color_edit_button_srgba(&mut self.selection_fill_color)
@@ -102,6 +115,14 @@ impl PrismApp {
                 color: self.selection_fill_color.to_array(),
                 name: None,
             });
+        }
+        if ui
+            .add_enabled(can_crop, egui::Button::new("Crop canvas to selection"))
+            .on_hover_text("Crop to the marquee and deselect in one revision")
+            .clicked()
+            && self.execute(Command::CropToSelection)
+        {
+            self.fit_requested = true;
         }
         if ui
             .add_enabled(has_selection, egui::Button::new("Deselect"))
@@ -168,5 +189,20 @@ mod tests {
             full_canvas_selection(1_920, 1_080),
             prism_core::Selection::rectangle(0, 0, 1_920, 1_080)
         );
+    }
+
+    #[test]
+    fn crop_control_requires_a_selection_smaller_than_the_canvas() {
+        assert!(!can_crop_to_selection(None, 1_920, 1_080));
+        assert!(!can_crop_to_selection(
+            Some(full_canvas_selection(1_920, 1_080)),
+            1_920,
+            1_080,
+        ));
+        assert!(can_crop_to_selection(
+            Some(prism_core::Selection::rectangle(20, 30, 640, 480)),
+            1_920,
+            1_080,
+        ));
     }
 }

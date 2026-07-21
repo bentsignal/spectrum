@@ -4,6 +4,42 @@ use super::*;
 use crate::commands::{guide_output, output};
 use crate::text::default_text_layer_name;
 
+#[derive(Clone, Copy)]
+enum SelectionAfterCrop {
+    Intersect,
+    Clear,
+}
+
+fn crop_canvas(
+    document: &mut Document,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    selection_after_crop: SelectionAfterCrop,
+) -> Result<()> {
+    if width == 0 || height == 0 || x >= document.width || y >= document.height {
+        bail!("crop must overlap the canvas and have a nonzero size");
+    }
+    let width = width.min(document.width - x);
+    let height = height.min(document.height - y);
+    let selection = match selection_after_crop {
+        SelectionAfterCrop::Intersect => document
+            .selection
+            .and_then(|selection| selection.cropped(x, y, width, height)),
+        SelectionAfterCrop::Clear => None,
+    };
+    document.width = width;
+    document.height = height;
+    document.selection = selection;
+    for layer in &mut document.layers {
+        layer.transform.x -= x as f32;
+        layer.transform.y -= y as f32;
+    }
+    alignment::crop_guides(document, x, y);
+    Ok(())
+}
+
 pub(super) fn apply_command(document: &mut Document, command: Command) -> Result<CommandOutput> {
     match command {
         Command::SetCanvas {
@@ -26,20 +62,24 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             width,
             height,
         } => {
-            if width == 0 || height == 0 || x >= document.width || y >= document.height {
-                bail!("crop must overlap the canvas and have a nonzero size");
-            }
-            document.width = width.min(document.width - x);
-            document.height = height.min(document.height - y);
-            document.selection = document
-                .selection
-                .and_then(|selection| selection.cropped(x, y, document.width, document.height));
-            for layer in &mut document.layers {
-                layer.transform.x -= x as f32;
-                layer.transform.y -= y as f32;
-            }
-            alignment::crop_guides(document, x, y);
+            crop_canvas(document, x, y, width, height, SelectionAfterCrop::Intersect)?;
             Ok(output("crop_canvas", "cropped canvas", Vec::new()))
+        }
+        Command::CropToSelection => {
+            let selection = document
+                .selection
+                .context("create a rectangular selection before cropping")?
+                .validated(document.width, document.height)?;
+            let (x, y, width, height) = selection.bounds();
+            if (x, y, width, height) == (0, 0, document.width, document.height) {
+                bail!("selection already covers the full canvas");
+            }
+            crop_canvas(document, x, y, width, height, SelectionAfterCrop::Clear)?;
+            Ok(output(
+                "crop_to_selection",
+                "cropped canvas to selection",
+                Vec::new(),
+            ))
         }
         Command::AddRaster { path, name, x, y } => {
             require_finite("x", x)?;

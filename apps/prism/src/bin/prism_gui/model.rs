@@ -158,7 +158,10 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::DuplicateLayer { .. }
         | Command::Undo
         | Command::Redo => CanvasInvalidation::All,
-        Command::ImportFont { .. } | Command::SetSelection { .. } => CanvasInvalidation::None,
+        Command::ImportFont { .. }
+        | Command::SetSelection { .. }
+        | Command::CropCanvas { .. }
+        | Command::CropToSelection => CanvasInvalidation::None,
         Command::RemoveLayer { .. } => CanvasInvalidation::Structure,
         _ => CanvasInvalidation::None,
     }

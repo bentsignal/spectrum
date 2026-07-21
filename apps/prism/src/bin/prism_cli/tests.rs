@@ -59,6 +59,44 @@ fn selection_cli_persists_and_fills_without_touching_existing_layers() {
 }
 
 #[test]
+fn selection_crop_cli_uses_the_atomic_core_command() {
+    let project = temporary_project("selection-crop");
+    let project_arg = project.to_str().unwrap();
+    for arguments in [
+        vec!["init", "Selection crop", "--width", "80", "--height", "60"],
+        vec![
+            "add-rectangle",
+            "--width",
+            "12",
+            "--height",
+            "10",
+            "--x",
+            "30",
+            "--y",
+            "20",
+        ],
+        vec!["selection", "rectangle", "4", "5", "20", "10"],
+        vec!["selection", "crop"],
+    ] {
+        let mut cli = vec!["prism", "--project", project_arg];
+        cli.extend(arguments);
+        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+    }
+    let document = Workspace::load_read_only(&project).unwrap();
+    assert_eq!((document.width, document.height), (20, 10));
+    assert_eq!(document.selection, None);
+    assert_eq!(document.layers.len(), 1);
+    assert_eq!(
+        (
+            document.layers[0].transform.x,
+            document.layers[0].transform.y,
+        ),
+        (26.0, 15.0)
+    );
+    std::fs::remove_file(project).unwrap();
+}
+
+#[test]
 fn benchmark_cli_defaults_to_interactive_and_accepts_hosted_ci() {
     let default = Cli::try_parse_from(["prism", "benchmark", "--strict"]).unwrap();
     let CliCommand::Benchmark {
@@ -524,7 +562,25 @@ fn schema_keeps_guides_and_typography_commands_together() {
         assert!(examples.iter().any(|example| example["command"] == command));
     }
     assert!(schema["alignment"].is_object());
+    assert_eq!(
+        schema["command_protocol"]["supported_operation_versions"],
+        serde_json::json!([1, 2, 3, 4, 5])
+    );
+    assert_eq!(
+        schema["command_protocol"]["selection_operations_version"],
+        4
+    );
+    assert_eq!(
+        schema["command_protocol"]["crop_to_selection_operations_version"],
+        5
+    );
     assert!(schema["selection"].is_object());
+    assert!(schema["selection"]["crop"].is_string());
+    assert!(
+        examples
+            .iter()
+            .any(|example| example["command"] == "crop_to_selection")
+    );
     assert!(schema["typography"].is_object());
     assert!(schema["typography"]["subset_plan"].is_string());
     assert!(schema["typography"]["optimization_analysis"].is_string());

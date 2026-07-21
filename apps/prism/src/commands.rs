@@ -31,6 +31,7 @@ pub enum Command {
         width: u32,
         height: u32,
     },
+    CropToSelection,
     AddRaster {
         path: PathBuf,
         name: Option<String>,
