@@ -226,6 +226,24 @@ fn native_macos_menu_disables_winit_replacement_before_launch() {
 }
 
 #[test]
+fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repository = manifest.join("../..");
+    let app = fs::read_to_string(manifest.join("src/bin/prism-gui.rs")).unwrap();
+    let plist = fs::read_to_string(repository.join("packaging/prism/macos/Info.plist")).unwrap();
+    let macos = fs::read_to_string(repository.join("scripts/package-prism-macos.sh")).unwrap();
+    let linux = fs::read_to_string(repository.join("scripts/package-prism-linux.sh")).unwrap();
+    let windows = fs::read_to_string(repository.join("scripts/package-prism-windows.ps1")).unwrap();
+
+    assert!(app.contains("with_icon(prism_icon())"));
+    assert!(app.contains("assets/branding/cropped-prism.png"));
+    assert!(plist.contains("<string>Prism.icns</string>"));
+    assert!(macos.contains("assets/branding/cropped-prism.png"));
+    assert!(linux.contains("com.bentsignal.Prism.png"));
+    assert!(windows.contains("Prism.png"));
+}
+
+#[test]
 fn lone_document_tab_close_is_disabled_and_annotated() {
     let chrome = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/chrome.rs"),

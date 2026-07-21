@@ -112,10 +112,18 @@ fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1480.0, 920.0])
-            .with_min_inner_size([1060.0, 680.0]),
+            .with_min_inner_size([1060.0, 680.0])
+            .with_icon(lumen_icon()),
         centered: true,
         ..Default::default()
     }
+}
+
+fn lumen_icon() -> egui::IconData {
+    eframe::icon_data::from_png_bytes(include_bytes!(
+        "../../../../assets/branding/lumen-violet-final-clean.png"
+    ))
+    .expect("bundled Lumen icon must be a valid PNG")
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -373,6 +381,13 @@ impl eframe::App for LumenApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_lumen_icon_is_the_full_resolution_capital_l_artwork() {
+        let icon = lumen_icon();
+        assert_eq!([icon.width, icon.height], [1_024, 1_024]);
+        assert_eq!(icon.rgba.len(), 1_024 * 1_024 * 4);
+    }
 
     #[test]
     fn fast_preview_keeps_full_preview_fit_geometry() {

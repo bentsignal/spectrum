@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lumen
+Comment=Fast native photo editor and catalog
+Exec=lumen-gui %F
+Icon=com.bentsignal.Lumen
+Terminal=false
+Categories=Graphics;Photography;
+StartupNotify=true
