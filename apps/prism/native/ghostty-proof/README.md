@@ -18,7 +18,8 @@ The proof exercises the architectural unknowns that parser-only
 It intentionally does not claim production behavior. IME composition,
 accessibility, complete mouse reporting and selection, rich clipboard types,
 OSC 52 approval UI, secure input, URLs, notifications, renderer-health UI,
-tabs, and eframe OpenGL/Metal composition remain TODOs.
+tabs, actual eframe-owned child-`NSView` lifecycle and input routing, and
+eframe OpenGL/Ghostty Metal composition remain TODOs.
 
 ## Pinned inputs
 
@@ -42,7 +43,7 @@ The tag object and peeled commit are provenance metadata. Because the official
 release archive contains no Git-object manifest, its verified SHA-256—not an
 unprovable archive-to-commit equivalence—is the downloaded source trust anchor.
 
-### Xcode 26.4 and newer on arm64
+### Affected arm64 SDKs (validated with Xcode 26.5)
 
 Official Zig 0.15.2 predates Xcode 26.4's change from an `arm64-macos` root
 target in `libSystem.tbd` to an `arm64e-macos` root target. Its native arm64
@@ -51,40 +52,59 @@ tracked as [Ghostty #11991](https://github.com/ghostty-org/ghostty/issues/11991)
 and fixed in Zig 0.16 (Zig PR #31673), without a Zig 0.15 backport.
 
 The proof remains pinned to Ghostty's required Zig 0.15.2. On an arm64 Mac, the
-script inspects only the root target block of the selected SDK's
+script inspects only the root target block of the active SDK's
 `libSystem.tbd`. If that block lacks `arm64-macos`, it requires Homebrew's
 patched `zig@0.15` bottle at `/opt/homebrew/opt/zig@0.15/bin/zig` and verifies
 that it reports exactly 0.15.2. This is the route recommended in Ghostty
-#11991. The official x86_64 archive is deliberately not used under Rosetta on
-Xcode 27 because that combination fails while building libc++. The script only
-consumes an already-installed bottle: it does not install Homebrew software or
-build Zig from source. Compatible arm64 SDKs and native x86_64 hosts continue
-to use the checksummed official archives. Unlike those archives, the local
-Homebrew bottle is trusted input rather than a checksum-pinned artifact; the
-script verifies the formula prefix, resolved keg binary, exact reported Zig
-version, and `poured_from_bottle` installation receipt before downloading
-Ghostty.
+#11991. The official x86_64 archive is deliberately not used under Rosetta
+because that workaround fails while building libc++ on newer SDKs.
+
+The Homebrew Zig build also needs
+`/opt/homebrew/opt/llvm@20/bin/llvm-libtool-darwin`, installed as Zig's
+`llvm@20` dependency. Apple's `libtool` drops Zig archive members that are not
+8-byte aligned, leaving `libghostty.a` without required public symbols. The
+script places a build-local `libtool` shim ahead of `PATH`, backed by LLVM's
+tool, then verifies that `_ghostty_init` and `_ghostty_app_new` exist before
+Swift linking. It does not change the machine-wide `PATH`.
+
+The user-tested proof was built on Apple Silicon with stable Xcode 26.5
+(17F42), macOS SDK 26.5, Homebrew `zig@0.15` 0.15.2, and `llvm@20` 20.1.8.
+Typing and rapid resizing passed the requested smoke test. The build selected
+stable Xcode only for that process with `DEVELOPER_DIR`; the globally selected
+Xcode 27 beta was not changed. Compatible arm64 SDKs and native x86_64 hosts
+continue to use the checksummed official Zig archives. Unlike those archives,
+the local Homebrew bottles are trusted input rather than checksum-pinned
+artifacts; the script verifies Zig's formula prefix, resolved keg binary,
+exact reported version, and `poured_from_bottle` installation receipt before
+downloading Ghostty.
 
 ## Build
 
 Requirements:
 
 - macOS 13 or newer;
-- full Xcode selected by `xcode-select`, with macOS SDK, iOS SDK, Swift, and the
-  Metal Toolchain component installed. Before any download, the script runs the
-  non-compiling `xcrun --sdk macosx metal -v` availability probe; if it fails,
-  install the component with `xcodebuild -downloadComponent MetalToolchain`;
+- full Xcode selected for the process through `DEVELOPER_DIR` or globally with
+  `xcode-select`, with macOS SDK, iOS SDK, Swift, and the Metal Toolchain
+  component installed. Before any download, the script runs the non-compiling
+  `xcrun --sdk macosx metal -v` availability probe; if it fails, install the
+  component with `xcodebuild -downloadComponent MetalToolchain`;
 - Homebrew's exact `zig@0.15` bottle when building on arm64 against an SDK whose
   root `libSystem.tbd` advertises `arm64e-macos` but not `arm64-macos`; install
-  it separately with `brew install --force-bottle zig@0.15`;
+  it separately with `brew install --force-bottle zig@0.15`. Its `llvm@20`
+  bottle dependency must provide `llvm-libtool-darwin` at the locked path;
 - `gettext`/`msgfmt`; and
 - network access to the HTTPS URLs in the lock file.
 
 From the repository root:
 
 ```sh
-bash scripts/build-prism-ghostty-macos.sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  bash scripts/build-prism-ghostty-macos.sh
 ```
+
+Omit `DEVELOPER_DIR` when the intended full Xcode is already selected globally.
+The script never calls `xcode-select --switch` and does not alter global Xcode
+selection.
 
 The script is noninteractive. It verifies every downloaded archive before
 extraction, uses Ghostty's required Zig toolchain (with the narrow
@@ -99,11 +119,16 @@ Expected output:
 target/ghostty-proof/dist/PrismGhosttyProof.app
 ```
 
-The packaged resource sentinel must be:
+Ghostty installs a `share/` tree. The script copies the contents of that tree
+directly into `Contents/Resources`; it does not add an extra wholesale
+`Resources/ghostty/` wrapper. The packaged sentinel is therefore:
 
 ```text
-PrismGhosttyProof.app/Contents/Resources/ghostty/terminfo/78/xterm-ghostty
+PrismGhosttyProof.app/Contents/Resources/terminfo/78/xterm-ghostty
 ```
+
+Ghostty-owned subtrees retain their upstream names, so themes remain under
+`Contents/Resources/ghostty/themes/`.
 
 ## Run and test manually
 
@@ -128,7 +153,8 @@ Check only the proof claims:
 7. Activity Monitor shows no runaway idle or occluded repaint loop.
 
 Do not use this harness to evaluate IME, VoiceOver, terminal selection, OSC 52,
-or Prism/egui overlay behavior; those paths are deliberately incomplete.
+or Prism/eframe child-view and overlay behavior; those paths are deliberately
+incomplete.
 
 ## Source-only checks
 
@@ -137,6 +163,14 @@ These checks do not download or build dependencies:
 ```sh
 bash -n scripts/build-prism-ghostty-macos.sh
 plutil -lint apps/prism/native/ghostty-proof/Info.plist
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcrun swift-format lint --strict --recursive \
+  apps/prism/native/ghostty-proof/Package.swift \
+  apps/prism/native/ghostty-proof/Sources
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcrun swiftc -frontend -parse \
+  apps/prism/native/ghostty-proof/Package.swift \
+  apps/prism/native/ghostty-proof/Sources/PrismGhosttyProof/*.swift
 git diff --check
 ```
 

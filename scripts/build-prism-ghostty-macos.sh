@@ -115,7 +115,9 @@ require_command awk
 require_command codesign
 require_command curl
 require_command ditto
+require_command ln
 require_command mktemp
+require_command nm
 require_command plutil
 require_command shasum
 require_command sw_vers
@@ -124,12 +126,16 @@ require_command xcode-select
 require_command xcodebuild
 require_command xcrun
 
-xcode_developer_dir="$(xcode-select --print-path)"
+xcode_developer_dir="${DEVELOPER_DIR:-$(xcode-select --print-path)}"
 case "$xcode_developer_dir" in
   *.app/Contents/Developer) ;;
-  *) die "full Xcode must be active; run xcode-select with Xcode.app, not CommandLineTools" ;;
+  *) die "full Xcode must be active through DEVELOPER_DIR or xcode-select, not CommandLineTools" ;;
 esac
-xcodebuild -version >/dev/null
+xcode_version_output="$(xcodebuild -version)"
+xcode_version="$(printf '%s\n' "$xcode_version_output" | awk 'NR == 1 { print $2; exit }')"
+xcode_build="$(printf '%s\n' "$xcode_version_output" | awk 'NR == 2 { print $3; exit }')"
+[[ -n "$xcode_version" && -n "$xcode_build" ]] \
+  || die "could not identify the active Xcode version"
 macos_sdk="$(xcrun --sdk macosx --show-sdk-path)" \
   || die "the active Xcode is missing the macOS SDK"
 [[ -d "$macos_sdk" ]] || die "the active macOS SDK path does not exist: $macos_sdk"
@@ -167,6 +173,7 @@ ghostty_sha="$(lock_value GHOSTTY_SOURCE_SHA256)"
 zig_version="$(lock_value ZIG_VERSION)"
 homebrew_zig_formula="$(lock_value HOMEBREW_ZIG_FORMULA)"
 homebrew_zig_arm64_path="$(lock_value HOMEBREW_ZIG_ARM64_PATH)"
+homebrew_llvm_libtool_path="$(lock_value HOMEBREW_LLVM_LIBTOOL_PATH)"
 minimum_macos="$(lock_value MINIMUM_MACOS_VERSION)"
 xcframework_relative="$(lock_value GHOSTTY_XCFRAMEWORK_PATH)"
 resources_relative="$(lock_value GHOSTTY_RESOURCES_PATH)"
@@ -185,6 +192,8 @@ resource_sentinel="$(lock_value GHOSTTY_RESOURCE_SENTINEL)"
   || die "this proof expects Homebrew's zig@0.15 patched toolchain formula"
 [[ "$homebrew_zig_arm64_path" == "/opt/homebrew/opt/zig@0.15/bin/zig" ]] \
   || die "unexpected Homebrew Zig path in lock file: $homebrew_zig_arm64_path"
+[[ "$homebrew_llvm_libtool_path" == "/opt/homebrew/opt/llvm@20/bin/llvm-libtool-darwin" ]] \
+  || die "unexpected Homebrew LLVM libtool path in lock file: $homebrew_llvm_libtool_path"
 [[ "$minimum_macos" == "13.0" ]] || die "this proof expects Ghostty's macOS 13.0 deployment target"
 for relative_path in "$xcframework_relative" "$resources_relative" "$resource_sentinel"; do
   case "$relative_path" in
@@ -208,8 +217,8 @@ case "$machine_arch" in
     else
       # Official Zig 0.15.2 cannot parse the arm64e-only root TBD labels in
       # current SDKs. Ghostty #11991 recommends Homebrew's patched 0.15.2
-      # bottle. Do not fall back to the official x86_64 binary under Rosetta:
-      # its libc++ build fails under Xcode 27.
+      # bottle. Do not fall back to the official x86_64 binary under Rosetta;
+      # that workaround fails while building libc++ on newer SDKs.
       zig_arch="aarch64"
       zig_source_kind="homebrew"
       zig_binary="$homebrew_zig_arm64_path"
@@ -238,6 +247,8 @@ case "$machine_arch" in
       actual_zig_version="$("$zig_binary" version)"
       [[ "$actual_zig_version" == "$zig_version" ]] \
         || die "wrong Homebrew Zig version at $zig_binary (expected $zig_version, got $actual_zig_version); install the exact bottle with: $homebrew_zig_install"
+      [[ -x "$homebrew_llvm_libtool_path" ]] \
+        || die "Homebrew Zig's LLVM archive tool is missing: $homebrew_llvm_libtool_path"
     fi
     ;;
   x86_64)
@@ -277,9 +288,21 @@ fi
 
 ghostty_prefix="$install_root/ghostty-$ghostty_version"
 mkdir -p "$ghostty_prefix"
+zig_build_path="$PATH"
+if [[ "$zig_source_kind" == "homebrew" ]]; then
+  # Apple's libtool drops Zig archive members that are not 8-byte aligned.
+  # The LLVM tool installed with Homebrew Zig preserves and realigns them.
+  libtool_shim_dir="$storage_root/tool-shims/homebrew-zig"
+  if [[ -e "$libtool_shim_dir" ]]; then
+    safe_remove_tree "$libtool_shim_dir"
+  fi
+  mkdir -p "$libtool_shim_dir"
+  ln -s -- "$homebrew_llvm_libtool_path" "$libtool_shim_dir/libtool"
+  zig_build_path="$libtool_shim_dir:$PATH"
+fi
 (
   cd "$ghostty_source"
-  "${zig_command[@]}" build -j2 \
+  PATH="$zig_build_path" "${zig_command[@]}" build -j2 \
     --prefix "$ghostty_prefix" \
     --cache-dir "$scratch_root/ghostty-zig-cache" \
     --global-cache-dir "$zig_global_cache" \
@@ -292,6 +315,14 @@ xcframework="$ghostty_source/$xcframework_relative"
 resources="$ghostty_prefix/$resources_relative"
 [[ -d "$xcframework" ]] || die "Ghostty build did not produce expected XCFramework: $xcframework"
 [[ -f "$xcframework/Info.plist" ]] || die "Ghostty XCFramework has no Info.plist: $xcframework"
+ghostty_macos_library="$xcframework/macos-arm64_x86_64/libghostty.a"
+[[ -f "$ghostty_macos_library" ]] \
+  || die "Ghostty XCFramework has no macOS static library: $ghostty_macos_library"
+for required_symbol in _ghostty_init _ghostty_app_new; do
+  nm -arch "$swift_arch" -gU "$ghostty_macos_library" 2>/dev/null \
+    | awk -v symbol="$required_symbol" '$NF == symbol { found = 1 } END { exit found ? 0 : 1 }' \
+    || die "Ghostty macOS static library does not export $required_symbol"
+done
 [[ -f "$resources/$resource_sentinel" ]] \
   || die "Ghostty resources are incomplete; missing sentinel: $resources/$resource_sentinel"
 ghostty_header="$(find "$xcframework" -type f -name ghostty.h -print -quit)"
@@ -324,7 +355,7 @@ bundle_staging="$(mktemp -d "$storage_root/bundle.XXXXXX")/PrismGhosttyProof.app
 mkdir -p "$bundle_staging/Contents/MacOS" "$bundle_staging/Contents/Resources"
 install -m 0755 "$harness_executable" "$bundle_staging/Contents/MacOS/PrismGhosttyProof"
 install -m 0644 "$harness_source/Info.plist" "$bundle_staging/Contents/Info.plist"
-ditto "$resources" "$bundle_staging/Contents/Resources/ghostty"
+ditto "$resources" "$bundle_staging/Contents/Resources"
 install -m 0644 "$ghostty_source/LICENSE" \
   "$bundle_staging/Contents/Resources/GHOSTTY-LICENSE"
 codesign --force --sign - "$bundle_staging"
@@ -336,12 +367,13 @@ mv -- "$bundle_staging" "$bundle"
 safe_remove_tree "$(dirname -- "$bundle_staging")"
 safe_remove_tree "$harness_stage"
 
-echo "Created source-only Ghostty proof harness:"
+echo "Created Ghostty proof harness:"
 echo "  $bundle"
 echo "Ghostty: $ghostty_tag"
 echo "  annotated tag object: $ghostty_tag_object"
 echo "  peeled source commit: $ghostty_revision"
 echo "  verified release archive: $ghostty_sha"
+echo "Xcode: $xcode_version ($xcode_build) from $xcode_developer_dir"
 echo "Zig: $zig_version ($zig_arch toolchain on $machine_arch host)"
 if [[ "$zig_source_kind" == "homebrew" ]]; then
   echo "  compatibility mode: Homebrew patched $homebrew_zig_formula bottle at $zig_binary"

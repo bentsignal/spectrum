@@ -24,10 +24,12 @@ GHOSTTY_SOURCE_SHA256=3349d25600ffbda281197a18314f7d18791969cffe9474f0ff16a45a9e
 # archives remain the reproducible toolchains for compatible arm64 SDKs and
 # native x86_64 hosts. On affected arm64 SDKs the script instead requires the
 # already-installed Homebrew zig@0.15 bottle, which carries Homebrew's patch for
-# this SDK incompatibility. That local installation is trusted input rather
-# than a checksum-pinned artifact: the script constrains its formula prefix,
-# resolved keg binary, exact reported version, and poured-bottle receipt, but
-# never installs or builds it.
+# this SDK incompatibility. The build also uses llvm-libtool-darwin from the
+# bottle's llvm@20 dependency because Apple's libtool drops unaligned Zig
+# archive members. Those local installations are trusted input rather than
+# checksum-pinned artifacts: the script constrains their fixed paths plus
+# Zig's formula prefix, resolved keg binary, exact reported version, and
+# poured-bottle receipt, but never installs or builds them.
 ZIG_VERSION=0.15.2
 ZIG_ARM64_URL=https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz
 ZIG_ARM64_SHA256=3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b
@@ -35,6 +37,7 @@ ZIG_X86_64_URL=https://ziglang.org/download/0.15.2/zig-x86_64-macos-0.15.2.tar.x
 ZIG_X86_64_SHA256=375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f
 HOMEBREW_ZIG_FORMULA=zig@0.15
 HOMEBREW_ZIG_ARM64_PATH=/opt/homebrew/opt/zig@0.15/bin/zig
+HOMEBREW_LLVM_LIBTOOL_PATH=/opt/homebrew/opt/llvm@20/bin/llvm-libtool-darwin
 
 # Upstream Ghostty 1.3.1 builds its macOS library for Ventura or newer.
 MINIMUM_MACOS_VERSION=13.0
@@ -42,5 +45,5 @@ MINIMUM_MACOS_VERSION=13.0
 # Ghostty 1.3.1's XCFramework step writes relative to the source root; its
 # resources install relative to the explicit Zig prefix supplied by the script.
 GHOSTTY_XCFRAMEWORK_PATH=macos/GhosttyKit.xcframework
-GHOSTTY_RESOURCES_PATH=share/ghostty
+GHOSTTY_RESOURCES_PATH=share
 GHOSTTY_RESOURCE_SENTINEL=terminfo/78/xterm-ghostty

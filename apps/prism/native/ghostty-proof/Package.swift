@@ -19,6 +19,7 @@ let package = Package(
       dependencies: ["GhosttyKit"],
       path: "Sources/PrismGhosttyProof",
       linkerSettings: [
+        .linkedLibrary("c++"),
         .linkedFramework("AppKit"),
         .linkedFramework("Carbon"),
         .linkedFramework("CoreGraphics"),

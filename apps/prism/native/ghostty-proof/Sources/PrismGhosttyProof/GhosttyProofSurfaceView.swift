@@ -31,7 +31,7 @@ final class GhosttyProofSurfaceView: NSView {
         nsview: Unmanaged.passUnretained(self).toOpaque()
       )
     )
-    config.scale_factor = NSScreen.main?.backingScaleFactor ?? 1
+    config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 1)
     config.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
 
     let created = workingDirectory.withCString { directory in
