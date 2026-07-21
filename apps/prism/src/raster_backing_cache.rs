@@ -1,13 +1,13 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, BufReader, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
-use image::{ImageDecoder, RgbaImage};
+use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use spectrum_imaging::{
@@ -18,11 +18,14 @@ use spectrum_imaging::{
 use crate::raster_region::{decoder_contract_for, inspect_raster_region_source};
 
 mod cache_fs;
+pub(crate) mod prepare;
 use cache_fs::{
-    is_cache_key, is_temporary_entry_name, metadata_is_link_or_reparse, open_trusted_cache_file,
-    path_refers_to_file, read_bounded, read_exact_at, remove_cache_entry, sync_directory,
-    trusted_cache_directory, trusted_cache_directory_if_present, trusted_cache_file_length,
+    RetainedPlane, is_cache_key, is_temporary_entry_name, metadata_is_link_or_reparse,
+    open_trusted_cache_file, path_refers_to_file, read_bounded, read_exact_at, remove_cache_entry,
+    retain_plane, sync_directory, trusted_cache_directory, trusted_cache_directory_if_present,
+    trusted_cache_file_length,
 };
+use prepare::prepare_exact_rgba8_plane;
 
 const CACHE_SCHEMA_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "manifest.json";
@@ -83,8 +86,65 @@ pub enum PrepareDerivedBacking {
     Ready {
         backing: DerivedRasterBacking,
         created: bool,
+        memory_plan: DerivedBackingMemoryPlan,
     },
     InProgress(DerivedBackingIdentity),
+}
+
+/// Accounted pixel storage for one cold derived-backing preparation.
+///
+/// Prism publication retains one decoded output surface and writes it directly,
+/// or converts one row at a time for RGB/L/LA inputs. Decoder dependencies can
+/// own additional full-frame or input buffers while producing that surface.
+/// Those known reservations are reported separately; because dependency-private
+/// allocations are not fully limited by `image`, this plan does not advertise
+/// an enforced total-process peak.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DerivedBackingMemoryPlan {
+    decoded_surface_bytes: u64,
+    conversion_row_bytes: u64,
+    decoder_scratch_reservation_bytes: u64,
+    encoded_input_reservation_bytes: u64,
+    known_resident_reservation_bytes: u64,
+}
+
+impl DerivedBackingMemoryPlan {
+    pub fn decoded_surface_bytes(self) -> u64 {
+        self.decoded_surface_bytes
+    }
+
+    pub fn conversion_row_bytes(self) -> u64 {
+        self.conversion_row_bytes
+    }
+
+    /// Conservative dependency pixel-scratch reservation concurrent with the
+    /// output surface. WebP reserves one RGBA plane because opaque lossless
+    /// decode requires it; some layouts may use less or additional private work.
+    pub fn decoder_scratch_reservation_bytes(self) -> u64 {
+        self.decoder_scratch_reservation_bytes
+    }
+
+    /// Conservative encoded-input reservation for decoders that buffer input.
+    pub fn encoded_input_reservation_bytes(self) -> u64 {
+        self.encoded_input_reservation_bytes
+    }
+
+    /// Reservation covering all known concurrent buffers in the pinned decoder
+    /// implementations. This is not an upper bound on dependency-private work.
+    pub fn known_resident_reservation_bytes(self) -> u64 {
+        self.known_resident_reservation_bytes
+    }
+
+    /// `image` does not enforce a complete bound on dependency-private decoder
+    /// allocations, so supported derived formats currently return `None`.
+    pub fn enforced_peak_bytes(self) -> Option<u64> {
+        None
+    }
+
+    /// Publication never allocates a second full RGBA8 plane in memory.
+    pub fn full_plane_copy_bytes(self) -> u64 {
+        0
+    }
 }
 
 pub struct DerivedBackingCache {
@@ -151,6 +211,7 @@ impl DerivedBackingCache {
         &self,
         identity: &DerivedBackingIdentity,
     ) -> Result<Option<DerivedRasterBacking>> {
+        self.validate_identity(identity)?;
         if !trusted_cache_directory_if_present(&self.root)? {
             return Ok(None);
         }
@@ -200,7 +261,7 @@ impl DerivedBackingCache {
             },
             key: identity.key.clone(),
             plane_path,
-            plane,
+            plane: retain_plane(plane),
             max_region_pixels: self.limits.max_region_pixels,
         }))
     }
@@ -210,33 +271,50 @@ impl DerivedBackingCache {
     /// worker coordinator, is released after crashes, and makes quota checks
     /// race-free.
     ///
-    /// The cold path can transiently hold the decoder's native surface and the
-    /// RGBA8 plane together. It must remain on the single background builder;
-    /// this foundation deliberately does not invoke it from the GUI renderer.
+    /// Prism's publication path holds one decoded output surface and at most one
+    /// RGBA8 conversion row. Decoder-private memory is serialized globally and
+    /// accounted conservatively where dependency behavior is known.
     pub fn prepare(&self, source: &Path) -> Result<PrepareDerivedBacking> {
         let identity = self.identify(source)?;
-        if let Ok(Some(backing)) = self.open_ready(&identity) {
+        self.prepare_identified(source, &identity)
+    }
+
+    /// Prepares a source using an identity retained by a worker retry loop.
+    ///
+    /// Busy retries validate the immutable identity but do not rehash or
+    /// reinspect the source. Once this call owns the build lease, the decode
+    /// path validates the source against the identity before and after its
+    /// single decode.
+    pub fn prepare_identified(
+        &self,
+        source: &Path,
+        identity: &DerivedBackingIdentity,
+    ) -> Result<PrepareDerivedBacking> {
+        let memory_plan = self.validate_identity(identity)?;
+        if let Ok(Some(backing)) = self.open_ready(identity) {
             return Ok(PrepareDerivedBacking::Ready {
                 backing,
                 created: false,
+                memory_plan,
             });
         }
         fs::create_dir_all(&self.root)
             .with_context(|| format!("could not create {}", self.root.display()))?;
         trusted_cache_directory(&self.root)?;
         let Some(_lease) = CachePrepareLease::acquire(self.root.join(PREPARE_LOCK))? else {
-            return Ok(PrepareDerivedBacking::InProgress(identity));
+            return Ok(PrepareDerivedBacking::InProgress(identity.clone()));
         };
-        match self.open_ready(&identity) {
+        match self.open_ready(identity) {
             Ok(Some(backing)) => {
                 return Ok(PrepareDerivedBacking::Ready {
                     backing,
                     created: false,
+                    memory_plan,
                 });
             }
             Ok(None) => {}
             Err(_) => {
-                let corrupt = self.entry_directory(&identity);
+                let corrupt = self.entry_directory(identity);
                 remove_cache_entry(&corrupt).with_context(|| {
                     format!(
                         "could not discard corrupt cache entry {}",
@@ -262,10 +340,21 @@ impl DerivedBackingCache {
             bail!("derived raster backing cache quota would be exceeded");
         }
 
-        let pixels = decode_exact_rgba8(source, &identity, self.limits)?;
-        let raw = pixels.into_raw();
-        if u64::try_from(raw.len()).ok() != Some(plane_bytes) {
-            bail!("decoded raster byte count does not match its backing descriptor");
+        let temporary_name = format!(
+            ".tmp-{}-{}-{}",
+            identity.key,
+            std::process::id(),
+            TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let temporary = TemporaryDirectory::create(self.root.join(temporary_name))?;
+        let prepared = prepare_exact_rgba8_plane(
+            source,
+            identity,
+            self.limits,
+            &temporary.path.join(PLANE_FILE),
+        )?;
+        if prepared.plane_bytes != plane_bytes || prepared.memory_plan != memory_plan {
+            bail!("decoded raster does not match its preparation memory contract");
         }
         let manifest = DerivedBackingManifest {
             schema_version: CACHE_SCHEMA_VERSION,
@@ -275,15 +364,16 @@ impl DerivedBackingCache {
             pixel_format: PIXEL_FORMAT.into(),
             row_stride: u64::from(identity.descriptor.width) * 4,
             plane_bytes,
-            plane_sha256: sha256_bytes(&raw),
+            plane_sha256: prepared.plane_sha256,
         };
-        self.publish(&identity, &manifest, &raw)?;
+        self.publish(identity, &manifest, temporary)?;
         let backing = self
-            .open_ready(&identity)?
+            .open_ready(identity)?
             .context("published derived raster backing is not ready")?;
         Ok(PrepareDerivedBacking::Ready {
             backing,
             created: true,
+            memory_plan,
         })
     }
 
@@ -291,16 +381,8 @@ impl DerivedBackingCache {
         &self,
         identity: &DerivedBackingIdentity,
         manifest: &DerivedBackingManifest,
-        raw: &[u8],
+        temporary: TemporaryDirectory,
     ) -> Result<()> {
-        let temporary_name = format!(
-            ".tmp-{}-{}-{}",
-            identity.key,
-            std::process::id(),
-            TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let temporary = TemporaryDirectory::create(self.root.join(temporary_name))?;
-        write_immutable_file(&temporary.path.join(PLANE_FILE), raw)?;
         let manifest_bytes = serde_json::to_vec(manifest)?;
         write_immutable_file(&temporary.path.join(MANIFEST_FILE), &manifest_bytes)?;
         write_immutable_file(
@@ -327,6 +409,46 @@ impl DerivedBackingCache {
         sync_directory(&self.root)?;
         temporary.commit();
         Ok(())
+    }
+
+    /// Returns the pixel-storage peak enforced by cold preparation.
+    pub fn preparation_memory_plan(
+        &self,
+        identity: &DerivedBackingIdentity,
+    ) -> Result<DerivedBackingMemoryPlan> {
+        self.validate_identity(identity)
+    }
+
+    fn validate_identity(
+        &self,
+        identity: &DerivedBackingIdentity,
+    ) -> Result<DerivedBackingMemoryPlan> {
+        if !is_lower_sha256(&identity.source_sha256)
+            || !identity.descriptor.supports_exact_rgba8_backing()
+        {
+            bail!("derived raster backing identity is invalid");
+        }
+        if identity.descriptor.width > self.limits.max_dimension
+            || identity.descriptor.height > self.limits.max_dimension
+        {
+            bail!("raster dimensions exceed the derived backing dimension limit");
+        }
+        let expected_key = sha256_bytes(&serde_json::to_vec(&CacheKeyMaterial {
+            source_sha256: &identity.source_sha256,
+            descriptor: &identity.descriptor,
+        })?);
+        if identity.key != expected_key {
+            bail!("derived raster backing identity key is invalid");
+        }
+        let plan = prepare::memory_plan(&identity.descriptor, self.limits)?;
+        let plane_bytes = identity
+            .descriptor
+            .exact_rgba8_plane_bytes()
+            .context("derived raster backing dimensions overflow")?;
+        if plane_bytes > self.limits.max_plane_bytes {
+            bail!("derived raster backing exceeds the per-source byte limit");
+        }
+        Ok(plan)
     }
 
     fn occupied_plane_bytes(&self) -> Result<u64> {
@@ -383,7 +505,7 @@ pub struct DerivedRasterBacking {
     info: RegionSourceInfo,
     key: String,
     plane_path: PathBuf,
-    plane: File,
+    plane: RetainedPlane,
     max_region_pixels: u64,
 }
 
@@ -414,14 +536,13 @@ impl ExactRegionSource for DerivedRasterBacking {
             .ok_or(DerivedBackingReadError::LayoutOverflow)?;
         let mut output = vec![0; output_bytes];
         let source_stride = u64::from(self.info.descriptor.width) * 4;
-        let plane = self.plane.try_clone()?;
         for row in 0..region.height {
             let offset = u64::from(region.y + row)
                 .checked_mul(source_stride)
                 .and_then(|offset| offset.checked_add(u64::from(region.x) * 4))
                 .ok_or(DerivedBackingReadError::LayoutOverflow)?;
             let start = row as usize * row_bytes;
-            read_exact_at(&plane, &mut output[start..start + row_bytes], offset)?;
+            read_exact_at(&self.plane, &mut output[start..start + row_bytes], offset)?;
         }
         RgbaImage::from_raw(region.width, region.height, output)
             .ok_or(DerivedBackingReadError::InvalidPlane)
@@ -515,69 +636,6 @@ impl DerivedBackingManifest {
     }
 }
 
-fn decode_exact_rgba8(
-    source: &Path,
-    identity: &DerivedBackingIdentity,
-    limits: DerivedBackingLimits,
-) -> Result<RgbaImage> {
-    let mut source_file =
-        File::open(source).with_context(|| format!("could not open {}", source.display()))?;
-    if !source_file.metadata()?.is_file() {
-        bail!("encoded raster source is not a regular file");
-    }
-    let before_hash = sha256_reader_bounded(
-        &mut source_file,
-        limits.max_encoded_source_bytes,
-        "encoded raster",
-    )?;
-    if before_hash != identity.source_sha256 {
-        bail!("raster source changed before its derived backing was prepared");
-    }
-    source_file.seek(SeekFrom::Start(0))?;
-    if source_file.metadata()?.len() > limits.max_encoded_source_bytes {
-        bail!("encoded raster exceeds the derived backing source byte limit");
-    }
-    let reader = image::ImageReader::new(BufReader::new(&mut source_file))
-        .with_guessed_format()
-        .with_context(|| format!("could not identify {}", source.display()))?;
-    let format = reader
-        .format()
-        .with_context(|| format!("could not identify {}", source.display()))?;
-    if decoder_contract_for(format) != identity.descriptor.decoder_contract {
-        bail!("raster decoder contract changed before backing preparation");
-    }
-    let mut image_limits = image::Limits::default();
-    image_limits.max_image_width = Some(identity.descriptor.width);
-    image_limits.max_image_height = Some(identity.descriptor.height);
-    image_limits.max_alloc = Some(limits.max_plane_bytes);
-    let mut decoder = reader
-        .into_decoder()
-        .with_context(|| format!("could not inspect {}", source.display()))?;
-    if decoder.dimensions() != (identity.descriptor.width, identity.descriptor.height)
-        || format!("{:?}", decoder.color_type()).to_ascii_lowercase()
-            != identity.descriptor.color_encoding
-    {
-        bail!("raster decoder metadata changed before backing preparation");
-    }
-    decoder.set_limits(image_limits)?;
-    let decoded = image::DynamicImage::from_decoder(decoder)
-        .with_context(|| format!("could not decode {}", source.display()))?
-        .to_rgba8();
-    source_file.seek(SeekFrom::Start(0))?;
-    if sha256_reader_bounded(
-        &mut source_file,
-        limits.max_encoded_source_bytes,
-        "encoded raster",
-    )? != identity.source_sha256
-    {
-        bail!("raster source changed while its derived backing was prepared");
-    }
-    if decoded.dimensions() != (identity.descriptor.width, identity.descriptor.height) {
-        bail!("raster dimensions changed while its derived backing was prepared");
-    }
-    Ok(decoded)
-}
-
 fn write_immutable_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
     file.write_all(bytes)?;
@@ -625,6 +683,13 @@ fn sha256_reader_bounded(reader: &mut impl Read, max_bytes: u64, label: &str) ->
 
 fn sha256_bytes(bytes: &[u8]) -> String {
     sha256_hex(Sha256::digest(bytes))
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn sha256_hex(digest: impl AsRef<[u8]>) -> String {

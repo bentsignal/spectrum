@@ -6,6 +6,22 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
+#[cfg(any(unix, windows))]
+pub(super) type RetainedPlane = File;
+
+#[cfg(not(any(unix, windows)))]
+pub(super) struct RetainedPlane(std::sync::Mutex<File>);
+
+#[cfg(any(unix, windows))]
+pub(super) fn retain_plane(file: File) -> RetainedPlane {
+    file
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn retain_plane(file: File) -> RetainedPlane {
+    RetainedPlane(std::sync::Mutex::new(file))
+}
+
 pub(super) fn trusted_cache_directory_if_present(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -98,12 +114,20 @@ pub(super) fn is_temporary_entry_name(value: &str) -> bool {
 }
 
 #[cfg(unix)]
-pub(super) fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+pub(super) fn read_exact_at(
+    file: &RetainedPlane,
+    buffer: &mut [u8],
+    offset: u64,
+) -> io::Result<()> {
     std::os::unix::fs::FileExt::read_exact_at(file, buffer, offset)
 }
 
 #[cfg(windows)]
-pub(super) fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> io::Result<()> {
+pub(super) fn read_exact_at(
+    file: &RetainedPlane,
+    mut buffer: &mut [u8],
+    mut offset: u64,
+) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
 
     while !buffer.is_empty() {
@@ -123,8 +147,15 @@ pub(super) fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64)
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(super) fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
-    let mut file = file.try_clone()?;
+pub(super) fn read_exact_at(
+    plane: &RetainedPlane,
+    buffer: &mut [u8],
+    offset: u64,
+) -> io::Result<()> {
+    let mut file = plane
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     file.seek(SeekFrom::Start(offset))?;
     file.read_exact(buffer)
 }
@@ -262,6 +293,46 @@ fn make_cache_path_writable(path: &Path, metadata: &fs::Metadata) -> io::Result<
     let mut permissions = metadata.permissions();
     permissions.set_readonly(false);
     fs::set_permissions(path, permissions)
+}
+
+#[cfg(all(test, not(any(unix, windows))))]
+mod fallback_tests {
+    use std::{sync::Arc, thread};
+
+    use super::*;
+
+    #[test]
+    fn retained_plane_serializes_cursor_based_positioned_reads() {
+        let path =
+            std::env::temp_dir().join(format!("prism-retained-plane-{}", std::process::id()));
+        let first = vec![0x31_u8; 4_096];
+        let second = vec![0xc7_u8; 4_096];
+        let mut contents = first.clone();
+        contents.extend_from_slice(&second);
+        fs::write(&path, contents).unwrap();
+        let plane = Arc::new(retain_plane(File::open(&path).unwrap()));
+        let workers = (0..8)
+            .map(|worker| {
+                let plane = Arc::clone(&plane);
+                let expected = if worker % 2 == 0 {
+                    first.clone()
+                } else {
+                    second.clone()
+                };
+                thread::spawn(move || {
+                    for _ in 0..64 {
+                        let mut actual = vec![0; expected.len()];
+                        read_exact_at(&plane, &mut actual, (worker % 2 * 4_096) as u64).unwrap();
+                        assert_eq!(actual, expected);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        fs::remove_file(path).unwrap();
+    }
 }
 
 #[cfg(unix)]

@@ -2,7 +2,12 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
 };
 
 use flate2::{Compression, write::ZlibEncoder};
@@ -106,14 +111,31 @@ fn exact_planes_match_current_jpeg_webp_and_adam7_decoders() {
             .save_with_format(path, *format)
             .unwrap();
     }
+    // image-webp's encoder emits lossless WebP, exercising its opaque RGB path.
+    let opaque_lossless_webp = directory.path().join("small-opaque-lossless.webp");
+    DynamicImage::ImageRgb8(image::RgbImage::from_fn(13, 9, |x, y| {
+        let pixel = originals.get_pixel(x, y);
+        image::Rgb([pixel[0], pixel[1], pixel[2]])
+    }))
+    .save_with_format(&opaque_lossless_webp, ImageFormat::WebP)
+    .unwrap();
     let adam7 = directory.path().join("small-adam7.png");
     write_adam7_rgba8(&adam7, &originals);
+    let adam7_luma = directory.path().join("small-adam7-luma.png");
+    let luma = image::GrayImage::from_fn(13, 9, |x, y| image::Luma([(x * 17 + y * 23) as u8]));
+    write_adam7_8bit(&adam7_luma, 13, 9, 0, 1, luma.as_raw());
+    let adam7_luma_alpha = directory.path().join("small-adam7-luma-alpha.png");
+    let luma_alpha = image::GrayAlphaImage::from_fn(13, 9, |x, y| {
+        image::LumaA([(x * 7 + y * 19) as u8, (x * 31 + y * 3) as u8])
+    });
+    write_adam7_8bit(&adam7_luma_alpha, 13, 9, 4, 2, luma_alpha.as_raw());
 
-    for path in sources
-        .iter()
-        .map(|(path, _)| path)
-        .chain(std::iter::once(&adam7))
-    {
+    for path in sources.iter().map(|(path, _)| path).chain([
+        &opaque_lossless_webp,
+        &adam7,
+        &adam7_luma,
+        &adam7_luma_alpha,
+    ]) {
         let expected = image::open(path).unwrap().to_rgba8();
         let backing = prepare_ready(&cache(&directory.path().join("cache")), path);
         let actual = backing
@@ -126,6 +148,91 @@ fn exact_planes_match_current_jpeg_webp_and_adam7_decoders() {
             .unwrap();
         assert_eq!(actual, expected, "backing mismatch for {}", path.display());
     }
+}
+
+#[test]
+fn preparation_memory_plan_separates_publication_from_decoder_owned_buffers() {
+    let directory = TestDirectory::new("memory-plan");
+    let rgb = directory.path().join("rgb.webp");
+    DynamicImage::ImageRgb8(image::RgbImage::from_fn(31, 17, |x, y| {
+        image::Rgb([(x * 3) as u8, (y * 5) as u8, (x + y) as u8])
+    }))
+    .save_with_format(&rgb, ImageFormat::WebP)
+    .unwrap();
+    let cache = cache(&directory.path().join("cache"));
+    let identity = cache.identify(&rgb).unwrap();
+    let plan = cache.preparation_memory_plan(&identity).unwrap();
+    let pixels = 31_u64 * 17;
+    assert_eq!(plan.decoded_surface_bytes(), pixels * 3);
+    assert_eq!(plan.conversion_row_bytes(), 31 * 4);
+    assert_eq!(plan.decoder_scratch_reservation_bytes(), pixels * 4);
+    assert_eq!(plan.encoded_input_reservation_bytes(), 0);
+    assert_eq!(plan.known_resident_reservation_bytes(), pixels * 7);
+    assert_eq!(plan.enforced_peak_bytes(), None);
+    assert_eq!(plan.full_plane_copy_bytes(), 0);
+
+    let rgba = directory.path().join("rgba-adam7.png");
+    write_adam7_rgba8(&rgba, &test_pixels(31, 17, 41));
+    let identity = cache.identify(&rgba).unwrap();
+    let plan = cache.preparation_memory_plan(&identity).unwrap();
+    assert_eq!(plan.decoded_surface_bytes(), pixels * 4);
+    assert_eq!(plan.conversion_row_bytes(), 0);
+    assert_eq!(plan.decoder_scratch_reservation_bytes(), 0);
+    assert_eq!(plan.encoded_input_reservation_bytes(), 0);
+    assert_eq!(plan.known_resident_reservation_bytes(), pixels * 4);
+    assert_eq!(plan.enforced_peak_bytes(), None);
+    assert_eq!(plan.full_plane_copy_bytes(), 0);
+
+    let jpeg = directory.path().join("buffered.jpg");
+    DynamicImage::ImageRgb8(image::RgbImage::from_fn(31, 17, |x, y| {
+        image::Rgb([(x * 11) as u8, (y * 13) as u8, (x + y * 2) as u8])
+    }))
+    .save_with_format(&jpeg, ImageFormat::Jpeg)
+    .unwrap();
+    let identity = cache.identify(&jpeg).unwrap();
+    let plan = cache.preparation_memory_plan(&identity).unwrap();
+    let encoded_limit = DerivedBackingLimits::default().max_encoded_source_bytes;
+    assert_eq!(plan.decoder_scratch_reservation_bytes(), 0);
+    assert_eq!(plan.encoded_input_reservation_bytes(), encoded_limit);
+    assert_eq!(
+        plan.known_resident_reservation_bytes(),
+        encoded_limit + pixels * 3
+    );
+    assert_eq!(plan.enforced_peak_bytes(), None);
+}
+
+#[test]
+fn process_wide_decode_permit_serializes_different_workers() {
+    let (first_acquired_tx, first_acquired_rx) = mpsc::channel();
+    let (release_first_tx, release_first_rx) = mpsc::channel();
+    let first = thread::spawn(move || {
+        crate::raster_backing_cache::prepare::with_full_raster_decode_permit_for_test(|| {
+            first_acquired_tx.send(()).unwrap();
+            release_first_rx.recv().unwrap();
+        });
+    });
+    first_acquired_rx.recv().unwrap();
+
+    let (second_started_tx, second_started_rx) = mpsc::channel();
+    let (second_acquired_tx, second_acquired_rx) = mpsc::channel();
+    let second = thread::spawn(move || {
+        second_started_tx.send(()).unwrap();
+        crate::raster_backing_cache::prepare::with_full_raster_decode_permit_for_test(|| {
+            second_acquired_tx.send(()).unwrap();
+        });
+    });
+    second_started_rx.recv().unwrap();
+    assert!(
+        second_acquired_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
+    release_first_tx.send(()).unwrap();
+    second_acquired_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    first.join().unwrap();
+    second.join().unwrap();
 }
 
 #[test]
@@ -212,6 +319,62 @@ fn source_mutation_changes_the_content_address() {
     let second = cache.identify(&source).unwrap();
     assert_ne!(first.source_sha256(), second.source_sha256());
     assert_ne!(first.key(), second.key());
+}
+
+#[test]
+fn prepare_identified_rejects_a_source_changed_after_identification() {
+    let directory = TestDirectory::new("identified-source-change");
+    let source = directory.path().join("mutable.webp");
+    DynamicImage::ImageRgba8(test_pixels(9, 7, 1))
+        .save_with_format(&source, ImageFormat::WebP)
+        .unwrap();
+    let cache = cache(&directory.path().join("cache"));
+    let identity = cache.identify(&source).unwrap();
+    DynamicImage::ImageRgba8(test_pixels(9, 7, 211))
+        .save_with_format(&source, ImageFormat::WebP)
+        .unwrap();
+    let error = match cache.prepare_identified(&source, &identity) {
+        Ok(_) => panic!("changed source unexpectedly prepared"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("changed before its derived backing was prepared")
+    );
+}
+
+#[test]
+fn busy_prepare_identified_retry_does_not_rehash_or_reinspect() {
+    let directory = TestDirectory::new("identified-busy-retry");
+    let source = directory.path().join("source.webp");
+    DynamicImage::ImageRgba8(test_pixels(8, 6, 91))
+        .save_with_format(&source, ImageFormat::WebP)
+        .unwrap();
+    let cache_root = directory.path().join("cache");
+    fs::create_dir(&cache_root).unwrap();
+    let cache = cache(&cache_root);
+    let identity = cache.identify(&source).unwrap();
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(cache_root.join(".prepare-lock"))
+        .unwrap();
+    lock.try_lock_exclusive().unwrap();
+    let parked_source = source.with_extension("parked");
+    fs::rename(&source, &parked_source).unwrap();
+    assert!(matches!(
+        cache.prepare_identified(&source, &identity).unwrap(),
+        PrepareDerivedBacking::InProgress(returned) if returned == identity
+    ));
+    fs::rename(&parked_source, &source).unwrap();
+    FileExt::unlock(&lock).unwrap();
+    assert!(matches!(
+        cache.prepare_identified(&source, &identity).unwrap(),
+        PrepareDerivedBacking::Ready { created: true, .. }
+    ));
 }
 
 #[test]
@@ -456,6 +619,17 @@ fn plane_and_region_limits_are_enforced_before_large_work() {
 }
 
 fn write_adam7_rgba8(path: &Path, pixels: &RgbaImage) {
+    write_adam7_8bit(path, pixels.width(), pixels.height(), 6, 4, pixels.as_raw());
+}
+
+fn write_adam7_8bit(
+    path: &Path,
+    width: u32,
+    height: u32,
+    png_color_type: u8,
+    channels: usize,
+    pixels: &[u8],
+) {
     let mut filtered = Vec::new();
     for &(start_x, start_y, step_x, step_y) in &[
         (0, 0, 8, 8),
@@ -466,13 +640,14 @@ fn write_adam7_rgba8(path: &Path, pixels: &RgbaImage) {
         (1, 0, 2, 2),
         (0, 1, 1, 2),
     ] {
-        for y in (start_y..pixels.height()).step_by(step_y) {
-            if start_x >= pixels.width() {
+        for y in (start_y..height).step_by(step_y) {
+            if start_x >= width {
                 continue;
             }
             filtered.push(0);
-            for x in (start_x..pixels.width()).step_by(step_x) {
-                filtered.extend_from_slice(&pixels.get_pixel(x, y).0);
+            for x in (start_x..width).step_by(step_x) {
+                let start = (y as usize * width as usize + x as usize) * channels;
+                filtered.extend_from_slice(&pixels[start..start + channels]);
             }
         }
     }
@@ -481,9 +656,9 @@ fn write_adam7_rgba8(path: &Path, pixels: &RgbaImage) {
     let compressed = encoder.finish().unwrap();
     let mut png = Vec::from(&b"\x89PNG\r\n\x1a\n"[..]);
     let mut header = Vec::new();
-    header.extend_from_slice(&pixels.width().to_be_bytes());
-    header.extend_from_slice(&pixels.height().to_be_bytes());
-    header.extend_from_slice(&[8, 6, 0, 0, 1]);
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    header.extend_from_slice(&[8, png_color_type, 0, 0, 1]);
     write_png_chunk(&mut png, b"IHDR", &header);
     write_png_chunk(&mut png, b"IDAT", &compressed);
     write_png_chunk(&mut png, b"IEND", &[]);
