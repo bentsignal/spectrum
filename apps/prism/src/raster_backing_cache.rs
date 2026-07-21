@@ -620,11 +620,23 @@ fn sha256_reader_bounded(reader: &mut impl Read, max_bytes: u64, label: &str) ->
             .checked_add(read as u64)
             .context("hashed byte count overflows")?;
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(sha256_hex(digest.finalize()))
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    sha256_hex(Sha256::digest(bytes))
+}
+
+fn sha256_hex(digest: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let digest = digest.as_ref();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 struct CachePrepareLease {
