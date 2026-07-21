@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 const COMPOSITOR_WORKERS: usize = 2;
 const MAX_FALLBACK_OFFSCREEN_DIMENSION: u32 = 4_096;
@@ -10,19 +11,22 @@ struct CompositePreviewKey {
     document: Document,
     scale_sixty_fourths: u32,
     region: prism_core::RenderRegion,
+    raster_mode: RasterRenderMode,
 }
 
 impl CompositePreviewKey {
-    fn new(
+    fn new_with_sources(
         tab_id: u64,
         generation: u64,
         document: &Document,
         geometry: CanvasGeometry,
         physical_pixels_per_point: f32,
+        raster_sources: &RasterSourceSnapshot,
     ) -> Option<Self> {
         let display_scale = geometry.pixels_per_point * physical_pixels_per_point;
         let requested_units = ((display_scale.max(1.0 / 64.0) * 64.0).ceil() as u32).max(1);
-        let scale_sixty_fourths = if prism_core::document_supports_region_native_zoom(document) {
+        let raster_mode = raster_sources.render_mode(document);
+        let scale_sixty_fourths = if !matches!(raster_mode, RasterRenderMode::FallbackCapped) {
             requested_units
         } else {
             let longest = document.width.max(document.height).max(1) as f32;
@@ -41,11 +45,30 @@ impl CompositePreviewKey {
             document,
             scale_sixty_fourths,
             region,
+            raster_mode,
         })
     }
 
     fn scale(&self) -> f32 {
         self.scale_sixty_fourths as f32 / 64.0
+    }
+
+    #[cfg(test)]
+    fn new(
+        tab_id: u64,
+        generation: u64,
+        document: &Document,
+        geometry: CanvasGeometry,
+        physical_pixels_per_point: f32,
+    ) -> Option<Self> {
+        Self::new_with_sources(
+            tab_id,
+            generation,
+            document,
+            geometry,
+            physical_pixels_per_point,
+            &RasterSourceSnapshot::empty(),
+        )
     }
 }
 
@@ -58,12 +81,14 @@ pub(super) struct CompositeFrame {
 struct CompositeRenderRequest {
     sequence: u64,
     key: CompositePreviewKey,
+    raster_sources: Arc<RasterSourceSnapshot>,
 }
 
 struct CompositeRenderResult {
     worker: usize,
     sequence: u64,
     key: CompositePreviewKey,
+    raster_sources: Arc<RasterSourceSnapshot>,
     result: Result<image::DynamicImage, String>,
 }
 
@@ -73,6 +98,7 @@ struct CompositeFailure {
     attempts: u32,
     retry_at: std::time::Instant,
     retry_queued: bool,
+    raster_sources: Arc<RasterSourceSnapshot>,
 }
 
 pub(super) struct CompositePreview {
@@ -88,6 +114,29 @@ pub(super) struct CompositePreview {
     receiver: Receiver<CompositeRenderResult>,
 }
 
+fn render_composite_request(
+    request: &CompositeRenderRequest,
+) -> Result<image::DynamicImage, String> {
+    let result = match request.key.raster_mode {
+        RasterRenderMode::Provider { .. } => {
+            prism_core::render_document_region_scaled_with_sources(
+                &request.key.document,
+                request.key.scale(),
+                request.key.region,
+                request.raster_sources.as_ref(),
+            )
+        }
+        RasterRenderMode::LegacyNative | RasterRenderMode::FallbackCapped => {
+            prism_core::render_document_region_scaled(
+                &request.key.document,
+                request.key.scale(),
+                request.key.region,
+            )
+        }
+    };
+    result.map_err(|error| format!("{error:#}"))
+}
+
 impl CompositePreview {
     pub(super) fn new(repaint: egui::Context) -> Self {
         let (result_sender, receiver) = mpsc::channel::<CompositeRenderResult>();
@@ -98,18 +147,14 @@ impl CompositePreview {
             std::thread::spawn(move || {
                 while let Ok(request) = worker_receiver.recv() {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        prism_core::render_document_region_scaled(
-                            &request.key.document,
-                            request.key.scale(),
-                            request.key.region,
-                        )
-                        .map_err(|error| format!("{error:#}"))
+                        render_composite_request(&request)
                     }))
                     .unwrap_or_else(|_| Err("Document region preview renderer panicked".into()));
                     let _ = result_sender.send(CompositeRenderResult {
                         worker,
                         sequence: request.sequence,
                         key: request.key,
+                        raster_sources: request.raster_sources,
                         result,
                     });
                     repaint.request_repaint();
@@ -146,13 +191,15 @@ impl CompositePreview {
         document: &Document,
         geometry: CanvasGeometry,
         physical_pixels_per_point: f32,
+        raster_sources: Arc<RasterSourceSnapshot>,
     ) -> Result<Option<CompositeFrame>, String> {
-        let Some(desired_key) = CompositePreviewKey::new(
+        let Some(desired_key) = CompositePreviewKey::new_with_sources(
             tab_id,
             self.generation,
             document,
             geometry,
             physical_pixels_per_point,
+            raster_sources.as_ref(),
         ) else {
             return Ok(None);
         };
@@ -174,6 +221,7 @@ impl CompositePreview {
             self.pending = Some(CompositeRenderRequest {
                 sequence: self.next_sequence,
                 key: desired_key.clone(),
+                raster_sources: Arc::clone(&raster_sources),
             });
         }
 
@@ -196,6 +244,7 @@ impl CompositePreview {
                         attempts,
                         retry_at: std::time::Instant::now() + retry_delay(attempts),
                         retry_queued: false,
+                        raster_sources: response.raster_sources,
                     });
                     continue;
                 }
@@ -301,6 +350,7 @@ impl CompositePreview {
                 self.pending = Some(CompositeRenderRequest {
                     sequence: self.next_sequence,
                     key: desired_key.clone(),
+                    raster_sources: Arc::clone(&failure.raster_sources),
                 });
                 failure.retry_queued = true;
             }
@@ -429,7 +479,65 @@ pub(super) fn paint_composite_preview(
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
+    use prism_core::{RasterSourceEpoch, ResolvedRasterSource};
+    use spectrum_imaging::{
+        ExactRegionSource, PixelRegion, RegionReadCapability, RegionReadiness,
+        RegionSourceDescriptor, RegionSourceInfo, SourceSampleDepth,
+    };
+
     use super::*;
+
+    struct ConstantSource {
+        info: RegionSourceInfo,
+        pixel: [u8; 4],
+    }
+
+    impl ExactRegionSource for ConstantSource {
+        type Error = Infallible;
+
+        fn info(&self) -> &RegionSourceInfo {
+            &self.info
+        }
+
+        fn read_exact_region(&self, region: PixelRegion) -> Result<image::RgbaImage, Self::Error> {
+            Ok(image::RgbaImage::from_pixel(
+                region.width,
+                region.height,
+                image::Rgba(self.pixel),
+            ))
+        }
+    }
+
+    fn provider_snapshot(
+        path: PathBuf,
+        epoch: u64,
+        pixel: [u8; 4],
+        dimensions: (u32, u32),
+    ) -> Arc<RasterSourceSnapshot> {
+        let source = ResolvedRasterSource::new(
+            RasterSourceEpoch::new(format!("source-{epoch}")).unwrap(),
+            Arc::new(ConstantSource {
+                info: RegionSourceInfo {
+                    descriptor: RegionSourceDescriptor {
+                        width: dimensions.0,
+                        height: dimensions.1,
+                        color_encoding: "rgba8".into(),
+                        sample_depth: SourceSampleDepth::EightBit,
+                        frame_index: 0,
+                        page_index: 0,
+                        decoder_contract: "test".into(),
+                    },
+                    capability: RegionReadCapability::DerivedBacking,
+                    readiness: RegionReadiness::Ready,
+                },
+                pixel,
+            }),
+        )
+        .unwrap();
+        RasterSourceSnapshot::with_test_provider(epoch, path, source)
+    }
 
     fn geometry(canvas: Rect, viewport: Rect) -> CanvasGeometry {
         CanvasGeometry {
@@ -483,6 +591,75 @@ mod tests {
         .unwrap();
         assert!(region.width <= 1_603);
         assert!(region.height <= 903);
+    }
+
+    #[test]
+    fn provider_readiness_switches_from_capped_to_exact_high_zoom() {
+        let path = PathBuf::from("not-present.jpg");
+        let mut document = Document::new("Provider zoom", 16_384, 16_384);
+        document.layers.push(Layer {
+            kind: LayerKind::Raster {
+                path: path.clone(),
+                original_path: None,
+            },
+            ..Layer::default()
+        });
+        let geometry = CanvasGeometry {
+            canvas: Rect::from_min_size(Pos2::ZERO, Vec2::splat(262_144.0)),
+            viewport: Rect::from_min_size(Pos2::ZERO, Vec2::new(1_600.0, 900.0)),
+            pixels_per_point: 16.0,
+        };
+        let pending = RasterSourceSnapshot::empty();
+        let capped =
+            CompositePreviewKey::new_with_sources(1, 0, &document, geometry, 1.0, &pending)
+                .unwrap();
+        assert_eq!(capped.raster_mode, RasterRenderMode::FallbackCapped);
+        assert!(capped.scale() < 1.0);
+
+        let ready = provider_snapshot(path, 9, [1, 2, 3, 255], (16_384, 16_384));
+        let exact =
+            CompositePreviewKey::new_with_sources(1, 0, &document, geometry, 1.0, ready.as_ref())
+                .unwrap();
+        assert_eq!(
+            exact.raster_mode,
+            RasterRenderMode::Provider { snapshot_epoch: 9 }
+        );
+        assert_eq!(exact.scale(), 16.0);
+        assert_ne!(capped, exact);
+    }
+
+    #[test]
+    fn render_request_uses_its_exact_snapshot_without_path_fallback() {
+        let path = PathBuf::from("definitely-missing.jpg");
+        let mut document = Document::new("Exact snapshot", 4, 4);
+        document.layers.push(Layer {
+            kind: LayerKind::Raster {
+                path: path.clone(),
+                original_path: None,
+            },
+            ..Layer::default()
+        });
+        let first = provider_snapshot(path.clone(), 11, [12, 34, 56, 255], (4, 4));
+        let newer = provider_snapshot(path, 12, [200, 210, 220, 255], (4, 4));
+        let geometry = geometry(
+            Rect::from_min_size(Pos2::ZERO, Vec2::splat(4.0)),
+            Rect::from_min_size(Pos2::ZERO, Vec2::splat(4.0)),
+        );
+        let key =
+            CompositePreviewKey::new_with_sources(1, 0, &document, geometry, 1.0, first.as_ref())
+                .unwrap();
+        let newer_key =
+            CompositePreviewKey::new_with_sources(1, 0, &document, geometry, 1.0, newer.as_ref())
+                .unwrap();
+        assert!(!completed_preview_is_safe_to_display(&key, &newer_key));
+        let rendered = render_composite_request(&CompositeRenderRequest {
+            sequence: 1,
+            key,
+            raster_sources: first,
+        })
+        .unwrap()
+        .to_rgba8();
+        assert_eq!(rendered.get_pixel(0, 0).0, [12, 34, 56, 255]);
     }
 
     #[test]

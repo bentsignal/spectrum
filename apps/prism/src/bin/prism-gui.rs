@@ -45,6 +45,8 @@ mod model;
 use model::*;
 #[path = "prism_gui/project_lifecycle.rs"]
 mod project_lifecycle;
+#[path = "prism_gui/raster_sources.rs"]
+mod raster_sources;
 #[path = "prism_gui/renderer.rs"]
 mod renderer;
 #[path = "prism_gui/shortcuts.rs"]
@@ -62,6 +64,7 @@ mod theme;
 mod typography_ui;
 use history::HistoryViewState;
 use project_lifecycle::MoveProjectDialog;
+use raster_sources::*;
 use renderer::*;
 use terminal::TerminalDock;
 use theme::*;
@@ -96,6 +99,7 @@ struct PrismApp {
     layer_render_request_sender: Sender<LayerRenderRequest>,
     layer_render_receiver: Receiver<LayerRenderResult>,
     composite_preview: CompositePreview,
+    raster_sources: RasterSourceCoordinator,
     preview_error: Option<String>,
     layer_thumbnails: HashMap<u64, TextureHandle>,
     status: String,
@@ -199,6 +203,7 @@ impl PrismApp {
             layer_render_request_sender,
             layer_render_receiver,
             composite_preview: CompositePreview::new(creation.egui_ctx.clone()),
+            raster_sources: RasterSourceCoordinator::new(creation.egui_ctx.clone()),
             preview_error: None,
             layer_thumbnails: HashMap::new(),
             status: "Ready".into(),
@@ -246,6 +251,7 @@ impl PrismApp {
                 app.status_error = true;
             }
         }
+        app.sync_active_raster_sources();
         app
     }
 
@@ -257,6 +263,7 @@ impl PrismApp {
         match self.workspace.execute(command) {
             Ok(output) => {
                 self.apply_canvas_invalidation(invalidation);
+                self.sync_active_raster_sources();
                 if let Some(error) = self.workspace.pending_publish_error() {
                     self.status = format!(
                         "Edit is safe in Prism recovery storage, but the project file could not update: {error}"
@@ -380,6 +387,7 @@ impl PrismApp {
         self.next_tab_id += 1;
         self.tab_ids.push(id);
         self.active_tab_id = id;
+        self.sync_active_raster_sources();
         self.history.workspace_changed();
         self.reset_canvas_cache();
         self.layer_thumbnails.clear();
@@ -402,6 +410,7 @@ impl PrismApp {
         self.inactive_workspaces
             .insert(self.active_tab_id, previous);
         self.active_tab_id = id;
+        self.sync_active_raster_sources();
         self.history.workspace_changed();
         self.reset_canvas_cache();
         self.layer_thumbnails.clear();
@@ -434,6 +443,7 @@ impl PrismApp {
             return;
         };
         self.tab_ids.remove(position);
+        self.raster_sources.remove_tab(id);
         if id == self.active_tab_id {
             let replacement_id = self.tab_ids[position.min(self.tab_ids.len() - 1)];
             if let Some(replacement) = self.inactive_workspaces.remove(&replacement_id) {
@@ -444,6 +454,7 @@ impl PrismApp {
             self.inactive_workspaces.remove(&id);
         }
         self.history.workspace_changed();
+        self.sync_active_raster_sources();
         self.reset_canvas_cache();
         self.layer_thumbnails.clear();
         self.fit_requested = true;
@@ -548,6 +559,7 @@ impl eframe::App for PrismApp {
         #[cfg(target_os = "macos")]
         self.process_native_menu_actions(root.ctx());
         let context = root.ctx().clone();
+        self.raster_sources.poll(&context);
         self.receive_open_documents(&context);
         self.sync_agent_collaborations(&context);
         self.poll_terminals(&context);
