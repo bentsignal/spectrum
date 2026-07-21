@@ -68,13 +68,13 @@ fn temporary_interlaced_png(label: &str) -> PathBuf {
     path
 }
 
-fn temporary_rgba16_header(label: &str, width: u32, height: u32) -> PathBuf {
+fn temporary_rgba_header(label: &str, width: u32, height: u32, bit_depth: u8) -> PathBuf {
     let path = temporary_path(label, "png");
     let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
     let mut ihdr = Vec::with_capacity(13);
     ihdr.extend_from_slice(&width.to_be_bytes());
     ihdr.extend_from_slice(&height.to_be_bytes());
-    ihdr.extend_from_slice(&[16, 6, 0, 0, 0]);
+    ihdr.extend_from_slice(&[bit_depth, 6, 0, 0, 0]);
     push_png_chunk(&mut bytes, b"IHDR", &ihdr);
     push_png_chunk(&mut bytes, b"IDAT", &[0x78, 0x9c, 0x03, 0, 0, 0, 0, 1]);
     push_png_chunk(&mut bytes, b"IEND", &[]);
@@ -114,12 +114,16 @@ fn fallback_stats_account_for_full_decode_and_transformed_surfaces() {
             jpeg_path.clone(),
             spectrum_imaging::Adjustments::default(),
             32_u64 * 24 * 3,
+            1_915,
+            7_680,
         ),
         (
             "interlaced PNG",
             interlaced_path.clone(),
             spectrum_imaging::Adjustments::default(),
             4,
+            5,
+            20,
         ),
         (
             "spotted PNG",
@@ -134,10 +138,20 @@ fn fallback_stats_account_for_full_decode_and_transformed_surfaces() {
                 ..Default::default()
             },
             19_u64 * 13 * 4,
+            621,
+            2_964,
         ),
     ];
 
-    for (label, path, adjustments, minimum_decode_bytes) in fixtures {
+    for (
+        label,
+        path,
+        adjustments,
+        expected_decode_bytes,
+        expected_transformed_pixels,
+        expected_peak_bytes,
+    ) in fixtures
+    {
         let mut document = Document::new(label, 64, 64);
         document.layers.push(Layer {
             adjustments,
@@ -164,11 +178,15 @@ fn fallback_stats_account_for_full_decode_and_transformed_surfaces() {
         let (viewport, stats) =
             render_document_region_scaled_with_stats(&document, 1.0, region).unwrap();
         assert_eq!(viewport.to_rgba8(), full, "{label}");
-        assert!(
-            stats.fallback_decode_bytes >= minimum_decode_bytes,
-            "{label}: {stats:?}"
+        assert_eq!(
+            stats.fallback_decode_bytes, expected_decode_bytes,
+            "{label}"
         );
-        assert!(stats.transformed_surface_pixels > 0, "{label}: {stats:?}");
+        assert_eq!(
+            stats.transformed_surface_pixels, expected_transformed_pixels,
+            "{label}"
+        );
+        assert_eq!(stats.fallback_peak_bytes, expected_peak_bytes, "{label}");
     }
 
     for path in [jpeg_path, interlaced_path, spotted_path] {
@@ -246,7 +264,7 @@ fn adjusted_anisotropic_fallback_is_rejected_before_allocation() {
 
 #[test]
 fn rgba16_fallback_peak_is_rejected_from_header_before_decode() {
-    let path = temporary_rgba16_header("bounded-rgba16", 4_096, 4_096);
+    let path = temporary_rgba_header("bounded-rgba16", 4_096, 4_096, 16);
     let mut document = Document::new("RGBA16 fallback", 4_096, 4_096);
     document.layers.push(Layer {
         kind: LayerKind::Raster {
@@ -256,6 +274,48 @@ fn rgba16_fallback_peak_is_rejected_from_header_before_decode() {
         ..Layer::default()
     });
     assert!(!document_supports_region_native_zoom(&document));
+    let error = render_document_region_scaled_with_stats(
+        &document,
+        1.0,
+        RenderRegion {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 32,
+        },
+    )
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("bounded viewport fallback"));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn adjustment_intermediates_reject_near_cap_rgba8_before_decode() {
+    let path = temporary_rgba_header("bounded-adjustments", 4_096, 4_096, 8);
+    let mut document = Document::new("Adjustment fallback", 4_096, 4_096);
+    document.layers.push(Layer {
+        adjustments: spectrum_imaging::Adjustments {
+            noise_reduction: 20.0,
+            sharpening: 20.0,
+            spots: vec![spectrum_imaging::SpotRemoval {
+                x: 0.5,
+                y: 0.5,
+                radius: 0.05,
+                opacity: 1.0,
+            }],
+            ..Default::default()
+        },
+        transform: Transform {
+            scale_x: 0.1,
+            scale_y: 0.1,
+            ..Default::default()
+        },
+        kind: LayerKind::Raster {
+            path: path.clone(),
+            original_path: None,
+        },
+        ..Layer::default()
+    });
     let error = render_document_region_scaled_with_stats(
         &document,
         1.0,
@@ -300,8 +360,9 @@ fn scaled_rgba16_png_uses_fallback_and_matches_export() {
     let (viewport, stats) =
         render_document_region_scaled_with_stats(&document, 1.5, region).unwrap();
     assert_eq!(viewport.to_rgba8(), full);
-    assert!(stats.fallback_decode_bytes >= 7 * 5 * 8);
-    assert!(stats.transformed_surface_pixels > 0);
+    assert_eq!(stats.fallback_decode_bytes, 7 * 5 * 8);
+    assert_eq!(stats.transformed_surface_pixels, 277);
+    assert_eq!(stats.fallback_peak_bytes, 1_360);
     let _ = std::fs::remove_file(path);
 }
 

@@ -889,6 +889,7 @@ fn guide_output(action: &str, message: &str, guide_ids: Vec<u64>) -> CommandOutp
 }
 
 mod render;
+mod render_fallback;
 mod render_region;
 mod text_render;
 mod text_rotation;
