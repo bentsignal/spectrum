@@ -902,6 +902,7 @@ pub use render::{
     render_layer_preview, render_layer_preview_scaled, render_layer_preview_scaled_with_font,
     render_solid_color, save_document,
 };
+pub use render_region::{RegionSourceScales, region_source_scales};
 pub use text_render::{
     TextGeometry, measure_text, measure_text_geometry, measure_text_geometry_with_typography,
     measure_text_with_typography,

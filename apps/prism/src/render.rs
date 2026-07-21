@@ -11,7 +11,7 @@ use spectrum_imaging::{RenderOptions, render_image};
 use crate::{
     Document, FontAsset, Layer, LayerKind, Transform, blend_rgb,
     render_fallback::{MAX_REGION_FALLBACK_PEAK_BYTES, ensure_region_fallback_is_bounded},
-    shapes::{constrained_shape_scale, render_shape},
+    shapes::render_shape,
     text_render::{
         measure_text_geometry_with_typography, measure_text_with_typography, render_text,
     },
@@ -270,22 +270,9 @@ fn render_document_region_scaled_impl(
             continue;
         }
         let font_asset = document.font_for_layer(layer);
-        let text_scale = text_raster_scale(layer, scale);
-        let shape_scale = if matches!(
-            layer.kind,
-            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
-        ) {
-            constrained_shape_scale(
-                layer,
-                [
-                    (layer.transform.scale_x.abs() * scale).max(1.0),
-                    (layer.transform.scale_y.abs() * scale).max(1.0),
-                ],
-                document.width.max(document.height),
-            )?
-        } else {
-            [1.0; 2]
-        };
+        let source_scales = crate::render_region::region_source_scales(document, layer, scale)?;
+        let text_scale = source_scales.text_raster;
+        let shape_scale = source_scales.shape_raster;
         let mut render_layer = layer.clone();
         if let LayerKind::Text {
             font_size,
@@ -299,8 +286,8 @@ fn render_document_region_scaled_impl(
         let mut scaled_layer = layer.clone();
         scaled_layer.transform.x *= scale;
         scaled_layer.transform.y *= scale;
-        scaled_layer.transform.scale_x *= scale / text_scale / shape_scale[0];
-        scaled_layer.transform.scale_y *= scale / text_scale / shape_scale[1];
+        scaled_layer.transform.scale_x = source_scales.outer_transform[0];
+        scaled_layer.transform.scale_y = source_scales.outer_transform[1];
         let mut coverage = RgbaImage::new(region.width, region.height);
         if bound_fallback_layers
             && crate::render_region::composite_bounded_source_region(
@@ -545,19 +532,6 @@ pub fn render_solid_color(color: [u8; 4], adjustments: &spectrum_imaging::Adjust
     .to_rgba8()
     .get_pixel(0, 0)
     .0
-}
-
-fn text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
-    if !matches!(layer.kind, LayerKind::Text { .. }) {
-        return 1.0;
-    }
-    let target = layer
-        .transform
-        .scale_x
-        .abs()
-        .max(layer.transform.scale_y.abs())
-        * document_scale;
-    (target.max(1.0).ceil() as u32).next_power_of_two().min(16) as f32
 }
 
 fn transform_layer(image: DynamicImage, transform: Transform) -> RgbaImage {

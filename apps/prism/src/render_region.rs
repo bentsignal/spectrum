@@ -2,7 +2,8 @@ use anyhow::{Result, bail};
 use image::RgbaImage;
 
 use crate::{
-    FontAsset, Layer, LayerKind, RegionRenderStats, RenderRegion, render::composite_pixel,
+    Document, FontAsset, Layer, LayerKind, RegionRenderStats, RenderRegion,
+    render::composite_pixel, shapes::constrained_shape_scale,
     text_render::measure_text_geometry_with_typography,
 };
 
@@ -10,6 +11,65 @@ mod source;
 use source::{SampleSource, SourceDescriptor, SourceRegion};
 
 const MAX_SOURCE_STAGING_PIXELS: u64 = 4_096 * 4_096;
+
+/// Rasterization and outer-transform scales used by region-native sampling.
+///
+/// This is public so allocation-contract benchmarks can derive independent
+/// source-space bounds from the exact production scale selection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RegionSourceScales {
+    pub text_raster: f32,
+    pub shape_raster: [f32; 2],
+    pub outer_transform: [f32; 2],
+}
+
+pub fn region_source_scales(
+    document: &Document,
+    layer: &Layer,
+    document_scale: f32,
+) -> Result<RegionSourceScales> {
+    if !document_scale.is_finite() || document_scale <= 0.0 {
+        bail!("document render scale must be a positive finite number");
+    }
+    let text_raster = text_raster_scale(layer, document_scale);
+    let shape_raster = if matches!(
+        layer.kind,
+        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+    ) {
+        constrained_shape_scale(
+            layer,
+            [
+                (layer.transform.scale_x.abs() * document_scale).max(1.0),
+                (layer.transform.scale_y.abs() * document_scale).max(1.0),
+            ],
+            document.width.max(document.height),
+        )?
+    } else {
+        [1.0; 2]
+    };
+    Ok(RegionSourceScales {
+        text_raster,
+        shape_raster,
+        outer_transform: [
+            layer.transform.scale_x * document_scale / text_raster / shape_raster[0],
+            layer.transform.scale_y * document_scale / text_raster / shape_raster[1],
+        ],
+    })
+}
+
+fn text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
+    if !matches!(layer.kind, LayerKind::Text { .. }) {
+        return 1.0;
+    }
+    let target = layer
+        .transform
+        .scale_x
+        .abs()
+        .max(layer.transform.scale_y.abs())
+        * document_scale;
+    (target.max(1.0).ceil() as u32).next_power_of_two().min(16) as f32
+}
+
 pub(crate) fn supports_bounded_source(layer: &Layer) -> bool {
     matches!(
         layer.kind,
