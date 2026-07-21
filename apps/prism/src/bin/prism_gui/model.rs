@@ -140,6 +140,8 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::UpdateRectangle { id, .. }
         | Command::UpdateEllipse { id, .. }
         | Command::SetShapeStroke { id, .. }
+        | Command::SetShapeFill { id, .. }
+        | Command::SetLayerStyle { id, .. }
         | Command::RasterizeShape { id, .. }
         | Command::AdjustLayer { id, .. }
         | Command::ResetLayerAdjustments { id } => CanvasInvalidation::Layer(*id),

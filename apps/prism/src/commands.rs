@@ -4,9 +4,18 @@ use serde::{Deserialize, Serialize};
 use spectrum_imaging::AdjustmentPatch;
 
 use crate::{
-    Alignment, AlignmentReference, BlendMode, GuideOrientation, LayerMask, LayerTransfer,
-    ShapeStroke, TextTypography, Transform,
+    Alignment, AlignmentReference, BlendMode, GuideOrientation, LayerMask, LayerStyle,
+    LayerTransfer, ShapeFill, ShapeStroke, TextTypography, Transform,
 };
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CommandOutput {
+    pub action: String,
+    pub message: String,
+    pub layer_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guide_ids: Vec<u64>,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -159,6 +168,14 @@ pub enum Command {
         id: u64,
         stroke: ShapeStroke,
     },
+    SetLayerStyle {
+        id: u64,
+        style: LayerStyle,
+    },
+    SetShapeFill {
+        id: u64,
+        fill: Option<ShapeFill>,
+    },
     RasterizeShape {
         id: u64,
         path: PathBuf,
@@ -170,4 +187,22 @@ pub enum Command {
     },
     Undo,
     Redo,
+}
+
+pub(crate) fn output(action: &str, message: &str, layer_ids: Vec<u64>) -> CommandOutput {
+    CommandOutput {
+        action: action.into(),
+        message: message.into(),
+        layer_ids,
+        guide_ids: Vec::new(),
+    }
+}
+
+pub(crate) fn guide_output(action: &str, message: &str, guide_ids: Vec<u64>) -> CommandOutput {
+    CommandOutput {
+        action: action.into(),
+        message: message.into(),
+        layer_ids: Vec::new(),
+        guide_ids,
+    }
 }

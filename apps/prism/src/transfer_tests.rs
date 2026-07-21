@@ -7,8 +7,9 @@ use std::{
 use image::{Rgba, RgbaImage};
 
 use crate::{
-    BlendMode, Command, Document, DurableProject, Layer, LayerKind, LayerMask, LayerTransfer,
-    ShapeStroke, TextAlignment, TextEffects, TextTypography, Transform, Workspace,
+    BlendMode, Command, Document, DropShadow, DurableProject, GradientStop, Layer, LayerKind,
+    LayerMask, LayerStyle, LayerTransfer, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment,
+    TextEffects, TextTypography, Transform, Workspace,
 };
 
 fn test_directory(label: &str) -> PathBuf {
@@ -52,6 +53,17 @@ fn transfer_preserves_every_layer_field_except_local_ids_in_one_undo_step() {
             height: 0.6,
             invert: true,
         },
+        style: LayerStyle {
+            drop_shadow: Some(DropShadow::default()),
+        },
+        shape_fill: Some(ShapeFill::Gradient(ShapeGradient {
+            angle: 35.0,
+            stops: vec![
+                GradientStop::new(0.0, [8, 16, 32, 255]),
+                GradientStop::new(1.0, [240, 180, 90, 220]),
+            ],
+            ..ShapeGradient::default()
+        })),
         stroke: ShapeStroke {
             enabled: true,
             width: 7.0,

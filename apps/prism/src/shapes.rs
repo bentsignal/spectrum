@@ -157,7 +157,11 @@ impl<'a> ShapeSampler<'a> {
                 color,
                 corner_radius,
                 ..
-            } if corner_radius <= 0.0 && !self.layer.stroke.enabled => Some(Rgba(color)),
+            } if corner_radius <= 0.0 && !self.layer.stroke.enabled => match &self.layer.shape_fill
+            {
+                Some(fill) => fill.uniform_color().map(Rgba),
+                None => Some(Rgba(color)),
+            },
             _ => None,
         }
     }
@@ -171,7 +175,14 @@ impl<'a> ShapeSampler<'a> {
                 corner_radius,
             } => {
                 if corner_radius <= 0.0 && !self.layer.stroke.enabled {
-                    color
+                    shape_fill_color(
+                        self.layer,
+                        color,
+                        (x as f32 + 0.5) / self.scale[0],
+                        (y as f32 + 0.5) / self.scale[1],
+                        width,
+                        height,
+                    )
                 } else {
                     sample_shape_pixel(x, y, self.scale, |x, y| {
                         if !rounded_rect_contains(x, y, width, height, corner_radius, 0.0) {
@@ -189,7 +200,7 @@ impl<'a> ShapeSampler<'a> {
                         Some(if stroke_pixel {
                             self.layer.stroke.color
                         } else {
-                            color
+                            shape_fill_color(self.layer, color, x, y, width, height)
                         })
                     })
                 }
@@ -218,7 +229,7 @@ impl<'a> ShapeSampler<'a> {
                     Some(if self.layer.stroke.enabled && !inner {
                         self.layer.stroke.color
                     } else {
-                        color
+                        shape_fill_color(self.layer, color, x, y, width, height)
                     })
                 })
             }
@@ -226,6 +237,21 @@ impl<'a> ShapeSampler<'a> {
         };
         Rgba(color)
     }
+}
+
+fn shape_fill_color(
+    layer: &Layer,
+    fallback: [u8; 4],
+    x: f32,
+    y: f32,
+    width: u32,
+    height: u32,
+) -> [u8; 4] {
+    layer
+        .shape_fill
+        .as_ref()
+        .map(|fill| fill.sample(x, y, width, height))
+        .unwrap_or(fallback)
 }
 
 fn sample_shape_pixel(

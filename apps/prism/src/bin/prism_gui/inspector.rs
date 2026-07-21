@@ -600,6 +600,7 @@ impl PrismApp {
                 enabled: clipped,
             });
         }
+        self.layer_effects_controls(ui, layer);
         if matches!(
             layer.kind,
             LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }

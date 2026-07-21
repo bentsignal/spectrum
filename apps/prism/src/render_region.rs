@@ -3,7 +3,10 @@ use image::RgbaImage;
 
 use crate::{
     Document, FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
-    render::composite_pixel, shapes::constrained_shape_scale,
+    effects::{colored_shadow_pixel, drop_shadow_alpha},
+    effects_render::composite_style_pixel,
+    render::composite_pixel,
+    shapes::constrained_shape_scale,
     text_render::measure_text_geometry_with_typography,
 };
 
@@ -112,10 +115,20 @@ pub(crate) fn composite_bounded_source_region(
         &descriptor,
         font_asset,
     )?;
-    let Some(intersection) = geometry.intersection(region) else {
+    let intersection = geometry.intersection(region);
+    let shadow = scaled_layer.style.drop_shadow;
+    let shadow_intersection =
+        shadow.and_then(|shadow| geometry.shadow_intersection(region, shadow));
+    if intersection.is_none() && shadow_intersection.is_none() {
         return Ok(true);
-    };
-    let Some(staging_region) = required_source_region(&geometry, intersection) else {
+    }
+    let mut staging_region =
+        intersection.and_then(|intersection| required_source_region(&geometry, intersection));
+    if let (Some(shadow), Some(intersection)) = (shadow, shadow_intersection) {
+        let shadow_region = required_shadow_source_region(&geometry, intersection, shadow);
+        staging_region = union_source_regions(staging_region, shadow_region);
+    }
+    let Some(staging_region) = staging_region else {
         return Ok(true);
     };
     if staging_region.pixel_count() > MAX_SOURCE_STAGING_PIXELS {
@@ -129,32 +142,68 @@ pub(crate) fn composite_bounded_source_region(
         .full_source_pixels
         .saturating_add(u64::from(geometry.source_width) * u64::from(geometry.source_height));
 
-    for canvas_y in intersection.top..intersection.bottom {
-        for canvas_x in intersection.left..intersection.right {
-            let output_x = (canvas_x - geometry.origin_x) as u32;
-            let output_y = (canvas_y - geometry.origin_y) as u32;
-            let Some((scaled_x, scaled_y)) = geometry.inverse_sample(output_x, output_y) else {
-                continue;
-            };
-            let source_pixel = sample_triangle_resize(
-                &source,
-                (geometry.source_width, geometry.source_height),
-                (geometry.scaled_width, geometry.scaled_height),
-                (scaled_x, scaled_y),
-            );
-            composite_pixel(
-                canvas,
-                coverage,
-                source_pixel,
-                output_x,
-                output_y,
-                geometry.output_width,
-                geometry.output_height,
-                scaled_layer,
-                clip,
-                canvas_x as u32 - region.x,
-                canvas_y as u32 - region.y,
-            );
+    if let (Some(shadow), Some(intersection)) = (shadow, shadow_intersection) {
+        for canvas_y in intersection.top..intersection.bottom {
+            for canvas_x in intersection.left..intersection.right {
+                let center_x = canvas_x - geometry.origin_x - shadow.offset_x.round() as i64;
+                let center_y = canvas_y - geometry.origin_y - shadow.offset_y.round() as i64;
+                let alpha = drop_shadow_alpha(
+                    center_x,
+                    center_y,
+                    shadow.blur_radius,
+                    |output_x, output_y| {
+                        sample_output_alpha(&source, &geometry, base_layer, output_x, output_y)
+                    },
+                );
+                stats.shadow_samples =
+                    stats
+                        .shadow_samples
+                        .saturating_add(if shadow.blur_radius < 0.5 {
+                            1
+                        } else {
+                            crate::effects::DROP_SHADOW_KERNEL_TAPS
+                        });
+                composite_style_pixel(
+                    canvas,
+                    colored_shadow_pixel(shadow, alpha),
+                    scaled_layer.opacity,
+                    scaled_layer.clip_to_below,
+                    clip,
+                    canvas_x as u32 - region.x,
+                    canvas_y as u32 - region.y,
+                );
+            }
+        }
+    }
+
+    if let Some(intersection) = intersection {
+        for canvas_y in intersection.top..intersection.bottom {
+            for canvas_x in intersection.left..intersection.right {
+                let output_x = (canvas_x - geometry.origin_x) as u32;
+                let output_y = (canvas_y - geometry.origin_y) as u32;
+                let Some((scaled_x, scaled_y)) = geometry.inverse_sample(output_x, output_y) else {
+                    continue;
+                };
+                let source_pixel = sample_triangle_resize(
+                    &source,
+                    (geometry.source_width, geometry.source_height),
+                    (geometry.scaled_width, geometry.scaled_height),
+                    (scaled_x, scaled_y),
+                );
+                composite_pixel(
+                    canvas,
+                    coverage,
+                    source_pixel,
+                    output_x,
+                    output_y,
+                    geometry.output_width,
+                    geometry.output_height,
+                    scaled_layer,
+                    clip,
+                    canvas_x as u32 - region.x,
+                    canvas_y as u32 - region.y,
+                );
+            }
         }
     }
     Ok(true)
@@ -285,6 +334,34 @@ impl SamplingGeometry {
         })
     }
 
+    fn shadow_intersection(
+        self,
+        region: RenderRegion,
+        shadow: crate::DropShadow,
+    ) -> Option<CanvasIntersection> {
+        let radius = shadow.blur_radius.ceil() as i64;
+        let left =
+            (self.origin_x + shadow.offset_x.round() as i64 - radius).max(i64::from(region.x));
+        let top =
+            (self.origin_y + shadow.offset_y.round() as i64 - radius).max(i64::from(region.y));
+        let right = (self.origin_x
+            + i64::from(self.output_width)
+            + shadow.offset_x.round() as i64
+            + radius)
+            .min(i64::from(region.x + region.width));
+        let bottom = (self.origin_y
+            + i64::from(self.output_height)
+            + shadow.offset_y.round() as i64
+            + radius)
+            .min(i64::from(region.y + region.height));
+        (right > left && bottom > top).then_some(CanvasIntersection {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
+
     fn inverse_sample(self, output_x: u32, output_y: u32) -> Option<(u32, u32)> {
         match self.rotation {
             RotationSampling::None => Some((output_x, output_y)),
@@ -352,6 +429,113 @@ fn required_source_region(
         width: right - left,
         height: bottom - top,
     })
+}
+
+fn required_shadow_source_region(
+    geometry: &SamplingGeometry,
+    intersection: CanvasIntersection,
+    shadow: crate::DropShadow,
+) -> Option<SourceRegion> {
+    let mut bounds = None;
+    for canvas_y in intersection.top..intersection.bottom {
+        for canvas_x in intersection.left..intersection.right {
+            let center_x = canvas_x - geometry.origin_x - shadow.offset_x.round() as i64;
+            let center_y = canvas_y - geometry.origin_y - shadow.offset_y.round() as i64;
+            let _ = drop_shadow_alpha(center_x, center_y, shadow.blur_radius, |x, y| {
+                if x >= 0
+                    && y >= 0
+                    && x < i64::from(geometry.output_width)
+                    && y < i64::from(geometry.output_height)
+                    && let Some((scaled_x, scaled_y)) = geometry.inverse_sample(x as u32, y as u32)
+                {
+                    let x = source_sample_bounds(
+                        geometry.source_width,
+                        geometry.scaled_width,
+                        scaled_x,
+                    );
+                    let y = source_sample_bounds(
+                        geometry.source_height,
+                        geometry.scaled_height,
+                        scaled_y,
+                    );
+                    bounds = Some(match bounds {
+                        Some((left, top, right, bottom)) => (
+                            left.min(x.start),
+                            top.min(y.start),
+                            right.max(x.end),
+                            bottom.max(y.end),
+                        ),
+                        None => (x.start, y.start, x.end, y.end),
+                    });
+                }
+                0
+            });
+        }
+    }
+    bounds.map(|(left, top, right, bottom)| SourceRegion {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
+fn union_source_regions(
+    left: Option<SourceRegion>,
+    right: Option<SourceRegion>,
+) -> Option<SourceRegion> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let x = left.x.min(right.x);
+            let y = left.y.min(right.y);
+            let far_x = (left.x + left.width).max(right.x + right.width);
+            let far_y = (left.y + left.height).max(right.y + right.height);
+            Some(SourceRegion {
+                x,
+                y,
+                width: far_x - x,
+                height: far_y - y,
+            })
+        }
+        (left, right) => left.or(right),
+    }
+}
+
+fn sample_output_alpha(
+    source: &SampleSource<'_>,
+    geometry: &SamplingGeometry,
+    layer: &Layer,
+    output_x: i64,
+    output_y: i64,
+) -> u8 {
+    if output_x < 0
+        || output_y < 0
+        || output_x >= i64::from(geometry.output_width)
+        || output_y >= i64::from(geometry.output_height)
+    {
+        return 0;
+    }
+    let Some((scaled_x, scaled_y)) = geometry.inverse_sample(output_x as u32, output_y as u32)
+    else {
+        return 0;
+    };
+    let source_x = scaled_x.saturating_mul(geometry.source_width) / geometry.scaled_width.max(1);
+    let source_y = scaled_y.saturating_mul(geometry.source_height) / geometry.scaled_height.max(1);
+    let normalized_x = source_x as f32 / geometry.source_width.max(1) as f32;
+    let normalized_y = source_y as f32 / geometry.source_height.max(1) as f32;
+    let in_mask = normalized_x >= layer.mask.x
+        && normalized_x <= layer.mask.x + layer.mask.width
+        && normalized_y >= layer.mask.y
+        && normalized_y <= layer.mask.y + layer.mask.height;
+    if layer.mask.enabled && in_mask == layer.mask.invert {
+        return 0;
+    }
+    sample_triangle_resize(
+        source,
+        (geometry.source_width, geometry.source_height),
+        (geometry.scaled_width, geometry.scaled_height),
+        (scaled_x, scaled_y),
+    )[3]
 }
 
 fn sample_triangle_resize(

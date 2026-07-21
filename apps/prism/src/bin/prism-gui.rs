@@ -29,6 +29,8 @@ mod clipboard;
 mod compositor;
 #[path = "prism_gui/dialogs.rs"]
 mod dialogs;
+#[path = "prism_gui/effects_ui.rs"]
+mod effects_ui;
 #[path = "prism_gui/history.rs"]
 mod history;
 #[path = "prism_gui/inline_text.rs"]
