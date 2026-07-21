@@ -330,6 +330,9 @@ impl Workspace {
         }) {
             bail!("history and selection commands cannot be part of an edit batch");
         }
+        if self.durable.is_some() {
+            return self.execute_durable_batch(commands);
+        }
         let before = self.document.clone();
         let mut outputs = Vec::with_capacity(commands.len());
         for command in commands.iter().cloned() {
@@ -344,20 +347,32 @@ impl Workspace {
         if self.document == before {
             return Ok(outputs);
         }
-        if let Some(durable) = &mut self.durable {
-            let label = if outputs.len() == 1 {
-                outputs[0].message.clone()
-            } else {
-                format!("Applied {} actions", outputs.len())
-            };
-            if let Err(error) = durable.commit(&commands, &self.document, label) {
-                self.document = before;
-                return Err(error);
-            }
-            self.dirty = false;
-        } else {
-            self.record_edit(before);
+        self.record_edit(before);
+        Ok(outputs)
+    }
+
+    fn execute_durable_batch(&mut self, commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
+        let prepared = self
+            .durable
+            .as_ref()
+            .context("durable Prism project disappeared")?
+            .prepare_edit(&commands)?;
+        let mut candidate = self.document.clone();
+        let outputs = prepared.apply(&mut candidate)?;
+        if candidate == self.document {
+            return Ok(outputs);
         }
+        let label = if outputs.len() == 1 {
+            outputs[0].message.clone()
+        } else {
+            format!("Applied {} actions", outputs.len())
+        };
+        self.durable
+            .as_mut()
+            .context("durable Prism project disappeared")?
+            .commit_prepared(prepared, &candidate, label)?;
+        self.document = candidate;
+        self.dirty = false;
         Ok(outputs)
     }
 
@@ -371,6 +386,9 @@ impl Workspace {
     pub fn preview(&mut self, command: Command) -> Result<CommandOutput> {
         if self.interaction_before.is_none() {
             bail!("begin an interaction before applying preview commands");
+        }
+        if self.durable.is_some() && crate::revisions::command_embeds_asset(&command) {
+            bail!("asset commands cannot preview a durable interaction");
         }
         if matches!(
             command,
@@ -396,6 +414,9 @@ impl Workspace {
         }
         if self.interaction_before.is_none() {
             bail!("begin an interaction before applying preview commands");
+        }
+        if self.durable.is_some() && commands.iter().any(crate::revisions::command_embeds_asset) {
+            bail!("asset commands cannot preview a durable interaction");
         }
         if commands.iter().any(|command| {
             matches!(
@@ -432,6 +453,10 @@ impl Workspace {
             if commands.is_empty() {
                 self.document = before;
                 bail!("completed interaction has no semantic command");
+            }
+            if commands.iter().any(crate::revisions::command_embeds_asset) {
+                self.document = before;
+                bail!("asset commands cannot commit a durable interaction");
             }
             if let Err(error) = durable.commit(
                 &commands,
