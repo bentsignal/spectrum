@@ -47,16 +47,20 @@ pub(super) enum GlobalShortcut {
     Terminal,
     History,
     UndoRedo,
+    SelectAll,
+    Deselect,
 }
 
 impl GlobalShortcut {
     #[cfg(test)]
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 7] = [
         Self::ToolsAndActions,
         Self::JumpToObject,
         Self::Terminal,
         Self::History,
         Self::UndoRedo,
+        Self::SelectAll,
+        Self::Deselect,
     ];
 
     pub(super) fn key(self) -> egui::Key {
@@ -66,6 +70,8 @@ impl GlobalShortcut {
             Self::Terminal => egui::Key::J,
             Self::History => egui::Key::H,
             Self::UndoRedo => egui::Key::Z,
+            Self::SelectAll => egui::Key::A,
+            Self::Deselect => egui::Key::D,
         }
     }
 
@@ -76,6 +82,8 @@ impl GlobalShortcut {
             Self::Terminal => "J",
             Self::History => "H",
             Self::UndoRedo => "Z",
+            Self::SelectAll => "A",
+            Self::Deselect => "D",
         }
     }
 }
@@ -157,6 +165,13 @@ fn terminal_shortcut_pressed(input: &egui::InputState) -> bool {
 
 fn rotation_arm_allowed(interaction_active: bool, has_editable_selection: bool) -> bool {
     !interaction_active && has_editable_selection
+}
+
+pub(super) fn canvas_interaction_active(
+    canvas_drag_active: bool,
+    workspace_interaction_active: bool,
+) -> bool {
+    canvas_drag_active || workspace_interaction_active
 }
 
 fn reset_tool_after_escape(tool: &mut Tool, status: &mut String, status_error: &mut bool) {
@@ -251,6 +266,24 @@ impl PrismApp {
             } else {
                 self.execute(Command::Undo);
             }
+        }
+        let selection_actions_available = !self.history.visible
+            && !canvas_interaction_active(self.drag.is_some(), self.workspace.interaction_active());
+        if route_application_shortcut(
+            application_shortcut_owner,
+            selection_actions_available,
+            context.input(|input| global_shortcut_pressed(input, GlobalShortcut::SelectAll)),
+        ) {
+            self.select_all_pixels();
+            return;
+        }
+        if route_application_shortcut(
+            application_shortcut_owner,
+            selection_actions_available && self.workspace.document.selection.is_some(),
+            context.input(|input| global_shortcut_pressed(input, GlobalShortcut::Deselect)),
+        ) {
+            self.deselect_pixels();
+            return;
         }
         if context.input(|input| {
             input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace)
@@ -384,10 +417,31 @@ mod tests {
         assert_eq!(GlobalShortcut::JumpToObject.label(), "F");
         assert_eq!(GlobalShortcut::Terminal.key(), egui::Key::J);
         assert_eq!(GlobalShortcut::Terminal.label(), "J");
+        assert_eq!(GlobalShortcut::SelectAll.key(), egui::Key::A);
+        assert_eq!(GlobalShortcut::Deselect.key(), egui::Key::D);
         for (index, shortcut) in GlobalShortcut::ALL.iter().enumerate() {
             for other in &GlobalShortcut::ALL[index + 1..] {
                 assert_ne!(shortcut.key(), other.key());
             }
+        }
+    }
+
+    #[test]
+    fn selection_chords_use_the_portable_global_shortcut_domain() {
+        for shortcut in [GlobalShortcut::SelectAll, GlobalShortcut::Deselect] {
+            let mut input = egui::RawInput::default();
+            input.modifiers.command = true;
+            input.events.push(egui::Event::Key {
+                key: shortcut.key(),
+                physical_key: Some(shortcut.key()),
+                pressed: true,
+                repeat: false,
+                modifiers: input.modifiers,
+            });
+            let context = egui::Context::default();
+            context.begin_pass(input);
+            assert!(context.input(|input| global_shortcut_pressed(input, shortcut)));
+            let _ = context.end_pass();
         }
     }
 
@@ -421,6 +475,19 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn draw_drag_owns_selection_shortcuts_without_a_workspace_interaction() {
+        let interaction_active = canvas_interaction_active(true, false);
+        assert!(interaction_active);
+        assert!(!route_application_shortcut(
+            ApplicationShortcutOwner::Egui,
+            !interaction_active,
+            true
+        ));
+        assert!(canvas_interaction_active(false, true));
+        assert!(!canvas_interaction_active(false, false));
     }
 
     #[test]

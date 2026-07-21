@@ -22,6 +22,7 @@ use super::*;
 use crate::macos_menu_spec::{
     ACTION_MENU_ITEMS, ActionKeyEquivalent, KeyModifiers, NativeMenuAction, NativeMenuSection,
 };
+use crate::shortcuts::canvas_interaction_active;
 
 static OPEN_DOCUMENT_SENDER: OnceLock<Sender<PathBuf>> = OnceLock::new();
 static NATIVE_MENU_SENDER: OnceLock<Sender<NativeMenuAction>> = OnceLock::new();
@@ -47,6 +48,7 @@ pub(super) struct NativeMenuState {
     pub(super) terminal_visible: bool,
     pub(super) keyboard_focus: bool,
     pub(super) selection_present: bool,
+    pub(super) pixel_selection_present: bool,
     pub(super) interaction_active: bool,
 }
 
@@ -103,6 +105,15 @@ impl NativeMenuState {
                     && !self.keyboard_focus
                     && !self.terminal_visible
             }
+            NativeMenuAction::SelectAll | NativeMenuAction::Deselect => {
+                !self.modal_open
+                    && self.workspace_ready
+                    && !self.keyboard_focus
+                    && !self.terminal_visible
+                    && !self.history_visible
+                    && !self.interaction_active
+                    && (action == NativeMenuAction::SelectAll || self.pixel_selection_present)
+            }
             NativeMenuAction::FitCanvas | NativeMenuAction::ZoomIn | NativeMenuAction::ZoomOut => {
                 !self.modal_open
                     && self.workspace_ready
@@ -124,7 +135,11 @@ impl NativeMenuState {
             } else {
                 "Show Terminal"
             }),
-            NativeMenuAction::Cut | NativeMenuAction::Copy | NativeMenuAction::Paste => None,
+            NativeMenuAction::Cut
+            | NativeMenuAction::Copy
+            | NativeMenuAction::Paste
+            | NativeMenuAction::SelectAll
+            | NativeMenuAction::Deselect => None,
             _ => None,
         }
     }
@@ -480,7 +495,11 @@ impl PrismApp {
             terminal_visible: self.terminal.visible(),
             keyboard_focus: clipboard.keyboard_focus,
             selection_present: clipboard.selection_present,
-            interaction_active: clipboard.interaction_active,
+            pixel_selection_present: self.workspace.document.selection.is_some(),
+            interaction_active: canvas_interaction_active(
+                self.drag.is_some(),
+                clipboard.interaction_active,
+            ),
         }
     }
 
@@ -511,6 +530,8 @@ impl PrismApp {
                             .expect("matched actions always have a clipboard command"),
                     );
                 }
+                NativeMenuAction::SelectAll => self.select_all_pixels(),
+                NativeMenuAction::Deselect => self.deselect_pixels(),
                 NativeMenuAction::ToggleHistory => self.toggle_history(),
                 NativeMenuAction::ToggleTerminal => self.toggle_terminal(),
                 NativeMenuAction::FitCanvas => {
@@ -577,6 +598,8 @@ mod tests {
         assert!(!state.allows(NativeMenuAction::FitCanvas));
         assert!(state.allows(NativeMenuAction::ToggleHistory));
         assert!(!state.allows(NativeMenuAction::Copy));
+        assert!(!state.allows(NativeMenuAction::SelectAll));
+        assert!(!state.allows(NativeMenuAction::Deselect));
         assert_eq!(
             state.title(NativeMenuAction::ToggleHistory),
             Some("Hide History")
@@ -654,6 +677,54 @@ mod tests {
         assert!(terminal.allows(NativeMenuAction::Cut));
         assert!(terminal.allows(NativeMenuAction::Copy));
         assert!(terminal.allows(NativeMenuAction::Paste));
+        assert!(!focused.allows(NativeMenuAction::SelectAll));
+        assert!(!focused.allows(NativeMenuAction::Deselect));
+        assert!(!terminal.allows(NativeMenuAction::SelectAll));
+        assert!(!terminal.allows(NativeMenuAction::Deselect));
+    }
+
+    #[test]
+    fn selection_menu_actions_require_an_idle_canvas_and_deselect_requires_a_marquee() {
+        let selected = NativeMenuState {
+            workspace_ready: true,
+            pixel_selection_present: true,
+            ..Default::default()
+        };
+        assert!(selected.allows(NativeMenuAction::SelectAll));
+        assert!(selected.allows(NativeMenuAction::Deselect));
+
+        let empty = NativeMenuState {
+            pixel_selection_present: false,
+            ..selected
+        };
+        assert!(empty.allows(NativeMenuAction::SelectAll));
+        assert!(!empty.allows(NativeMenuAction::Deselect));
+
+        for unavailable in [
+            NativeMenuState {
+                history_visible: true,
+                ..selected
+            },
+            NativeMenuState {
+                interaction_active: true,
+                ..selected
+            },
+        ] {
+            assert!(!unavailable.allows(NativeMenuAction::SelectAll));
+            assert!(!unavailable.allows(NativeMenuAction::Deselect));
+        }
+    }
+
+    #[test]
+    fn draw_drag_disables_native_selection_actions_before_a_workspace_interaction_starts() {
+        let state = NativeMenuState {
+            workspace_ready: true,
+            pixel_selection_present: true,
+            interaction_active: canvas_interaction_active(true, false),
+            ..Default::default()
+        };
+        assert!(!state.allows(NativeMenuAction::SelectAll));
+        assert!(!state.allows(NativeMenuAction::Deselect));
     }
 
     #[test]
