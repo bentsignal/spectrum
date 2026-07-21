@@ -688,7 +688,7 @@ fn composite_over(image: &mut RgbaImage, x: u32, y: u32, source: [u8; 4]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FontSlant, TextEffects};
+    use crate::TextEffects;
     use std::path::PathBuf;
 
     #[test]
@@ -740,18 +740,7 @@ mod tests {
     #[test]
     fn parsed_imported_fonts_are_reused_by_content_hash() {
         let path = temporary_font("cache");
-        let asset = FontAsset {
-            id: 7,
-            family: "Test".into(),
-            style: "Regular".into(),
-            weight: 400,
-            slant: FontSlant::Normal,
-            source_name: "test.ttf".into(),
-            subset_allowed: true,
-            content_hash: format!("test-cache-{}", path.display()),
-            path: path.clone(),
-            original_path: Some(path.clone()),
-        };
+        let asset = FontAsset::import(7, &path).unwrap();
         let first = cached_font(Some(&asset)).unwrap();
         let second = cached_font(Some(&asset)).unwrap();
         let _ = std::fs::remove_file(path);
@@ -819,7 +808,10 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("prism-{label}-{stamp}.ttf"));
+        let temporary_root = std::env::temp_dir();
+        let path = std::fs::canonicalize(&temporary_root)
+            .unwrap_or(temporary_root)
+            .join(format!("prism-{label}-{stamp}.ttf"));
         std::fs::write(&path, epaint_default_fonts::HACK_REGULAR).unwrap();
         path
     }

@@ -120,7 +120,9 @@ fn temporary_font(label: &str) -> (std::path::PathBuf, FontAsset) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("prism-region-{label}-{stamp}.ttf"));
+    let path = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("prism-region-{label}-{stamp}.ttf"));
     std::fs::write(&path, epaint_default_fonts::HACK_REGULAR).unwrap();
     let asset = FontAsset::import(71, &path).unwrap();
     (path, asset)

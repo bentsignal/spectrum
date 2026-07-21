@@ -9,8 +9,8 @@ use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
 use prism_core::{
-    Alignment, AlignmentReference, BlendMode, Command, Document, GuideOrientation, LayerMask,
-    ShapeStroke, Transform, Workspace, export_document,
+    Alignment, AlignmentReference, BlendMode, Command, Document, DurableProject, GuideOrientation,
+    LayerMask, ShapeStroke, Transform, Workspace, export_document, inspect_font_source_read_only,
 };
 use serde_json::{Value, json};
 use spectrum_imaging::{AdjustmentPatch, RenderOptions};
@@ -99,6 +99,10 @@ enum CliCommand {
         /// Limit analysis to one embedded font asset.
         #[arg(long)]
         font_id: Option<u64>,
+    },
+    /// Verify and inspect one immutable embedded source-font snapshot.
+    FontSource {
+        font_id: u64,
     },
     /// Update one text layer's font, paragraph metrics, and effects.
     Typography(TypographyArgs),
@@ -518,6 +522,20 @@ fn run(cli: Cli) -> Result<Value> {
         CliCommand::FontUsage { font_id } => {
             typography::font_usage(&session_document(&cli.project, cli.session)?, font_id)
         }
+        CliCommand::FontSource { font_id } => {
+            if cli.session.is_some() {
+                bail!("font-source is read-only and does not accept --session");
+            }
+            if DurableProject::looks_durable(&cli.project)? {
+                let inspected = inspect_font_source_read_only(&cli.project, font_id)?;
+                Ok(typography::verified_font_source(
+                    &inspected.font,
+                    &inspected.source,
+                ))
+            } else {
+                typography::font_source(&Workspace::load_read_only(&cli.project)?, font_id)
+            }
+        }
         CliCommand::LayerCopy(arguments) => {
             transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)
         }
@@ -826,6 +844,7 @@ fn run(cli: Cli) -> Result<Value> {
                 | CliCommand::List
                 | CliCommand::FontList { .. }
                 | CliCommand::FontUsage { .. }
+                | CliCommand::FontSource { .. }
                 | CliCommand::LayerCopy(..)
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }

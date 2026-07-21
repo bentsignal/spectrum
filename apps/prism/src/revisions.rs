@@ -13,7 +13,9 @@ use spectrum_revisions::{
     RevisionId, Session, SessionId, TrackId,
 };
 
-use crate::{Command, Document, LayerKind, apply_command};
+use crate::{
+    Command, Document, FontAsset, FontSourceSnapshot, LayerKind, LayerTransferFont, apply_command,
+};
 
 const APPLICATION_ID: &str = "spectrum.prism";
 const SNAPSHOT_COMMAND_BUDGET: u64 = 100;
@@ -68,6 +70,10 @@ pub struct ProjectHistory {
     pub revisions: Vec<Revision>,
     pub sessions: Vec<Session>,
 }
+
+#[path = "readonly_font.rs"]
+mod readonly_font;
+pub use readonly_font::{ReadOnlyFontSource, inspect_font_source_read_only};
 
 impl DurableProject {
     pub fn looks_durable(path: &Path) -> Result<bool> {
@@ -681,7 +687,7 @@ impl PreparedSnapshot {
             }
         }
         for font in &mut portable.font_assets {
-            let prepared = prepare_asset(&font.path)?;
+            let prepared = prepare_verified_font_asset(font)?;
             font.path = prepared.reference.path();
             font.original_path = None;
             assets.push(prepared.asset);
@@ -729,10 +735,14 @@ impl PreparedOperations {
         let mut assets = Vec::new();
         for command in &mut portable {
             match command {
-                Command::AddRaster { path, .. }
-                | Command::RasterizeShape { path, .. }
-                | Command::ImportFont { path } => {
+                Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } => {
                     let prepared = prepare_asset(path)?;
+                    *path = prepared.reference.path();
+                    assets.push(prepared.asset);
+                }
+                Command::ImportFont { path } => {
+                    let snapshot = FontSourceSnapshot::read(path)?;
+                    let prepared = prepare_font_snapshot(&snapshot)?;
                     *path = prepared.reference.path();
                     assets.push(prepared.asset);
                 }
@@ -749,7 +759,7 @@ impl PreparedOperations {
                         assets.push(prepared.asset);
                     }
                     if let Some(font) = &mut transfer.font_asset {
-                        let prepared = prepare_asset(&font.path)?;
+                        let prepared = prepare_verified_transfer_font_asset(font)?;
                         font.path = prepared.reference.path();
                         assets.push(prepared.asset);
                     }
@@ -822,6 +832,10 @@ fn prepare_asset(path: &Path) -> Result<PreparedAsset> {
         );
     }
     let bytes = fs::read(path).with_context(|| format!("could not embed {}", path.display()))?;
+    Ok(prepare_asset_bytes(path, bytes))
+}
+
+fn prepare_asset_bytes(path: &Path, bytes: Vec<u8>) -> PreparedAsset {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -829,13 +843,38 @@ fn prepare_asset(path: &Path) -> Result<PreparedAsset> {
         .filter(|extension| !extension.is_empty())
         .unwrap_or_else(|| "bin".into());
     let asset = Asset::new(media_type(&extension), bytes);
-    Ok(PreparedAsset {
+    PreparedAsset {
         reference: AssetReference {
             id: asset.id,
             extension,
         },
         asset,
-    })
+    }
+}
+
+fn prepare_font_snapshot(snapshot: &FontSourceSnapshot) -> Result<PreparedAsset> {
+    let prepared = prepare_asset_bytes(snapshot.canonical_path(), snapshot.bytes().to_vec());
+    if prepared.asset.id.to_string() != snapshot.content_hash() {
+        bail!("font snapshot identity does not match the revision asset identity");
+    }
+    Ok(prepared)
+}
+
+fn prepare_verified_font_asset(font: &FontAsset) -> Result<PreparedAsset> {
+    prepare_font_snapshot(&font.source_snapshot()?)
+}
+
+fn prepare_verified_transfer_font_asset(font: &LayerTransferFont) -> Result<PreparedAsset> {
+    let snapshot = FontSourceSnapshot::read_verified(&font.path, &font.content_hash)?;
+    if snapshot.family != font.family
+        || snapshot.style != font.style
+        || snapshot.weight != font.weight
+        || snapshot.slant != font.slant
+        || snapshot.subset_allowed != font.subset_allowed
+    {
+        bail!("transferred font metadata does not match its immutable source snapshot");
+    }
+    prepare_font_snapshot(&snapshot)
 }
 
 struct AssetReference {

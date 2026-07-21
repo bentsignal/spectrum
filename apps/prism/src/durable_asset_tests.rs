@@ -19,7 +19,9 @@ fn test_directory(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-durable-asset-{label}-{stamp}"))
+    fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("prism-durable-asset-{label}-{stamp}"))
 }
 
 fn test_actor(label: &str) -> Actor {
@@ -212,6 +214,157 @@ fn failing_durable_asset_batch_changes_neither_document_history_nor_embedded_ass
     );
     assert_eq!(count_rows(&project, "assets"), asset_count_before);
 
+    drop(workspace);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_font_import_rejects_oversize_before_staging_an_asset() {
+    let directory = test_directory("oversized-font");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("oversized.ttf");
+    fs::File::create(&source)
+        .unwrap()
+        .set_len(crate::font_source::MAX_EMBEDDED_FONT_BYTES as u64 + 1)
+        .unwrap();
+    let project = directory.join("oversized.prism");
+    let mut workspace = Workspace::create_durable(
+        Document::new("Bounded font", 4, 4),
+        &project,
+        test_actor("bounded-font"),
+        SessionId::new(),
+    )
+    .unwrap();
+    let history_before = workspace.history().unwrap().unwrap();
+    let asset_count_before = count_rows(&project, "assets");
+
+    let error = workspace
+        .execute(Command::ImportFont { path: source })
+        .unwrap_err();
+
+    assert!(error.to_string().contains("32 MiB"));
+    assert!(workspace.document.font_assets.is_empty());
+    assert_eq!(count_rows(&project, "assets"), asset_count_before);
+    assert_eq!(
+        workspace.history().unwrap().unwrap().current,
+        history_before.current
+    );
+    drop(workspace);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn durable_font_import_rejects_symlinked_final_and_ancestor_components() {
+    use std::os::unix::fs::symlink;
+
+    let directory = test_directory("linked-font");
+    let real_directory = directory.join("real");
+    fs::create_dir_all(&real_directory).unwrap();
+    let source = real_directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let linked_directory = directory.join("linked-directory");
+    let linked_file = directory.join("linked-font.ttf");
+    symlink(&real_directory, &linked_directory).unwrap();
+    symlink(&source, &linked_file).unwrap();
+    let project = directory.join("linked.prism");
+    let mut workspace = Workspace::create_durable(
+        Document::new("Linked font", 4, 4),
+        &project,
+        test_actor("linked-font"),
+        SessionId::new(),
+    )
+    .unwrap();
+    let asset_count_before = count_rows(&project, "assets");
+
+    for path in [linked_file, linked_directory.join("Hack-Regular.ttf")] {
+        assert!(workspace.execute(Command::ImportFont { path }).is_err());
+    }
+
+    assert!(workspace.document.font_assets.is_empty());
+    assert_eq!(count_rows(&project, "assets"), asset_count_before);
+    drop(workspace);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_font_import_persists_the_verified_bytes_before_source_replacement() {
+    let directory = test_directory("font-replacement");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let project = directory.join("font-replacement.prism");
+    let mut workspace = Workspace::create_durable(
+        Document::new("Font replacement", 4, 4),
+        &project,
+        test_actor("font-replacement"),
+        SessionId::new(),
+    )
+    .unwrap();
+
+    workspace
+        .execute(Command::ImportFont {
+            path: source.clone(),
+        })
+        .unwrap();
+    fs::write(
+        &source,
+        vec![0x5a; epaint_default_fonts::HACK_REGULAR.len()],
+    )
+    .unwrap();
+    drop(workspace);
+
+    let loaded = Workspace::load_read_only(&project).unwrap();
+    assert_eq!(loaded.font_assets.len(), 1);
+    assert_eq!(
+        loaded.font_assets[0].bytes().unwrap(),
+        epaint_default_fonts::HACK_REGULAR
+    );
+    assert_eq!(count_rows(&project, "assets"), 1);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn periodic_snapshot_rejects_a_tampered_materialized_font() {
+    let directory = test_directory("periodic-font-verification");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let project = directory.join("periodic-font.prism");
+    let mut workspace = Workspace::create_durable(
+        Document::new("Periodic font", 4, 4),
+        &project,
+        test_actor("periodic-font"),
+        SessionId::new(),
+    )
+    .unwrap();
+    workspace
+        .execute(Command::ImportFont { path: source })
+        .unwrap();
+    let embedded = workspace.document.font_assets[0].path.clone();
+    fs::write(
+        embedded,
+        vec![0x7b; epaint_default_fonts::HACK_REGULAR.len()],
+    )
+    .unwrap();
+    let before = workspace.document.clone();
+    let history_before = workspace.history().unwrap().unwrap();
+    let commands = (0..99)
+        .map(|index| Command::SetCanvas {
+            width: 4,
+            height: 4,
+            background: [index as u8, 0, 0, 255],
+        })
+        .collect();
+
+    let error = workspace.execute_batch(commands).unwrap_err();
+
+    assert!(error.to_string().contains("content identity"));
+    assert_eq!(workspace.document, before);
+    assert_eq!(
+        workspace.history().unwrap().unwrap().current,
+        history_before.current
+    );
     drop(workspace);
     fs::remove_dir_all(directory).unwrap();
 }

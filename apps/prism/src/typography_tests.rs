@@ -5,9 +5,9 @@ use std::{
 };
 
 use crate::{
-    Command, Document, LayerKind, TextAlignment, TextEffects, TextTypography, Workspace,
-    analyze_all_font_usage, analyze_font_usage, font_usage, render_document,
-    render_layer_base_scaled_with_font,
+    Command, Document, FontAsset, FontSourceSnapshot, LayerKind, TextAlignment, TextEffects,
+    TextTypography, Workspace, analyze_all_font_usage, analyze_font_usage, font_usage,
+    render_document, render_layer_base_scaled_with_font, save_document,
 };
 
 fn test_directory(label: &str) -> PathBuf {
@@ -15,7 +15,9 @@ fn test_directory(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-typography-{label}-{stamp}"))
+    fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("prism-typography-{label}-{stamp}"))
 }
 
 fn test_actor() -> spectrum_revisions::Actor {
@@ -117,6 +119,10 @@ fn imported_font_and_typography_round_trip_inside_durable_project() {
     assert_ne!(loaded.font_assets[0].path, source);
     assert!(loaded.font_assets[0].original_path.is_none());
     assert_eq!(
+        loaded.font_assets[0].content_hash,
+        spectrum_revisions::AssetId::for_bytes(epaint_default_fonts::HACK_REGULAR).to_string()
+    );
+    assert_eq!(
         loaded.font_assets[0].bytes().unwrap(),
         epaint_default_fonts::HACK_REGULAR
     );
@@ -149,6 +155,245 @@ fn malformed_font_import_is_rejected_without_allocating_an_asset() {
     assert_eq!(workspace.document.next_font_id, 1);
 
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn immutable_font_source_rejects_tampering_truncation_and_unmaterialized_paths() {
+    let directory = test_directory("immutable-source");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let asset = FontAsset::import(1, &source).unwrap();
+    let snapshot = asset.source_snapshot().unwrap();
+    assert_eq!(snapshot.bytes(), epaint_default_fonts::HACK_REGULAR);
+    assert_eq!(snapshot.content_hash(), asset.content_hash);
+
+    let mut wrong_identity = asset.clone();
+    wrong_identity.content_hash = "0".repeat(64);
+    assert!(
+        wrong_identity
+            .source_snapshot()
+            .unwrap_err()
+            .to_string()
+            .contains("content identity")
+    );
+
+    let mut escaped = asset.clone();
+    escaped.path = PathBuf::from("../outside-project-font.ttf");
+    assert!(
+        escaped
+            .source_snapshot()
+            .unwrap_err()
+            .to_string()
+            .contains("not materialized safely")
+    );
+
+    fs::write(&source, &epaint_default_fonts::HACK_REGULAR[..128]).unwrap();
+    assert!(asset.source_snapshot().is_err());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn legacy_and_initial_durable_saves_reject_tampered_font_bytes() {
+    let directory = test_directory("tampered-save");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let mut document = Document::new("Tampered save", 320, 200);
+    document
+        .font_assets
+        .push(FontAsset::import(1, &source).unwrap());
+    fs::write(
+        &source,
+        vec![0x4f; epaint_default_fonts::HACK_REGULAR.len()],
+    )
+    .unwrap();
+    let legacy_project = directory.join("tampered-legacy.prism");
+    let durable_project = directory.join("tampered-durable.prism");
+
+    let legacy_error = save_document(&document, &legacy_project).unwrap_err();
+    let durable_error = Workspace::create_durable(
+        document,
+        &durable_project,
+        test_actor(),
+        spectrum_revisions::SessionId::new(),
+    )
+    .err()
+    .expect("tampered initial snapshot should fail");
+
+    assert!(legacy_error.to_string().contains("content identity"));
+    assert!(durable_error.to_string().contains("content identity"));
+    assert!(!legacy_project.exists());
+    assert!(!durable_project.exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn font_source_read_is_bounded_before_allocating_file_contents() {
+    let directory = test_directory("oversized-source");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("oversized.ttf");
+    fs::File::create(&source)
+        .unwrap()
+        .set_len(crate::font_source::MAX_EMBEDDED_FONT_BYTES as u64 + 1)
+        .unwrap();
+    assert!(
+        FontSourceSnapshot::read(&source)
+            .unwrap_err()
+            .to_string()
+            .contains("32 MiB")
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn source_snapshot_accepts_static_variable_and_cff_open_type_containers() {
+    let fixtures = fs::canonicalize(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/spectrum-fonts/tests/fonts"),
+    )
+    .unwrap();
+    for name in [
+        "noto-sans-static-source.ttf",
+        "noto-sans-variable-rejected.ttf",
+        "noto-sans-cff-rejected.otf",
+    ] {
+        let snapshot = FontSourceSnapshot::read(&fixtures.join(name)).unwrap();
+        assert!(!snapshot.is_empty(), "fixture {name} should be readable");
+        assert_eq!(snapshot.content_hash().len(), 64);
+    }
+}
+
+#[test]
+fn font_source_fails_closed_for_fstype_and_outline_restrictions() {
+    let directory = test_directory("embedding-restrictions");
+    fs::create_dir_all(&directory).unwrap();
+    for (name, fs_type) in [("preview.ttf", 0x0004), ("bitmap-only.ttf", 0x0208)] {
+        let source = directory.join(name);
+        let mut bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
+        set_fs_type(&mut bytes, fs_type);
+        fs::write(&source, bytes).unwrap();
+        assert!(FontSourceSnapshot::read(&source).is_err());
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn font_source_rejects_symlink_entry_points() {
+    use std::os::unix::fs::symlink;
+
+    let directory = test_directory("symlink-source");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    let link = directory.join("linked.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    symlink(&source, &link).unwrap();
+    assert!(
+        FontSourceSnapshot::read(&link)
+            .unwrap_err()
+            .to_string()
+            .contains("securely open")
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn font_source_rejects_symlinked_ancestor_directories() {
+    use std::os::unix::fs::symlink;
+
+    let directory = test_directory("symlink-ancestor");
+    let real_directory = directory.join("real");
+    fs::create_dir_all(&real_directory).unwrap();
+    let source = real_directory.join("Hack-Regular.ttf");
+    let linked_directory = directory.join("linked");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    symlink(&real_directory, &linked_directory).unwrap();
+    assert!(
+        FontSourceSnapshot::read(&linked_directory.join("Hack-Regular.ttf"))
+            .unwrap_err()
+            .to_string()
+            .contains("securely open")
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_font_source_binds_a_regular_file_handle_identity() {
+    let directory = test_directory("windows-file-identity");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let snapshot = FontSourceSnapshot::read(&source).unwrap();
+    assert_eq!(snapshot.bytes(), epaint_default_fonts::HACK_REGULAR);
+    assert!(snapshot.canonical_path().is_absolute());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_font_source_rejects_reparse_point_ancestors_when_links_are_available() {
+    use std::os::windows::fs::symlink_dir;
+
+    let directory = test_directory("windows-reparse-ancestor");
+    let real_directory = directory.join("real");
+    fs::create_dir_all(&real_directory).unwrap();
+    let source = real_directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let linked_directory = directory.join("linked");
+    if symlink_dir(&real_directory, &linked_directory).is_ok() {
+        assert!(
+            FontSourceSnapshot::read(&linked_directory.join("Hack-Regular.ttf"))
+                .unwrap_err()
+                .to_string()
+                .contains("reparse-point")
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_font_source_rejects_an_ancestor_junction_redirect() {
+    let directory = test_directory("windows-junction-ancestor");
+    let real_directory = directory.join("real");
+    fs::create_dir_all(&real_directory).unwrap();
+    let source = real_directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let junction = directory.join("junction");
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&real_directory)
+        .status()
+        .unwrap();
+    assert!(status.success(), "test junction should be creatable");
+
+    let error = FontSourceSnapshot::read(&junction.join("Hack-Regular.ttf")).unwrap_err();
+
+    assert!(error.to_string().contains("reparse-point"));
+    fs::remove_dir(&junction).unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+fn set_fs_type(bytes: &mut [u8], fs_type: u16) {
+    let table_count = usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
+    for index in 0..table_count {
+        let record = 12 + index * 16;
+        if &bytes[record..record + 4] != b"OS/2" {
+            continue;
+        }
+        let offset = u32::from_be_bytes([
+            bytes[record + 8],
+            bytes[record + 9],
+            bytes[record + 10],
+            bytes[record + 11],
+        ]) as usize;
+        bytes[offset + 8..offset + 10].copy_from_slice(&fs_type.to_be_bytes());
+        return;
+    }
+    panic!("test font has no OS/2 table");
 }
 
 #[test]

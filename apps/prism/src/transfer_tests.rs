@@ -17,7 +17,9 @@ fn test_directory(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-transfer-{label}-{stamp}"))
+    fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("prism-transfer-{label}-{stamp}"))
 }
 
 fn test_actor() -> spectrum_revisions::Actor {

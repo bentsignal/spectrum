@@ -14,6 +14,7 @@ enum CommandProvenance {
     Font {
         staged_path: PathBuf,
         original_path: PathBuf,
+        content_hash: String,
     },
 }
 
@@ -55,8 +56,9 @@ impl PreparedEdit {
                     CommandProvenance::Raster { original_path }
                 }
                 Command::ImportFont { path } => {
-                    let original_path = canonical_asset_path(path)?;
-                    let prepared = prepare_asset(&original_path)?;
+                    let snapshot = FontSourceSnapshot::read(path)?;
+                    let original_path = snapshot.canonical_path().to_owned();
+                    let prepared = prepare_font_snapshot(&snapshot)?;
                     let staged_path =
                         project.stage_asset(&prepared.reference, &prepared.asset.bytes)?;
                     set_import_font_path(&mut portable_commands[index], prepared.reference.path());
@@ -65,6 +67,7 @@ impl PreparedEdit {
                     CommandProvenance::Font {
                         staged_path,
                         original_path,
+                        content_hash: snapshot.content_hash().to_owned(),
                     }
                 }
                 Command::RasterizeShape { path, .. } => {
@@ -89,7 +92,7 @@ impl PreparedEdit {
                     let font_asset = transfer
                         .font_asset
                         .as_ref()
-                        .map(|font| prepare_staged_asset(project, &font.path))
+                        .map(|font| prepare_staged_font_asset(project, font))
                         .transpose()?;
                     prepare_layer_transfer_command(
                         &mut portable_commands[index],
@@ -135,14 +138,24 @@ impl PreparedEdit {
                 CommandProvenance::Font {
                     staged_path,
                     original_path,
+                    content_hash,
                 } => {
-                    if document.font_assets.len() > font_count_before
-                        && let Some(font) = document
+                    if document.font_assets.len() > font_count_before {
+                        let font = document
                             .font_assets
                             .iter_mut()
                             .find(|font| font.path == *staged_path)
-                    {
+                            .context("prepared font import did not create its staged asset")?;
+                        if font.content_hash != *content_hash {
+                            bail!("staged font bytes changed after their verified snapshot");
+                        }
                         font.original_path = Some(original_path.clone());
+                    } else if !document
+                        .font_assets
+                        .iter()
+                        .any(|font| font.content_hash == *content_hash)
+                    {
+                        bail!("prepared font import did not retain its verified snapshot");
                     }
                 }
             }
@@ -154,6 +167,15 @@ impl PreparedEdit {
 
 fn prepare_staged_asset(project: &DurableProject, path: &Path) -> Result<(PreparedAsset, PathBuf)> {
     let prepared = prepare_asset(&canonical_asset_path(path)?)?;
+    let staged_path = project.stage_asset(&prepared.reference, &prepared.asset.bytes)?;
+    Ok((prepared, staged_path))
+}
+
+fn prepare_staged_font_asset(
+    project: &DurableProject,
+    font: &LayerTransferFont,
+) -> Result<(PreparedAsset, PathBuf)> {
+    let prepared = prepare_verified_transfer_font_asset(font)?;
     let staged_path = project.stage_asset(&prepared.reference, &prepared.asset.bytes)?;
     Ok((prepared, staged_path))
 }

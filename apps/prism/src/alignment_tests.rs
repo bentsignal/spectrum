@@ -161,7 +161,9 @@ fn imported_typography_alignment_uses_the_rendered_effect_bounds() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let font_path = std::env::temp_dir().join(format!("prism-align-font-{stamp}.ttf"));
+    let font_path = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("prism-align-font-{stamp}.ttf"));
     std::fs::write(&font_path, epaint_default_fonts::HACK_REGULAR).unwrap();
     let font = FontAsset::import(31, &font_path).unwrap();
     let mut document = Document::new("Imported alignment", 720, 420);

@@ -117,6 +117,251 @@ fn font_usage_cli_accepts_an_optional_asset_filter() {
 }
 
 #[test]
+fn font_source_cli_requires_one_embedded_asset() {
+    let cli =
+        Cli::try_parse_from(["prism", "--project", "type.prism", "font-source", "12"]).unwrap();
+    let CliCommand::FontSource { font_id } = cli.command else {
+        panic!("font-source subcommand should parse");
+    };
+    assert_eq!(font_id, 12);
+}
+
+#[test]
+fn font_source_output_proves_identity_without_mutating_the_document() {
+    let directory = temporary_project("font-source").with_extension("assets");
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let mut document = Document::new("Source proof", 320, 200);
+    document
+        .font_assets
+        .push(prism_core::FontAsset::import(1, &source).unwrap());
+    let before = document.clone();
+
+    let output = typography::font_source(&document, 1).unwrap();
+
+    assert_eq!(output["action"], "font_source");
+    assert_eq!(output["immutable_identity_verified"], true);
+    assert_eq!(output["editable_embedding_verified"], true);
+    assert_eq!(output["font_bytes_modified"], false);
+    assert_eq!(output["mutates_project"], false);
+    assert_eq!(
+        output["source_bytes"],
+        epaint_default_fonts::HACK_REGULAR.len()
+    );
+    assert_eq!(document, before);
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_font_source_keeps_store_bytes_unchanged_and_rejects_sessions() {
+    let project = temporary_project("font-source-read-only");
+    let directory = temporary_project("font-source-read-only").with_extension("assets");
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::Init {
+            name: "Read-only proof".into(),
+            width: 320,
+            height: 200,
+            background: "18191dff".into(),
+        },
+    })
+    .unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontImport { path: source },
+    })
+    .unwrap();
+    let before = std::fs::read(&project).unwrap();
+
+    let output = run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontSource { font_id: 1 },
+    })
+    .unwrap();
+    let session_error = run(Cli {
+        project: project.clone(),
+        session: Some(spectrum_revisions::SessionId::new()),
+        command: CliCommand::FontSource { font_id: 1 },
+    })
+    .unwrap_err();
+
+    assert_eq!(output["mutates_project"], false);
+    assert!(
+        session_error
+            .to_string()
+            .contains("does not accept --session")
+    );
+    assert_eq!(std::fs::read(&project).unwrap(), before);
+    std::fs::remove_file(project).unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_font_source_ignores_newer_live_and_recovery_state_without_writes() {
+    let directory = temporary_project("font-source-invariant").with_extension("tree");
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("invariant.prism");
+    let source = directory.join("Hack-Regular.ttf");
+    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::Init {
+            name: "Immutable inspection".into(),
+            width: 320,
+            height: 200,
+            background: "18191dff".into(),
+        },
+    })
+    .unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontImport { path: source },
+    })
+    .unwrap();
+    let project_info = spectrum_revisions::RevisionStore::open_read_only(&project)
+        .unwrap()
+        .project_info()
+        .unwrap();
+    let live_cache = directory.join(".revision-cache");
+    drop(
+        spectrum_revisions::LiveRevisionStore::open(&project, &live_cache)
+            .expect("test live cache should materialize from the canonical project"),
+    );
+    let working = live_cache
+        .join(project_info.project_id.to_string())
+        .join("live.sqlite");
+    let canonical_writer = rusqlite::Connection::open(&project).unwrap();
+    canonical_writer
+        .execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA wal_autocheckpoint=0;
+             CREATE TABLE read_only_recovery_probe(value INTEGER);
+             INSERT INTO read_only_recovery_probe VALUES (1);
+             UPDATE spectrum_meta SET value = CAST('888888' AS BLOB)
+             WHERE key = 'storage_generation';",
+        )
+        .unwrap();
+    let live_writer = rusqlite::Connection::open(working).unwrap();
+    live_writer
+        .execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA wal_autocheckpoint=0;
+             CREATE TABLE newer_live_probe(value INTEGER);
+             INSERT INTO newer_live_probe VALUES (2);
+             UPDATE spectrum_meta SET value = CAST('999999' AS BLOB)
+             WHERE key = 'storage_generation';",
+        )
+        .unwrap();
+    let before = tree_snapshot(&directory);
+
+    let output = run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontSource { font_id: 1 },
+    })
+    .unwrap();
+
+    assert_eq!(output["immutable_identity_verified"], true);
+    assert_eq!(tree_snapshot(&directory), before);
+    drop(live_writer);
+    drop(canonical_writer);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
+    let directory = temporary_project("font-source-transfer").with_extension("tree");
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("transfer-destination.prism");
+    let source = directory.join("Hack-Regular.ttf");
+    let transfer_path = directory.join("font-layer.json");
+    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let mut source_workspace = Workspace::new(Document::new("Transfer source", 320, 200), None);
+    source_workspace
+        .execute(Command::ImportFont {
+            path: source.clone(),
+        })
+        .unwrap();
+    let font_id = source_workspace.document.font_assets[0].id;
+    source_workspace
+        .execute(Command::AddText {
+            text: "Transferred type".into(),
+            name: None,
+            font_size: 48.0,
+            color: [255, 255, 255, 255],
+            x: 20.0,
+            y: 30.0,
+        })
+        .unwrap();
+    let layer_id = source_workspace.document.selected.unwrap();
+    source_workspace
+        .execute(Command::SetTextTypography {
+            id: layer_id,
+            typography: prism_core::TextTypography {
+                font_id: Some(font_id),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+    let transfer = prism_core::LayerTransfer::from_selected(&source_workspace.document).unwrap();
+    std::fs::write(&transfer_path, transfer.to_json().unwrap()).unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::Init {
+            name: "Transfer destination".into(),
+            width: 320,
+            height: 200,
+            background: "18191dff".into(),
+        },
+    })
+    .unwrap();
+    for _ in 0..2 {
+        run(Cli {
+            project: project.clone(),
+            session: None,
+            command: CliCommand::LayerPaste(LayerPasteArgs {
+                input: transfer_path.clone(),
+                index: None,
+            }),
+        })
+        .unwrap();
+    }
+    let before = tree_snapshot(&directory);
+
+    let output = run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontSource { font_id: 1 },
+    })
+    .unwrap();
+    let inspected = prism_core::inspect_font_source_read_only(&project, 1).unwrap();
+
+    assert_eq!(output["family"], "Hack");
+    assert_eq!(output["style"], "Regular");
+    assert_eq!(output["source_name"], "Hack-Regular.ttf");
+    assert_eq!(
+        output["content_hash"],
+        spectrum_revisions::AssetId::for_bytes(epaint_default_fonts::HACK_REGULAR).to_string()
+    );
+    assert_eq!(inspected.embedded_font_count, 1);
+    assert_eq!(inspected.next_font_id, 2);
+    assert_eq!(inspected.font.id, 1);
+    assert_eq!(tree_snapshot(&directory), before);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn font_usage_output_limits_its_non_mutation_and_coverage_claims() {
     let output = typography::font_usage(&Document::new("Usage", 320, 200), None).unwrap();
     assert_eq!(output["action"], "font_usage");
@@ -147,6 +392,7 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert!(schema["typography"]["optimization_limitations"].is_string());
     assert!(schema["typography"]["embedding_metadata"].is_string());
     assert!(schema["typography"]["editable_default"].is_string());
+    assert!(schema["typography"]["source_snapshot"].is_string());
     assert_eq!(
         schema["layer_transfer"]["version"],
         prism_core::LAYER_TRANSFER_VERSION
@@ -283,7 +529,33 @@ fn temporary_project(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-{label}-cli-{stamp}.prism"))
+    std::fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("prism-{label}-cli-{stamp}.prism"))
+}
+
+fn tree_snapshot(root: &Path) -> Vec<(PathBuf, bool, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, snapshot: &mut Vec<(PathBuf, bool, Vec<u8>)>) {
+        let mut entries = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            let relative = path.strip_prefix(root).unwrap().to_owned();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            if metadata.is_dir() {
+                snapshot.push((relative, true, Vec::new()));
+                visit(root, &path, snapshot);
+            } else {
+                snapshot.push((relative, false, std::fs::read(path).unwrap()));
+            }
+        }
+    }
+
+    let mut snapshot = Vec::new();
+    visit(root, root, &mut snapshot);
+    snapshot
 }
 
 fn initialize_rectangle_project(project: &Path) {
