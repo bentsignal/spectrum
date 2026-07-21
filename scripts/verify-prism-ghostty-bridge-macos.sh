@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+metadata_validator="$repo_root/scripts/validate-prism-ghostty-metadata.py"
+
 [[ $# -ge 3 ]] || {
   echo "usage: $0 <bridge-dylib> <minimum-macos> <architecture> [forbidden-path ...]" >&2
   exit 2
@@ -24,6 +27,9 @@ die() {
 [[ "$minimum_macos" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid minimum macOS version"
 [[ "$expected_arch" == "arm64" || "$expected_arch" == "x86_64" ]] \
   || die "unsupported bridge architecture: $expected_arch"
+[[ -f "$metadata_validator" && ! -L "$metadata_validator" ]] \
+  || die "metadata validator not found: $metadata_validator"
+nm_tool="$(command -v nm)" || die "required command not found: nm"
 
 install_name="$(otool -D "$bridge" | sed -n '2p')"
 [[ "$install_name" == "@rpath/libPrismGhosttyBridge.dylib" ]] \
@@ -64,7 +70,10 @@ otool -l "$bridge" | awk -v expected="$minimum_macos" '
   END { exit found ? 0 : 1 }
 ' || die "Ghostty bridge deployment target is not macOS $minimum_macos"
 
-for symbol in \
+python3 "$metadata_validator" symbols \
+  "$nm_tool" \
+  "$bridge" \
+  "$expected_arch" \
   _prism_ghostty_bridge_abi_version \
   _prism_ghostty_global_init \
   _prism_ghostty_runtime_create \
@@ -75,11 +84,7 @@ for symbol in \
   _prism_ghostty_surface_set_state \
   _prism_ghostty_surface_edit \
   _prism_ghostty_surface_request_close \
-  _prism_ghostty_surface_destroy; do
-  nm -gU "$bridge" | awk -v symbol="$symbol" \
-    '$NF == symbol { found = 1 } END { exit found ? 0 : 1 }' \
-    || die "Ghostty bridge does not export $symbol"
-done
+  _prism_ghostty_surface_destroy
 
 for forbidden in "${forbidden_paths[@]}"; do
   [[ -n "$forbidden" ]] || continue

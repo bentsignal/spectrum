@@ -100,6 +100,13 @@ macOS can keep a process in kernel-uninterruptible (`U`) state even after
 `SIGKILL`; in that exceptional case the runner reports it and the private build
 root must remain untouched until the kernel releases the process.
 
+Symbol validation emits a bounded `prism-ghostty-symbol-check` record before a
+failure returns to packaging. The record identifies the inspected artifact,
+tool, architecture, and SHA-256 values and distinguishes an `nm` execution or
+archive-reading error from a successful lookup with missing required symbols.
+Ordinary failed private roots are still removed; retain the packaging log for
+this diagnostic record rather than retaining a large build tree.
+
 Only after every proof step succeeds does the script atomically write a
 versioned `ghostty-proof.attestation`. It records reviewed inputs and per-build
 hashes for diagnosis and consistency checks, but it is not a signature or a

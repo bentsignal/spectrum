@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -77,6 +80,7 @@ ATTESTATION_KEYS = {
 
 KEY_PATTERN = re.compile(r"^[A-Z0-9_]+$")
 SHA_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+SYMBOL_DIAGNOSTIC_LIMIT = 4096
 
 
 def fail(message: str) -> "NoReturn":
@@ -158,14 +162,117 @@ def validate_tool(
         fail("trusted tool shim target mismatch")
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def diagnostic_excerpt(stream: object) -> str:
+    stream.seek(0)
+    value = stream.read(SYMBOL_DIAGNOSTIC_LIMIT + 1)
+    truncated = len(value) > SYMBOL_DIAGNOSTIC_LIMIT
+    value = value[:SYMBOL_DIAGNOSTIC_LIMIT]
+    text = value.decode("utf-8", errors="replace")
+    return text + ("\n[truncated]" if truncated else "")
+
+
+def validate_symbols(
+    tool_argument: str,
+    artifact: Path,
+    architecture: str,
+    required_symbols: list[str],
+) -> None:
+    tool = Path(tool_argument)
+    if not tool.is_absolute() or not tool.exists() or not os.access(tool, os.X_OK):
+        fail("symbol tool must be an absolute executable path")
+    try:
+        resolved_tool = tool.resolve(strict=True)
+    except OSError as error:
+        fail(f"could not resolve symbol tool: {error}")
+    if not resolved_tool.is_file():
+        fail("resolved symbol tool is not a regular file")
+    if not artifact.is_absolute() or not artifact.is_file() or artifact.is_symlink():
+        fail("symbol artifact must be an absolute regular non-symlink file")
+    try:
+        resolved_artifact = artifact.resolve(strict=True)
+    except OSError as error:
+        fail(f"could not resolve symbol artifact: {error}")
+    if resolved_artifact != artifact:
+        fail("symbol artifact has a symlinked or non-canonical component")
+    if architecture not in {"arm64", "x86_64"}:
+        fail("symbol architecture must be arm64 or x86_64")
+    if not required_symbols or any(
+        not symbol.startswith("_") or any(character.isspace() for character in symbol)
+        for symbol in required_symbols
+    ):
+        fail("required symbols must be non-empty underscore-prefixed names")
+
+    record: dict[str, object] = {
+        "architecture": architecture,
+        "artifact": str(artifact),
+        "artifact_sha256": sha256_file(artifact),
+        "required_symbols": required_symbols,
+        "tool": str(tool),
+        "tool_resolved": str(resolved_tool),
+        "tool_sha256": sha256_file(resolved_tool),
+    }
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        try:
+            completed = subprocess.run(
+                [str(tool), "-arch", architecture, "-gU", str(artifact)],
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                check=False,
+            )
+        except OSError as error:
+            record.update({"status": "tool_error", "launch_error": str(error)})
+            print(f"prism-ghostty-symbol-check {json.dumps(record, sort_keys=True)}", file=sys.stderr)
+            raise SystemExit(2)
+
+        record["tool_exit_code"] = completed.returncode
+        stderr_excerpt = diagnostic_excerpt(stderr)
+        if stderr_excerpt:
+            record["tool_stderr"] = stderr_excerpt
+        if completed.returncode != 0:
+            stdout_excerpt = diagnostic_excerpt(stdout)
+            if stdout_excerpt:
+                record["tool_stdout"] = stdout_excerpt
+            record["status"] = "tool_error"
+            print(f"prism-ghostty-symbol-check {json.dumps(record, sort_keys=True)}", file=sys.stderr)
+            raise SystemExit(2)
+
+        stdout.seek(0)
+        observed = set()
+        for raw_line in stdout:
+            fields = raw_line.decode("utf-8", errors="replace").split()
+            if fields:
+                observed.add(fields[-1])
+        missing = [symbol for symbol in required_symbols if symbol not in observed]
+        record["observed_symbol_count"] = len(observed)
+        if missing:
+            record.update({"status": "missing_symbols", "missing_symbols": missing})
+            print(f"prism-ghostty-symbol-check {json.dumps(record, sort_keys=True)}", file=sys.stderr)
+            raise SystemExit(3)
+        record["status"] = "ok"
+        print(f"prism-ghostty-symbol-check {json.dumps(record, sort_keys=True)}")
+
+
 def main() -> None:
+    if len(sys.argv) >= 6 and sys.argv[1] == "symbols":
+        validate_symbols(sys.argv[2], Path(sys.argv[3]), sys.argv[4], sys.argv[5:])
+        return
     if len(sys.argv) == 6 and sys.argv[1] == "tool":
         validate_tool(Path(sys.argv[2]), sys.argv[3], sys.argv[4], Path(sys.argv[5]))
         return
     if len(sys.argv) < 3 or sys.argv[1] not in {"lock", "attestation"}:
         fail(
             f"usage: {Path(sys.argv[0]).name} lock|attestation <path> [KEY=VALUE ...] "
-            "or tool <trusted-root> <relative-tool> <sha256> <shim>"
+            "or tool <trusted-root> <relative-tool> <sha256> <shim> "
+            "or symbols <nm-tool> <artifact> <arm64|x86_64> <symbol...>"
         )
     values = validate(sys.argv[1], Path(sys.argv[2]))
     for expectation in sys.argv[3:]:

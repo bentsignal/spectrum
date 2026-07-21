@@ -47,6 +47,20 @@ expect_failure() {
   }
 }
 
+expect_exit_code() {
+  local expected="$1"
+  shift
+  local exit_code
+  set +e
+  "$@" >/dev/null 2>&1
+  exit_code=$?
+  set -e
+  [[ $exit_code -eq $expected ]] || {
+    echo "expected exit $expected, got $exit_code: $*" >&2
+    exit 1
+  }
+}
+
 cp -- "$repo_root/packaging/prism/macos/ghostty-proof.lock" "$fixture/lock"
 python3 "$metadata_validator" lock "$fixture/lock"
 cp -- "$fixture/lock" "$fixture/duplicate-lock"
@@ -452,6 +466,9 @@ if tool == "otool":
 elif tool == "lipo":
     print("x86_64" if mode == "architecture" else "arm64")
 elif tool == "nm":
+    if mode == "nm-error":
+        print("synthetic archive parse failure", file=sys.stderr)
+        raise SystemExit(47)
     for symbol in symbols:
         if mode != "abi" or symbol != "_prism_ghostty_surface_edit":
             print("0000000000000000 T " + symbol)
@@ -468,6 +485,26 @@ done
 printf 'fake Mach-O\n' >"$fixture/libPrismGhosttyBridge.dylib"
 bridge_command=(bash "$bridge_verifier" "$fixture/libPrismGhosttyBridge.dylib" 13.0 arm64 /forbidden/build/path)
 PATH="$fixture/shims:/usr/bin:/bin" PRISM_GHOSTTY_TEST_MODE=ok "${bridge_command[@]}"
+symbol_check=(python3 "$metadata_validator" symbols "$fixture/shims/nm" \
+  "$fixture/libPrismGhosttyBridge.dylib" arm64 \
+  _prism_ghostty_bridge_abi_version _prism_ghostty_surface_edit)
+symbol_output="$(PRISM_GHOSTTY_TEST_MODE=ok "${symbol_check[@]}")"
+[[ "$symbol_output" == *'"status": "ok"'* ]]
+[[ "$symbol_output" == *'"architecture": "arm64"'* ]]
+[[ "$symbol_output" == *'"artifact_sha256":'* ]]
+[[ "$symbol_output" == *'"tool_sha256":'* ]]
+expect_failure '"status": "missing_symbols"' env PRISM_GHOSTTY_TEST_MODE=abi \
+  "${symbol_check[@]}"
+expect_failure '"missing_symbols": ["_prism_ghostty_surface_edit"]' env \
+  PRISM_GHOSTTY_TEST_MODE=abi "${symbol_check[@]}"
+expect_exit_code 3 env PRISM_GHOSTTY_TEST_MODE=abi "${symbol_check[@]}"
+expect_failure '"status": "tool_error"' env PRISM_GHOSTTY_TEST_MODE=nm-error \
+  "${symbol_check[@]}"
+expect_failure '"tool_exit_code": 47' env PRISM_GHOSTTY_TEST_MODE=nm-error \
+  "${symbol_check[@]}"
+expect_failure 'synthetic archive parse failure' env PRISM_GHOSTTY_TEST_MODE=nm-error \
+  "${symbol_check[@]}"
+expect_exit_code 2 env PRISM_GHOSTTY_TEST_MODE=nm-error "${symbol_check[@]}"
 mkdir "$fixture/real-bridge-parent"
 cp -- "$fixture/libPrismGhosttyBridge.dylib" "$fixture/real-bridge-parent/bridge.dylib"
 ln -s real-bridge-parent "$fixture/symlinked-bridge-parent"
@@ -480,7 +517,8 @@ for test_case in \
   'dependency:non-allowlisted dependency' \
   'minos:deployment target' \
   'architecture:does not contain architecture' \
-  'abi:does not export _prism_ghostty_surface_edit' \
+  'abi:missing_symbols' \
+  'nm-error:tool_error' \
   'leakage:retained forbidden build path'; do
   mode="${test_case%%:*}"
   expected="${test_case#*:}"
@@ -528,6 +566,9 @@ assert '"${zig_command[@]}" build -j2' in proof
 assert 'zig_url="$(lock_value ZIG_ARM64_URL)"' in proof
 assert '/usr/bin/arch -x86_64' not in proof
 assert proof.count("verify_pinned_sdk_and_shim") >= 5
+assert 'python3 "$metadata_validator" symbols' in proof
+assert '2>/dev/null' not in proof[proof.index('for architecture in arm64 x86_64; do'):]
+assert 'python3 "$metadata_validator" symbols' in consumer
 assert consumer.count("verify_snapshot_hashes") >= 2
 assert consumer.count("verify_sealed_snapshot_unchanged") >= 4
 assert 'ln -s -- "$xcframework"' not in consumer

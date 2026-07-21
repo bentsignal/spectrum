@@ -405,6 +405,7 @@ actual_xcode_build="$(printf '%s\n' "$xcode_output" | awk 'NR == 2 { print $3; e
   || die "Xcode version mismatch (expected $expected_xcode_version, got $actual_xcode_version)"
 [[ "$actual_xcode_build" == "$expected_xcode_build" ]] \
   || die "Xcode build mismatch (expected $expected_xcode_build, got $actual_xcode_build)"
+xcode_nm="$(xcrun --find nm)" || die "pinned Xcode does not provide nm"
 
 actual_bridge_abi_version="$(awk \
   '$1 == "#define" && $2 == "PRISM_GHOSTTY_BRIDGE_ABI_VERSION" { print $3; found = 1; exit } END { if (!found) exit 1 }' \
@@ -421,11 +422,13 @@ library_arches="$(lipo -archs "$macos_library")"
 [[ " $library_arches " == *" arm64 "* && " $library_arches " == *" x86_64 "* ]] \
   || die "Ghostty static library must contain arm64 and x86_64 (found: $library_arches)"
 for architecture in arm64 x86_64; do
-  for symbol in _ghostty_init _ghostty_app_new _ghostty_surface_new; do
-    nm -arch "$architecture" -gU "$macos_library" 2>/dev/null \
-      | awk -v symbol="$symbol" '$NF == symbol { found = 1 } END { exit found ? 0 : 1 }' \
-      || die "Ghostty $architecture library does not export $symbol"
-  done
+  python3 "$metadata_validator" symbols \
+    "$xcode_nm" \
+    "$macos_library" \
+    "$architecture" \
+    _ghostty_init \
+    _ghostty_app_new \
+    _ghostty_surface_new
 done
 plutil -lint "$xcframework_manifest" >/dev/null \
   || die "Ghostty XCFramework manifest is invalid"

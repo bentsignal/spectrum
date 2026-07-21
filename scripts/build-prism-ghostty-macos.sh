@@ -403,6 +403,8 @@ xcode_libtool_relative="Toolchains/XcodeDefault.xctoolchain/usr/bin/libtool"
 xcode_libtool="$canonical_xcode_developer_dir/$xcode_libtool_relative"
 [[ "$(DEVELOPER_DIR="$canonical_xcode_developer_dir" xcrun --sdk macosx --find libtool)" == \
   "$xcode_libtool" ]] || die "selected Xcode does not resolve the reviewed libtool path"
+xcode_nm="$(DEVELOPER_DIR="$canonical_xcode_developer_dir" xcrun --find nm)" \
+  || die "selected Xcode does not provide nm"
 libtool_arches="$(lipo -archs "$xcode_libtool" 2>/dev/null || true)"
 [[ " $libtool_arches " == *" arm64 "* && " $libtool_arches " == *" x86_64 "* ]] \
   || die "pinned Xcode libtool must contain arm64 and x86_64"
@@ -484,11 +486,13 @@ library_arches="$(lipo -archs "$ghostty_macos_library")"
 [[ " $library_arches " == *" arm64 "* && " $library_arches " == *" x86_64 "* ]] \
   || die "Ghostty static library must contain arm64 and x86_64 (found: $library_arches)"
 for architecture in arm64 x86_64; do
-  for required_symbol in _ghostty_init _ghostty_app_new _ghostty_surface_new; do
-    nm -arch "$architecture" -gU "$ghostty_macos_library" 2>/dev/null \
-      | awk -v symbol="$required_symbol" '$NF == symbol { found = 1 } END { exit found ? 0 : 1 }' \
-      || die "Ghostty $architecture library does not export $required_symbol"
-  done
+  python3 "$metadata_validator" symbols \
+    "$xcode_nm" \
+    "$ghostty_macos_library" \
+    "$architecture" \
+    _ghostty_init \
+    _ghostty_app_new \
+    _ghostty_surface_new
 done
 [[ -f "$resources/$resource_sentinel" ]] \
   || die "Ghostty resources are incomplete; missing sentinel: $resources/$resource_sentinel"
