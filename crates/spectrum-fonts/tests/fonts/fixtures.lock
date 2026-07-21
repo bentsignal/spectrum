@@ -1,0 +1,100 @@
+schema = 1
+
+[[source]]
+id = "noto-sans-regular-hinted"
+repository = "https://github.com/notofonts/noto-fonts"
+revision = "ffebf8c1ee449e544955a7e813c54f9b73848eac"
+path = "hinted/ttf/NotoSans/NotoSans-Regular.ttf"
+url = "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
+sha256 = "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5"
+license = "SIL Open Font License 1.1 (OFL.txt)"
+
+[[fixture]]
+path = "noto-sans-rich-rejected.ttf"
+source = "noto-sans-regular-hinted"
+operation = "exact byte-for-byte copy; STAT rejection and hint-bearing rejection after STAT removal"
+sha256 = "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5"
+coverage = ["STAT rejection", "global TrueType hint-table rejection", "local glyph-instruction rejection"]
+
+[[fixture]]
+path = "noto-sans-static-source.ttf"
+source = "noto-sans-regular-hinted"
+generator = "cargo run --locked -p spectrum-fonts --example generate_fixtures -- <source> crates/spectrum-fonts/tests/fonts"
+tool = "hb-subset 0.3.0 with bundled HarfBuzz 8.2.2"
+unicode = "U+0041-U+005A"
+drop_tables_not_in = ["head", "hhea", "maxp", "OS/2", "hmtx", "cmap", "loca", "glyf", "name", "post"]
+flags = ["drop_hinting", "remap_glyph_indices", "retain_subroutines", "retain_legacy_names", "retain_notdef_outline", "retain_glyph_names", "retain_unicode_ranges", "retain_layout_closure"]
+sha256 = "1de794fb16bb4fc99afef5d597b909791230be4ea216c5762797f09d9d56a04c"
+coverage = ["deterministic subset golden", "raw name records", "OS/2 fsType", "parser reload", "nominal outline/metrics/raster parity"]
+
+[[fixture]]
+path = "noto-sans-layout-source.ttf"
+source = "noto-sans-regular-hinted"
+generator = "cargo run --locked -p spectrum-fonts --example generate_fixtures -- <source> crates/spectrum-fonts/tests/fonts"
+tool = "hb-subset 0.3.0 with bundled HarfBuzz 8.2.2"
+unicode = "U+0041-U+005A,U+0061-U+007A,U+00C5"
+drop_tables_not_in = ["head", "hhea", "maxp", "OS/2", "hmtx", "cmap", "loca", "glyf", "name", "post", "GDEF", "GPOS", "GSUB"]
+flags = ["drop_hinting", "remap_glyph_indices", "retain_subroutines", "retain_legacy_names", "retain_notdef_outline", "retain_glyph_names", "retain_unicode_ranges", "retain_layout_closure"]
+sha256 = "05549e889a11eb65b542a071e97d71f4333caf5a88408ab10a1ac3de25d4be3a"
+coverage = ["GSUB ligature closure", "GPOS positioning", "GDEF retention", "composite outline parity", "shaped closure outline/metric/unhinted-raster parity"]
+
+[[derived_case]]
+id = "noto-sans-static-cmap14"
+base_fixture = "noto-sans-static-source.ttf"
+builder = "tests/support.rs::with_default_and_nondefault_uvs"
+operation = "append one Unicode platform cmap format 14 subtable; U+0041 U+FE0F is default and U+0042 U+FE0F maps non-default to the U+0043 glyph; rebuild every SFNT checksum"
+sha256 = "92de785c4e5dc040a2bbc050c238519a8c49322725d2e8ce8e56328e7837baad"
+coverage = ["sorted platform 0 encoding 5 cmap14", "cmap14 default mapping", "cmap14 non-default mapping", "actual base-plus-selector shaping parity", "resolved UVS outline/metric parity", "deterministic bytes"]
+
+[[derived_case]]
+id = "noto-sans-static-layout"
+base_fixture = "noto-sans-layout-source.ttf"
+builder = "none; fixture is generated and hash locked"
+operation = "request AV/ffi/U+00C5, retain default layout closure, shape with language und"
+coverage = ["GSUB", "GPOS", "GDEF", "default-feature shaping parity", "shaped closure outline/metric/unhinted-raster parity", "structural numberOfContours=-1 composite glyph"]
+
+[[produced_output]]
+case = "static_ab"
+request = "U+0041,U+0042"
+sha256_file = "output-goldens.lock"
+status = "locked in output-goldens.lock"
+
+[[produced_output]]
+case = "uvs_default_nondefault"
+request = "U+0041 U+FE0F default; U+0042 U+FE0F non-default"
+sha256_file = "output-goldens.lock"
+status = "locked in output-goldens.lock"
+
+[[produced_output]]
+case = "rich_layout"
+request = "U+0041,U+0056,U+0066,U+0069,U+00C5 with AV and ffi shaping samples"
+sha256_file = "output-goldens.lock"
+status = "locked in output-goldens.lock"
+
+[[fixture]]
+id = "noto-sans-variable-rejection"
+repository = "https://github.com/google/fonts"
+revision = "2f6daa88e1e71320a6fe71cc91ecbfc018928737"
+path = "ofl/notosans/NotoSans[wdth,wght].ttf"
+url = "https://raw.githubusercontent.com/google/fonts/2f6daa88e1e71320a6fe71cc91ecbfc018928737/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf"
+local_path = "noto-sans-variable-rejected.ttf"
+license = "SIL Open Font License 1.1"
+license_url = "https://raw.githubusercontent.com/google/fonts/2f6daa88e1e71320a6fe71cc91ecbfc018928737/ofl/notosans/OFL.txt"
+license_file = "OFL-google-fonts.txt"
+license_sha256 = "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a"
+sha256 = "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d"
+coverage = ["real variable TrueType rejection", "fvar/gvar/HVAR/MVAR/avar/STAT fail-closed boundary"]
+
+[[fixture]]
+id = "noto-sans-cff-rejection"
+repository = "https://github.com/notofonts/noto-fonts"
+revision = "ffebf8c1ee449e544955a7e813c54f9b73848eac"
+path = "unhinted/otf/NotoSans/NotoSans-Regular.otf"
+url = "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/unhinted/otf/NotoSans/NotoSans-Regular.otf"
+local_path = "noto-sans-cff-rejected.otf"
+license = "SIL Open Font License 1.1"
+license_url = "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/LICENSE"
+license_file = "LICENSE-notofonts.txt"
+license_sha256 = "0dab92d0544f7b233403f14b84a663bdbfa746982eda629e7f4f9ffe1b036feb"
+sha256 = "7b8a545d63de82a3325dc3c545b597898c03219bd432b0a18086e7605859c6c4"
+coverage = ["real CFF OpenType rejection", "OTTO signature fail-closed boundary"]

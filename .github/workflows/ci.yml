@@ -51,6 +51,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - name: Test bundled font subset candidate and corpus
+        run: cargo test -p spectrum-fonts --locked
       - run: cargo build --release --workspace --bins --locked
       - if: runner.os == 'Linux'
         run: ./target/release/lumen benchmark --strict --profile hosted-ci

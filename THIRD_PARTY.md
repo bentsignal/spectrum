@@ -11,6 +11,22 @@ Prism uses the Ubuntu Light font distributed by `epaint_default_fonts` for
 portable text-layer rendering. Ubuntu Font Family is licensed under the Ubuntu
 Font Licence 1.0: <https://ubuntu.com/legal/font-licence>.
 
+Spectrum's disconnected font-subset candidate vendors `hb-subset` 0.3.0,
+Copyright (c) 2023 Henrik Lievonen, under the MIT License. The vendor record,
+published archive checksum, and Spectrum's two audited portability patches are in
+`third_party/hb-subset/SPECTRUM_PATCH.md`; the license text is in
+`third_party/hb-subset/LICENSE.md`.
+
+That wrapper bundles HarfBuzz 8.2.2, Copyright its contributors, under the Old
+MIT License. The complete notice is preserved in
+`third_party/hb-subset/harfbuzz/COPYING`. The candidate is not connected to a
+Spectrum application until its supported envelope passes the required
+cross-platform conformance corpus.
+
+The candidate is path-pinned to the reviewed vendored `hb-subset` package in
+`Cargo.lock`; the approved bounded build and licensed corpus validation have
+completed without connecting the candidate to a Spectrum application.
+
 The optional, standalone Prism terminal proof harness builds and statically
 links Ghostty 1.3.1, Copyright (c) 2024 Mitchell Hashimoto, under the MIT
 License. The exact official source archive checksum, annotated tag object,

@@ -1,0 +1,4 @@
+# Filled only from the approved pinned HarfBuzz 8.2.2 build.
+static_ab=34cd937ed8a3e8274890e5ab3acb368cf579dd1d1191c4a5e413b48d3b50aa6e
+uvs_default_nondefault=4c615e74285fbd24d21518d46df829a6420b9384a416d9a65d245454f5e4177e
+rich_layout=df0df400a8186bbae1bb4cd0a32dccff4a35f72ea72d39fae568aef725daeff5

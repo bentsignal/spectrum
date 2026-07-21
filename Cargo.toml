@@ -4,10 +4,12 @@ members = [
     "apps/prism",
     "crates/spectrum-imaging",
     "crates/spectrum-history-ui",
+    "crates/spectrum-fonts",
     "crates/spectrum-terminal",
     "crates/spectrum-revisions",
     "tools/workspace-guardrails",
 ]
+exclude = ["third_party/hb-subset"]
 resolver = "2"
 
 [workspace.package]
@@ -25,6 +27,7 @@ epaint_default_fonts = "0.35"
 flate2 = "1.1"
 fs2 = "0.4"
 fontdue = "0.9"
+hb-subset = { version = "=0.3.0", path = "third_party/hb-subset", features = ["bundled"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
 png = "0.18.1"
 portable-pty = "0.9"
