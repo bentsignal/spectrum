@@ -56,7 +56,7 @@ pub(super) fn open_trusted_cache_file(path: &Path, max_bytes: u64) -> Result<Fil
         .open(path)
         .with_context(|| format!("could not open cache file {}", path.display()))?;
     let opened_metadata = file.metadata()?;
-    if !opened_metadata.is_file() || !same_file_identity(&path_metadata, &opened_metadata) {
+    if !opened_metadata.is_file() || !path_refers_to_file(path, &file)? {
         bail!("cache file {} changed while it was opened", path.display());
     }
     if opened_metadata.len() > max_bytes {
@@ -179,25 +179,58 @@ pub(super) fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
 }
 
 #[cfg(unix)]
-pub(super) fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+pub(super) fn path_refers_to_file(path: &Path, file: &File) -> io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
 
-    left.dev() == right.dev() && left.ino() == right.ino()
+    let path_metadata = fs::symlink_metadata(path)?;
+    if metadata_is_link_or_reparse(&path_metadata) || !path_metadata.is_file() {
+        return Ok(false);
+    }
+    let opened_metadata = file.metadata()?;
+    Ok(
+        path_metadata.dev() == opened_metadata.dev()
+            && path_metadata.ino() == opened_metadata.ino(),
+    )
 }
 
 #[cfg(windows)]
-pub(super) fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
+pub(super) fn path_refers_to_file(path: &Path, file: &File) -> io::Result<bool> {
+    let path_metadata = fs::symlink_metadata(path)?;
+    if metadata_is_link_or_reparse(&path_metadata) || !path_metadata.is_file() {
+        return Ok(false);
+    }
+    let verifier = OpenOptions::new().read(true).open(path)?;
+    Ok(windows_file_identity(file)? == windows_file_identity(&verifier)?)
+}
 
-    left.volume_serial_number().is_some()
-        && left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index().is_some()
-        && left.file_index() == right.file_index()
+#[cfg(windows)]
+fn windows_file_identity(file: &File) -> io::Result<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the retained File owns a live handle and `information` points to
+    // writable storage of the exact structure required by the Win32 API.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((
+        information.dwVolumeSerialNumber,
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    ))
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(super) fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    left.len() == right.len() && left.modified().ok() == right.modified().ok()
+pub(super) fn path_refers_to_file(path: &Path, file: &File) -> io::Result<bool> {
+    let path_metadata = fs::symlink_metadata(path)?;
+    if metadata_is_link_or_reparse(&path_metadata) || !path_metadata.is_file() {
+        return Ok(false);
+    }
+    let opened_metadata = file.metadata()?;
+    Ok(path_metadata.len() == opened_metadata.len()
+        && path_metadata.modified().ok() == opened_metadata.modified().ok())
 }
 
 #[cfg(unix)]

@@ -2774,6 +2774,7 @@ dependencies = [
  "spectrum-terminal",
  "ttf-parser 0.21.1",
  "vt100",
+ "windows-sys 0.61.2",
  "winit",
 ]
 

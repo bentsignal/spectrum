@@ -20,7 +20,7 @@ use crate::raster_region::{decoder_contract_for, inspect_raster_region_source};
 mod cache_fs;
 use cache_fs::{
     is_cache_key, is_temporary_entry_name, metadata_is_link_or_reparse, open_trusted_cache_file,
-    read_bounded, read_exact_at, remove_cache_entry, same_file_identity, sync_directory,
+    path_refers_to_file, read_bounded, read_exact_at, remove_cache_entry, sync_directory,
     trusted_cache_directory, trusted_cache_directory_if_present, trusted_cache_file_length,
 };
 
@@ -661,7 +661,7 @@ impl CachePrepareLease {
         if metadata_is_link_or_reparse(&path_metadata)
             || !path_metadata.is_file()
             || !opened_metadata.is_file()
-            || !same_file_identity(&path_metadata, &opened_metadata)
+            || !path_refers_to_file(&path, &file)?
         {
             bail!("cache preparation lock changed while it was opened");
         }
