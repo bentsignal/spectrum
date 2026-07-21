@@ -51,7 +51,10 @@ mod raster_sources;
 mod renderer;
 #[path = "prism_gui/shortcuts.rs"]
 mod shortcuts;
+#[path = "prism_gui/source_geometry.rs"]
+mod source_geometry;
 use compositor::*;
+use source_geometry::*;
 #[path = "prism_gui/terminal.rs"]
 mod terminal;
 #[path = "prism_gui/terminal_input.rs"]
@@ -93,6 +96,7 @@ struct PrismApp {
     next_tab_id: u64,
     inactive_workspaces: HashMap<u64, Workspace>,
     layer_visuals: HashMap<u64, LayerVisualEntry>,
+    layer_source_overrides: HashMap<u64, LayerSourceOverride>,
     layer_visual_dirty: HashSet<u64>,
     layer_render_pending: HashMap<u64, LayerRenderRequest>,
     layer_render_in_flight: bool,
@@ -198,6 +202,7 @@ impl PrismApp {
             next_tab_id: 2,
             inactive_workspaces: HashMap::new(),
             layer_visuals: HashMap::new(),
+            layer_source_overrides: HashMap::new(),
             layer_visual_dirty: HashSet::new(),
             layer_render_pending: HashMap::new(),
             layer_render_in_flight: false,
@@ -333,11 +338,14 @@ impl PrismApp {
                     .map(|layer| layer.id)
                     .collect();
                 self.layer_visuals.retain(|id, _| active.contains(id));
+                self.layer_source_overrides
+                    .retain(|id, _| active.contains(id));
                 self.layer_render_pending
                     .retain(|id, _| active.contains(id));
                 self.layer_visual_dirty.retain(|id| active.contains(id));
             }
             CanvasInvalidation::All => {
+                self.layer_source_overrides.clear();
                 self.layer_visual_dirty
                     .extend(self.workspace.document.layers.iter().map(|layer| layer.id));
             }

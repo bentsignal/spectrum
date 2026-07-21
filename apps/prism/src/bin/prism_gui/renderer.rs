@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct LayerVisualKey {
-    kind: LayerKind,
+    pub(super) kind: LayerKind,
     adjustments: spectrum_imaging::Adjustments,
     stroke: ShapeStroke,
     pub(super) text_raster_scale: u32,
@@ -117,6 +117,7 @@ pub(super) fn reuse_cached_visual_during_interaction(
 impl PrismApp {
     pub(super) fn reset_canvas_cache(&mut self) {
         self.layer_visuals.clear();
+        self.layer_source_overrides.clear();
         self.layer_visual_dirty.clear();
         self.layer_render_pending.clear();
         self.preview_error = None;
@@ -168,6 +169,7 @@ impl PrismApp {
                             max_size: result.max_size,
                         },
                     );
+                    self.layer_source_overrides.remove(&result.layer_id);
                     self.layer_visual_dirty.remove(&result.layer_id);
                     self.preview_error = None;
                 }
@@ -291,23 +293,18 @@ impl PrismApp {
     }
 
     pub(super) fn layer_source_geometry(&self, layer: &Layer) -> Option<LayerSourceGeometry> {
+        let source_override = self.layer_source_overrides.get(&layer.id);
         let cached = self
             .layer_visuals
             .get(&layer.id)
             .map(|entry| (&entry.key, entry.source_geometry));
-        current_layer_source_geometry(layer, cached, self.workspace.document.font_for_layer(layer))
+        current_layer_source_geometry(
+            layer,
+            source_override,
+            cached,
+            self.workspace.document.font_for_layer(layer),
+        )
     }
-}
-
-pub(super) fn current_layer_source_geometry(
-    layer: &Layer,
-    cached: Option<(&LayerVisualKey, LayerSourceGeometry)>,
-    font_asset: Option<&prism_core::FontAsset>,
-) -> Option<LayerSourceGeometry> {
-    cached
-        .filter(|(key, _)| key.kind == layer.kind)
-        .map(|(_, geometry)| geometry)
-        .or_else(|| source_geometry_before_preview(layer, font_asset))
 }
 
 struct CachedLayerBase {
@@ -419,7 +416,7 @@ fn normalized_visual_bounds(geometry: LayerSourceGeometry) -> Rect {
     )
 }
 
-fn source_geometry_before_preview(
+pub(super) fn source_geometry_before_preview(
     layer: &Layer,
     font_asset: Option<&prism_core::FontAsset>,
 ) -> Option<LayerSourceGeometry> {

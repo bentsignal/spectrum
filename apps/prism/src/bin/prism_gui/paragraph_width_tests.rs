@@ -122,23 +122,25 @@ fn paragraph_cursor_tracks_the_transformed_local_x_axis() {
             resize_cursor(handle, 90.0),
             egui::CursorIcon::ResizeVertical
         );
+        assert_eq!(resize_cursor(handle, 135.0), egui::CursorIcon::ResizeNeSw);
     }
 }
 
 #[test]
-fn rapid_previews_and_a_new_drag_ignore_stale_cached_text_geometry() {
+fn one_preview_layout_serves_both_outlines_and_the_next_drag() {
     let stale_layer = paragraph_layer(Transform::default(), 180.0);
     let stale_key = LayerVisualKey::new(&stale_layer, 1.0);
     let stale_source = source_for(&stale_layer);
 
     let mut current = paragraph_layer(Transform::default(), 300.0);
     let current_source =
-        current_layer_source_geometry(&current, Some((&stale_key, stale_source)), None).unwrap();
+        current_layer_source_geometry(&current, None, Some((&stale_key, stale_source)), None)
+            .unwrap();
     assert_eq!(current_source.paragraph_bounds.unwrap().width(), 300.0);
 
     let mut drag = width_drag(&current, current_source, ResizeHandle::ParagraphRight);
     drag.current_canvas += Vec2::new(40.0, 0.0);
-    let (typography, transform, _) =
+    let (typography, transform, preview_source) =
         paragraph_width_preview(&current, drag, ResizeHandle::ParagraphRight, None).unwrap();
     let LayerKind::Text {
         typography: current_typography,
@@ -150,14 +152,46 @@ fn rapid_previews_and_a_new_drag_ignore_stale_cached_text_geometry() {
     *current_typography = typography;
     current.transform = transform;
 
-    let latest_source =
-        current_layer_source_geometry(&current, Some((&stale_key, stale_source)), None).unwrap();
+    let source_override = LayerSourceOverride::new(current.kind.clone(), preview_source);
+    let redundant_layouts = std::cell::Cell::new(0);
+    let resolve_again = || {
+        redundant_layouts.set(redundant_layouts.get() + 1);
+        None
+    };
+    let outline_source = current_layer_source_geometry_with_resolver(
+        &current,
+        Some(&source_override),
+        Some((&stale_key, stale_source)),
+        resolve_again,
+    )
+    .unwrap();
+    let drag_outline_source = current_layer_source_geometry_with_resolver(
+        &current,
+        Some(&source_override),
+        Some((&stale_key, stale_source)),
+        resolve_again,
+    )
+    .unwrap();
+    assert_eq!(redundant_layouts.get(), 0);
+    assert_eq!(outline_source, preview_source);
+    assert_eq!(drag_outline_source, preview_source);
+
+    let latest_source = outline_source;
     assert_eq!(latest_source.paragraph_bounds.unwrap().width(), 340.0);
     let new_drag = width_drag(&current, latest_source, ResizeHandle::ParagraphRight);
     assert_eq!(
         paragraph_width_from_drag(new_drag, ResizeHandle::ParagraphRight),
         Some(340.0)
     );
+
+    let canceled_source = current_layer_source_geometry_with_resolver(
+        &stale_layer,
+        Some(&source_override),
+        Some((&stale_key, stale_source)),
+        || None,
+    )
+    .unwrap();
+    assert_eq!(canceled_source, stale_source);
 }
 
 #[test]

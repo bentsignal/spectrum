@@ -546,15 +546,19 @@ impl PrismApp {
             return;
         };
         let font_asset = self.workspace.document.font_for_layer(layer);
-        let Some((typography, transform, _)) =
+        let Some((typography, transform, source)) =
             paragraph_width_preview(layer, drag, handle, font_asset)
         else {
             return;
         };
-        self.preview_commands(vec![
+        if self.preview_commands(vec![
             Command::SetTextTypography { id, typography },
             Command::SetTransform { id, transform },
-        ]);
+        ]) && let Ok(layer) = self.workspace.document.layer(id)
+        {
+            self.layer_source_overrides
+                .insert(id, LayerSourceOverride::new(layer.kind.clone(), source));
+        }
     }
 
     pub(super) fn canvas_click(&mut self, position: Pos2) {
