@@ -519,13 +519,12 @@ fn paint_layer_visual(
     entry: &LayerVisualEntry,
 ) {
     let canvas_rect = layer_texture_bounds(layer, entry);
-    let text_rotation_pivot = matches!(layer.kind, LayerKind::Text { .. }).then(|| {
-        let visual_center = entry.source_geometry.visual_bounds.center();
-        geometry.canvas_to_screen(Pos2::new(
-            layer.transform.x + visual_center.x * layer.transform.scale_x,
-            layer.transform.y + visual_center.y * layer.transform.scale_y,
-        ))
-    });
+    let text_rotation_pivot = if matches!(layer.kind, LayerKind::Text { .. }) {
+        layer_bounds(layer, Some(entry.source_geometry))
+            .map(|bounds| geometry.canvas_to_screen(bounds.center()))
+    } else {
+        None
+    };
     let mut screen_rect = Rect::from_min_max(
         geometry.canvas_to_screen(canvas_rect.min),
         geometry.canvas_to_screen(canvas_rect.max),
@@ -695,8 +694,7 @@ fn quad_mesh(
     ];
     if rotation_degrees.abs() >= 0.01 {
         let center = rotation_pivot.unwrap_or_else(|| rect.center());
-        let radians = rotation_degrees.to_radians();
-        let (sin, cos) = radians.sin_cos();
+        let (sin, cos) = prism_core::rotation_sin_cos(rotation_degrees);
         for position in &mut positions {
             let delta = *position - center;
             *position =
@@ -806,6 +804,67 @@ mod tests {
         let expected = pivot + Vec2::new(-(rect.top() - pivot.y), rect.left() - pivot.x);
         assert!(first.distance(expected) < 0.001);
         assert_ne!(pivot, rect.center());
+    }
+
+    #[test]
+    fn rotated_text_mesh_and_selection_share_one_stable_visual_center() {
+        let source = LayerSourceGeometry {
+            size: Vec2::new(180.0, 96.0),
+            visual_bounds: Rect::from_min_size(Pos2::new(18.0, 24.0), Vec2::new(112.0, 48.0)),
+        };
+        let mut layer = Layer {
+            transform: Transform {
+                x: 70.0,
+                y: 45.0,
+                scale_x: 1.4,
+                scale_y: 0.8,
+                ..Transform::default()
+            },
+            kind: LayerKind::Text {
+                text: "Stable pivot".into(),
+                font_size: 48.0,
+                color: [255; 4],
+                typography: prism_core::TextTypography::default(),
+            },
+            ..Layer::default()
+        };
+        let unrotated = layer_bounds(&layer, Some(source)).unwrap();
+        let pivot = unrotated.center();
+        let texture_visual = Rect::from_min_max(Pos2::new(0.12, 0.18), Pos2::new(0.76, 0.82));
+
+        for rotation in [0.0, 23.0, 90.0, 187.0, 359.0] {
+            layer.transform.rotation = rotation;
+            let selection = rotated_layer_corners(&layer, Some(source)).unwrap();
+            let texture_rect = aligned_text_texture_bounds(&layer, source, texture_visual);
+            let mesh = quad_mesh(
+                egui::TextureId::Managed(7),
+                texture_rect,
+                Some(Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))),
+                Color32::WHITE,
+                rotation,
+                Some(pivot),
+            );
+            let positions = mesh
+                .vertices
+                .iter()
+                .map(|vertex| vertex.pos)
+                .collect::<Vec<_>>();
+            let map_texture_point = |point: Pos2| {
+                positions[0]
+                    + (positions[1] - positions[0]) * point.x
+                    + (positions[3] - positions[0]) * point.y
+            };
+            let painted_visual = [
+                map_texture_point(texture_visual.left_top()),
+                map_texture_point(texture_visual.right_top()),
+                map_texture_point(texture_visual.right_bottom()),
+                map_texture_point(texture_visual.left_bottom()),
+            ];
+
+            for (painted, selected) in painted_visual.into_iter().zip(selection) {
+                assert!(painted.distance(selected) < 0.001);
+            }
+        }
     }
 
     #[test]

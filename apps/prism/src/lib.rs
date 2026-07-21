@@ -896,6 +896,9 @@ mod render_fallback;
 mod render_region;
 mod text_render;
 mod text_rotation;
+mod transform_math;
+
+pub use transform_math::rotation_sin_cos;
 
 pub use raster_backing_cache::{
     DerivedBackingCache, DerivedBackingIdentity, DerivedBackingLimits, DerivedBackingMemoryPlan,
