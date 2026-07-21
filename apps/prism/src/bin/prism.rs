@@ -100,6 +100,10 @@ enum CliCommand {
         #[arg(long)]
         font_id: Option<u64>,
     },
+    /// Verify and inspect one immutable embedded source-font snapshot.
+    FontSource {
+        font_id: u64,
+    },
     /// Update one text layer's font, paragraph metrics, and effects.
     Typography(TypographyArgs),
     /// Serialize one layer and its referenced font for cross-document transfer.
@@ -518,6 +522,9 @@ fn run(cli: Cli) -> Result<Value> {
         CliCommand::FontUsage { font_id } => {
             typography::font_usage(&session_document(&cli.project, cli.session)?, font_id)
         }
+        CliCommand::FontSource { font_id } => {
+            typography::font_source(&session_document(&cli.project, cli.session)?, font_id)
+        }
         CliCommand::LayerCopy(arguments) => {
             transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)
         }
@@ -826,6 +833,7 @@ fn run(cli: Cli) -> Result<Value> {
                 | CliCommand::List
                 | CliCommand::FontList { .. }
                 | CliCommand::FontUsage { .. }
+                | CliCommand::FontSource { .. }
                 | CliCommand::LayerCopy(..)
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }

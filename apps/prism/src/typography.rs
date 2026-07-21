@@ -5,10 +5,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use ttf_parser::{Face, Permissions, name_id};
 
-const MAX_EMBEDDED_FONT_BYTES: usize = 32 * 1024 * 1024;
+use crate::FontSourceSnapshot;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,72 +36,41 @@ pub struct FontAsset {
 
 impl FontAsset {
     pub fn import(id: u64, path: &Path) -> Result<Self> {
-        let bytes =
-            fs::read(path).with_context(|| format!("could not read font {}", path.display()))?;
-        if bytes.is_empty() {
-            bail!("font data cannot be empty");
-        }
-        if bytes.len() > MAX_EMBEDDED_FONT_BYTES {
-            bail!("font exceeds Prism's 32 MiB embedded-font limit");
-        }
-        let face = Face::parse(&bytes, 0)
-            .with_context(|| format!("{} is not a supported OpenType font", path.display()))?;
-        if !permissions_allow_editable_embedding(face.permissions()) {
-            bail!(
-                "OpenType embedding metadata does not allow portable editable embedding (preview/print-only fonts are unsupported); verify the font license separately"
-            );
-        }
-        if !face.is_outline_embedding_allowed() {
-            bail!(
-                "OpenType embedding metadata does not allow editable outline embedding; verify the font license separately"
-            );
-        }
-        let family = font_name(&face, &[name_id::TYPOGRAPHIC_FAMILY, name_id::FAMILY])
-            .unwrap_or_else(|| "Imported Font".into());
-        let style = font_name(&face, &[name_id::TYPOGRAPHIC_SUBFAMILY, name_id::SUBFAMILY])
-            .unwrap_or_else(|| "Regular".into());
-        let slant = if face.is_italic() {
-            FontSlant::Italic
-        } else if face.is_oblique() {
-            FontSlant::Oblique
-        } else {
-            FontSlant::Normal
-        };
-        let canonical = fs::canonicalize(path)
-            .with_context(|| format!("could not resolve font {}", path.display()))?;
+        let snapshot = FontSourceSnapshot::read(path)?;
         Ok(Self {
             id,
-            family,
-            style,
-            weight: face.weight().to_number(),
-            slant,
+            family: snapshot.family.clone(),
+            style: snapshot.style.clone(),
+            weight: snapshot.weight,
+            slant: snapshot.slant,
             source_name: path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("font")
                 .to_owned(),
-            subset_allowed: face.is_subsetting_allowed(),
-            content_hash: sha256_hex(&bytes),
-            path: canonical.clone(),
-            original_path: Some(canonical),
+            subset_allowed: snapshot.subset_allowed(),
+            content_hash: snapshot.content_hash().to_owned(),
+            path: snapshot.canonical_path().to_owned(),
+            original_path: Some(snapshot.canonical_path().to_owned()),
         })
     }
 
-    pub fn bytes(&self) -> Result<Vec<u8>> {
-        fs::read(&self.path)
-            .with_context(|| format!("could not read embedded font {}", self.path.display()))
+    pub fn source_snapshot(&self) -> Result<FontSourceSnapshot> {
+        let snapshot = FontSourceSnapshot::read_verified(&self.path, &self.content_hash)?;
+        if snapshot.family != self.family
+            || snapshot.style != self.style
+            || snapshot.weight != self.weight
+            || snapshot.slant != self.slant
+            || snapshot.subset_allowed != self.subset_allowed
+        {
+            bail!("embedded font metadata does not match its immutable source snapshot");
+        }
+        Ok(snapshot)
     }
-}
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = Sha256::digest(bytes);
-    let mut encoded = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        encoded.push(HEX[usize::from(byte >> 4)] as char);
-        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    pub fn bytes(&self) -> Result<Vec<u8>> {
+        Ok(self.source_snapshot()?.bytes().to_vec())
     }
-    encoded
 }
 
 pub(crate) fn make_fonts_portable(
@@ -146,23 +113,6 @@ pub(crate) fn resolve_portable_fonts(fonts: &mut [FontAsset], project_directory:
             }
         }
     }
-}
-
-fn permissions_allow_editable_embedding(permissions: Option<Permissions>) -> bool {
-    matches!(
-        permissions,
-        Some(Permissions::Installable | Permissions::Editable)
-    )
-}
-
-fn font_name(face: &Face<'_>, ids: &[u16]) -> Option<String> {
-    ids.iter().find_map(|wanted| {
-        face.names()
-            .into_iter()
-            .filter(|name| name.name_id == *wanted)
-            .find_map(|name| name.to_string())
-            .filter(|name| !name.trim().is_empty())
-    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

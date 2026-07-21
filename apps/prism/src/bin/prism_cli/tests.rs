@@ -117,6 +117,44 @@ fn font_usage_cli_accepts_an_optional_asset_filter() {
 }
 
 #[test]
+fn font_source_cli_requires_one_embedded_asset() {
+    let cli =
+        Cli::try_parse_from(["prism", "--project", "type.prism", "font-source", "12"]).unwrap();
+    let CliCommand::FontSource { font_id } = cli.command else {
+        panic!("font-source subcommand should parse");
+    };
+    assert_eq!(font_id, 12);
+}
+
+#[test]
+fn font_source_output_proves_identity_without_mutating_the_document() {
+    let directory = temporary_project("font-source").with_extension("assets");
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let mut document = Document::new("Source proof", 320, 200);
+    document
+        .font_assets
+        .push(prism_core::FontAsset::import(1, &source).unwrap());
+    let before = document.clone();
+
+    let output = typography::font_source(&document, 1).unwrap();
+
+    assert_eq!(output["action"], "font_source");
+    assert_eq!(output["immutable_identity_verified"], true);
+    assert_eq!(output["editable_embedding_verified"], true);
+    assert_eq!(output["font_bytes_modified"], false);
+    assert_eq!(output["mutates_project"], false);
+    assert_eq!(
+        output["source_bytes"],
+        epaint_default_fonts::HACK_REGULAR.len()
+    );
+    assert_eq!(document, before);
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn font_usage_output_limits_its_non_mutation_and_coverage_claims() {
     let output = typography::font_usage(&Document::new("Usage", 320, 200), None).unwrap();
     assert_eq!(output["action"], "font_usage");
@@ -147,6 +185,7 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert!(schema["typography"]["optimization_limitations"].is_string());
     assert!(schema["typography"]["embedding_metadata"].is_string());
     assert!(schema["typography"]["editable_default"].is_string());
+    assert!(schema["typography"]["source_snapshot"].is_string());
     assert_eq!(
         schema["layer_transfer"]["version"],
         prism_core::LAYER_TRANSFER_VERSION
