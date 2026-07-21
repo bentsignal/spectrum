@@ -45,6 +45,7 @@ pub(super) struct NativeMenuState {
     pub(super) can_redo: bool,
     pub(super) history_visible: bool,
     pub(super) terminal_visible: bool,
+    pub(super) native_terminal_active: bool,
     pub(super) keyboard_focus: bool,
     pub(super) selection_present: bool,
     pub(super) interaction_active: bool,
@@ -67,6 +68,7 @@ impl NativeMenuBridge {
 impl NativeMenuState {
     fn allows(self, action: NativeMenuAction) -> bool {
         match action {
+            NativeMenuAction::Cut if self.native_terminal_active => false,
             NativeMenuAction::Cut | NativeMenuAction::Copy | NativeMenuAction::Paste => {
                 self.keyboard_focus
                     || self.terminal_visible
@@ -478,6 +480,12 @@ impl PrismApp {
             can_redo: self.workspace.can_redo(),
             history_visible: self.history.visible,
             terminal_visible: self.terminal.visible(),
+            native_terminal_active: self.terminal.visible()
+                && self
+                    .terminal
+                    .sessions
+                    .get(self.terminal.active)
+                    .is_some_and(|session| session.native),
             keyboard_focus: clipboard.keyboard_focus,
             selection_present: clipboard.selection_present,
             interaction_active: clipboard.interaction_active,
@@ -506,6 +514,10 @@ impl PrismApp {
                 action @ (NativeMenuAction::Cut
                 | NativeMenuAction::Copy
                 | NativeMenuAction::Paste) => {
+                    #[cfg(feature = "ghostty-terminal")]
+                    if self.route_native_terminal_edit(action) {
+                        continue;
+                    }
                     context.send_viewport_cmd(
                         clipboard_viewport_command(action)
                             .expect("matched actions always have a clipboard command"),
@@ -652,6 +664,19 @@ mod tests {
         assert!(focused.allows(NativeMenuAction::Copy));
         assert!(focused.allows(NativeMenuAction::Paste));
         assert!(terminal.allows(NativeMenuAction::Cut));
+        assert!(terminal.allows(NativeMenuAction::Copy));
+        assert!(terminal.allows(NativeMenuAction::Paste));
+    }
+
+    #[test]
+    fn native_terminal_disables_cut_but_keeps_copy_and_paste() {
+        let terminal = NativeMenuState {
+            workspace_ready: true,
+            terminal_visible: true,
+            native_terminal_active: true,
+            ..Default::default()
+        };
+        assert!(!terminal.allows(NativeMenuAction::Cut));
         assert!(terminal.allows(NativeMenuAction::Copy));
         assert!(terminal.allows(NativeMenuAction::Paste));
     }

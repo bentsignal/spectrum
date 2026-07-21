@@ -6,6 +6,12 @@ description = "A fast, agent-first layered image editor"
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# Builds the macOS host for Prism's separately packaged Ghostty bridge. The
+# portable terminal remains the default unless PRISM_EXPERIMENTAL_GHOSTTY=1.
+ghostty-terminal = []
+
 [lib]
 name = "prism_core"
 

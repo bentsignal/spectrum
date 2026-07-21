@@ -39,17 +39,25 @@ pub(super) struct TerminalDock {
     pub(super) sessions: Vec<TerminalTab>,
     pub(super) active: usize,
     next_id: u64,
+    native_sessions: bool,
     pub(super) focus_terminal: bool,
     pending_close: Option<usize>,
 }
 
 impl Default for TerminalDock {
     fn default() -> Self {
+        Self::new(false)
+    }
+}
+
+impl TerminalDock {
+    pub(super) fn new(native_sessions: bool) -> Self {
         Self {
             visible: false,
             sessions: Vec::new(),
             active: 0,
             next_id: 1,
+            native_sessions,
             focus_terminal: false,
             pending_close: None,
         }
@@ -68,19 +76,23 @@ pub(super) struct TerminalTab {
     pub(super) message: Option<(String, bool)>,
     pub(super) selection: Option<TerminalSelection>,
     pub(super) last_activity: std::time::Instant,
+    pub(super) native: bool,
 }
 
 impl TerminalTab {
-    fn spawn(id: u64, context_title: String, context: TerminalContext) -> Self {
+    fn spawn(id: u64, context_title: String, context: TerminalContext, native: bool) -> Self {
         let size = TerminalSize::new(INITIAL_ROWS, INITIAL_COLS);
-        let result = TerminalSession::spawn(context.clone(), size);
-        let (process, running, message) = match result {
-            Ok(process) => (Some(process), true, None),
-            Err(error) => (
-                None,
-                false,
-                Some((format!("could not start shell: {error:#}"), true)),
-            ),
+        let (process, running, message) = if native {
+            (None, true, None)
+        } else {
+            match TerminalSession::spawn(context.clone(), size) {
+                Ok(process) => (Some(process), true, None),
+                Err(error) => (
+                    None,
+                    false,
+                    Some((format!("could not start shell: {error:#}"), true)),
+                ),
+            }
         };
         Self {
             id,
@@ -94,6 +106,7 @@ impl TerminalTab {
             message,
             selection: None,
             last_activity: std::time::Instant::now(),
+            native,
         }
     }
 
@@ -130,6 +143,10 @@ impl TerminalTab {
     }
 
     pub(super) fn write(&mut self, bytes: &[u8]) {
+        if self.native {
+            self.message = Some(("Use the native terminal surface for input.".into(), false));
+            return;
+        }
         match self.process.as_mut().filter(|_| self.running) {
             Some(process) => {
                 if let Err(error) = process.write(bytes) {
@@ -143,6 +160,9 @@ impl TerminalTab {
     }
 
     pub(super) fn resize(&mut self, size: TerminalSize) {
+        if self.native {
+            return;
+        }
         if size == self.size {
             return;
         }
@@ -158,6 +178,10 @@ impl TerminalTab {
     }
 
     pub(super) fn clear(&mut self) {
+        if self.native {
+            self.message = Some(("Clear is handled by Ghostty key bindings.".into(), false));
+            return;
+        }
         self.parser = vt100::Parser::new(self.size.rows, self.size.cols, SCROLLBACK_ROWS);
         self.write(&[12]);
         self.selection = None;
@@ -169,6 +193,11 @@ impl TerminalTab {
     }
 
     pub(super) fn restart(&mut self) {
+        if self.native {
+            self.running = true;
+            self.message = None;
+            return;
+        }
         if let Some(process) = self.process.as_mut() {
             let _ = process.terminate();
         }
@@ -183,6 +212,26 @@ impl TerminalTab {
                 self.process = None;
                 self.running = false;
                 self.message = Some((format!("restart failed: {error:#}"), true));
+            }
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+    fn fall_back_to_portable(&mut self, diagnostic: String) {
+        self.native = false;
+        match TerminalSession::spawn(self.context.clone(), self.size) {
+            Ok(process) => {
+                self.process = Some(process);
+                self.running = true;
+                self.message = Some((diagnostic, true));
+            }
+            Err(error) => {
+                self.process = None;
+                self.running = false;
+                self.message = Some((
+                    format!("{diagnostic}; portable fallback also failed: {error:#}"),
+                    true,
+                ));
             }
         }
     }
@@ -206,8 +255,12 @@ impl TerminalDock {
     fn new_session(&mut self, launch: TerminalLaunch) {
         let id = self.next_id;
         self.next_id += 1;
-        self.sessions
-            .push(TerminalTab::spawn(id, launch.title, launch.context));
+        self.sessions.push(TerminalTab::spawn(
+            id,
+            launch.title,
+            launch.context,
+            self.native_sessions,
+        ));
         self.active = self.sessions.len() - 1;
         self.focus_terminal = true;
         self.pending_close = None;
@@ -246,6 +299,15 @@ impl TerminalDock {
     pub(super) fn shutdown(&mut self) {
         self.sessions.clear();
     }
+
+    #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+    fn native_session_ids(&self) -> std::collections::BTreeSet<u64> {
+        self.sessions
+            .iter()
+            .filter(|session| session.native)
+            .map(|session| session.id)
+            .collect()
+    }
 }
 
 struct TerminalLaunch {
@@ -277,6 +339,50 @@ impl PrismApp {
     }
 
     pub(super) fn poll_terminals(&mut self, context: &egui::Context) {
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        {
+            for event in self.native_terminal.poll() {
+                match event {
+                    native_terminal::NativeTerminalEvent::Title { session_id, title } => {
+                        if let Some(session) = self
+                            .terminal
+                            .sessions
+                            .iter_mut()
+                            .find(|session| session.id == session_id)
+                        {
+                            session.title = title;
+                            session.last_activity = std::time::Instant::now();
+                        }
+                    }
+                    native_terminal::NativeTerminalEvent::Closed {
+                        session_id,
+                        process_alive,
+                    } => {
+                        if let Some(index) = self
+                            .terminal
+                            .sessions
+                            .iter()
+                            .position(|session| session.id == session_id)
+                        {
+                            if process_alive {
+                                let session = &mut self.terminal.sessions[index];
+                                session.running = true;
+                                session.message = Some((
+                                    "Ghostty requested confirmation before closing.".into(),
+                                    false,
+                                ));
+                                self.terminal.pending_close = Some(index);
+                            } else {
+                                self.terminal.close_now(index);
+                                self.native_terminal.reset(session_id);
+                            }
+                        }
+                    }
+                }
+            }
+            self.native_terminal
+                .retain_sessions(&self.terminal.native_session_ids());
+        }
         let changed = self.terminal.poll();
         if self.terminal.sessions.iter().any(|session| session.running) {
             let recently_active = self.terminal.sessions.iter().any(|session| {
@@ -293,6 +399,8 @@ impl PrismApp {
     }
 
     pub(super) fn terminal_panel(&mut self, root: &mut egui::Ui) {
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        let modal_open = self.has_modal_surface();
         self.terminal_session_rail(root);
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(INK).inner_margin(0))
@@ -303,6 +411,34 @@ impl PrismApp {
                     });
                     return;
                 };
+                #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+                if session.native {
+                    let rect = ui.available_rect_before_wrap();
+                    ui.painter().rect_filled(rect, 0.0, INK);
+                    ui.allocate_rect(rect, Sense::hover());
+                    let presentation = native_terminal::NativeSurfacePresentation::for_terminal(
+                        rect,
+                        self.terminal.visible,
+                        true,
+                        modal_open,
+                        self.terminal.focus_terminal,
+                    );
+                    match self
+                        .native_terminal
+                        .present(session.id, &session.context, presentation)
+                    {
+                        Ok(()) => self.terminal.focus_terminal = false,
+                        Err(error) => {
+                            session.fall_back_to_portable(format!(
+                                "Ghostty surface failed; using portable fallback: {error:#}"
+                            ));
+                            self.status =
+                                "Ghostty surface failed; the session can restart portably.".into();
+                            self.status_error = true;
+                        }
+                    }
+                    return;
+                }
                 terminal_render::show_terminal(ui, session, &mut self.terminal.focus_terminal);
             });
     }
@@ -318,6 +454,7 @@ impl PrismApp {
                     session.title.clone(),
                     session.context_title.clone(),
                     session.running,
+                    session.native,
                 )
             })
             .collect();
@@ -361,7 +498,9 @@ impl PrismApp {
                     });
                 });
                 ui.add_space(4.0);
-                for (index, (_, title, context_title, running)) in sessions.iter().enumerate() {
+                for (index, (_, title, context_title, running, native)) in
+                    sessions.iter().enumerate()
+                {
                     let marker = if *running { "●" } else { "○" };
                     let response = ui
                         .selectable_label(
@@ -374,11 +513,11 @@ impl PrismApp {
                         self.terminal.focus_terminal = true;
                     }
                     response.context_menu(|ui| {
-                        if *running && ui.button("Interrupt").clicked() {
+                        if *running && !*native && ui.button("Interrupt").clicked() {
                             interrupt = Some(index);
                             ui.close();
                         }
-                        if ui.button("Clear display").clicked() {
+                        if !*native && ui.button("Clear display").clicked() {
                             clear = Some(index);
                             ui.close();
                         }
@@ -393,7 +532,7 @@ impl PrismApp {
                     });
                 }
                 if let Some(index) = self.terminal.pending_close
-                    && let Some((_, title, _, _)) = sessions.get(index)
+                    && let Some((_, title, _, _, _)) = sessions.get(index)
                 {
                     ui.add_space(6.0);
                     ui.separator();
@@ -439,20 +578,74 @@ impl PrismApp {
             self.terminal.sessions[index].clear();
         }
         if let Some(index) = restart {
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            if self.terminal.sessions[index].native {
+                let id = self.terminal.sessions[index].id;
+                self.native_terminal.reset(id);
+            }
             self.terminal.sessions[index].restart();
         }
         if let Some(index) = close {
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            if self
+                .terminal
+                .sessions
+                .get(index)
+                .is_some_and(|session| session.native)
+            {
+                let id = self.terminal.sessions[index].id;
+                if let Err(error) = self.native_terminal.request_close(id) {
+                    self.terminal.sessions[index].message =
+                        Some((format!("close request failed: {error:#}"), true));
+                }
+            } else {
+                self.terminal.request_close(index);
+            }
+            #[cfg(not(all(target_os = "macos", feature = "ghostty-terminal")))]
             self.terminal.request_close(index);
         }
         if cancel_close {
             self.terminal.pending_close = None;
         }
         if let Some(index) = confirm_close {
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            let native_id = self
+                .terminal
+                .sessions
+                .get(index)
+                .filter(|session| session.native)
+                .map(|session| session.id);
             self.terminal.close_now(index);
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            if let Some(id) = native_id {
+                self.native_terminal.reset(id);
+            }
         }
         if hide {
             self.terminal.visible = false;
         }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+    pub(super) fn route_native_terminal_edit(
+        &mut self,
+        action: macos_menu_spec::NativeMenuAction,
+    ) -> bool {
+        let Some(session) = self.terminal.sessions.get_mut(self.terminal.active) else {
+            return false;
+        };
+        if !self.terminal.visible || !session.native {
+            return false;
+        }
+        let native_action = match action {
+            macos_menu_spec::NativeMenuAction::Copy => native_terminal::NativeEditAction::Copy,
+            macos_menu_spec::NativeMenuAction::Paste => native_terminal::NativeEditAction::Paste,
+            _ => return false,
+        };
+        if let Err(error) = self.native_terminal.edit(session.id, native_action) {
+            session.message = Some((format!("terminal edit action failed: {error:#}"), true));
+        }
+        true
     }
 }
 

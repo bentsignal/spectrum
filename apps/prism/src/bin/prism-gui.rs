@@ -48,6 +48,8 @@ mod macos_menu_spec;
 #[path = "prism_gui/model.rs"]
 mod model;
 use model::*;
+#[path = "prism_gui/native_terminal.rs"]
+mod native_terminal;
 #[path = "prism_gui/project_lifecycle.rs"]
 mod project_lifecycle;
 #[path = "prism_gui/raster_sources.rs"]
@@ -147,6 +149,8 @@ struct PrismApp {
     collaboration_poll_at: std::time::Instant,
     workspace_initialized: bool,
     terminal: TerminalDock,
+    #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+    native_terminal: native_terminal::NativeTerminalHost,
 }
 
 fn native_options() -> eframe::NativeOptions {
@@ -190,6 +194,10 @@ impl PrismApp {
         #[cfg(target_os = "macos")] native_menu: macos::NativeMenuBridge,
     ) -> Self {
         install_style(&creation.egui_ctx);
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        let native_terminal = native_terminal::NativeTerminalHost::from_environment(creation);
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        let native_terminal_ready = native_terminal.is_ready();
         let (layer_render_request_sender, layer_render_request_receiver) = mpsc::channel();
         let (layer_render_result_sender, layer_render_receiver) = mpsc::channel();
         spawn_layer_render_worker(
@@ -253,7 +261,14 @@ impl PrismApp {
                 + std::time::Duration::from_millis(250),
             collaboration_poll_at: std::time::Instant::now(),
             workspace_initialized,
-            terminal: TerminalDock::default(),
+            terminal: TerminalDock::new(
+                #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+                native_terminal_ready,
+                #[cfg(not(all(target_os = "macos", feature = "ghostty-terminal")))]
+                false,
+            ),
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            native_terminal,
         };
         if let Some(path) = initial_project {
             if workspace_initialized {
@@ -264,6 +279,11 @@ impl PrismApp {
             }
         }
         app.sync_active_raster_sources();
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        if let Some(diagnostic) = app.native_terminal.fallback_diagnostic() {
+            app.status = diagnostic.to_owned();
+            app.status_error = true;
+        }
         app
     }
 
@@ -616,6 +636,8 @@ impl eframe::App for PrismApp {
         if self.terminal.visible() {
             self.terminal_panel(root);
         } else {
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            self.native_terminal.hide_all();
             self.top_bar(root);
             if self.history.visible {
                 self.history_view(root);
@@ -641,6 +663,8 @@ impl eframe::App for PrismApp {
             let _ = workspace.checkpoint();
         }
         self.terminal.shutdown();
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        self.native_terminal.shutdown();
     }
 }
 

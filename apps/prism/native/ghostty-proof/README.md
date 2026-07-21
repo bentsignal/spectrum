@@ -30,10 +30,12 @@ is the reviewed contract. It pins:
   `22efb0be2bbea73e5339f5426fa3b20edabcaa11`, peeled source commit
   `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`, and the SHA-256 of Ghostty's
   official source release;
-- official Zig 0.15.2 macOS archives and SHA-256 values for compatible arm64
-  SDKs and native x86_64 hosts, plus the exact Homebrew formula and path used
-  by the affected-arm64-SDK compatibility route described below;
-- macOS 13.0 as the minimum deployment target; and
+- official Zig 0.15.2 macOS archives and SHA-256 values;
+- the root-owned CLT macOS 15.2 SDK path, identity, key-file hashes, and a
+  complete hash of its file bytes, topology, modes, and safe symlink targets;
+- the universal macOS target, macOS 13.0 minimum deployment target, Prism
+  bridge ABI, reviewed Xcode version/build, and exact selected-Xcode `libtool`
+  SHA-256; and
 - the expected `GhosttyKit.xcframework`, resources directory, and terminfo
   sentinel paths.
 
@@ -43,42 +45,16 @@ The tag object and peeled commit are provenance metadata. Because the official
 release archive contains no Git-object manifest, its verified SHA-256—not an
 unprovable archive-to-commit equivalence—is the downloaded source trust anchor.
 
-### Affected arm64 SDKs (validated with Xcode 26.5)
-
-Official Zig 0.15.2 predates Xcode 26.4's change from an `arm64-macos` root
-target in `libSystem.tbd` to an `arm64e-macos` root target. Its native arm64
-build runner consequently fails before Ghostty's build graph starts; this is
-tracked as [Ghostty #11991](https://github.com/ghostty-org/ghostty/issues/11991)
-and fixed in Zig 0.16 (Zig PR #31673), without a Zig 0.15 backport.
-
-The proof remains pinned to Ghostty's required Zig 0.15.2. On an arm64 Mac, the
-script inspects only the root target block of the active SDK's
-`libSystem.tbd`. If that block lacks `arm64-macos`, it requires Homebrew's
-patched `zig@0.15` bottle at `/opt/homebrew/opt/zig@0.15/bin/zig` and verifies
-that it reports exactly 0.15.2. This is the route recommended in Ghostty
-#11991. The official x86_64 archive is deliberately not used under Rosetta
-because that workaround fails while building libc++ on newer SDKs.
-
-The Homebrew Zig build also needs
-`/opt/homebrew/opt/llvm@20/bin/llvm-libtool-darwin`, installed as Zig's
-`llvm@20` dependency. Apple's `libtool` drops Zig archive members that are not
-8-byte aligned, leaving `libghostty.a` without required public symbols. The
-script places a build-local `libtool` shim ahead of `PATH`, backed by LLVM's
-tool, then verifies that `_ghostty_init` and `_ghostty_app_new` exist before
-Swift linking. It does not change the machine-wide `PATH`.
-
-The user-tested proof was built on Apple Silicon with stable Xcode 26.5
-(17F42), macOS SDK 26.5, Homebrew `zig@0.15` 0.15.2, and `llvm@20` 20.1.8.
-Typing and rapid resizing passed the requested smoke test. The build selected
-stable Xcode only for that process with `DEVELOPER_DIR`; the globally selected
-Xcode 27 beta was not changed. Compatible arm64 SDKs and native x86_64 hosts
-continue to use the checksummed official Zig archives. Unlike those archives,
-the local Homebrew bottles are trusted input rather than checksum-pinned
-artifacts; the script verifies Zig's formula prefix, resolved keg binary,
-exact reported version, and `poured_from_bottle` installation receipt before
-downloading Ghostty. It separately verifies LLVM's locked formula and version,
-formula prefix, resolved keg binary, bottle receipt, arm64 architecture, and
-reported tool version.
+The production proof path accepts only a checksum-pinned official Zig archive.
+Xcode 26.5's root `libSystem.tbd` advertises `arm64e-macos` but not
+`arm64-macos`, which official arm64 Zig 0.15.2 cannot parse. A reviewed
+package-private `xcrun` shim therefore returns the fully sealed CLT macOS 15.2
+SDK only for Zig's exact macOS SDK-discovery call. Every other `xcrun` request,
+including iOS SDK, Metal, and Swift discovery, delegates to Xcode 26.5.
+Ghostty invokes bare `libtool` while combining its static dependencies, so the
+proof also exposes the exact checksum-pinned `libtool` inside Xcode 26.5. Every
+shim and input is verified before and after the build. The proof never executes
+a machine-installed Zig or LLVM toolchain, and does not execute CLT compilers.
 
 ## Build
 
@@ -90,11 +66,8 @@ Requirements:
   component installed. Before any download, the script runs the non-compiling
   `xcrun --sdk macosx metal -v` availability probe; if it fails, install the
   component with `xcodebuild -downloadComponent MetalToolchain`;
-- Homebrew's exact `zig@0.15` bottle when building on arm64 against an SDK whose
-  root `libSystem.tbd` advertises `arm64e-macos` but not `arm64-macos`; install
-  it separately with `brew install --force-bottle zig@0.15`. Its `llvm@20`
-  bottle dependency must provide `llvm-libtool-darwin` at the locked path;
 - `gettext`/`msgfmt`; and
+- the exact CLT macOS 15.2 SDK recorded in the lock file; and
 - network access to the HTTPS URLs in the lock file.
 
 From the repository root:
@@ -109,20 +82,37 @@ The script never calls `xcode-select --switch` and does not alter global Xcode
 selection.
 
 The script is noninteractive. It verifies every downloaded archive before
-extraction. Downloads and the official Zig toolchain may remain cached, but
-every invocation removes and re-extracts the exact Ghostty source tree and
-clears its exact install prefix before building. This prevents a prior build's
-generated XCFramework or resources from satisfying the current build's output
-checks. The script uses Ghostty's required Zig toolchain (with the narrow
-Homebrew-patched route above), limits the Ghostty build to two jobs, stages a
+extraction. Checksum-verified download archives may remain cached, but every
+invocation removes and safely re-extracts both the exact Ghostty source tree and
+the official Zig toolchain, and clears Ghostty's exact
+install prefix before building. This prevents a prior build's modified toolchain,
+generated XCFramework, or resources from satisfying the current build's output
+checks. The script uses Ghostty's required checksum-pinned Zig toolchain and
+the checksum-pinned archive tool from Xcode 26.5 and sealed CLT macOS 15.2 SDK,
+limits the Ghostty build to two jobs, stages a
 SwiftPM build against the generated XCFramework, copies Ghostty's resources
-and license into the proof app, and applies an ad-hoc local signature. It does
-not launch the app.
+and license into the proof app, and applies and verifies an ad-hoc local
+signature. It does not launch the app.
+
+Zig's version probe is limited to two minutes and the Ghostty Zig build to one
+hour. A timeout terminates the command's process group and fails packaging.
+macOS can keep a process in kernel-uninterruptible (`U`) state even after
+`SIGKILL`; in that exceptional case the runner reports it and the private build
+root must remain untouched until the kernel releases the process.
+
+Only after every proof step succeeds does the script atomically write a
+versioned `ghostty-proof.attestation`. It records reviewed inputs and per-build
+hashes for diagnosis and consistency checks, but it is not a signature or a
+packaging trust root. Production packaging does not accept this standalone
+proof directory: it creates a fresh proof below its own mode-700 temporary root,
+seals the outputs itself, and consumes a read-only snapshot in the same process
+chain. Generated Ghostty outputs are not claimed to be byte-reproducible.
 
 Expected output:
 
 ```text
 target/ghostty-proof/dist/PrismGhosttyProof.app
+target/ghostty-proof/ghostty-proof.attestation
 ```
 
 Ghostty installs a `share/` tree. The script copies the contents of that tree
