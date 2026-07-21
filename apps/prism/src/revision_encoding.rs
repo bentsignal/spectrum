@@ -13,6 +13,8 @@ pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
 pub(super) const SELECTION_OPERATIONS_VERSION: u32 = 4;
+pub(super) const CROP_TO_SELECTION_OPERATIONS_VERSION: u32 =
+    crate::PRISM_COMMAND_OPERATIONS_VERSION;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -39,13 +41,19 @@ impl Compatibility for PrismCompatibility {
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=SELECTION_OPERATIONS_VERSION)
+            && (LEGACY_OPERATIONS_VERSION..=CROP_TO_SELECTION_OPERATIONS_VERSION)
                 .contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands
+        .iter()
+        .any(|command| matches!(command, Command::CropToSelection))
+    {
+        return CROP_TO_SELECTION_OPERATIONS_VERSION;
+    }
     if commands.iter().any(|command| {
         matches!(
             command,
@@ -136,10 +144,13 @@ mod tests {
         assert!(validate_operations_version(&commands, LEGACY_OPERATIONS_VERSION).is_ok());
         assert!(validate_operations_version(&commands, LAYER_EFFECTS_OPERATIONS_VERSION).is_ok());
         assert!(validate_operations_version(&commands, SELECTION_OPERATIONS_VERSION).is_ok());
+        assert!(
+            validate_operations_version(&commands, CROP_TO_SELECTION_OPERATIONS_VERSION).is_ok()
+        );
     }
 
     #[test]
-    fn selection_commands_require_the_v4_operation_envelope() {
+    fn existing_selection_commands_keep_the_v4_operation_envelope() {
         for command in [
             Command::SetSelection {
                 selection: Some(Selection::rectangle(4, 5, 20, 10)),
@@ -166,6 +177,36 @@ mod tests {
                     SELECTION_OPERATIONS_VERSION,
                 )
                 .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn crop_to_selection_requires_v5_and_v4_rejects_its_payload() {
+        let bytes = serde_json::to_vec(&[Command::CropToSelection]).unwrap();
+        let commands: Vec<Command> = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(
+            operations_version(&commands),
+            CROP_TO_SELECTION_OPERATIONS_VERSION
+        );
+        assert!(validate_operations_version(&commands, SELECTION_OPERATIONS_VERSION).is_err());
+        assert!(
+            validate_operations_version(&commands, CROP_TO_SELECTION_OPERATIONS_VERSION).is_ok()
+        );
+    }
+
+    #[test]
+    fn compatibility_advertises_operation_versions_one_through_five() {
+        for version in LEGACY_OPERATIONS_VERSION..=CROP_TO_SELECTION_OPERATIONS_VERSION {
+            assert!(
+                PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
+            );
+        }
+        for version in [0, CROP_TO_SELECTION_OPERATIONS_VERSION + 1] {
+            assert!(
+                !PrismCompatibility
+                    .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
     }

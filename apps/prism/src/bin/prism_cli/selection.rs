@@ -21,6 +21,8 @@ enum SelectionAction {
     },
     /// Clear the current document selection.
     Clear,
+    /// Crop the canvas to the current rectangular selection and clear it atomically.
+    Crop,
     /// Create a new editable solid-color layer at the selected bounds.
     Fill {
         #[arg(long, default_value = "5dd8c7ff")]
@@ -41,6 +43,7 @@ pub(super) fn command(arguments: SelectionArgs) -> Result<Command> {
             selection: Some(Selection::rectangle(x, y, width, height)),
         },
         SelectionAction::Clear => Command::SetSelection { selection: None },
+        SelectionAction::Crop => Command::CropToSelection,
         SelectionAction::Fill { color, name } => Command::FillSelection {
             color: parse_color(&color)?,
             name,
@@ -53,7 +56,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rectangle_and_fill_map_to_the_public_command_protocol() {
+    fn selection_actions_map_to_the_public_command_protocol() {
         let rectangle = command(SelectionArgs {
             action: SelectionAction::Rectangle {
                 x: 4,
@@ -68,6 +71,14 @@ mod tests {
             Command::SetSelection {
                 selection: Some(Selection::rectangle(4, 5, 20, 10))
             }
+        );
+
+        assert_eq!(
+            command(SelectionArgs {
+                action: SelectionAction::Crop,
+            })
+            .unwrap(),
+            Command::CropToSelection
         );
 
         let fill = command(SelectionArgs {

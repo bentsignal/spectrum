@@ -85,6 +85,82 @@ fn crop_intersects_and_translates_persistent_selection() {
 }
 
 #[test]
+fn crop_to_selection_uses_exact_bounds_offsets_content_and_clears_selection() {
+    let mut document = Document::new("Crop to selection", 100, 80);
+    document.layers.push(Layer {
+        id: 1,
+        transform: Transform {
+            x: 35.0,
+            y: 24.0,
+            ..Default::default()
+        },
+        kind: LayerKind::Rectangle {
+            width: 20,
+            height: 10,
+            color: [10, 20, 30, 255],
+            corner_radius: 0.0,
+        },
+        ..Default::default()
+    });
+    document.next_id = 2;
+    document.guides = vec![
+        Guide {
+            id: 1,
+            orientation: GuideOrientation::Vertical,
+            position: 45.0,
+        },
+        Guide {
+            id: 2,
+            orientation: GuideOrientation::Horizontal,
+            position: 5.0,
+        },
+    ];
+    document.next_guide_id = 3;
+    let mut workspace = Workspace::new(document, None);
+    workspace
+        .execute(Command::SetSelection {
+            selection: Some(Selection::rectangle(20, 10, 50, 40)),
+        })
+        .unwrap();
+
+    let output = workspace.execute(Command::CropToSelection).unwrap();
+
+    assert_eq!(output.action, "crop_to_selection");
+    assert_eq!(
+        (workspace.document.width, workspace.document.height),
+        (50, 40)
+    );
+    assert_eq!(workspace.document.selection, None);
+    assert_eq!(
+        (
+            workspace.document.layers[0].transform.x,
+            workspace.document.layers[0].transform.y,
+        ),
+        (15.0, 14.0)
+    );
+    assert_eq!(workspace.document.guides.len(), 1);
+    assert_eq!(workspace.document.guide(1).unwrap().position, 25.0);
+}
+
+#[test]
+fn crop_to_selection_rejects_missing_invalid_and_full_canvas_selections_atomically() {
+    let mut workspace = Workspace::new(Document::new("Crop errors", 100, 80), None);
+    let before = workspace.document.clone();
+    assert!(workspace.execute(Command::CropToSelection).is_err());
+    assert_eq!(workspace.document, before);
+
+    workspace.document.selection = Some(Selection::rectangle(100, 10, 20, 20));
+    let before = workspace.document.clone();
+    assert!(workspace.execute(Command::CropToSelection).is_err());
+    assert_eq!(workspace.document, before);
+
+    workspace.document.selection = Some(Selection::rectangle(0, 0, 100, 80));
+    let before = workspace.document.clone();
+    assert!(workspace.execute(Command::CropToSelection).is_err());
+    assert_eq!(workspace.document, before);
+}
+
+#[test]
 fn fill_creates_one_editable_layer_and_undo_preserves_original_content() {
     let mut document = Document::new("Fill", 40, 30);
     document.layers.push(Layer {
@@ -272,6 +348,85 @@ fn durable_selection_and_fill_each_commit_exactly_one_revision() {
         Some(Selection::rectangle(8, 9, 20, 15))
     );
     assert_eq!(reopened.document.layers.len(), 1);
+    drop(reopened);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_crop_to_selection_is_one_revision_with_reopen_undo_and_redo_parity() {
+    let directory = test_directory("durable-crop");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("crop.prism");
+    let session = spectrum_revisions::SessionId::new();
+    let mut document = Document::new("Durable crop", 120, 90);
+    document.layers.push(Layer {
+        id: 1,
+        transform: Transform {
+            x: 40.0,
+            y: 30.0,
+            ..Default::default()
+        },
+        kind: LayerKind::Rectangle {
+            width: 24,
+            height: 18,
+            color: [40, 80, 120, 255],
+            corner_radius: 2.0,
+        },
+        ..Default::default()
+    });
+    document.next_id = 2;
+    document.guides.push(Guide {
+        id: 1,
+        orientation: GuideOrientation::Horizontal,
+        position: 35.0,
+    });
+    document.next_guide_id = 2;
+    let mut workspace = Workspace::create_durable(document, &path, test_actor(), session).unwrap();
+    workspace
+        .execute(Command::SetSelection {
+            selection: Some(Selection::rectangle(20, 15, 60, 45)),
+        })
+        .unwrap();
+    let before_crop = workspace.document.clone();
+    let revisions_before = workspace.history().unwrap().unwrap().revisions.len();
+
+    workspace.execute(Command::CropToSelection).unwrap();
+
+    assert_eq!(
+        workspace.history().unwrap().unwrap().revisions.len(),
+        revisions_before + 1
+    );
+    let cropped = workspace.document.clone();
+    assert_eq!((cropped.width, cropped.height), (60, 45));
+    assert_eq!(cropped.selection, None);
+    assert_eq!(
+        (cropped.layers[0].transform.x, cropped.layers[0].transform.y),
+        (20.0, 15.0)
+    );
+    assert_eq!(cropped.guide(1).unwrap().position, 20.0);
+    drop(workspace);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let (operation_version, operation_bytes): (u32, Vec<u8>) = connection
+        .query_row(
+            "SELECT version, bytes FROM operation_payloads WHERE instr(CAST(bytes AS TEXT), 'crop_to_selection') > 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(operation_version, PRISM_COMMAND_OPERATIONS_VERSION);
+    assert_eq!(
+        serde_json::from_slice::<Vec<Command>>(&operation_bytes).unwrap(),
+        vec![Command::CropToSelection]
+    );
+    drop(connection);
+
+    let mut reopened = Workspace::open_as(&path, test_actor(), session).unwrap();
+    assert_eq!(reopened.document, cropped);
+    reopened.execute(Command::Undo).unwrap();
+    assert_eq!(reopened.document, before_crop);
+    reopened.execute(Command::Redo).unwrap();
+    assert_eq!(reopened.document, cropped);
     drop(reopened);
     std::fs::remove_dir_all(directory).unwrap();
 }

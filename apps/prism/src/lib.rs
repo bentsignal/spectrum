@@ -64,6 +64,7 @@ pub use shapes::{
 };
 
 pub const PRISM_VERSION: u32 = 4;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 5;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 
