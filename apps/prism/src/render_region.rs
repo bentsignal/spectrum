@@ -57,7 +57,7 @@ pub(crate) fn composite_bounded_source_region(
         return Ok(true);
     };
     let source = match &descriptor {
-        SourceDescriptor::Shape { sampler } => SampleSource::Shape(*sampler),
+        SourceDescriptor::Shape { sampler } => SampleSource::shape(*sampler),
         SourceDescriptor::Raster { .. } | SourceDescriptor::Text { .. } => {
             let Some(staging_region) = required_source_region(&geometry, intersection) else {
                 return Ok(true);
@@ -204,6 +204,7 @@ impl<'a> SourceDescriptor<'a> {
 }
 
 enum SampleSource<'a> {
+    Constant([u8; 4]),
     Pixels {
         image: RgbaImage,
         region: SourceRegion,
@@ -211,9 +212,16 @@ enum SampleSource<'a> {
     Shape(ShapeSampler<'a>),
 }
 
-impl SampleSource<'_> {
+impl<'a> SampleSource<'a> {
+    fn shape(sampler: ShapeSampler<'a>) -> Self {
+        sampler
+            .uniform_pixel()
+            .map_or(Self::Shape(sampler), |pixel| Self::Constant(pixel.0))
+    }
+
     fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
         match self {
+            Self::Constant(pixel) => *pixel,
             Self::Pixels { image, region } => image.get_pixel(x - region.x, y - region.y).0,
             Self::Shape(sampler) => sampler.pixel(x, y).0,
         }
@@ -553,6 +561,9 @@ fn sample_triangle_resize(
     output: (u32, u32),
     coordinate: (u32, u32),
 ) -> [u8; 4] {
+    if let SampleSource::Constant(pixel) = source_pixels {
+        return *pixel;
+    }
     if source == output {
         return source_pixels.pixel(coordinate.0, coordinate.1);
     }
@@ -750,6 +761,63 @@ fn rotated_text_bounds(width: u32, height: u32, degrees: f32, pivot: (f32, f32))
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Layer, LayerKind, ShapeStroke};
+
+    #[test]
+    fn uniform_rectangles_bypass_procedural_and_triangle_sampling() {
+        let color = [37, 91, 173, 211];
+        let layer = Layer {
+            kind: LayerKind::Rectangle {
+                width: 16_384,
+                height: 16_384,
+                color,
+                corner_radius: 0.0,
+            },
+            ..Layer::default()
+        };
+        let source = SampleSource::shape(ShapeSampler::new(&layer, [1.0; 2]).unwrap());
+        assert!(matches!(&source, SampleSource::Constant(pixel) if *pixel == color));
+        assert_eq!(
+            sample_triangle_resize(
+                &source,
+                (16_384, 16_384),
+                (131_072, 131_072),
+                (79_123, 62_417),
+            ),
+            color
+        );
+
+        for layer in [
+            Layer {
+                kind: LayerKind::Rectangle {
+                    width: 128,
+                    height: 96,
+                    color,
+                    corner_radius: 8.0,
+                },
+                ..Layer::default()
+            },
+            Layer {
+                stroke: ShapeStroke {
+                    enabled: true,
+                    width: 3.0,
+                    color: [240, 220, 180, 255],
+                },
+                kind: LayerKind::Rectangle {
+                    width: 128,
+                    height: 96,
+                    color,
+                    corner_radius: 0.0,
+                },
+                ..Layer::default()
+            },
+        ] {
+            assert!(matches!(
+                SampleSource::shape(ShapeSampler::new(&layer, [1.0; 2]).unwrap()),
+                SampleSource::Shape(_)
+            ));
+        }
+    }
 
     #[test]
     fn source_bounds_include_triangle_filter_support() {

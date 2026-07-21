@@ -147,6 +147,21 @@ impl<'a> ShapeSampler<'a> {
         self.dimensions
     }
 
+    /// Returns the source pixel when every coordinate has the same value.
+    ///
+    /// Keeping this property on the sampler lets every compositor consumer
+    /// avoid redundant procedural sampling without duplicating shape rules.
+    pub(crate) fn uniform_pixel(&self) -> Option<Rgba<u8>> {
+        match self.layer.kind {
+            LayerKind::Rectangle {
+                color,
+                corner_radius,
+                ..
+            } if corner_radius <= 0.0 && !self.layer.stroke.enabled => Some(Rgba(color)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn pixel(&self, x: u32, y: u32) -> Rgba<u8> {
         let color = match self.layer.kind {
             LayerKind::Rectangle {
