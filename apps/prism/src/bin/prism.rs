@@ -523,7 +523,10 @@ fn run(cli: Cli) -> Result<Value> {
             typography::font_usage(&session_document(&cli.project, cli.session)?, font_id)
         }
         CliCommand::FontSource { font_id } => {
-            typography::font_source(&session_document(&cli.project, cli.session)?, font_id)
+            if cli.session.is_some() {
+                bail!("font-source is read-only and does not accept --session");
+            }
+            typography::font_source(&Workspace::load_read_only(&cli.project)?, font_id)
         }
         CliCommand::LayerCopy(arguments) => {
             transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)

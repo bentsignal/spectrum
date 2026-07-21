@@ -155,6 +155,56 @@ fn font_source_output_proves_identity_without_mutating_the_document() {
 }
 
 #[test]
+fn durable_font_source_keeps_store_bytes_unchanged_and_rejects_sessions() {
+    let project = temporary_project("font-source-read-only");
+    let directory = temporary_project("font-source-read-only").with_extension("assets");
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::Init {
+            name: "Read-only proof".into(),
+            width: 320,
+            height: 200,
+            background: "18191dff".into(),
+        },
+    })
+    .unwrap();
+    run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontImport { path: source },
+    })
+    .unwrap();
+    let before = std::fs::read(&project).unwrap();
+
+    let output = run(Cli {
+        project: project.clone(),
+        session: None,
+        command: CliCommand::FontSource { font_id: 1 },
+    })
+    .unwrap();
+    let session_error = run(Cli {
+        project: project.clone(),
+        session: Some(spectrum_revisions::SessionId::new()),
+        command: CliCommand::FontSource { font_id: 1 },
+    })
+    .unwrap_err();
+
+    assert_eq!(output["mutates_project"], false);
+    assert!(
+        session_error
+            .to_string()
+            .contains("does not accept --session")
+    );
+    assert_eq!(std::fs::read(&project).unwrap(), before);
+    std::fs::remove_file(project).unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn font_usage_output_limits_its_non_mutation_and_coverage_claims() {
     let output = typography::font_usage(&Document::new("Usage", 320, 200), None).unwrap();
     assert_eq!(output["action"], "font_usage");
@@ -322,7 +372,9 @@ fn temporary_project(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-{label}-cli-{stamp}.prism"))
+    std::fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("prism-{label}-cli-{stamp}.prism"))
 }
 
 fn initialize_rectangle_project(project: &Path) {

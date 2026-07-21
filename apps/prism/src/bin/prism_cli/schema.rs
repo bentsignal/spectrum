@@ -51,8 +51,8 @@ pub(super) fn schema() -> Value {
             "rendering": "portable CPU export and exact interactive composite preview share the same fixed-kernel shadow and shape sampler"
         },
         "typography": {
-            "portable_fonts": "font-import reads a bounded regular file once, verifies editable OpenType embedding metadata, and transactionally embeds those exact bytes as a content-addressed project asset",
-            "source_snapshot": "font-source <font-id> re-reads one materialized full-font asset, verifies its deterministic SHA-256 identity and embedding metadata, and reports proof without modifying the project",
+            "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot, verifies editable OpenType embedding metadata, and transactionally embeds those exact bytes as a content-addressed project asset",
+            "source_snapshot": "font-source <font-id> re-reads one materialized full-font asset through a read-only project load, verifies its deterministic SHA-256 identity and embedding metadata, and reports proof without modifying the project; --session is rejected",
             "discovery": "font-list --query <text> searches embedded family and style metadata",
             "optimization_analysis": "font-usage [--font-id <id>] reports deterministic Unicode cmap subset-retention requirements, variation sequences, embedding metadata, provenance, and source size without changing font bytes; --session retains standard session-resume behavior",
             "optimization_limitations": "analysis excludes symbol and other non-Unicode cmaps, shaping, renderer fallback, and legal license conclusions",

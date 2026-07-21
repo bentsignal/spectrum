@@ -29,6 +29,7 @@ fs2 = "0.4"
 fontdue = "0.9"
 hb-subset = { version = "=0.3.0", path = "third_party/hb-subset", features = ["bundled"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
+libc = "0.2"
 png = "0.18.1"
 portable-pty = "0.9"
 rawler = "0.7.2"

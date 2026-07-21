@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -79,27 +80,60 @@ pub(crate) fn make_fonts_portable(
     asset_directory: &Path,
 ) -> Result<()> {
     for font in fonts {
-        let canonical = fs::canonicalize(&font.path)
-            .with_context(|| format!("could not read font asset {}", font.path.display()))?;
+        let snapshot = font.source_snapshot()?;
+        let canonical = snapshot.canonical_path();
         if font.original_path.is_none() {
-            font.original_path = Some(canonical.clone());
+            font.original_path = Some(canonical.to_owned());
         }
         let font_directory = asset_directory.join("fonts");
         fs::create_dir_all(&font_directory)?;
-        let file_name = canonical
-            .file_name()
+        let extension = canonical
+            .extension()
             .and_then(|value| value.to_str())
-            .unwrap_or("font.otf");
-        let destination = font_directory.join(format!("font-{}-{file_name}", font.id));
+            .filter(|value| {
+                value.len() <= 8 && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            })
+            .unwrap_or("otf");
+        let destination = font_directory.join(format!(
+            "font-{}-{}.{}",
+            font.id,
+            snapshot.content_hash(),
+            extension
+        ));
         if canonical != destination {
-            fs::copy(&canonical, &destination).with_context(|| {
-                format!(
-                    "could not copy {} into portable Prism fonts",
-                    canonical.display()
-                )
-            })?;
+            persist_font_snapshot(&destination, &snapshot)?;
         }
         font.path = destination.strip_prefix(project_directory)?.to_owned();
+    }
+    Ok(())
+}
+
+fn persist_font_snapshot(destination: &Path, snapshot: &FontSourceSnapshot) -> Result<()> {
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+    {
+        Ok(mut file) => {
+            if let Err(error) = file
+                .write_all(snapshot.bytes())
+                .and_then(|()| file.sync_all())
+            {
+                drop(file);
+                let _ = fs::remove_file(destination);
+                return Err(error).with_context(|| {
+                    format!("could not persist font snapshot {}", destination.display())
+                });
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            FontSourceSnapshot::read_verified(destination, snapshot.content_hash())?;
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("could not create font snapshot {}", destination.display())
+            });
+        }
     }
     Ok(())
 }

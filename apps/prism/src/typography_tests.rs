@@ -7,7 +7,7 @@ use std::{
 use crate::{
     Command, Document, FontAsset, FontSourceSnapshot, LayerKind, TextAlignment, TextEffects,
     TextTypography, Workspace, analyze_all_font_usage, analyze_font_usage, font_usage,
-    render_document, render_layer_base_scaled_with_font,
+    render_document, render_layer_base_scaled_with_font, save_document,
 };
 
 fn test_directory(label: &str) -> PathBuf {
@@ -15,7 +15,9 @@ fn test_directory(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-typography-{label}-{stamp}"))
+    fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("prism-typography-{label}-{stamp}"))
 }
 
 fn test_actor() -> spectrum_revisions::Actor {
@@ -192,6 +194,41 @@ fn immutable_font_source_rejects_tampering_truncation_and_unmaterialized_paths()
 }
 
 #[test]
+fn legacy_and_initial_durable_saves_reject_tampered_font_bytes() {
+    let directory = test_directory("tampered-save");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let mut document = Document::new("Tampered save", 320, 200);
+    document
+        .font_assets
+        .push(FontAsset::import(1, &source).unwrap());
+    fs::write(
+        &source,
+        vec![0x4f; epaint_default_fonts::HACK_REGULAR.len()],
+    )
+    .unwrap();
+    let legacy_project = directory.join("tampered-legacy.prism");
+    let durable_project = directory.join("tampered-durable.prism");
+
+    let legacy_error = save_document(&document, &legacy_project).unwrap_err();
+    let durable_error = Workspace::create_durable(
+        document,
+        &durable_project,
+        test_actor(),
+        spectrum_revisions::SessionId::new(),
+    )
+    .err()
+    .expect("tampered initial snapshot should fail");
+
+    assert!(legacy_error.to_string().contains("content identity"));
+    assert!(durable_error.to_string().contains("content identity"));
+    assert!(!legacy_project.exists());
+    assert!(!durable_project.exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn font_source_read_is_bounded_before_allocating_file_contents() {
     let directory = test_directory("oversized-source");
     fs::create_dir_all(&directory).unwrap();
@@ -253,8 +290,64 @@ fn font_source_rejects_symlink_entry_points() {
         FontSourceSnapshot::read(&link)
             .unwrap_err()
             .to_string()
-            .contains("symlink")
+            .contains("securely open")
     );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn font_source_rejects_symlinked_ancestor_directories() {
+    use std::os::unix::fs::symlink;
+
+    let directory = test_directory("symlink-ancestor");
+    let real_directory = directory.join("real");
+    fs::create_dir_all(&real_directory).unwrap();
+    let source = real_directory.join("Hack-Regular.ttf");
+    let linked_directory = directory.join("linked");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    symlink(&real_directory, &linked_directory).unwrap();
+    assert!(
+        FontSourceSnapshot::read(&linked_directory.join("Hack-Regular.ttf"))
+            .unwrap_err()
+            .to_string()
+            .contains("securely open")
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_font_source_binds_a_regular_file_handle_identity() {
+    let directory = test_directory("windows-file-identity");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let snapshot = FontSourceSnapshot::read(&source).unwrap();
+    assert_eq!(snapshot.bytes(), epaint_default_fonts::HACK_REGULAR);
+    assert!(snapshot.canonical_path().is_absolute());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_font_source_rejects_reparse_point_ancestors_when_links_are_available() {
+    use std::os::windows::fs::symlink_dir;
+
+    let directory = test_directory("windows-reparse-ancestor");
+    let real_directory = directory.join("real");
+    fs::create_dir_all(&real_directory).unwrap();
+    let source = real_directory.join("Hack-Regular.ttf");
+    fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
+    let linked_directory = directory.join("linked");
+    if symlink_dir(&real_directory, &linked_directory).is_ok() {
+        assert!(
+            FontSourceSnapshot::read(&linked_directory.join("Hack-Regular.ttf"))
+                .unwrap_err()
+                .to_string()
+                .contains("reparse-point")
+        );
+    }
     fs::remove_dir_all(directory).unwrap();
 }
 

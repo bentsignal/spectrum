@@ -31,18 +31,19 @@ pub struct FontSourceSnapshot {
 
 impl FontSourceSnapshot {
     pub fn read(path: &Path) -> Result<Self> {
-        reject_symlink(path)?;
-        let canonical_path = fs::canonicalize(path)
-            .with_context(|| format!("could not resolve font {}", path.display()))?;
-        let path_metadata = require_regular_file(&canonical_path)?;
-        let file = File::open(&canonical_path)
-            .with_context(|| format!("could not read font {}", path.display()))?;
+        Self::read_inner(path, None)
+    }
+
+    fn read_inner(path: &Path, expected_hash: Option<&str>) -> Result<Self> {
+        let file = open_no_follow(path)?;
         let opened_metadata = file.metadata()?;
-        if !same_file(&path_metadata, &opened_metadata) {
-            bail!("font source changed while opening {}", path.display());
-        }
+        require_regular_metadata(&opened_metadata, path)?;
         let bytes = read_bounded(file, &opened_metadata, path)?;
-        verify_unchanged_path(path, &canonical_path, &opened_metadata)?;
+        let canonical_path = verify_unchanged_path(path, &opened_metadata)?;
+        let content_hash = sha256_hex(&bytes);
+        if expected_hash.is_some_and(|expected| expected != content_hash) {
+            bail!("embedded font source bytes do not match their content identity");
+        }
 
         let face = Face::parse(&bytes, 0)
             .with_context(|| format!("{} is not a supported OpenType font", path.display()))?;
@@ -60,7 +61,6 @@ impl FontSourceSnapshot {
         };
         let weight = face.weight().to_number();
         let subset_allowed = face.is_subsetting_allowed();
-        let content_hash = sha256_hex(&bytes);
         Ok(Self {
             canonical_path,
             content_hash,
@@ -84,11 +84,7 @@ impl FontSourceSnapshot {
         {
             bail!("embedded font source has an invalid content identity");
         }
-        let snapshot = Self::read(path)?;
-        if snapshot.content_hash != expected_hash {
-            bail!("embedded font source bytes do not match their content identity");
-        }
-        Ok(snapshot)
+        Self::read_inner(path, Some(expected_hash))
     }
 
     pub fn canonical_path(&self) -> &Path {
@@ -138,33 +134,154 @@ fn read_bounded(file: File, before: &Metadata, path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn verify_unchanged_path(path: &Path, canonical: &Path, opened: &Metadata) -> Result<()> {
-    reject_symlink(path)?;
-    if fs::canonicalize(path)? != canonical {
-        bail!("font source path changed while reading {}", path.display());
-    }
-    let current = require_regular_file(canonical)?;
+fn verify_unchanged_path(path: &Path, opened: &Metadata) -> Result<PathBuf> {
+    let current_file = open_no_follow(path)?;
+    let current = current_file.metadata()?;
+    require_regular_metadata(&current, path)?;
     if !stable_file(opened, &current) {
         bail!("font source changed while reading {}", path.display());
     }
-    Ok(())
-}
-
-fn reject_symlink(path: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("could not inspect font {}", path.display()))?;
-    if metadata.file_type().is_symlink() {
-        bail!("refusing symlink font source {}", path.display());
+    let canonical = fs::canonicalize(path)
+        .with_context(|| format!("could not resolve font {}", path.display()))?;
+    let canonical_metadata = fs::symlink_metadata(&canonical)?;
+    if canonical_metadata.file_type().is_symlink() || !same_file(opened, &canonical_metadata) {
+        bail!("font source path changed while reading {}", path.display());
     }
-    Ok(())
+    Ok(canonical)
 }
 
-fn require_regular_file(path: &Path) -> Result<Metadata> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+fn require_regular_metadata(metadata: &Metadata, path: &Path) -> Result<()> {
+    if !metadata.is_file() {
         bail!("font source {} is not a regular file", path.display());
     }
-    Ok(metadata)
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
+fn absolute_lexical_path(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                bail!("font source path cannot contain parent-directory traversal");
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> Result<File> {
+    use std::{
+        ffi::CString,
+        os::{
+            fd::{AsRawFd, FromRawFd},
+            unix::ffi::OsStrExt,
+        },
+    };
+
+    let absolute = absolute_lexical_path(path)?;
+    let mut directory = File::open("/")?;
+    let mut components = absolute
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name),
+            _ => None,
+        });
+    let Some(mut name) = components.next() else {
+        bail!("font source path does not name a file");
+    };
+    loop {
+        let next = components.next();
+        let name = CString::new(name.as_bytes()).context("font path contains a null byte")?;
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | libc::O_NONBLOCK
+            | if next.is_some() { libc::O_DIRECTORY } else { 0 };
+        // SAFETY: `directory` owns a live directory descriptor, `name` is a
+        // null-terminated component, and a successful descriptor is immediately
+        // transferred into `File`. O_NOFOLLOW binds every traversed component.
+        let descriptor = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+        if descriptor < 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("could not securely open font {}", path.display()));
+        }
+        // SAFETY: `openat` returned a new owned descriptor above.
+        let opened = unsafe { File::from_raw_fd(descriptor) };
+        let Some(next_name) = next else {
+            return Ok(opened);
+        };
+        directory = opened;
+        name = next_name;
+    }
+}
+
+#[cfg(windows)]
+const WINDOWS_NO_FOLLOW_FLAGS: u32 =
+    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+#[cfg(windows)]
+const _: () = assert!(
+    WINDOWS_NO_FOLLOW_FLAGS & windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
+        != 0
+);
+
+#[cfg(windows)]
+fn open_no_follow(path: &Path) -> Result<File> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+
+    let absolute = absolute_lexical_path(path)?;
+    reject_windows_reparse_components(&absolute)?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(WINDOWS_NO_FOLLOW_FLAGS)
+        .open(&absolute)
+        .with_context(|| format!("could not securely open font {}", path.display()))?;
+    if file.metadata()?.file_attributes()
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+    {
+        bail!("refusing reparse-point font source {}", path.display());
+    }
+    reject_windows_reparse_components(&absolute)?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn reject_windows_reparse_components(path: &Path) -> Result<()> {
+    use std::os::windows::fs::MetadataExt;
+
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if matches!(
+            component,
+            std::path::Component::Prefix(_) | std::path::Component::RootDir
+        ) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&current)?;
+        if metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            bail!("refusing reparse-point font path {}", current.display());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_no_follow(_path: &Path) -> Result<File> {
+    bail!("secure font source reads are unsupported on this platform")
 }
 
 fn stable_file(before: &Metadata, after: &Metadata) -> bool {
@@ -243,7 +360,9 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let directory = std::env::temp_dir().join(format!("prism-font-identity-{stamp}"));
+        let directory = fs::canonicalize(std::env::temp_dir())
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(format!("prism-font-identity-{stamp}"));
         fs::create_dir_all(&directory).unwrap();
         let first = directory.join("first.ttf");
         let replacement = directory.join("replacement.ttf");
