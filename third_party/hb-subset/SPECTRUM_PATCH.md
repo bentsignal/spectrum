@@ -35,8 +35,10 @@ portably when callers use `Blob::from_file`.
 
 The published `build.rs` also passes GCC/Clang's `-std=c++11` spelling to every
 C++ compiler. Spectrum selects `/std:c++14` for MSVC (which has no C++11 mode
-switch) and retains `-std=c++11` for GNU-like compilers. No HarfBuzz feature,
-source, warning, or optimization setting is otherwise changed.
+switch) and retains `-std=c++11` for GNU-like compilers. MSVC also receives
+`/bigobj` because HarfBuzz's monolithic subset translation unit exceeds the
+default COFF section limit in debug builds. No HarfBuzz feature, source,
+warning, or optimization setting is otherwise changed.
 
 To audit an update, download the named `.crate`, verify the archive checksum,
 compare the unpacked payload with this directory excluding this file, the two

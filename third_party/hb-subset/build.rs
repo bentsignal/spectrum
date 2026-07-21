@@ -22,7 +22,9 @@ fn build_harfbuzz() -> Vec<PathBuf> {
     if build.get_compiler().is_like_msvc() {
         // MSVC has no C++11 mode switch; C++14 is its oldest supported
         // standards-conformance mode and covers HarfBuzz 8.2.2's C++11 floor.
-        build.flag("/std:c++14");
+        // HarfBuzz's monolithic subset translation unit exceeds the default
+        // COFF section limit in debug builds.
+        build.flag("/std:c++14").flag("/bigobj");
     } else {
         build.flag("-std=c++11");
     }
