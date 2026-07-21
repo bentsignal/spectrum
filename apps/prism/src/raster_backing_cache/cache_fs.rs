@@ -124,9 +124,9 @@ pub(super) fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64)
 
 #[cfg(not(any(unix, windows)))]
 pub(super) fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
-    let mut file = file.try_clone()?;
-    file.seek(SeekFrom::Start(offset))?;
-    file.read_exact(buffer)
+    let mut retained = file;
+    retained.seek(SeekFrom::Start(offset))?;
+    retained.read_exact(buffer)
 }
 
 pub(super) fn remove_cache_entry(path: &Path) -> io::Result<()> {

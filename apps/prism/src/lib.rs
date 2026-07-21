@@ -897,8 +897,8 @@ mod text_render;
 mod text_rotation;
 
 pub use raster_backing_cache::{
-    DerivedBackingCache, DerivedBackingIdentity, DerivedBackingLimits, DerivedBackingReadError,
-    DerivedRasterBacking, PrepareDerivedBacking,
+    DerivedBackingCache, DerivedBackingIdentity, DerivedBackingLimits, DerivedBackingMemoryPlan,
+    DerivedBackingReadError, DerivedRasterBacking, PrepareDerivedBacking,
 };
 pub use raster_region::{RasterRegionInspection, inspect_raster_region_source};
 pub use render::{
