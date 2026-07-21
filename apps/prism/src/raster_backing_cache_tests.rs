@@ -111,6 +111,14 @@ fn exact_planes_match_current_jpeg_webp_and_adam7_decoders() {
             .save_with_format(path, *format)
             .unwrap();
     }
+    // image-webp's encoder emits lossless WebP, exercising its opaque RGB path.
+    let opaque_lossless_webp = directory.path().join("small-opaque-lossless.webp");
+    DynamicImage::ImageRgb8(image::RgbImage::from_fn(13, 9, |x, y| {
+        let pixel = originals.get_pixel(x, y);
+        image::Rgb([pixel[0], pixel[1], pixel[2]])
+    }))
+    .save_with_format(&opaque_lossless_webp, ImageFormat::WebP)
+    .unwrap();
     let adam7 = directory.path().join("small-adam7.png");
     write_adam7_rgba8(&adam7, &originals);
     let adam7_luma = directory.path().join("small-adam7-luma.png");
@@ -122,11 +130,12 @@ fn exact_planes_match_current_jpeg_webp_and_adam7_decoders() {
     });
     write_adam7_8bit(&adam7_luma_alpha, 13, 9, 4, 2, luma_alpha.as_raw());
 
-    for path in sources
-        .iter()
-        .map(|(path, _)| path)
-        .chain([&adam7, &adam7_luma, &adam7_luma_alpha])
-    {
+    for path in sources.iter().map(|(path, _)| path).chain([
+        &opaque_lossless_webp,
+        &adam7,
+        &adam7_luma,
+        &adam7_luma_alpha,
+    ]) {
         let expected = image::open(path).unwrap().to_rgba8();
         let backing = prepare_ready(&cache(&directory.path().join("cache")), path);
         let actual = backing
@@ -142,13 +151,13 @@ fn exact_planes_match_current_jpeg_webp_and_adam7_decoders() {
 }
 
 #[test]
-fn preparation_memory_plan_never_accounts_a_second_full_plane() {
+fn preparation_memory_plan_separates_publication_from_decoder_owned_buffers() {
     let directory = TestDirectory::new("memory-plan");
-    let rgb = directory.path().join("rgb.jpg");
+    let rgb = directory.path().join("rgb.webp");
     DynamicImage::ImageRgb8(image::RgbImage::from_fn(31, 17, |x, y| {
         image::Rgb([(x * 3) as u8, (y * 5) as u8, (x + y) as u8])
     }))
-    .save_with_format(&rgb, ImageFormat::Jpeg)
+    .save_with_format(&rgb, ImageFormat::WebP)
     .unwrap();
     let cache = cache(&directory.path().join("cache"));
     let identity = cache.identify(&rgb).unwrap();
@@ -156,9 +165,11 @@ fn preparation_memory_plan_never_accounts_a_second_full_plane() {
     let pixels = 31_u64 * 17;
     assert_eq!(plan.decoded_surface_bytes(), pixels * 3);
     assert_eq!(plan.conversion_row_bytes(), 31 * 4);
-    assert_eq!(plan.peak_pixel_bytes(), pixels * 3 + 31 * 4);
+    assert_eq!(plan.decoder_scratch_reservation_bytes(), pixels * 4);
+    assert_eq!(plan.encoded_input_reservation_bytes(), 0);
+    assert_eq!(plan.known_resident_reservation_bytes(), pixels * 7);
+    assert_eq!(plan.enforced_peak_bytes(), None);
     assert_eq!(plan.full_plane_copy_bytes(), 0);
-    assert!(plan.peak_pixel_bytes() < pixels * 3 + pixels * 4);
 
     let rgba = directory.path().join("rgba-adam7.png");
     write_adam7_rgba8(&rgba, &test_pixels(31, 17, 41));
@@ -166,8 +177,28 @@ fn preparation_memory_plan_never_accounts_a_second_full_plane() {
     let plan = cache.preparation_memory_plan(&identity).unwrap();
     assert_eq!(plan.decoded_surface_bytes(), pixels * 4);
     assert_eq!(plan.conversion_row_bytes(), 0);
-    assert_eq!(plan.peak_pixel_bytes(), pixels * 4);
+    assert_eq!(plan.decoder_scratch_reservation_bytes(), 0);
+    assert_eq!(plan.encoded_input_reservation_bytes(), 0);
+    assert_eq!(plan.known_resident_reservation_bytes(), pixels * 4);
+    assert_eq!(plan.enforced_peak_bytes(), None);
     assert_eq!(plan.full_plane_copy_bytes(), 0);
+
+    let jpeg = directory.path().join("buffered.jpg");
+    DynamicImage::ImageRgb8(image::RgbImage::from_fn(31, 17, |x, y| {
+        image::Rgb([(x * 11) as u8, (y * 13) as u8, (x + y * 2) as u8])
+    }))
+    .save_with_format(&jpeg, ImageFormat::Jpeg)
+    .unwrap();
+    let identity = cache.identify(&jpeg).unwrap();
+    let plan = cache.preparation_memory_plan(&identity).unwrap();
+    let encoded_limit = DerivedBackingLimits::default().max_encoded_source_bytes;
+    assert_eq!(plan.decoder_scratch_reservation_bytes(), 0);
+    assert_eq!(plan.encoded_input_reservation_bytes(), encoded_limit);
+    assert_eq!(
+        plan.known_resident_reservation_bytes(),
+        encoded_limit + pixels * 3
+    );
+    assert_eq!(plan.enforced_peak_bytes(), None);
 }
 
 #[test]

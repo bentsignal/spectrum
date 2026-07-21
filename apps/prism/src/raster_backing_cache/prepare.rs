@@ -23,7 +23,10 @@ pub(super) struct PreparedPlane {
     pub memory_plan: DerivedBackingMemoryPlan,
 }
 
-pub(super) fn memory_plan(descriptor: &RegionSourceDescriptor) -> Result<DerivedBackingMemoryPlan> {
+pub(super) fn memory_plan(
+    descriptor: &RegionSourceDescriptor,
+    limits: DerivedBackingLimits,
+) -> Result<DerivedBackingMemoryPlan> {
     if descriptor.width == 0 || descriptor.height == 0 {
         bail!("derived raster backing dimensions must be nonzero");
     }
@@ -47,18 +50,42 @@ pub(super) fn memory_plan(descriptor: &RegionSourceDescriptor) -> Result<Derived
             .checked_mul(4)
             .context("derived raster conversion row size overflows")?
     };
-    let peak_pixel_bytes = decoded_surface_bytes
+    // image-webp 0.2.4 lossless opaque decode allocates a full RGBA scratch
+    // plane while image's caller-provided RGB output plane is live. Reserve an
+    // RGBA plane for every WebP layout; other dependency-private buffers remain
+    // explicitly outside an enforced bound.
+    let decoder_scratch_reservation_bytes = if descriptor.decoder_contract.ends_with(":webp") {
+        pixels
+            .checked_mul(4)
+            .context("WebP decoder scratch reservation overflows")?
+    } else {
+        0
+    };
+    // image 0.25.10's JPEG decoder constructor reads the entire encoded source
+    // into a Vec. Identity preparation already enforces this configured limit.
+    let encoded_input_reservation_bytes = if descriptor.decoder_contract.ends_with(":jpeg") {
+        limits.max_encoded_source_bytes
+    } else {
+        0
+    };
+    let decode_reservation = decoded_surface_bytes
+        .checked_add(decoder_scratch_reservation_bytes)
+        .and_then(|bytes| bytes.checked_add(encoded_input_reservation_bytes))
+        .context("known decoder memory reservation overflows")?;
+    let publication_reservation = decoded_surface_bytes
         .checked_add(conversion_row_bytes)
-        .context("derived raster preparation memory peak overflows")?;
+        .context("derived raster publication memory reservation overflows")?;
     Ok(DerivedBackingMemoryPlan {
         decoded_surface_bytes,
         conversion_row_bytes,
-        peak_pixel_bytes,
+        decoder_scratch_reservation_bytes,
+        encoded_input_reservation_bytes,
+        known_resident_reservation_bytes: decode_reservation.max(publication_reservation),
     })
 }
 
-/// Decode and publication share one process-wide permit so the decoded surface
-/// remains the only full raster owned by a cold builder anywhere in Prism.
+/// Decoder construction, decode, and publication share one process-wide permit
+/// so only one dependency full-raster workload is resident anywhere in Prism.
 pub(super) fn prepare_exact_rgba8_plane(
     source: &Path,
     identity: &DerivedBackingIdentity,
@@ -96,6 +123,9 @@ pub(super) fn prepare_exact_rgba8_plane(
     image_limits.max_image_width = Some(identity.descriptor.width);
     image_limits.max_image_height = Some(identity.descriptor.height);
     image_limits.max_alloc = Some(limits.max_plane_bytes);
+    // Decoder construction is inside the process-wide permit: image 0.25.10's
+    // JPEG constructor buffers the complete encoded stream before read_image.
+    let _decode_permit = acquire_full_raster_decode_permit();
     let mut decoder = reader
         .into_decoder()
         .with_context(|| format!("could not inspect {}", source.display()))?;
@@ -106,7 +136,6 @@ pub(super) fn prepare_exact_rgba8_plane(
         bail!("raster decoder metadata changed before backing preparation");
     }
     decoder.set_limits(image_limits)?;
-    let _decode_permit = acquire_full_raster_decode_permit();
     let decoded = DynamicImage::from_decoder(decoder)
         .with_context(|| format!("could not decode {}", source.display()))?;
 
@@ -128,7 +157,7 @@ pub(super) fn prepare_exact_rgba8_plane(
         bail!("decoded raster changed its backing pixel layout");
     }
 
-    let expected_plan = memory_plan(&identity.descriptor)?;
+    let expected_plan = memory_plan(&identity.descriptor, limits)?;
     write_decoded_surface(decoded, identity, plane_path, expected_plan)
 }
 

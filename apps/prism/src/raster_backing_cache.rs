@@ -20,9 +20,10 @@ use crate::raster_region::{decoder_contract_for, inspect_raster_region_source};
 mod cache_fs;
 pub(crate) mod prepare;
 use cache_fs::{
-    is_cache_key, is_temporary_entry_name, metadata_is_link_or_reparse, open_trusted_cache_file,
-    path_refers_to_file, read_bounded, read_exact_at, remove_cache_entry, sync_directory,
-    trusted_cache_directory, trusted_cache_directory_if_present, trusted_cache_file_length,
+    RetainedPlane, is_cache_key, is_temporary_entry_name, metadata_is_link_or_reparse,
+    open_trusted_cache_file, path_refers_to_file, read_bounded, read_exact_at, remove_cache_entry,
+    retain_plane, sync_directory, trusted_cache_directory, trusted_cache_directory_if_present,
+    trusted_cache_file_length,
 };
 use prepare::prepare_exact_rgba8_plane;
 
@@ -92,15 +93,19 @@ pub enum PrepareDerivedBacking {
 
 /// Accounted pixel storage for one cold derived-backing preparation.
 ///
-/// The decoder owns exactly one full native surface. Publication writes that
-/// surface directly, or converts one row at a time for RGB/L/LA inputs. The
-/// peak excludes decoder-private compressed-data state and fixed-size I/O/hash
-/// buffers; it intentionally includes no second full RGBA8 publication plane.
+/// Prism publication retains one decoded output surface and writes it directly,
+/// or converts one row at a time for RGB/L/LA inputs. Decoder dependencies can
+/// own additional full-frame or input buffers while producing that surface.
+/// Those known reservations are reported separately; because dependency-private
+/// allocations are not fully limited by `image`, this plan does not advertise
+/// an enforced total-process peak.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DerivedBackingMemoryPlan {
     decoded_surface_bytes: u64,
     conversion_row_bytes: u64,
-    peak_pixel_bytes: u64,
+    decoder_scratch_reservation_bytes: u64,
+    encoded_input_reservation_bytes: u64,
+    known_resident_reservation_bytes: u64,
 }
 
 impl DerivedBackingMemoryPlan {
@@ -112,8 +117,28 @@ impl DerivedBackingMemoryPlan {
         self.conversion_row_bytes
     }
 
-    pub fn peak_pixel_bytes(self) -> u64 {
-        self.peak_pixel_bytes
+    /// Conservative dependency pixel-scratch reservation concurrent with the
+    /// output surface. WebP reserves one RGBA plane because opaque lossless
+    /// decode requires it; some layouts may use less or additional private work.
+    pub fn decoder_scratch_reservation_bytes(self) -> u64 {
+        self.decoder_scratch_reservation_bytes
+    }
+
+    /// Conservative encoded-input reservation for decoders that buffer input.
+    pub fn encoded_input_reservation_bytes(self) -> u64 {
+        self.encoded_input_reservation_bytes
+    }
+
+    /// Reservation covering all known concurrent buffers in the pinned decoder
+    /// implementations. This is not an upper bound on dependency-private work.
+    pub fn known_resident_reservation_bytes(self) -> u64 {
+        self.known_resident_reservation_bytes
+    }
+
+    /// `image` does not enforce a complete bound on dependency-private decoder
+    /// allocations, so supported derived formats currently return `None`.
+    pub fn enforced_peak_bytes(self) -> Option<u64> {
+        None
     }
 
     /// Publication never allocates a second full RGBA8 plane in memory.
@@ -236,7 +261,7 @@ impl DerivedBackingCache {
             },
             key: identity.key.clone(),
             plane_path,
-            plane,
+            plane: retain_plane(plane),
             max_region_pixels: self.limits.max_region_pixels,
         }))
     }
@@ -246,9 +271,9 @@ impl DerivedBackingCache {
     /// worker coordinator, is released after crashes, and makes quota checks
     /// race-free.
     ///
-    /// The cold path holds one decoder-native surface and at most one RGBA8
-    /// conversion row. It must remain on a background worker; this foundation
-    /// deliberately does not invoke it from the GUI renderer.
+    /// Prism's publication path holds one decoded output surface and at most one
+    /// RGBA8 conversion row. Decoder-private memory is serialized globally and
+    /// accounted conservatively where dependency behavior is known.
     pub fn prepare(&self, source: &Path) -> Result<PrepareDerivedBacking> {
         let identity = self.identify(source)?;
         self.prepare_identified(source, &identity)
@@ -415,7 +440,7 @@ impl DerivedBackingCache {
         if identity.key != expected_key {
             bail!("derived raster backing identity key is invalid");
         }
-        let plan = prepare::memory_plan(&identity.descriptor)?;
+        let plan = prepare::memory_plan(&identity.descriptor, self.limits)?;
         let plane_bytes = identity
             .descriptor
             .exact_rgba8_plane_bytes()
@@ -480,7 +505,7 @@ pub struct DerivedRasterBacking {
     info: RegionSourceInfo,
     key: String,
     plane_path: PathBuf,
-    plane: File,
+    plane: RetainedPlane,
     max_region_pixels: u64,
 }
 
