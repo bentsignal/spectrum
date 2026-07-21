@@ -954,3 +954,7 @@ mod transfer_tests;
 #[cfg(test)]
 #[path = "workspace_interaction_tests.rs"]
 mod workspace_interaction_tests;
+
+#[cfg(test)]
+#[path = "durable_asset_tests.rs"]
+mod durable_asset_tests;

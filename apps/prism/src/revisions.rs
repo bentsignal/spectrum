@@ -27,6 +27,12 @@ const SNAPSHOT_COMMAND_BUDGET: u64 = 100;
 const SNAPSHOT_OPERATION_BYTE_BUDGET: usize = 64 * 1024;
 const ASSET_PREFIX: &str = "spectrum-asset:";
 
+#[path = "durable_cache.rs"]
+mod durable_cache;
+#[path = "durable_edit.rs"]
+mod durable_edit;
+pub(crate) use durable_edit::PreparedEdit;
+
 struct PrismCompatibility;
 
 impl Compatibility for PrismCompatibility {
@@ -296,10 +302,41 @@ impl DurableProject {
         if commands.is_empty() {
             bail!("cannot commit an empty Prism action");
         }
-        let operations = PreparedOperations::new(commands)?;
+        if commands.iter().any(command_embeds_asset) {
+            bail!("asset commands must be committed through a Prism workspace");
+        }
+        self.commit_operations(
+            PreparedOperations::new(commands)?,
+            commands.len(),
+            document,
+            label,
+        )
+    }
+
+    pub(crate) fn prepare_edit(&self, commands: &[Command]) -> Result<PreparedEdit> {
+        PreparedEdit::new(self, commands)
+    }
+
+    pub(crate) fn commit_prepared(
+        &mut self,
+        prepared: PreparedEdit,
+        document: &Document,
+        label: impl Into<String>,
+    ) -> Result<RevisionId> {
+        let command_count = prepared.execution_commands.len();
+        self.commit_operations(prepared.operations, command_count, document, label)
+    }
+
+    fn commit_operations(
+        &mut self,
+        operations: PreparedOperations,
+        command_count: usize,
+        document: &Document,
+        label: impl Into<String>,
+    ) -> Result<RevisionId> {
         let next_tail = self
             .snapshot_tail
-            .after(commands.len(), operations.payload.bytes.len());
+            .after(command_count, operations.payload.bytes.len());
         let snapshot = next_tail
             .needs_snapshot()
             .then(|| PreparedSnapshot::compressed(document))
@@ -324,7 +361,7 @@ impl DurableProject {
             expected_parent: self.cursor,
             application_version: env!("CARGO_PKG_VERSION").into(),
             label: Some(label.into()),
-            command_count: commands.len().try_into().unwrap_or(u32::MAX),
+            command_count: command_count.try_into().unwrap_or(u32::MAX),
             operation_payloads: vec![operation_payload],
             snapshots,
             assets,
@@ -484,11 +521,11 @@ impl DurableProject {
         for step in plan.steps {
             let mut commands: Vec<Command> = serde_json::from_slice(&step.operations.bytes)
                 .context("invalid Prism operation batch")?;
-            let materialized_fonts = self.materialize_command_assets(&mut commands)?;
+            let materialized = self.materialize_command_assets(&mut commands)?;
             for command in commands {
                 apply_command(&mut document, command)?;
             }
-            detach_materialized_font_origins(&mut document, &materialized_fonts);
+            detach_materialized_origins(&mut document, &materialized);
         }
         Ok((document, snapshot_tail))
     }
@@ -514,18 +551,27 @@ impl DurableProject {
         Ok(())
     }
 
-    fn materialize_command_assets(&self, commands: &mut [Command]) -> Result<Vec<PathBuf>> {
-        let mut materialized_fonts = Vec::new();
+    fn materialize_command_assets(&self, commands: &mut [Command]) -> Result<MaterializedOrigins> {
+        let mut materialized = MaterializedOrigins::default();
         for command in commands {
             match command {
                 Command::ImportFont { path } => {
                     if let Some(reference) = AssetReference::parse(path) {
                         *path = self.materialize(reference)?;
-                        materialized_fonts
+                        materialized
+                            .fonts
                             .push(fs::canonicalize(&*path).unwrap_or_else(|_| path.to_path_buf()));
                     }
                 }
-                Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } => {
+                Command::AddRaster { path, .. } => {
+                    if let Some(reference) = AssetReference::parse(path) {
+                        *path = self.materialize(reference)?;
+                        materialized
+                            .rasters
+                            .push(fs::canonicalize(&*path).unwrap_or_else(|_| path.to_path_buf()));
+                    }
+                }
+                Command::RasterizeShape { path, .. } => {
                     if let Some(reference) = AssetReference::parse(path) {
                         *path = self.materialize(reference)?;
                     }
@@ -550,7 +596,7 @@ impl DurableProject {
                 _ => {}
             }
         }
-        Ok(materialized_fonts)
+        Ok(materialized)
     }
 
     fn materialize(&self, reference: AssetReference) -> Result<PathBuf> {
@@ -559,29 +605,45 @@ impl DurableProject {
             .store()
             .asset_record(reference.id)?
             .with_context(|| format!("embedded Prism asset {} is missing", reference.id))?;
-        let directory = std::env::temp_dir()
-            .join("spectrum-prism-cache")
-            .join(self.info.project_id.to_string());
-        fs::create_dir_all(&directory)?;
-        let path = directory.join(format!("{}.{}", reference.id, reference.extension));
-        let valid = fs::read(&path)
-            .ok()
-            .is_some_and(|bytes| AssetId::for_bytes(&bytes) == reference.id);
-        if !valid {
-            let temporary = directory.join(format!("{}.tmp", reference.id));
-            fs::write(&temporary, &asset.bytes)?;
-            if path.exists() {
-                fs::remove_file(&path)?;
-            }
-            fs::rename(temporary, &path)?;
-        }
-        Ok(path)
+        self.stage_asset(&reference, &asset.bytes)
     }
 }
 
-fn detach_materialized_font_origins(document: &mut Document, materialized_fonts: &[PathBuf]) {
+pub(crate) fn command_embeds_asset(command: &Command) -> bool {
+    match command {
+        Command::AddRaster { .. } | Command::ImportFont { .. } | Command::RasterizeShape { .. } => {
+            true
+        }
+        Command::InsertLayer { transfer, .. } => {
+            matches!(&transfer.layer.kind, LayerKind::Raster { .. })
+                || transfer.font_asset.is_some()
+        }
+        _ => false,
+    }
+}
+
+#[derive(Default)]
+struct MaterializedOrigins {
+    rasters: Vec<PathBuf>,
+    fonts: Vec<PathBuf>,
+}
+
+fn detach_materialized_origins(document: &mut Document, materialized: &MaterializedOrigins) {
+    for layer in &mut document.layers {
+        if let LayerKind::Raster {
+            path,
+            original_path,
+        } = &mut layer.kind
+            && materialized
+                .rasters
+                .iter()
+                .any(|candidate| candidate == path)
+        {
+            *original_path = None;
+        }
+    }
     for font in &mut document.font_assets {
-        if materialized_fonts.iter().any(|path| path == &font.path) {
+        if materialized.fonts.iter().any(|path| path == &font.path) {
             font.original_path = None;
         }
     }
@@ -673,14 +735,7 @@ struct PreparedOperations {
 
 impl PreparedOperations {
     fn new(commands: &[Command]) -> Result<Self> {
-        let version = if commands
-            .iter()
-            .any(|command| matches!(command, Command::InsertLayer { .. }))
-        {
-            LAYER_TRANSFER_OPERATIONS_VERSION
-        } else {
-            LEGACY_OPERATIONS_VERSION
-        };
+        let version = operations_version(commands);
         let mut portable = commands.to_vec();
         let mut assets = Vec::new();
         for command in &mut portable {
@@ -713,13 +768,28 @@ impl PreparedOperations {
                 _ => {}
             }
         }
+        Self::from_portable(version, portable, assets)
+    }
+
+    fn from_portable(version: u32, commands: Vec<Command>, assets: Vec<Asset>) -> Result<Self> {
         Ok(Self {
             payload: Payload::new(
                 Encoding::new(OPERATIONS_FAMILY, version),
-                serde_json::to_vec(&portable)?,
+                serde_json::to_vec(&commands)?,
             ),
             assets,
         })
+    }
+}
+
+fn operations_version(commands: &[Command]) -> u32 {
+    if commands
+        .iter()
+        .any(|command| matches!(command, Command::InsertLayer { .. }))
+    {
+        LAYER_TRANSFER_OPERATIONS_VERSION
+    } else {
+        LEGACY_OPERATIONS_VERSION
     }
 }
 
@@ -748,6 +818,10 @@ fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
 struct PreparedAsset {
     reference: AssetReference,
     asset: Asset,
+}
+
+fn canonical_asset_path(path: &Path) -> Result<PathBuf> {
+    fs::canonicalize(path).with_context(|| format!("could not read asset {}", path.display()))
 }
 
 fn prepare_asset(path: &Path) -> Result<PreparedAsset> {
