@@ -13,7 +13,7 @@ install -m 0755 "$repo_root/target/release/prism-gui" "$bundle/Contents/MacOS/pr
 install -m 0755 "$repo_root/target/release/prism" "$bundle/Contents/MacOS/prism"
 install -m 0644 "$repo_root/packaging/prism/macos/Info.plist" "$bundle/Contents/Info.plist"
 "$repo_root/scripts/package-macos-icon.sh" \
-  "$repo_root/assets/branding/cropped-prism.png" \
+  "$repo_root/assets/branding/prism-app-icon.png" \
   "$bundle/Contents/Resources/Prism.icns"
 install -m 0644 "$repo_root/LICENSE" "$bundle/Contents/Resources/LICENSE"
 install -m 0644 "$repo_root/THIRD_PARTY.md" "$bundle/Contents/Resources/THIRD_PARTY.md"

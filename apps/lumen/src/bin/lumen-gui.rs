@@ -121,7 +121,7 @@ fn native_options() -> eframe::NativeOptions {
 
 fn lumen_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(include_bytes!(
-        "../../../../assets/branding/lumen-violet-final-clean.png"
+        "../../../../assets/branding/lumen-app-icon.png"
     ))
     .expect("bundled Lumen icon must be a valid PNG")
 }
@@ -387,6 +387,12 @@ mod tests {
         let icon = lumen_icon();
         assert_eq!([icon.width, icon.height], [1_024, 1_024]);
         assert_eq!(icon.rgba.len(), 1_024 * 1_024 * 4);
+        assert_eq!(icon.rgba[3], 0, "the app icon must have a masked corner");
+        assert_eq!(
+            icon.rgba[(512 * 1_024 + 512) * 4 + 3],
+            255,
+            "the app icon center must remain opaque"
+        );
     }
 
     #[test]

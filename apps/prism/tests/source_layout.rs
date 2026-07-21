@@ -236,9 +236,9 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
     let windows = fs::read_to_string(repository.join("scripts/package-prism-windows.ps1")).unwrap();
 
     assert!(app.contains("with_icon(prism_icon())"));
-    assert!(app.contains("assets/branding/cropped-prism.png"));
+    assert!(app.contains("assets/branding/prism-app-icon.png"));
     assert!(plist.contains("<string>Prism.icns</string>"));
-    assert!(macos.contains("assets/branding/cropped-prism.png"));
+    assert!(macos.contains("assets/branding/prism-app-icon.png"));
     assert!(linux.contains("com.bentsignal.Prism.png"));
     assert!(windows.contains("Prism.png"));
 }

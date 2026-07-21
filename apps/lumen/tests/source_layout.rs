@@ -55,9 +55,9 @@ fn lumen_branding_is_wired_to_runtime_and_native_packages() {
     let windows = fs::read_to_string(repository.join("scripts/package-windows.ps1")).unwrap();
 
     assert!(app.contains("with_icon(lumen_icon())"));
-    assert!(app.contains("lumen-violet-final-clean.png"));
+    assert!(app.contains("lumen-app-icon.png"));
     assert!(plist.contains("<string>Lumen.icns</string>"));
-    assert!(macos.contains("lumen-violet-final-clean.png"));
+    assert!(macos.contains("lumen-app-icon.png"));
     assert!(linux.contains("com.bentsignal.Lumen.png"));
     assert!(windows.contains("Lumen.png"));
 }

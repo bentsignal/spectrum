@@ -169,7 +169,7 @@ fn native_options() -> eframe::NativeOptions {
 
 fn prism_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(include_bytes!(
-        "../../../../assets/branding/cropped-prism.png"
+        "../../../../assets/branding/prism-app-icon.png"
     ))
     .expect("bundled Prism icon must be a valid PNG")
 }
@@ -629,8 +629,14 @@ mod tests {
     #[test]
     fn bundled_prism_icon_uses_the_user_cropped_artwork() {
         let icon = prism_icon();
-        assert_eq!([icon.width, icon.height], [400, 400]);
-        assert_eq!(icon.rgba.len(), 400 * 400 * 4);
+        assert_eq!([icon.width, icon.height], [1_024, 1_024]);
+        assert_eq!(icon.rgba.len(), 1_024 * 1_024 * 4);
+        assert_eq!(icon.rgba[3], 0, "the app icon must have a masked corner");
+        assert_eq!(
+            icon.rgba[(512 * 1_024 + 512) * 4 + 3],
+            255,
+            "the app icon center must remain opaque"
+        );
     }
 
     #[test]
