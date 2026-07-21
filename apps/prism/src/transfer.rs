@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Document, FontAsset, FontSlant, Layer, LayerKind, MAX_CANVAS_DIMENSION,
+    effects::{validate_layer_style, validate_shape_fill},
     validation::{
         require_finite, validate_adjustments, validate_mask, validate_shape_stroke,
         validate_transform,
@@ -12,7 +13,7 @@ use crate::{
 };
 
 pub const LAYER_TRANSFER_FORMAT: &str = "spectrum.prism.layer";
-pub const LAYER_TRANSFER_VERSION: u32 = 1;
+pub const LAYER_TRANSFER_VERSION: u32 = 2;
 const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 4 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
@@ -133,11 +134,14 @@ impl LayerTransfer {
         if self.format != LAYER_TRANSFER_FORMAT {
             bail!("unsupported Prism layer transfer format {}", self.format);
         }
-        if self.version != LAYER_TRANSFER_VERSION {
+        if !(1..=LAYER_TRANSFER_VERSION).contains(&self.version) {
             bail!(
-                "unsupported Prism layer transfer version {} (expected {LAYER_TRANSFER_VERSION})",
+                "unsupported Prism layer transfer version {} (supports 1 through {LAYER_TRANSFER_VERSION})",
                 self.version
             );
+        }
+        if self.version == 1 && (!self.layer.style.is_empty() || self.layer.shape_fill.is_some()) {
+            bail!("Prism layer transfer version 1 cannot contain layer styles or shape fills");
         }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");
@@ -177,11 +181,23 @@ fn sanitize_layer(layer: &mut Layer) -> Result<()> {
     validate_transform(layer.transform)?;
     validate_adjustments(&layer.adjustments)?;
     validate_mask(layer.mask)?;
+    validate_layer_style(&layer.style)?;
     validate_shape_stroke(layer.stroke)?;
+    if let Some(fill) = &layer.shape_fill {
+        validate_shape_fill(fill)?;
+        if !matches!(
+            layer.kind,
+            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+        ) {
+            bail!("only shape layers can have a shape fill");
+        }
+    }
     layer.opacity = layer.opacity.clamp(0.0, 1.0);
     layer.transform = layer.transform.sanitized();
     layer.adjustments = layer.adjustments.clone().sanitized();
     layer.mask = layer.mask.sanitized();
+    layer.style = layer.style.clone().sanitized();
+    layer.shape_fill = layer.shape_fill.clone().map(crate::ShapeFill::sanitized);
     layer.stroke = layer.stroke.sanitized();
 
     match &mut layer.kind {

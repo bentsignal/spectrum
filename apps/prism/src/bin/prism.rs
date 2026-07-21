@@ -22,6 +22,9 @@ use agent::{AgentCommand, agent_command};
 #[path = "prism_cli/benchmark.rs"]
 mod benchmark;
 use benchmark::benchmark;
+#[path = "prism_cli/effects.rs"]
+mod effects;
+use effects::{GradientArgs, ShadowArgs};
 #[path = "prism_cli/schema.rs"]
 mod schema;
 use schema::schema;
@@ -172,6 +175,10 @@ enum CliCommand {
         #[arg(long, default_value = "ffffffff")]
         color: String,
     },
+    /// Add, update, or clear a portable layer drop shadow.
+    Shadow(ShadowArgs),
+    /// Add, update, or clear a two-stop linear shape gradient.
+    Gradient(GradientArgs),
     /// Freeze an editable shape into an embedded raster asset.
     RasterizeShape {
         id: u64,
@@ -641,6 +648,12 @@ fn run(cli: Cli) -> Result<Value> {
                         color: parse_color(&color)?,
                     },
                 })?],
+                CliCommand::Shadow(arguments) => {
+                    vec![workspace.execute(effects::shadow_command(arguments)?)?]
+                }
+                CliCommand::Gradient(arguments) => {
+                    vec![workspace.execute(effects::gradient_command(arguments)?)?]
+                }
                 CliCommand::RasterizeShape { id, scale } => {
                     let layer = workspace.document.layer(id)?;
                     let scale = scale

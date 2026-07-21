@@ -117,7 +117,10 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert!(schema["typography"]["optimization_limitations"].is_string());
     assert!(schema["typography"]["embedding_metadata"].is_string());
     assert!(schema["typography"]["editable_default"].is_string());
-    assert_eq!(schema["layer_transfer"]["version"], 1);
+    assert_eq!(
+        schema["layer_transfer"]["version"],
+        prism_core::LAYER_TRANSFER_VERSION
+    );
     let insert = examples
         .iter()
         .find(|example| example["command"] == "insert_layer")
@@ -157,7 +160,7 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
     .unwrap();
     let copied = run(copy).unwrap();
     assert_eq!(copied["action"], "layer_copy");
-    assert_eq!(copied["version"], 1);
+    assert_eq!(copied["version"], prism_core::LAYER_TRANSFER_VERSION);
     assert!(transfer.exists());
 
     let paste = Cli::try_parse_from([

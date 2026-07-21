@@ -118,6 +118,7 @@ pub(crate) struct ShapeSampler<'a> {
     layer: &'a Layer,
     scale: [f32; 2],
     dimensions: (u32, u32),
+    fill_direction: Option<(f32, f32)>,
 }
 
 impl<'a> ShapeSampler<'a> {
@@ -140,6 +141,7 @@ impl<'a> ShapeSampler<'a> {
             layer,
             scale,
             dimensions,
+            fill_direction: layer.shape_fill.as_ref().map(|fill| fill.direction()),
         })
     }
 
@@ -157,7 +159,11 @@ impl<'a> ShapeSampler<'a> {
                 color,
                 corner_radius,
                 ..
-            } if corner_radius <= 0.0 && !self.layer.stroke.enabled => Some(Rgba(color)),
+            } if corner_radius <= 0.0 && !self.layer.stroke.enabled => match &self.layer.shape_fill
+            {
+                Some(fill) => fill.uniform_color().map(Rgba),
+                None => Some(Rgba(color)),
+            },
             _ => None,
         }
     }
@@ -171,7 +177,15 @@ impl<'a> ShapeSampler<'a> {
                 corner_radius,
             } => {
                 if corner_radius <= 0.0 && !self.layer.stroke.enabled {
-                    color
+                    shape_fill_color(
+                        self.layer,
+                        color,
+                        (x as f32 + 0.5) / self.scale[0],
+                        (y as f32 + 0.5) / self.scale[1],
+                        width,
+                        height,
+                        self.fill_direction,
+                    )
                 } else {
                     sample_shape_pixel(x, y, self.scale, |x, y| {
                         if !rounded_rect_contains(x, y, width, height, corner_radius, 0.0) {
@@ -189,7 +203,15 @@ impl<'a> ShapeSampler<'a> {
                         Some(if stroke_pixel {
                             self.layer.stroke.color
                         } else {
-                            color
+                            shape_fill_color(
+                                self.layer,
+                                color,
+                                x,
+                                y,
+                                width,
+                                height,
+                                self.fill_direction,
+                            )
                         })
                     })
                 }
@@ -218,7 +240,15 @@ impl<'a> ShapeSampler<'a> {
                     Some(if self.layer.stroke.enabled && !inner {
                         self.layer.stroke.color
                     } else {
-                        color
+                        shape_fill_color(
+                            self.layer,
+                            color,
+                            x,
+                            y,
+                            width,
+                            height,
+                            self.fill_direction,
+                        )
                     })
                 })
             }
@@ -226,6 +256,125 @@ impl<'a> ShapeSampler<'a> {
         };
         Rgba(color)
     }
+
+    pub(crate) fn alpha(&self, x: u32, y: u32) -> u8 {
+        match self.layer.kind {
+            LayerKind::Rectangle {
+                width,
+                height,
+                color,
+                corner_radius,
+            } => {
+                if corner_radius <= 0.0 && !self.layer.stroke.enabled {
+                    return shape_fill_alpha(
+                        self.layer,
+                        color[3],
+                        (x as f32 + 0.5) / self.scale[0],
+                        (y as f32 + 0.5) / self.scale[1],
+                        width,
+                        height,
+                        self.fill_direction,
+                    );
+                }
+                sample_shape_alpha(x, y, self.scale, |x, y| {
+                    if !rounded_rect_contains(x, y, width, height, corner_radius, 0.0) {
+                        return None;
+                    }
+                    let stroke_pixel = self.layer.stroke.enabled
+                        && !rounded_rect_contains(
+                            x,
+                            y,
+                            width,
+                            height,
+                            corner_radius,
+                            self.layer.stroke.width.min(width.min(height) as f32 * 0.5),
+                        );
+                    Some(if stroke_pixel {
+                        self.layer.stroke.color[3]
+                    } else {
+                        shape_fill_alpha(
+                            self.layer,
+                            color[3],
+                            x,
+                            y,
+                            width,
+                            height,
+                            self.fill_direction,
+                        )
+                    })
+                })
+            }
+            LayerKind::Ellipse {
+                width,
+                height,
+                color,
+            } => {
+                let center_x = width as f32 * 0.5;
+                let center_y = height as f32 * 0.5;
+                let radius_x = center_x.max(0.5);
+                let radius_y = center_y.max(0.5);
+                let inner_x = (radius_x - self.layer.stroke.width).max(0.0);
+                let inner_y = (radius_y - self.layer.stroke.width).max(0.0);
+                sample_shape_alpha(x, y, self.scale, |x, y| {
+                    let dx = x - center_x;
+                    let dy = y - center_y;
+                    let outer = (dx / radius_x).powi(2) + (dy / radius_y).powi(2) <= 1.0;
+                    if !outer {
+                        return None;
+                    }
+                    let inner = inner_x > 0.0
+                        && inner_y > 0.0
+                        && (dx / inner_x).powi(2) + (dy / inner_y).powi(2) <= 1.0;
+                    Some(if self.layer.stroke.enabled && !inner {
+                        self.layer.stroke.color[3]
+                    } else {
+                        shape_fill_alpha(
+                            self.layer,
+                            color[3],
+                            x,
+                            y,
+                            width,
+                            height,
+                            self.fill_direction,
+                        )
+                    })
+                })
+            }
+            _ => unreachable!("ShapeSampler validates the layer kind"),
+        }
+    }
+}
+
+fn shape_fill_color(
+    layer: &Layer,
+    fallback: [u8; 4],
+    x: f32,
+    y: f32,
+    width: u32,
+    height: u32,
+    direction: Option<(f32, f32)>,
+) -> [u8; 4] {
+    layer
+        .shape_fill
+        .as_ref()
+        .map(|fill| fill.sample(x, y, width, height, direction.unwrap_or((1.0, 0.0))))
+        .unwrap_or(fallback)
+}
+
+fn shape_fill_alpha(
+    layer: &Layer,
+    fallback: u8,
+    x: f32,
+    y: f32,
+    width: u32,
+    height: u32,
+    direction: Option<(f32, f32)>,
+) -> u8 {
+    layer
+        .shape_fill
+        .as_ref()
+        .map(|fill| fill.sample_alpha(x, y, width, height, direction.unwrap_or((1.0, 0.0))))
+        .unwrap_or(fallback)
 }
 
 fn sample_shape_pixel(
@@ -258,6 +407,26 @@ fn sample_shape_pixel(
     }
     color[3] = (alpha / OFFSETS.len() as u32) as u8;
     color
+}
+
+fn sample_shape_alpha(
+    x: u32,
+    y: u32,
+    scale: [f32; 2],
+    mut sample: impl FnMut(f32, f32) -> Option<u8>,
+) -> u8 {
+    const OFFSETS: [(f32, f32); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
+    let alpha = OFFSETS
+        .into_iter()
+        .filter_map(|(offset_x, offset_y)| {
+            sample(
+                (x as f32 + offset_x) / scale[0],
+                (y as f32 + offset_y) / scale[1],
+            )
+        })
+        .map(u32::from)
+        .sum::<u32>();
+    (alpha / OFFSETS.len() as u32) as u8
 }
 
 fn quantized_scale(target: f32) -> u32 {

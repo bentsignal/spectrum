@@ -10,6 +10,7 @@ use spectrum_imaging::{RenderOptions, render_image};
 
 use crate::{
     Document, FontAsset, Layer, LayerKind, RasterSourceResolver, Transform, blend_rgb,
+    effects_render::composite_shadow_region,
     render_fallback::{MAX_REGION_FALLBACK_PEAK_BYTES, ensure_region_fallback_is_bounded},
     shapes::render_shape,
     text_render::{measure_text_geometry_with_typography, render_text},
@@ -167,6 +168,14 @@ pub struct RegionRenderStats {
     pub fallback_peak_bytes: u64,
     /// Pixels materialized in full scaled and rotated fallback surfaces.
     pub transformed_surface_pixels: u64,
+    /// Fixed-kernel source-alpha samples used for layer drop shadows.
+    pub shadow_samples: u64,
+    /// Cumulative one-byte alpha-tile pixels allocated for bounded shadows.
+    pub shadow_alpha_tile_pixels: u64,
+    pub shadow_alpha_tile_bytes: u64,
+    /// Peak live alpha-tile allocation; tiles are processed one layer at a time.
+    pub max_shadow_alpha_tile_pixels: u64,
+    pub max_shadow_alpha_tile_bytes: u64,
 }
 
 /// Whether every visible layer can be sampled directly into a viewport region
@@ -347,6 +356,7 @@ fn render_document_region_scaled_impl(
         scaled_layer.transform.y *= scale;
         scaled_layer.transform.scale_x = source_scales.outer_transform[0];
         scaled_layer.transform.scale_y = source_scales.outer_transform[1];
+        scaled_layer.style = layer.style.scaled(scale);
         let mut coverage = RgbaImage::new(region.width, region.height);
         if bound_fallback_layers
             && crate::render_region::composite_bounded_source_region(
@@ -449,6 +459,17 @@ fn render_document_region_scaled_impl(
                 .transformed_surface_pixels
                 .saturating_add(fallback_allocation.scaled_pixels)
                 .saturating_add(rotated_pixels);
+        }
+        if let Some(shadow) = scaled_layer.style.drop_shadow {
+            composite_shadow_region(
+                &mut canvas,
+                &source,
+                &scaled_layer,
+                previous_coverage.as_ref(),
+                region,
+                shadow,
+                stats,
+            );
         }
         composite_layer_region(
             &mut canvas,
@@ -704,13 +725,7 @@ pub(crate) fn composite_pixel(
     x: u32,
     y: u32,
 ) {
-    let normalized_x = source_x as f32 / source_width.max(1) as f32;
-    let normalized_y = source_y as f32 / source_height.max(1) as f32;
-    let in_mask = normalized_x >= layer.mask.x
-        && normalized_x <= layer.mask.x + layer.mask.width
-        && normalized_y >= layer.mask.y
-        && normalized_y <= layer.mask.y + layer.mask.height;
-    let mask_alpha = if !layer.mask.enabled || in_mask != layer.mask.invert {
+    let mask_alpha = if layer_mask_allows(layer, source_x, source_y, source_width, source_height) {
         1.0
     } else {
         0.0
@@ -724,8 +739,30 @@ pub(crate) fn composite_pixel(
     if alpha <= 0.0 {
         return;
     }
+    composite_blended_pixel(canvas, source_pixel, layer.blend_mode, alpha, x, y);
+    coverage.put_pixel(x, y, Rgba([255, 255, 255, (alpha * 255.0) as u8]));
+}
+
+pub(crate) fn layer_mask_allows(layer: &Layer, x: u32, y: u32, width: u32, height: u32) -> bool {
+    let normalized_x = x as f32 / width.max(1) as f32;
+    let normalized_y = y as f32 / height.max(1) as f32;
+    let in_mask = normalized_x >= layer.mask.x
+        && normalized_x <= layer.mask.x + layer.mask.width
+        && normalized_y >= layer.mask.y
+        && normalized_y <= layer.mask.y + layer.mask.height;
+    !layer.mask.enabled || in_mask != layer.mask.invert
+}
+
+pub(crate) fn composite_blended_pixel(
+    canvas: &mut RgbaImage,
+    source_pixel: [u8; 4],
+    blend_mode: crate::BlendMode,
+    alpha: f32,
+    x: u32,
+    y: u32,
+) {
     let destination = *canvas.get_pixel(x, y);
-    let blended = blend_rgb(source_pixel, destination.0, layer.blend_mode);
+    let blended = blend_rgb(source_pixel, destination.0, blend_mode);
     let destination_alpha = destination[3] as f32 / 255.0;
     let output_alpha = alpha + destination_alpha * (1.0 - alpha);
     let mut output = [0; 4];
@@ -742,7 +779,6 @@ pub(crate) fn composite_pixel(
     }
     output[3] = (output_alpha * 255.0).round() as u8;
     canvas.put_pixel(x, y, Rgba(output));
-    coverage.put_pixel(x, y, Rgba([255, 255, 255, (alpha * 255.0) as u8]));
 }
 
 pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<()> {

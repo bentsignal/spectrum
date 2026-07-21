@@ -3,12 +3,18 @@ use image::RgbaImage;
 
 use crate::{
     Document, FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
-    render::composite_pixel, shapes::constrained_shape_scale,
+    effects::{DROP_SHADOW_KERNEL, colored_shadow_pixel, drop_shadow_alpha},
+    effects_render::composite_style_pixel,
+    render::composite_pixel,
+    shapes::constrained_shape_scale,
     text_render::measure_text_geometry_with_typography,
 };
 
 mod source;
-use source::{SampleSource, SourceDescriptor, SourceRegion};
+use source::{
+    SampleSource, SourceDescriptor, SourceRegion, sample_triangle_resize,
+    sample_triangle_resize_alpha, source_sample_bounds,
+};
 
 const MAX_SOURCE_STAGING_PIXELS: u64 = 4_096 * 4_096;
 
@@ -112,11 +118,31 @@ pub(crate) fn composite_bounded_source_region(
         &descriptor,
         font_asset,
     )?;
-    let Some(intersection) = geometry.intersection(region) else {
+    let intersection = geometry.intersection(region);
+    let shadow = scaled_layer.style.drop_shadow;
+    let shadow_intersection =
+        shadow.and_then(|shadow| geometry.shadow_intersection(region, shadow));
+    if intersection.is_none() && shadow_intersection.is_none() {
         return Ok(true);
-    };
-    let Some(staging_region) = required_source_region(&geometry, intersection) else {
-        return Ok(true);
+    }
+    let staging_region = if descriptor.is_unadjusted_shape() {
+        SourceRegion {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        }
+    } else {
+        let mut staging_region =
+            intersection.and_then(|intersection| required_source_region(&geometry, intersection));
+        if let (Some(shadow), Some(intersection)) = (shadow, shadow_intersection) {
+            let shadow_region = required_shadow_source_region(&geometry, intersection, shadow);
+            staging_region = union_source_regions(staging_region, shadow_region);
+        }
+        let Some(staging_region) = staging_region else {
+            return Ok(true);
+        };
+        staging_region
     };
     if staging_region.pixel_count() > MAX_SOURCE_STAGING_PIXELS {
         bail!(
@@ -129,35 +155,191 @@ pub(crate) fn composite_bounded_source_region(
         .full_source_pixels
         .saturating_add(u64::from(geometry.source_width) * u64::from(geometry.source_height));
 
-    for canvas_y in intersection.top..intersection.bottom {
-        for canvas_x in intersection.left..intersection.right {
-            let output_x = (canvas_x - geometry.origin_x) as u32;
-            let output_y = (canvas_y - geometry.origin_y) as u32;
-            let Some((scaled_x, scaled_y)) = geometry.inverse_sample(output_x, output_y) else {
-                continue;
-            };
-            let source_pixel = sample_triangle_resize(
-                &source,
-                (geometry.source_width, geometry.source_height),
-                (geometry.scaled_width, geometry.scaled_height),
-                (scaled_x, scaled_y),
-            );
-            composite_pixel(
-                canvas,
-                coverage,
-                source_pixel,
-                output_x,
-                output_y,
-                geometry.output_width,
-                geometry.output_height,
-                scaled_layer,
-                clip,
-                canvas_x as u32 - region.x,
-                canvas_y as u32 - region.y,
-            );
+    if let (Some(shadow), Some(intersection)) = (shadow, shadow_intersection) {
+        let alpha_tile =
+            ShadowAlphaTile::bounded(&source, &geometry, base_layer, intersection, shadow);
+        if let Some(tile) = &alpha_tile {
+            let pixels = tile.pixel_count();
+            stats.shadow_alpha_tile_pixels = stats.shadow_alpha_tile_pixels.saturating_add(pixels);
+            stats.shadow_alpha_tile_bytes = stats.shadow_alpha_tile_bytes.saturating_add(pixels);
+            stats.max_shadow_alpha_tile_pixels = stats.max_shadow_alpha_tile_pixels.max(pixels);
+            stats.max_shadow_alpha_tile_bytes = stats.max_shadow_alpha_tile_bytes.max(pixels);
+        }
+        for canvas_y in intersection.top..intersection.bottom {
+            for canvas_x in intersection.left..intersection.right {
+                let center_x = canvas_x - geometry.origin_x - shadow.offset_x.round() as i64;
+                let center_y = canvas_y - geometry.origin_y - shadow.offset_y.round() as i64;
+                let alpha = alpha_tile.as_ref().map_or_else(
+                    || {
+                        drop_shadow_alpha(center_x, center_y, shadow.blur_radius, |x, y| {
+                            sample_output_alpha(&source, &geometry, base_layer, x, y)
+                        })
+                    },
+                    |tile| tile.filtered_alpha(center_x, center_y, shadow.blur_radius),
+                );
+                stats.shadow_samples =
+                    stats
+                        .shadow_samples
+                        .saturating_add(if shadow.blur_radius < 0.5 {
+                            1
+                        } else {
+                            crate::effects::DROP_SHADOW_KERNEL_TAPS
+                        });
+                composite_style_pixel(
+                    canvas,
+                    colored_shadow_pixel(shadow, alpha),
+                    scaled_layer.opacity,
+                    scaled_layer.clip_to_below,
+                    clip,
+                    canvas_x as u32 - region.x,
+                    canvas_y as u32 - region.y,
+                );
+            }
+        }
+    }
+
+    if let Some(intersection) = intersection {
+        for canvas_y in intersection.top..intersection.bottom {
+            for canvas_x in intersection.left..intersection.right {
+                let output_x = (canvas_x - geometry.origin_x) as u32;
+                let output_y = (canvas_y - geometry.origin_y) as u32;
+                let Some((scaled_x, scaled_y)) = geometry.inverse_sample(output_x, output_y) else {
+                    continue;
+                };
+                let source_pixel = sample_triangle_resize(
+                    &source,
+                    (geometry.source_width, geometry.source_height),
+                    (geometry.scaled_width, geometry.scaled_height),
+                    (scaled_x, scaled_y),
+                );
+                composite_pixel(
+                    canvas,
+                    coverage,
+                    source_pixel,
+                    output_x,
+                    output_y,
+                    geometry.output_width,
+                    geometry.output_height,
+                    scaled_layer,
+                    clip,
+                    canvas_x as u32 - region.x,
+                    canvas_y as u32 - region.y,
+                );
+            }
         }
     }
     Ok(true)
+}
+
+/// Alpha samples needed by one visible shadow region, never the full layer.
+///
+/// The fixed shadow kernel revisits most coordinates across neighboring output
+/// pixels. Materializing this one-byte bounded tile preserves the exact alpha
+/// oracle while evaluating procedural geometry and masks only once per unique
+/// coordinate. Oversized tiles fall back to direct sampling.
+struct ShadowAlphaTile {
+    left: i64,
+    top: i64,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+impl ShadowAlphaTile {
+    fn pixel_count(&self) -> u64 {
+        u64::from(self.width) * u64::from(self.height)
+    }
+
+    fn bounded(
+        source: &SampleSource<'_>,
+        geometry: &SamplingGeometry,
+        layer: &Layer,
+        intersection: CanvasIntersection,
+        shadow: crate::DropShadow,
+    ) -> Option<Self> {
+        if !source.supports_unstaged_alpha_tile() {
+            return None;
+        }
+        let center_left = intersection.left - geometry.origin_x - shadow.offset_x.round() as i64;
+        let center_top = intersection.top - geometry.origin_y - shadow.offset_y.round() as i64;
+        let center_right = intersection.right - geometry.origin_x - shadow.offset_x.round() as i64;
+        let center_bottom =
+            intersection.bottom - geometry.origin_y - shadow.offset_y.round() as i64;
+        let (offset_left, offset_top, offset_right, offset_bottom) =
+            shadow_kernel_bounds(shadow.blur_radius);
+        let left = (center_left + offset_left).max(0);
+        let top = (center_top + offset_top).max(0);
+        let right = (center_right + offset_right)
+            .min(i64::from(geometry.output_width))
+            .max(left);
+        let bottom = (center_bottom + offset_bottom)
+            .min(i64::from(geometry.output_height))
+            .max(top);
+        let width = u32::try_from(right - left).ok()?;
+        let height = u32::try_from(bottom - top).ok()?;
+        let pixel_count = u64::from(width) * u64::from(height);
+        if pixel_count > MAX_SOURCE_STAGING_PIXELS {
+            return None;
+        }
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(pixel_count as usize).ok()?;
+        for y in top..bottom {
+            for x in left..right {
+                pixels.push(sample_output_alpha(source, geometry, layer, x, y));
+            }
+        }
+        Some(Self {
+            left,
+            top,
+            width,
+            height,
+            pixels,
+        })
+    }
+
+    #[inline]
+    fn alpha(&self, x: i64, y: i64) -> u8 {
+        let local_x = x - self.left;
+        let local_y = y - self.top;
+        if local_x < 0
+            || local_y < 0
+            || local_x >= i64::from(self.width)
+            || local_y >= i64::from(self.height)
+        {
+            return 0;
+        }
+        self.pixels[local_y as usize * self.width as usize + local_x as usize]
+    }
+
+    #[inline]
+    fn filtered_alpha(&self, center_x: i64, center_y: i64, radius: f32) -> u8 {
+        if radius < 0.5 {
+            return self.alpha(center_x, center_y);
+        }
+        let mut weighted_alpha = 0_u32;
+        let mut total_weight = 0_u32;
+        for (unit_x, unit_y, weight) in DROP_SHADOW_KERNEL {
+            let x = center_x + (unit_x * radius).round() as i64;
+            let y = center_y + (unit_y * radius).round() as i64;
+            weighted_alpha += u32::from(self.alpha(x, y)) * weight;
+            total_weight += weight;
+        }
+        (weighted_alpha / total_weight) as u8
+    }
+}
+
+fn shadow_kernel_bounds(radius: f32) -> (i64, i64, i64, i64) {
+    if radius < 0.5 {
+        return (0, 0, 0, 0);
+    }
+    DROP_SHADOW_KERNEL.into_iter().fold(
+        (0, 0, 0, 0),
+        |(left, top, right, bottom), (unit_x, unit_y, _)| {
+            let x = (unit_x * radius).round() as i64;
+            let y = (unit_y * radius).round() as i64;
+            (left.min(x), top.min(y), right.max(x), bottom.max(y))
+        },
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -177,10 +359,12 @@ struct SamplingGeometry {
 enum RotationSampling {
     None,
     Center {
-        degrees: f32,
+        sin: f32,
+        cos: f32,
     },
     TextPivot {
-        degrees: f32,
+        sin: f32,
+        cos: f32,
         pivot: (f32, f32),
         minimum: (f32, f32),
     },
@@ -200,6 +384,7 @@ impl SamplingGeometry {
         let degrees = scaled_layer.transform.rotation;
         let (output_width, output_height, offset, rotation) = match &render_layer.kind {
             LayerKind::Text { font_size, .. } if degrees.abs() >= 0.01 => {
+                let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
                 let LayerKind::Text {
                     text,
                     font_size: base_font_size,
@@ -227,7 +412,8 @@ impl SamplingGeometry {
                     bounds.height,
                     (bounds.min_x, bounds.min_y),
                     RotationSampling::TextPivot {
-                        degrees,
+                        sin,
+                        cos,
                         pivot,
                         minimum: (bounds.min_x, bounds.min_y),
                     },
@@ -243,11 +429,12 @@ impl SamplingGeometry {
                 if degrees.abs() >= 0.01 =>
             {
                 let bounds = centered_rotation_bounds(scaled_width, scaled_height, degrees);
+                let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
                 (
                     bounds.width,
                     bounds.height,
                     (bounds.offset_x, bounds.offset_y),
-                    RotationSampling::Center { degrees },
+                    RotationSampling::Center { sin, cos },
                 )
             }
             LayerKind::Raster { .. } | LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => (
@@ -285,26 +472,54 @@ impl SamplingGeometry {
         })
     }
 
+    fn shadow_intersection(
+        self,
+        region: RenderRegion,
+        shadow: crate::DropShadow,
+    ) -> Option<CanvasIntersection> {
+        let radius = shadow.blur_radius.ceil() as i64;
+        let left =
+            (self.origin_x + shadow.offset_x.round() as i64 - radius).max(i64::from(region.x));
+        let top =
+            (self.origin_y + shadow.offset_y.round() as i64 - radius).max(i64::from(region.y));
+        let right = (self.origin_x
+            + i64::from(self.output_width)
+            + shadow.offset_x.round() as i64
+            + radius)
+            .min(i64::from(region.x + region.width));
+        let bottom = (self.origin_y
+            + i64::from(self.output_height)
+            + shadow.offset_y.round() as i64
+            + radius)
+            .min(i64::from(region.y + region.height));
+        (right > left && bottom > top).then_some(CanvasIntersection {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
+
     fn inverse_sample(self, output_x: u32, output_y: u32) -> Option<(u32, u32)> {
         match self.rotation {
             RotationSampling::None => Some((output_x, output_y)),
-            RotationSampling::Center { degrees } => inverse_center_rotation(
+            RotationSampling::Center { sin, cos } => inverse_center_rotation(
                 output_x,
                 output_y,
-                self.output_width,
-                self.output_height,
-                self.scaled_width,
-                self.scaled_height,
-                degrees,
+                (self.output_width, self.output_height),
+                (self.scaled_width, self.scaled_height),
+                (sin, cos),
             ),
             RotationSampling::TextPivot {
-                degrees,
+                sin,
+                cos,
                 pivot,
                 minimum,
             } => inverse_text_rotation(
                 output_x,
                 output_y,
-                degrees,
+                sin,
+                cos,
                 pivot,
                 minimum,
                 (self.scaled_width, self.scaled_height),
@@ -354,82 +569,109 @@ fn required_source_region(
     })
 }
 
-fn sample_triangle_resize(
-    source_pixels: &SampleSource<'_>,
-    source: (u32, u32),
-    output: (u32, u32),
-    coordinate: (u32, u32),
-) -> [u8; 4] {
-    if let SampleSource::Constant(pixel) = source_pixels {
-        return *pixel;
-    }
-    if source == output {
-        return source_pixels.pixel(coordinate.0, coordinate.1);
-    }
-    let x_weights = triangle_weights(source.0, output.0, coordinate.0);
-    let y_weights = triangle_weights(source.1, output.1, coordinate.1);
-    let mut horizontal = [0.0_f32; 4];
-    for source_x in x_weights.start..x_weights.end {
-        let mut vertical = [0.0_f32; 4];
-        for source_y in y_weights.start..y_weights.end {
-            let pixel = source_pixels.pixel(source_x, source_y);
-            let weight =
-                triangle_weight(source_y, y_weights.center, y_weights.scale) / y_weights.sum;
-            for channel in 0..4 {
-                vertical[channel] += f32::from(pixel[channel]) * weight;
-            }
+fn required_shadow_source_region(
+    geometry: &SamplingGeometry,
+    intersection: CanvasIntersection,
+    shadow: crate::DropShadow,
+) -> Option<SourceRegion> {
+    let mut bounds: Option<(u32, u32, u32, u32)> = None;
+    for canvas_y in intersection.top..intersection.bottom {
+        for canvas_x in intersection.left..intersection.right {
+            let center_x = canvas_x - geometry.origin_x - shadow.offset_x.round() as i64;
+            let center_y = canvas_y - geometry.origin_y - shadow.offset_y.round() as i64;
+            let _ = drop_shadow_alpha(center_x, center_y, shadow.blur_radius, |x, y| {
+                if x >= 0
+                    && y >= 0
+                    && x < i64::from(geometry.output_width)
+                    && y < i64::from(geometry.output_height)
+                    && let Some((scaled_x, scaled_y)) = geometry.inverse_sample(x as u32, y as u32)
+                {
+                    let x = source_sample_bounds(
+                        geometry.source_width,
+                        geometry.scaled_width,
+                        scaled_x,
+                    );
+                    let y = source_sample_bounds(
+                        geometry.source_height,
+                        geometry.scaled_height,
+                        scaled_y,
+                    );
+                    bounds = Some(match bounds {
+                        Some((left, top, right, bottom)) => (
+                            left.min(x.start),
+                            top.min(y.start),
+                            right.max(x.end),
+                            bottom.max(y.end),
+                        ),
+                        None => (x.start, y.start, x.end, y.end),
+                    });
+                }
+                0
+            });
         }
-        let weight = triangle_weight(source_x, x_weights.center, x_weights.scale) / x_weights.sum;
-        for channel in 0..4 {
-            horizontal[channel] += vertical[channel] * weight;
+    }
+    bounds.map(|(left, top, right, bottom)| SourceRegion {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
+fn union_source_regions(
+    left: Option<SourceRegion>,
+    right: Option<SourceRegion>,
+) -> Option<SourceRegion> {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let x = left.x.min(right.x);
+            let y = left.y.min(right.y);
+            let far_x = (left.x + left.width).max(right.x + right.width);
+            let far_y = (left.y + left.height).max(right.y + right.height);
+            Some(SourceRegion {
+                x,
+                y,
+                width: far_x - x,
+                height: far_y - y,
+            })
         }
-    }
-    horizontal.map(|channel| channel.round().clamp(0.0, 255.0) as u8)
-}
-
-#[derive(Clone, Copy)]
-struct TriangleWeights {
-    start: u32,
-    end: u32,
-    center: f32,
-    scale: f32,
-    sum: f32,
-}
-
-fn source_sample_bounds(source: u32, output: u32, coordinate: u32) -> TriangleWeights {
-    if source == output {
-        return TriangleWeights {
-            start: coordinate,
-            end: coordinate + 1,
-            center: coordinate as f32,
-            scale: 1.0,
-            sum: 1.0,
-        };
-    }
-    triangle_weights(source, output, coordinate)
-}
-
-fn triangle_weights(source: u32, output: u32, coordinate: u32) -> TriangleWeights {
-    let ratio = source as f32 / output as f32;
-    let scale = ratio.max(1.0);
-    let input = (coordinate as f32 + 0.5) * ratio;
-    let start = ((input - scale).floor() as i64).clamp(0, i64::from(source) - 1) as u32;
-    let end = ((input + scale).ceil() as i64).clamp(i64::from(start) + 1, i64::from(source)) as u32;
-    let center = input - 0.5;
-    let sum = (start..end)
-        .map(|sample| triangle_weight(sample, center, scale))
-        .sum();
-    TriangleWeights {
-        start,
-        end,
-        center,
-        scale,
-        sum,
+        (left, right) => left.or(right),
     }
 }
 
-fn triangle_weight(sample: u32, center: f32, scale: f32) -> f32 {
-    (1.0 - ((sample as f32 - center) / scale).abs()).max(0.0)
+fn sample_output_alpha(
+    source: &SampleSource<'_>,
+    geometry: &SamplingGeometry,
+    layer: &Layer,
+    output_x: i64,
+    output_y: i64,
+) -> u8 {
+    if output_x < 0
+        || output_y < 0
+        || output_x >= i64::from(geometry.output_width)
+        || output_y >= i64::from(geometry.output_height)
+    {
+        return 0;
+    }
+    let Some((scaled_x, scaled_y)) = geometry.inverse_sample(output_x as u32, output_y as u32)
+    else {
+        return 0;
+    };
+    if !crate::render::layer_mask_allows(
+        layer,
+        output_x as u32,
+        output_y as u32,
+        geometry.output_width,
+        geometry.output_height,
+    ) {
+        return 0;
+    }
+    sample_triangle_resize_alpha(
+        source,
+        (geometry.source_width, geometry.source_height),
+        (geometry.scaled_width, geometry.scaled_height),
+        (scaled_x, scaled_y),
+    )
 }
 
 fn scaled_dimension(value: u32, scale: f32) -> u32 {
@@ -467,37 +709,28 @@ pub(crate) fn centered_rotation_bounds(
 fn inverse_center_rotation(
     output_x: u32,
     output_y: u32,
-    output_width: u32,
-    output_height: u32,
-    source_width: u32,
-    source_height: u32,
-    degrees: f32,
+    output: (u32, u32),
+    source: (u32, u32),
+    direction: (f32, f32),
 ) -> Option<(u32, u32)> {
-    let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
-    let source_center = (
-        (source_width as f32 - 1.0) * 0.5,
-        (source_height as f32 - 1.0) * 0.5,
-    );
-    let output_center = (
-        (output_width - 1) as f32 * 0.5,
-        (output_height - 1) as f32 * 0.5,
-    );
+    let source_center = ((source.0 as f32 - 1.0) * 0.5, (source.1 as f32 - 1.0) * 0.5);
+    let output_center = ((output.0 - 1) as f32 * 0.5, (output.1 - 1) as f32 * 0.5);
     let dx = output_x as f32 - output_center.0;
     let dy = output_y as f32 - output_center.1;
-    let source_x = cos * dx + sin * dy + source_center.0;
-    let source_y = -sin * dx + cos * dy + source_center.1;
-    rounded_source_sample(source_x, source_y, source_width, source_height)
+    let source_x = direction.1 * dx + direction.0 * dy + source_center.0;
+    let source_y = -direction.0 * dx + direction.1 * dy + source_center.1;
+    rounded_source_sample(source_x, source_y, source.0, source.1)
 }
 
 fn inverse_text_rotation(
     output_x: u32,
     output_y: u32,
-    degrees: f32,
+    sin: f32,
+    cos: f32,
     pivot: (f32, f32),
     minimum: (f32, f32),
     source: (u32, u32),
 ) -> Option<(u32, u32)> {
-    let (sin, cos) = crate::transform_math::rotation_sin_cos(degrees);
     let world_x = minimum.0 + output_x as f32 + 0.5;
     let world_y = minimum.1 + output_y as f32 + 0.5;
     let dx = world_x - pivot.0;

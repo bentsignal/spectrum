@@ -440,6 +440,7 @@ fn durable_project_uses_sparse_compressed_snapshots() {
         },
     )
     .unwrap();
+    document.version = 2;
     let (mut project, mut document) = DurableProject::create(
         &project_path,
         &document,
@@ -493,7 +494,15 @@ fn durable_project_uses_sparse_compressed_snapshots() {
         )
         .unwrap();
     assert_eq!(legacy_snapshot_count, 1);
-    assert_eq!(compressed_snapshot_count, 2);
+    assert_eq!(compressed_snapshot_count, 0);
+    let effects_snapshot_count: u32 = connection
+        .query_row(
+            "SELECT count(*) FROM snapshots WHERE version = 3",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(effects_snapshot_count, 2);
     drop(connection);
     let project_bytes = std::fs::metadata(&project_path).unwrap().len();
     eprintln!("250-action compact Prism project: {project_bytes} bytes");
@@ -503,13 +512,16 @@ fn durable_project_uses_sparse_compressed_snapshots() {
     impl spectrum_revisions::Compatibility for LegacyCompatibility {
         fn supports_snapshot(&self, encoding: &spectrum_revisions::Encoding) -> bool {
             encoding.family == "spectrum.prism.document"
-                && encoding.version == 1
-                && encoding.required_capabilities.is_empty()
+                && match encoding.version {
+                    1 => encoding.required_capabilities.is_empty(),
+                    2 => encoding.required_capabilities == ["deflate"],
+                    _ => false,
+                }
         }
 
         fn supports_operations(&self, encoding: &spectrum_revisions::Encoding) -> bool {
             encoding.family == "spectrum.prism.commands"
-                && encoding.version == 1
+                && (1..=2).contains(&encoding.version)
                 && encoding.required_capabilities.is_empty()
         }
     }

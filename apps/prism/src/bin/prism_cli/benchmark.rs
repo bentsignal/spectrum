@@ -2,11 +2,12 @@ use std::{io::Write, path::PathBuf, time::Instant};
 
 use anyhow::{Result, bail};
 use prism_core::{
-    BlendMode, Command, Document, FontAsset, Layer, LayerKind, LayerMask, RenderRegion,
-    ShapeStroke, TextAlignment, TextEffects, TextTypography, Transform, Workspace,
-    region_source_scales, render_document, render_document_region_scaled,
-    render_document_region_scaled_with_sources_and_stats, render_document_region_scaled_with_stats,
-    render_layer_base_scaled, render_layer_base_scaled_with_font, render_solid_color,
+    BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
+    LayerStyle, RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment, TextEffects,
+    TextTypography, Transform, Workspace, region_source_scales, render_document,
+    render_document_region_scaled, render_document_region_scaled_with_sources_and_stats,
+    render_document_region_scaled_with_stats, render_layer_base_scaled,
+    render_layer_base_scaled_with_font, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -429,6 +430,22 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         Layer {
             id: 110,
             opacity: 0.83,
+            style: LayerStyle {
+                drop_shadow: Some(DropShadow {
+                    color: [0, 0, 0, 150],
+                    offset_x: 18.0,
+                    offset_y: 16.0,
+                    blur_radius: 12.0,
+                }),
+            },
+            shape_fill: Some(ShapeFill::Gradient(ShapeGradient {
+                angle: 28.0,
+                stops: vec![
+                    GradientStop::new(0.0, [64, 142, 220, 218]),
+                    GradientStop::new(1.0, [181, 92, 220, 218]),
+                ],
+                ..ShapeGradient::default()
+            })),
             transform: Transform {
                 rotation: 17.0,
                 ..Transform::default()
@@ -512,6 +529,11 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             || stats.max_source_staging_pixels > vector_staging_budget
             || stats.max_adjusted_staging_pixels > vector_staging_budget
             || stats.transformed_surface_pixels != 0
+            || stats.shadow_samples > stats.output_pixels * 13
+            || stats.shadow_alpha_tile_pixels == 0
+            || stats.shadow_alpha_tile_bytes != stats.shadow_alpha_tile_pixels
+            || stats.max_shadow_alpha_tile_pixels > 4_096 * 4_096
+            || stats.max_shadow_alpha_tile_bytes != stats.max_shadow_alpha_tile_pixels
         {
             bail!("vector viewport compositor violated its allocation contract");
         }
@@ -687,7 +709,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             pass: bounded_source_p95 <= 750.0,
         },
         BenchmarkMetric {
-            name: "8x_zoom_16k_stroked_vector_viewport_composite",
+            name: "8x_zoom_16k_gradient_shadow_viewport_composite",
             median_ms: vector_source_median,
             p95_ms: vector_source_p95,
             budget_ms: 500.0,

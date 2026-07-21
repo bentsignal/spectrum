@@ -461,6 +461,7 @@ pub(super) fn document_requires_composite_preview(document: &Document) -> bool {
         layer.visible
             && (layer.blend_mode != BlendMode::Normal
                 || layer.clip_to_below
+                || layer.style.drop_shadow.is_some()
                 || (layer.mask.enabled && layer.mask.invert))
     })
 }
@@ -808,6 +809,9 @@ mod tests {
         document.layers[0].clip_to_below = false;
         document.layers[0].mask.enabled = true;
         document.layers[0].mask.invert = true;
+        assert!(document_requires_composite_preview(&document));
+        document.layers[0].mask = LayerMask::default();
+        document.layers[0].style.drop_shadow = Some(prism_core::DropShadow::default());
         assert!(document_requires_composite_preview(&document));
     }
 
