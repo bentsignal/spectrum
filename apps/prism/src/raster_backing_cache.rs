@@ -291,7 +291,7 @@ impl DerivedBackingCache {
         identity: &DerivedBackingIdentity,
     ) -> Result<PrepareDerivedBacking> {
         let memory_plan = self.validate_identity(identity)?;
-        if let Ok(Some(backing)) = self.open_ready(&identity) {
+        if let Ok(Some(backing)) = self.open_ready(identity) {
             return Ok(PrepareDerivedBacking::Ready {
                 backing,
                 created: false,
@@ -304,7 +304,7 @@ impl DerivedBackingCache {
         let Some(_lease) = CachePrepareLease::acquire(self.root.join(PREPARE_LOCK))? else {
             return Ok(PrepareDerivedBacking::InProgress(identity.clone()));
         };
-        match self.open_ready(&identity) {
+        match self.open_ready(identity) {
             Ok(Some(backing)) => {
                 return Ok(PrepareDerivedBacking::Ready {
                     backing,
@@ -314,7 +314,7 @@ impl DerivedBackingCache {
             }
             Ok(None) => {}
             Err(_) => {
-                let corrupt = self.entry_directory(&identity);
+                let corrupt = self.entry_directory(identity);
                 remove_cache_entry(&corrupt).with_context(|| {
                     format!(
                         "could not discard corrupt cache entry {}",
@@ -368,7 +368,7 @@ impl DerivedBackingCache {
         };
         self.publish(identity, &manifest, temporary)?;
         let backing = self
-            .open_ready(&identity)?
+            .open_ready(identity)?
             .context("published derived raster backing is not ready")?;
         Ok(PrepareDerivedBacking::Ready {
             backing,
