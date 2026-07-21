@@ -6,7 +6,8 @@ use crate::validation::require_finite;
 pub const MAX_DROP_SHADOW_BLUR: f32 = 128.0;
 pub const MAX_DROP_SHADOW_OFFSET: f32 = 4_096.0;
 pub(crate) const DROP_SHADOW_KERNEL_TAPS: u64 = 13;
-pub(crate) const DROP_SHADOW_KERNEL: [(f32, f32, u32); 13] = [
+/// Fixed sampling basis shared by exact compositing and bounded interactive previews.
+pub const DROP_SHADOW_KERNEL: [(f32, f32, u32); 13] = [
     (0.0, 0.0, 4),
     (-0.5, 0.0, 2),
     (0.5, 0.0, 2),
@@ -21,6 +22,7 @@ pub(crate) const DROP_SHADOW_KERNEL: [(f32, f32, u32); 13] = [
     (0.0, -1.0, 1),
     (0.0, 1.0, 1),
 ];
+pub const DROP_SHADOW_KERNEL_TOTAL_WEIGHT: u32 = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

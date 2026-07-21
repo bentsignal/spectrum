@@ -230,7 +230,7 @@ fn text_visual_key_tracks_typography_but_not_gpu_transform() {
 }
 
 #[test]
-fn shape_visual_key_tracks_gradient_fill_but_not_layer_style() {
+fn styled_shapes_require_a_textured_preview_without_rerasterizing_style_values() {
     let layer = Layer {
         kind: LayerKind::Rectangle {
             width: 160,
@@ -241,14 +241,108 @@ fn shape_visual_key_tracks_gradient_fill_but_not_layer_style() {
         ..Layer::default()
     };
     let original = LayerVisualKey::new(&layer, 1.0);
+    assert_eq!(solid_preview(&layer), Some((160, 90, [40, 80, 120, 255])));
 
     let mut gradient = layer.clone();
     gradient.shape_fill = Some(prism_core::ShapeFill::Gradient(
         prism_core::ShapeGradient::default(),
     ));
     assert_ne!(original, LayerVisualKey::new(&gradient, 1.0));
+    assert_eq!(solid_preview(&gradient), None);
 
     let mut styled = layer;
     styled.style.drop_shadow = Some(prism_core::DropShadow::default());
-    assert_eq!(original, LayerVisualKey::new(&styled, 1.0));
+    let styled_key = LayerVisualKey::new(&styled, 1.0);
+    assert_ne!(original, styled_key);
+    assert!(styled_key.textured_shape_preview);
+    assert!(!styled_key.colored_shadow_mask);
+    assert_eq!(solid_preview(&styled), None);
+
+    styled.style.drop_shadow.as_mut().unwrap().offset_x = 80.0;
+    styled.style.drop_shadow.as_mut().unwrap().offset_y = -40.0;
+    styled.style.drop_shadow.as_mut().unwrap().blur_radius = 64.0;
+    assert_eq!(styled_key, LayerVisualKey::new(&styled, 1.0));
+
+    styled.style.drop_shadow.as_mut().unwrap().color = [120, 30, 90, 160];
+    let colored_key = LayerVisualKey::new(&styled, 1.0);
+    assert_ne!(styled_key, colored_key);
+    let mut expected_colored_key = styled_key.clone();
+    expected_colored_key.colored_shadow_mask = true;
+    assert_eq!(expected_colored_key, colored_key);
+    assert!(!styled_key.colored_shadow_mask);
+    assert!(colored_key.colored_shadow_mask);
+
+    styled.style.drop_shadow.as_mut().unwrap().offset_x = -120.0;
+    styled.style.drop_shadow.as_mut().unwrap().blur_radius = 2.0;
+    styled.style.drop_shadow.as_mut().unwrap().color = [10, 240, 80, 96];
+    assert_eq!(colored_key, LayerVisualKey::new(&styled, 1.0));
+
+    styled.style.drop_shadow.as_mut().unwrap().color[3] = 0;
+    let transparent_key = LayerVisualKey::new(&styled, 1.0);
+    let mut expected_transparent_key = colored_key;
+    expected_transparent_key.colored_shadow_mask = false;
+    assert_eq!(expected_transparent_key, transparent_key);
+    assert!(!transparent_key.colored_shadow_mask);
+}
+
+#[test]
+fn blurred_shadow_preview_is_bounded_and_preserves_fully_overlapped_alpha() {
+    let shadow = prism_core::DropShadow {
+        color: [12, 24, 36, 160],
+        offset_x: 28.0,
+        offset_y: 34.0,
+        blur_radius: 20.0,
+    };
+    let mut samples = Vec::new();
+    for_each_shadow_preview_sample(shadow, 0.75, |offset, color| {
+        samples.push((offset, color));
+    });
+
+    assert_eq!(samples.len(), prism_core::DROP_SHADOW_KERNEL.len());
+    assert!(samples.len() <= 13);
+    assert_eq!(
+        prism_core::DROP_SHADOW_KERNEL
+            .iter()
+            .map(|(_, _, weight)| weight)
+            .sum::<u32>(),
+        prism_core::DROP_SHADOW_KERNEL_TOTAL_WEIGHT
+    );
+    assert!(
+        samples
+            .iter()
+            .any(|(offset, _)| *offset == Vec2::new(28.0, 34.0))
+    );
+    let actual_tint = samples[0].1.to_srgba_unmultiplied();
+    assert!(
+        actual_tint[..3]
+            .iter()
+            .zip([12, 24, 36])
+            .all(|(actual, expected)| actual.abs_diff(expected) <= 3)
+    );
+    let composed_alpha = samples.iter().fold(0.0_f32, |alpha, (_, color)| {
+        let source = f32::from(color.a()) / 255.0;
+        alpha + source * (1.0 - alpha)
+    });
+    let expected_alpha = f32::from(shadow.color[3]) / 255.0 * 0.75;
+    // This parity applies where all 13 quads overlap. Partially transparent edges
+    // remain an intentionally bounded interaction approximation.
+    assert!((composed_alpha - expected_alpha).abs() < 0.01);
+}
+
+#[test]
+fn sharp_shadow_preview_is_one_unblurred_offset_sample() {
+    let shadow = prism_core::DropShadow {
+        color: [8, 16, 24, 128],
+        offset_x: -12.0,
+        offset_y: 7.0,
+        blur_radius: 0.0,
+    };
+    let mut samples = Vec::new();
+    for_each_shadow_preview_sample(shadow, 0.5, |offset, color| {
+        samples.push((offset, color));
+    });
+
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].0, Vec2::new(-12.0, 7.0));
+    assert_eq!(samples[0].1, Color32::from_rgba_unmultiplied(8, 16, 24, 64));
 }
