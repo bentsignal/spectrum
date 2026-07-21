@@ -29,7 +29,9 @@ is the reviewed contract. It pins:
   `22efb0be2bbea73e5339f5426fa3b20edabcaa11`, peeled source commit
   `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`, and the SHA-256 of Ghostty's
   official source release;
-- official Zig 0.15.2 macOS archives and SHA-256 values for arm64 and x86_64;
+- official Zig 0.15.2 macOS archives and SHA-256 values for arm64 and x86_64,
+  including the conditional x86_64-on-arm64 compatibility route described
+  below;
 - macOS 13.0 as the minimum deployment target; and
 - the expected `GhosttyKit.xcframework`, resources directory, and terminfo
   sentinel paths.
@@ -40,6 +42,22 @@ The tag object and peeled commit are provenance metadata. Because the official
 release archive contains no Git-object manifest, its verified SHA-256—not an
 unprovable archive-to-commit equivalence—is the downloaded source trust anchor.
 
+### Xcode 26.4 and newer on arm64
+
+Official Zig 0.15.2 predates Xcode 26.4's change from an `arm64-macos` root
+target in `libSystem.tbd` to an `arm64e-macos` root target. Its native arm64
+build runner consequently fails before Ghostty's build graph starts; this is
+tracked as [Ghostty #11991](https://github.com/ghostty-org/ghostty/issues/11991)
+and fixed in Zig 0.16 (Zig PR #31673), without a Zig 0.15 backport.
+
+The proof remains pinned to Ghostty's required Zig 0.15.2. On an arm64 Mac, the
+script inspects only the root target block of the selected SDK's
+`libSystem.tbd`. If that block lacks `arm64-macos`, it runs the separately
+checksummed official x86_64 Zig 0.15.2 archive under Rosetta. This changes only
+the host build runner: Ghostty's build definition still explicitly produces
+the universal arm64/x86_64 macOS library and arm64 iOS slices. The fallback
+does not install Zig or any Homebrew package globally.
+
 ## Build
 
 Requirements:
@@ -47,6 +65,8 @@ Requirements:
 - macOS 13 or newer;
 - full Xcode selected by `xcode-select`, with macOS SDK, iOS SDK, Swift, and the
   Metal toolchain installed;
+- Rosetta when building on arm64 against an SDK whose root `libSystem.tbd`
+  advertises `arm64e-macos` but not `arm64-macos`;
 - `gettext`/`msgfmt`; and
 - network access to the HTTPS URLs in the lock file.
 
@@ -57,10 +77,10 @@ bash scripts/build-prism-ghostty-macos.sh
 ```
 
 The script is noninteractive. It verifies both downloads before extraction,
-uses Ghostty's required Zig toolchain, limits the Ghostty build to two jobs,
-stages a SwiftPM build against the generated XCFramework, copies Ghostty's
-resources and license into the proof app, and applies an ad-hoc local signature.
-It does not launch the app.
+uses Ghostty's required Zig toolchain (with the narrow Rosetta fallback above),
+limits the Ghostty build to two jobs, stages a SwiftPM build against the
+generated XCFramework, copies Ghostty's resources and license into the proof
+app, and applies an ad-hoc local signature. It does not launch the app.
 
 Expected output:
 

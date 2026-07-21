@@ -18,7 +18,11 @@ GHOSTTY_SOURCE_URL=https://release.files.ghostty.org/1.3.1/ghostty-1.3.1.tar.gz
 GHOSTTY_SOURCE_SHA256=3349d25600ffbda281197a18314f7d18791969cffe9474f0ff16a45a9ebfccdb
 
 # Ghostty 1.3.x is guaranteed by upstream to build with exactly Zig 0.15.2.
-# These URLs and checksums come from Zig's official download index.
+# These URLs and checksums come from Zig's official download index. Official
+# Zig 0.15.2 predates Xcode 26.4's arm64e-only root TBD label (Ghostty #11991;
+# fixed in Zig 0.16 by Zig PR #31673, without a 0.15 backport). On affected arm64
+# SDKs the build script runs this same pinned x86_64 archive under Rosetta;
+# Ghostty still emits its explicitly targeted universal XCFramework.
 ZIG_VERSION=0.15.2
 ZIG_ARM64_URL=https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz
 ZIG_ARM64_SHA256=3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b

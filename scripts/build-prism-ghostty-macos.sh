@@ -44,6 +44,16 @@ verify_file() {
     || die "checksum mismatch for $path (expected $expected, got $actual)"
 }
 
+sdk_root_supports_arm64() {
+  local libsystem_tbd="$1"
+  awk '
+    /^targets:[[:space:]]/ { in_root_targets = 1 }
+    in_root_targets && /arm64-macos/ { found = 1 }
+    in_root_targets && /^install-name:/ { exit }
+    END { exit found ? 0 : 1 }
+  ' "$libsystem_tbd"
+}
+
 download_verified() {
   local url="$1"
   local expected="$2"
@@ -120,8 +130,9 @@ case "$xcode_developer_dir" in
   *) die "full Xcode must be active; run xcode-select with Xcode.app, not CommandLineTools" ;;
 esac
 xcodebuild -version >/dev/null
-xcrun --sdk macosx --show-sdk-path >/dev/null \
+macos_sdk="$(xcrun --sdk macosx --show-sdk-path)" \
   || die "the active Xcode is missing the macOS SDK"
+[[ -d "$macos_sdk" ]] || die "the active macOS SDK path does not exist: $macos_sdk"
 xcrun --sdk iphoneos --show-sdk-path >/dev/null \
   || die "the active Xcode is missing the iOS SDK required for GhosttyKit.xcframework"
 xcrun --find metal >/dev/null 2>&1 \
@@ -175,12 +186,29 @@ for relative_path in "$xcframework_relative" "$resources_relative" "$resource_se
 done
 
 machine_arch="$(uname -m)"
+zig_via_rosetta=false
 case "$machine_arch" in
   arm64)
-    zig_arch="aarch64"
     swift_arch="arm64"
-    zig_url="$(lock_value ZIG_ARM64_URL)"
-    zig_sha="$(lock_value ZIG_ARM64_SHA256)"
+    macos_libsystem_tbd="$macos_sdk/usr/lib/libSystem.tbd"
+    [[ -f "$macos_libsystem_tbd" ]] \
+      || die "the active macOS SDK has no libSystem.tbd: $macos_libsystem_tbd"
+    if sdk_root_supports_arm64 "$macos_libsystem_tbd"; then
+      zig_arch="aarch64"
+      zig_url="$(lock_value ZIG_ARM64_URL)"
+      zig_sha="$(lock_value ZIG_ARM64_SHA256)"
+    else
+      # Zig 0.15.2 predates Xcode 26.4's arm64e-only root TBD labels. Its
+      # x86_64 build runner remains compatible, and Ghostty explicitly creates
+      # the arm64/x86_64 macOS and arm64 iOS XCFramework slices itself.
+      [[ -x /usr/bin/arch ]] || die "Rosetta compatibility requires /usr/bin/arch"
+      /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1 \
+        || die "the active SDK requires Zig's x86_64 fallback; install Rosetta and retry"
+      zig_arch="x86_64"
+      zig_url="$(lock_value ZIG_X86_64_URL)"
+      zig_sha="$(lock_value ZIG_X86_64_SHA256)"
+      zig_via_rosetta=true
+    fi
     ;;
   x86_64)
     zig_arch="x86_64"
@@ -208,7 +236,11 @@ extract_once "$zig_archive" "$zig_sha" "zig-$zig_arch-macos-$zig_version" \
 
 zig_binary="$zig_source/zig"
 [[ -x "$zig_binary" ]] || die "verified Zig archive did not provide: $zig_binary"
-actual_zig_version="$($zig_binary version)"
+zig_command=("$zig_binary")
+if [[ "$zig_via_rosetta" == true ]]; then
+  zig_command=(/usr/bin/arch -x86_64 "$zig_binary")
+fi
+actual_zig_version="$("${zig_command[@]}" version)"
 [[ "$actual_zig_version" == "$zig_version" ]] \
   || die "wrong Zig version after extraction (expected $zig_version, got $actual_zig_version)"
 
@@ -216,7 +248,7 @@ ghostty_prefix="$install_root/ghostty-$ghostty_version"
 mkdir -p "$ghostty_prefix"
 (
   cd "$ghostty_source"
-  "$zig_binary" build -j2 \
+  "${zig_command[@]}" build -j2 \
     --prefix "$ghostty_prefix" \
     --cache-dir "$scratch_root/ghostty-zig-cache" \
     --global-cache-dir "$zig_global_cache" \
@@ -279,5 +311,8 @@ echo "Ghostty: $ghostty_tag"
 echo "  annotated tag object: $ghostty_tag_object"
 echo "  peeled source commit: $ghostty_revision"
 echo "  verified release archive: $ghostty_sha"
-echo "Zig: $zig_version ($machine_arch host)"
+echo "Zig: $zig_version ($zig_arch toolchain on $machine_arch host)"
+if [[ "$zig_via_rosetta" == true ]]; then
+  echo "  compatibility mode: official x86_64 archive under Rosetta"
+fi
 echo "Run manually when ready: open '$bundle'"
