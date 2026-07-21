@@ -146,9 +146,74 @@ pub trait ExactRegionSource: Send + Sync {
     fn read_exact_region(&self, region: PixelRegion) -> Result<RgbaImage, Self::Error>;
 }
 
+/// Object-safe exact-region source used by application-owned provider maps.
+///
+/// Concrete providers keep their typed [`ExactRegionSource::Error`]. This
+/// erased view lets a renderer retain heterogeneous providers without making
+/// the neutral imaging crate depend on any application's cache implementation.
+pub trait DynExactRegionSource: Send + Sync {
+    fn info(&self) -> &RegionSourceInfo;
+    fn read_exact_region(
+        &self,
+        region: PixelRegion,
+    ) -> Result<RgbaImage, Box<dyn Error + Send + Sync + 'static>>;
+}
+
+impl<T> DynExactRegionSource for T
+where
+    T: ExactRegionSource,
+{
+    fn info(&self) -> &RegionSourceInfo {
+        ExactRegionSource::info(self)
+    }
+
+    fn read_exact_region(
+        &self,
+        region: PixelRegion,
+    ) -> Result<RgbaImage, Box<dyn Error + Send + Sync + 'static>> {
+        ExactRegionSource::read_exact_region(self, region)
+            .map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync + 'static>)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct TestReadError;
+
+    impl fmt::Display for TestReadError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("test provider read failed")
+        }
+    }
+
+    impl Error for TestReadError {}
+
+    struct TestSource {
+        info: RegionSourceInfo,
+        fail: bool,
+    }
+
+    impl ExactRegionSource for TestSource {
+        type Error = TestReadError;
+
+        fn info(&self) -> &RegionSourceInfo {
+            &self.info
+        }
+
+        fn read_exact_region(&self, region: PixelRegion) -> Result<RgbaImage, Self::Error> {
+            if self.fail {
+                return Err(TestReadError);
+            }
+            Ok(RgbaImage::from_pixel(
+                region.width,
+                region.height,
+                image::Rgba([region.x as u8, region.y as u8, 17, 255]),
+            ))
+        }
+    }
 
     fn descriptor() -> RegionSourceDescriptor {
         RegionSourceDescriptor {
@@ -200,5 +265,50 @@ mod tests {
             readiness: RegionReadiness::NeedsPreparation,
         };
         assert!(!info.supports_region_reads_now());
+    }
+
+    #[test]
+    fn concrete_sources_have_an_object_safe_exact_region_view() {
+        let source: Box<dyn DynExactRegionSource> = Box::new(TestSource {
+            info: RegionSourceInfo {
+                descriptor: descriptor(),
+                capability: RegionReadCapability::DerivedBacking,
+                readiness: RegionReadiness::Ready,
+            },
+            fail: false,
+        });
+        let region = PixelRegion {
+            x: 2,
+            y: 3,
+            width: 4,
+            height: 2,
+        };
+        assert_eq!(source.info().descriptor, descriptor());
+        assert_eq!(
+            source.read_exact_region(region).unwrap(),
+            RgbaImage::from_pixel(4, 2, image::Rgba([2, 3, 17, 255]))
+        );
+    }
+
+    #[test]
+    fn object_safe_sources_preserve_concrete_error_context() {
+        let source: Box<dyn DynExactRegionSource> = Box::new(TestSource {
+            info: RegionSourceInfo {
+                descriptor: descriptor(),
+                capability: RegionReadCapability::DerivedBacking,
+                readiness: RegionReadiness::Ready,
+            },
+            fail: true,
+        });
+        let error = source
+            .read_exact_region(PixelRegion {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            })
+            .unwrap_err();
+        assert_eq!(error.to_string(), "test provider read failed");
+        assert!(error.downcast_ref::<TestReadError>().is_some());
     }
 }
