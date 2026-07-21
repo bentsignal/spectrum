@@ -7,7 +7,9 @@ use std::{
 };
 
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
+use spectrum_imaging::RegionSourceDescriptor;
 
 use crate::{DerivedBackingCache, DerivedBackingLimits, PrepareDerivedBacking};
 
@@ -26,6 +28,12 @@ struct ChildConfig {
     limit: u64,
     expect_ready: bool,
     marker: PathBuf,
+}
+
+#[derive(Serialize)]
+struct TestCacheKeyMaterial<'a> {
+    source_sha256: &'a str,
+    descriptor: &'a RegionSourceDescriptor,
 }
 
 struct TestDirectory(PathBuf);
@@ -135,14 +143,36 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 }
 
 fn convert_v2_entry_to_legacy(root: &Path, key: &str) -> u64 {
+    let (legacy_key, bytes) = convert_v2_entry_to_legacy_with(root, key, |_| {});
+    assert_eq!(legacy_key, key);
+    bytes
+}
+
+fn convert_v2_entry_to_legacy_with(
+    root: &Path,
+    key: &str,
+    mutate: impl FnOnce(&mut serde_json::Value),
+) -> (String, u64) {
     let v2 = entry_path(root, key);
-    let legacy = root.join(key);
-    fs::create_dir(&legacy).unwrap();
-    fs::copy(v2.join("pixels.rgba8"), legacy.join("pixels.rgba8")).unwrap();
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(v2.join("manifest.json")).unwrap()).unwrap();
     manifest["schema_version"] = 1.into();
+    mutate(&mut manifest);
+    let source_sha256 = manifest["source_sha256"].as_str().unwrap().to_owned();
+    let descriptor: RegionSourceDescriptor =
+        serde_json::from_value(manifest["descriptor"].clone()).unwrap();
+    let legacy_key = sha256_bytes(
+        &serde_json::to_vec(&TestCacheKeyMaterial {
+            source_sha256: &source_sha256,
+            descriptor: &descriptor,
+        })
+        .unwrap(),
+    );
+    manifest["key"] = legacy_key.clone().into();
     let manifest = serde_json::to_vec(&manifest).unwrap();
+    let legacy = root.join(&legacy_key);
+    fs::create_dir(&legacy).unwrap();
+    fs::copy(v2.join("pixels.rgba8"), legacy.join("pixels.rgba8")).unwrap();
     fs::write(legacy.join("manifest.json"), &manifest).unwrap();
     fs::write(
         legacy.join("ready"),
@@ -150,7 +180,8 @@ fn convert_v2_entry_to_legacy(root: &Path, key: &str) -> u64 {
     )
     .unwrap();
     remove_test_entry(&v2);
-    complete_entry_logical_bytes(&legacy)
+    let bytes = complete_entry_logical_bytes(&legacy);
+    (legacy_key, bytes)
 }
 
 fn child_config() -> Option<ChildConfig> {
@@ -205,6 +236,31 @@ fn prepare_ready(cache: &DerivedBackingCache, source: &Path) -> crate::DerivedRa
         PrepareDerivedBacking::Ready { backing, .. } => backing,
         PrepareDerivedBacking::InProgress(_) => panic!("test cache unexpectedly busy"),
     }
+}
+
+fn assert_legacy_descriptor_rejected(
+    label: &str,
+    expected_error: &str,
+    mutate: impl FnOnce(&mut serde_json::Value),
+) {
+    let directory = TestDirectory::new(label);
+    let cache_root = directory.path().join("cache");
+    let legacy_source = directory.path().join("legacy.webp");
+    let target_source = directory.path().join("target.webp");
+    write_source(&legacy_source, 71);
+    write_source(&target_source, 72);
+    let cache = DerivedBackingCache::new(&cache_root, DerivedBackingLimits::default());
+    let legacy_identity = cache.identify(&legacy_source).unwrap();
+    let target_identity = cache.identify(&target_source).unwrap();
+    drop(prepare_ready(&cache, &legacy_source));
+    let _ = convert_v2_entry_to_legacy_with(&cache_root, legacy_identity.key(), mutate);
+
+    let error = match cache.prepare(&target_source) {
+        Ok(_) => panic!("unsupported legacy descriptor was accepted"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains(expected_error), "{error:#}");
+    assert!(!entry_path(&cache_root, target_identity.key()).exists());
 }
 
 #[test]
@@ -343,7 +399,7 @@ fn retained_reader_prevents_eviction_until_drop() {
 }
 
 #[test]
-fn legacy_and_v2_entries_share_one_total_quota() {
+fn legacy_entries_observed_by_v2_share_its_total_quota() {
     let directory = TestDirectory::new("cross-version-quota");
     let cache_root = directory.path().join("cache");
     let legacy_source = directory.path().join("legacy.webp");
@@ -395,6 +451,25 @@ fn corrupt_legacy_entry_fails_cross_version_accounting_closed() {
     };
     assert!(error.to_string().contains("legacy derived backing"));
     assert!(!entry_path(&cache_root, identity.key()).exists());
+}
+
+#[test]
+fn unsupported_legacy_descriptors_fail_accounting_closed() {
+    assert_legacy_descriptor_rejected(
+        "legacy-zero-dimension",
+        "unsupported descriptor capability",
+        |manifest| manifest["descriptor"]["width"] = 0.into(),
+    );
+    assert_legacy_descriptor_rejected(
+        "legacy-unsupported-depth",
+        "unsupported descriptor capability",
+        |manifest| manifest["descriptor"]["sample_depth"] = "sixteen_bit".into(),
+    );
+    assert_legacy_descriptor_rejected(
+        "legacy-unsupported-color",
+        "unsupported decoded color contract",
+        |manifest| manifest["descriptor"]["color_encoding"] = "cmyk8".into(),
+    );
 }
 
 #[test]

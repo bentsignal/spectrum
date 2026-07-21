@@ -42,6 +42,11 @@ impl EntryReadLease {
     }
 }
 
+/// Serializes v2 mutation and observes legacy entries under the root lock.
+///
+/// This coordinates with a v1 writer that started first. It cannot make a v1
+/// binary quota-aware of an already-active `v2` directory, so callers must not
+/// share a cache root across concurrent versions or downgrade onto a v2 root.
 pub(super) struct CacheMaintenanceLease {
     root: PathBuf,
     version_root: PathBuf,

@@ -46,6 +46,13 @@ pub struct DerivedBackingLimits {
     pub max_dimension: u32,
     pub max_encoded_source_bytes: u64,
     pub max_plane_bytes: u64,
+    /// Logical-byte quota enforced by current writers across v2 entries and
+    /// validated schema-v1 entries observed under the shared root lock.
+    ///
+    /// This is not safe against a schema-v1 binary publishing into the same
+    /// root after v2 activation: old code cannot see the versioned entries it
+    /// must account. Concurrent app versions and post-v2 downgrades must use
+    /// distinct cache roots.
     pub max_cache_bytes: u64,
     pub max_region_pixels: u64,
 }
@@ -151,6 +158,14 @@ impl DerivedBackingMemoryPlan {
     }
 }
 
+/// Versioned derived-raster storage with a cooperative logical-byte quota.
+///
+/// Current writers serialize with legacy writers through the root preparation
+/// lock and charge legacy entries already present when they publish. A legacy
+/// binary cannot account the `v2` directory, however, so publishing from v1
+/// after v2 activation is unsupported. Callers must assign distinct cache roots
+/// to concurrently running app versions and must not downgrade onto a root that
+/// has been activated by v2.
 pub struct DerivedBackingCache {
     root: PathBuf,
     limits: DerivedBackingLimits,
@@ -636,6 +651,11 @@ fn validate_inventory_manifest(
     if manifest.key != key || !is_lower_sha256(&manifest.source_sha256) {
         bail!("derived backing manifest has an invalid content identity");
     }
+    if !manifest.descriptor.supports_exact_rgba8_backing() {
+        bail!("derived backing manifest has an unsupported descriptor capability");
+    }
+    prepare::memory_plan(&manifest.descriptor, limits)
+        .context("derived backing manifest has an unsupported decoded color contract")?;
     let expected_key = sha256_bytes(&serde_json::to_vec(&CacheKeyMaterial {
         source_sha256: &manifest.source_sha256,
         descriptor: &manifest.descriptor,
