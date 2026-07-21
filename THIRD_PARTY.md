@@ -11,6 +11,14 @@ Prism uses the Ubuntu Light font distributed by `epaint_default_fonts` for
 portable text-layer rendering. Ubuntu Font Family is licensed under the Ubuntu
 Font Licence 1.0: <https://ubuntu.com/legal/font-licence>.
 
+The optional, standalone Prism terminal proof harness builds and statically
+links Ghostty 1.3.1, Copyright (c) 2024 Mitchell Hashimoto, under the MIT
+License. The exact official source, revision, checksum, toolchain, and generated
+artifact contract are recorded in
+`packaging/prism/macos/ghostty-proof.lock`. The proof bundle includes Ghostty's
+license as `Contents/Resources/GHOSTTY-LICENSE`. Ghostty is not linked into the
+production Prism application by this proof.
+
 Packaged builds include this notice. Anyone distributing the suite should review
 the LGPL requirements for their distribution model and retain a relinkable or
 otherwise compliant form of the application.
