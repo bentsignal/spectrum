@@ -21,7 +21,7 @@ mod agent;
 use agent::{AgentCommand, agent_command};
 #[path = "prism_cli/benchmark.rs"]
 mod benchmark;
-use benchmark::benchmark;
+use benchmark::{BenchmarkProfile, benchmark};
 #[path = "prism_cli/effects.rs"]
 mod effects;
 use effects::{GradientArgs, ShadowArgs};
@@ -352,33 +352,6 @@ enum CliCommand {
         #[arg(long, value_enum, default_value_t = BenchmarkProfile::Interactive)]
         profile: BenchmarkProfile,
     },
-}
-
-#[derive(Clone, Copy, Default, ValueEnum)]
-enum BenchmarkProfile {
-    #[default]
-    Interactive,
-    HostedCi,
-}
-
-impl BenchmarkProfile {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Interactive => "interactive-workstation",
-            Self::HostedCi => "github-hosted-linux",
-        }
-    }
-
-    fn gradient_shadow_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 500.0,
-            // The reviewed implementation measured 880.788 ms p95 on GitHub's
-            // shared Linux runner versus 222.508 ms locally. A 1,250 ms ceiling
-            // keeps 42% host-jitter headroom while the original 2,061.886 ms
-            // regression still fails decisively.
-            Self::HostedCi => 1_250.0,
-        }
-    }
 }
 
 #[derive(Subcommand)]

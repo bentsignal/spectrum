@@ -1,6 +1,7 @@
 use std::{io::Write, path::PathBuf, time::Instant};
 
 use anyhow::{Result, bail};
+use clap::ValueEnum;
 use prism_core::{
     BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
     LayerStyle, RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment, TextEffects,
@@ -16,6 +17,33 @@ use spectrum_imaging::Adjustments;
 #[path = "benchmark/raster_fixture.rs"]
 mod raster_fixture;
 use raster_fixture::PreparedRasterFixture;
+
+#[derive(Clone, Copy, Default, ValueEnum)]
+pub(super) enum BenchmarkProfile {
+    #[default]
+    Interactive,
+    HostedCi,
+}
+
+impl BenchmarkProfile {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive-workstation",
+            Self::HostedCi => "github-hosted-linux",
+        }
+    }
+
+    pub(super) fn gradient_shadow_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 500.0,
+            // The reviewed implementation measured 880.788 ms p95 on GitHub's
+            // shared Linux runner versus 222.508 ms locally. A 1,250 ms ceiling
+            // keeps 42% host-jitter headroom while the original 2,061.886 ms
+            // regression still fails decisively.
+            Self::HostedCi => 1_250.0,
+        }
+    }
+}
 
 #[derive(Serialize)]
 struct BenchmarkMetric {
