@@ -12,6 +12,12 @@ use crate::FontSlant;
 
 pub(crate) const MAX_EMBEDDED_FONT_BYTES: usize = 32 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    volume: u64,
+    index: u64,
+}
+
 /// One bounded, authorized, immutable read of a source OpenType font.
 ///
 /// The bytes are private so callers cannot change the identity that was
@@ -53,8 +59,9 @@ impl FontSourceSnapshot {
         let file = open_no_follow(path)?;
         let opened_metadata = file.metadata()?;
         require_regular_metadata(&opened_metadata, path)?;
-        let bytes = read_bounded(file, &opened_metadata, path)?;
-        let canonical_path = verify_unchanged_path(path, &opened_metadata)?;
+        let opened_identity = file_identity(&file, &opened_metadata)?;
+        let bytes = read_bounded(&file, &opened_metadata, opened_identity, path)?;
+        let canonical_path = verify_unchanged_path(path, &file, &opened_metadata, opened_identity)?;
         let verified = VerifiedFontSource::from_bytes(bytes, expected_hash, path)?;
         Ok(Self {
             canonical_path,
@@ -177,7 +184,12 @@ fn validate_content_hash(expected_hash: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_bounded(file: File, before: &Metadata, path: &Path) -> Result<Vec<u8>> {
+fn read_bounded(
+    file: &File,
+    before: &Metadata,
+    before_identity: FileIdentity,
+    path: &Path,
+) -> Result<Vec<u8>> {
     if before.len() == 0 {
         bail!("font data cannot be empty");
     }
@@ -186,11 +198,13 @@ fn read_bounded(file: File, before: &Metadata, path: &Path) -> Result<Vec<u8>> {
     }
     let expected_len = usize::try_from(before.len()).context("font length does not fit memory")?;
     let mut bytes = Vec::with_capacity(expected_len);
-    let mut reader: Take<File> = file.take(MAX_EMBEDDED_FONT_BYTES as u64 + 1);
+    let mut reader: Take<&File> = file.take(MAX_EMBEDDED_FONT_BYTES as u64 + 1);
     reader.read_to_end(&mut bytes)?;
     let file = reader.into_inner();
     let after = file.metadata()?;
-    if !stable_file(before, &after) || bytes.len() != expected_len {
+    let after_identity = file_identity(file, &after)?;
+    if !stable_file(before, before_identity, &after, after_identity) || bytes.len() != expected_len
+    {
         bail!("font source changed while reading {}", path.display());
     }
     if bytes.len() > MAX_EMBEDDED_FONT_BYTES {
@@ -199,17 +213,31 @@ fn read_bounded(file: File, before: &Metadata, path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn verify_unchanged_path(path: &Path, opened: &Metadata) -> Result<PathBuf> {
+fn verify_unchanged_path(
+    path: &Path,
+    opened_file: &File,
+    opened: &Metadata,
+    opened_identity: FileIdentity,
+) -> Result<PathBuf> {
+    let held = opened_file.metadata()?;
+    let held_identity = file_identity(opened_file, &held)?;
+    if !stable_file(opened, opened_identity, &held, held_identity) {
+        bail!("font source changed while reading {}", path.display());
+    }
     let current_file = open_no_follow(path)?;
     let current = current_file.metadata()?;
     require_regular_metadata(&current, path)?;
-    if !stable_file(opened, &current) {
+    let current_identity = file_identity(&current_file, &current)?;
+    if !stable_file(&held, held_identity, &current, current_identity) {
         bail!("font source changed while reading {}", path.display());
     }
     let canonical = fs::canonicalize(path)
         .with_context(|| format!("could not resolve font {}", path.display()))?;
-    let canonical_metadata = fs::symlink_metadata(&canonical)?;
-    if canonical_metadata.file_type().is_symlink() || !same_file(opened, &canonical_metadata) {
+    let canonical_file = open_no_follow(&canonical)?;
+    let canonical_metadata = canonical_file.metadata()?;
+    require_regular_metadata(&canonical_metadata, &canonical)?;
+    let canonical_identity = file_identity(&canonical_file, &canonical_metadata)?;
+    if !same_file(held_identity, canonical_identity) {
         bail!("font source path changed while reading {}", path.display());
     }
     Ok(canonical)
@@ -475,30 +503,59 @@ fn open_no_follow(_path: &Path) -> Result<File> {
     bail!("secure font source reads are unsupported on this platform")
 }
 
-fn stable_file(before: &Metadata, after: &Metadata) -> bool {
-    same_file(before, after)
+fn stable_file(
+    before: &Metadata,
+    before_identity: FileIdentity,
+    after: &Metadata,
+    after_identity: FileIdentity,
+) -> bool {
+    same_file(before_identity, after_identity)
         && before.len() == after.len()
         && before.modified().ok() == after.modified().ok()
 }
 
+fn same_file(left: FileIdentity, right: FileIdentity) -> bool {
+    left == right
+}
+
 #[cfg(unix)]
-fn same_file(left: &Metadata, right: &Metadata) -> bool {
+fn file_identity(_file: &File, metadata: &Metadata) -> Result<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
-    left.dev() == right.dev() && left.ino() == right.ino()
+    Ok(FileIdentity {
+        volume: metadata.dev(),
+        index: metadata.ino(),
+    })
 }
 
 #[cfg(windows)]
-fn same_file(left: &Metadata, right: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    left.volume_serial_number().is_some()
-        && left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index().is_some()
-        && left.file_index() == right.file_index()
+fn file_identity(file: &File, _metadata: &Metadata) -> Result<FileIdentity> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    let succeeded = unsafe {
+        GetFileInformationByHandle(file.as_raw_handle(), std::ptr::addr_of_mut!(information))
+    };
+    if succeeded == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("could not prove font source handle identity");
+    }
+    Ok(FileIdentity {
+        volume: u64::from(information.dwVolumeSerialNumber),
+        index: windows_file_index(information.nFileIndexHigh, information.nFileIndexLow),
+    })
+}
+
+#[cfg(windows)]
+fn windows_file_index(high: u32, low: u32) -> u64 {
+    (u64::from(high) << 32) | u64::from(low)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn same_file(_left: &Metadata, _right: &Metadata) -> bool {
-    false
+fn file_identity(_file: &File, _metadata: &Metadata) -> Result<FileIdentity> {
+    bail!("secure font source identity is unsupported on this platform")
 }
 
 fn require_editable_embedding(face: &Face<'_>) -> Result<()> {
@@ -592,12 +649,29 @@ mod tests {
         let replacement = directory.join("replacement.ttf");
         fs::write(&first, b"same length").unwrap();
         fs::write(&replacement, b"same length").unwrap();
-        let opened = File::open(&first).unwrap().metadata().unwrap();
+        let opened = File::open(&first).unwrap();
+        let opened_metadata = opened.metadata().unwrap();
+        let opened_identity = file_identity(&opened, &opened_metadata).unwrap();
+        assert_eq!(
+            file_identity(&opened, &opened_metadata).unwrap(),
+            opened_identity
+        );
         fs::remove_file(&first).unwrap();
         fs::rename(&replacement, &first).unwrap();
-        let current = fs::metadata(&first).unwrap();
-        assert!(!same_file(&opened, &current));
+        let current = File::open(&first).unwrap();
+        let current_metadata = current.metadata().unwrap();
+        let current_identity = file_identity(&current, &current_metadata).unwrap();
+        assert!(!same_file(opened_identity, current_identity));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_index_combines_high_and_low_words_without_loss() {
+        assert_eq!(
+            windows_file_index(0x0123_4567, 0x89ab_cdef),
+            0x0123_4567_89ab_cdef
+        );
     }
 
     #[cfg(windows)]
