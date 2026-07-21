@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -170,6 +170,33 @@ fn corrupt_or_truncated_plane_is_rejected_before_use() {
     assert!(cache.open_ready(&identity).is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn ready_provider_keeps_validated_plane_handle_after_path_swap() {
+    let directory = TestDirectory::new("retained-handle");
+    let source = directory.path().join("source.webp");
+    DynamicImage::ImageRgba8(test_pixels(12, 9, 61))
+        .save_with_format(&source, ImageFormat::WebP)
+        .unwrap();
+    let expected = image::open(&source).unwrap().to_rgba8();
+    let cache = cache(&directory.path().join("cache"));
+    let backing = prepare_ready(&cache, &source);
+    let plane_path = backing.plane_path().to_owned();
+    let moved_plane = plane_path.with_extension("validated");
+    fs::rename(&plane_path, &moved_plane).unwrap();
+    fs::write(&plane_path, vec![0; expected.as_raw().len()]).unwrap();
+
+    let actual = backing
+        .read_exact_region(PixelRegion {
+            x: 0,
+            y: 0,
+            width: expected.width(),
+            height: expected.height(),
+        })
+        .unwrap();
+    assert_eq!(actual, expected);
+}
+
 #[test]
 fn source_mutation_changes_the_content_address() {
     let directory = TestDirectory::new("mutation");
@@ -236,6 +263,97 @@ fn prepare_lock_is_nonblocking_and_released_for_the_next_builder() {
 }
 
 #[test]
+fn stale_temporary_planes_are_scavenged_and_do_not_consume_quota() {
+    let directory = TestDirectory::new("stale-temporary");
+    let source = directory.path().join("source.webp");
+    DynamicImage::ImageRgba8(test_pixels(8, 6, 15))
+        .save_with_format(&source, ImageFormat::WebP)
+        .unwrap();
+    let cache_root = directory.path().join("cache");
+    fs::create_dir(&cache_root).unwrap();
+    let limits = DerivedBackingLimits {
+        max_cache_bytes: 256,
+        ..DerivedBackingLimits::default()
+    };
+    let cache = DerivedBackingCache::new(&cache_root, limits);
+    let identity = cache.identify(&source).unwrap();
+    let stale = cache_root.join(format!(".tmp-{}-999-1", identity.key()));
+    fs::create_dir(&stale).unwrap();
+    let stale_plane = File::create(stale.join("pixels.rgba8")).unwrap();
+    stale_plane.set_len(1_024).unwrap();
+    drop(stale_plane);
+    let invalid = cache_root.join(".tmp-not-a-cache-build");
+    fs::create_dir(&invalid).unwrap();
+    File::create(invalid.join("pixels.rgba8"))
+        .unwrap()
+        .set_len(1_024)
+        .unwrap();
+
+    assert!(matches!(
+        cache.prepare(&source).unwrap(),
+        PrepareDerivedBacking::Ready { created: true, .. }
+    ));
+    assert!(!stale.exists());
+    assert!(invalid.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_links_are_rejected_and_scavenging_never_traverses_targets() {
+    use std::os::unix::fs::symlink;
+
+    let directory = TestDirectory::new("link-safety");
+    let source = directory.path().join("source.webp");
+    DynamicImage::ImageRgba8(test_pixels(8, 6, 45))
+        .save_with_format(&source, ImageFormat::WebP)
+        .unwrap();
+    let cache_root = directory.path().join("cache");
+    let cache = cache(&cache_root);
+    let identity = cache.identify(&source).unwrap();
+    drop(prepare_ready(&cache, &source));
+
+    let plane = cache_root.join(identity.key()).join("pixels.rgba8");
+    let external_plane = directory.path().join("external-plane");
+    fs::rename(&plane, &external_plane).unwrap();
+    symlink(&external_plane, &plane).unwrap();
+    assert!(cache.open_ready(&identity).is_err());
+
+    let external_directory = directory.path().join("external-directory");
+    fs::create_dir(&external_directory).unwrap();
+    let sentinel = external_directory.join("must-survive");
+    fs::write(&sentinel, b"safe").unwrap();
+    let stale = cache_root.join(format!(".tmp-{}-321-7", identity.key()));
+    fs::create_dir(&stale).unwrap();
+    symlink(&external_directory, stale.join("outside")).unwrap();
+    assert!(cache.prepare(&source).is_ok());
+    assert_eq!(fs::read(&sentinel).unwrap(), b"safe");
+    assert!(!stale.exists());
+}
+
+#[test]
+fn ready_and_manifest_metadata_are_bounded_before_parsing() {
+    let directory = TestDirectory::new("metadata-limits");
+    let source = directory.path().join("source.jpg");
+    DynamicImage::ImageRgba8(test_pixels(8, 6, 77))
+        .save_with_format(&source, ImageFormat::Jpeg)
+        .unwrap();
+    let cache = cache(&directory.path().join("cache"));
+    let identity = cache.identify(&source).unwrap();
+    drop(prepare_ready(&cache, &source));
+    let entry = cache.root().join(identity.key());
+    let ready = entry.join("ready");
+    make_writable(&ready, &fs::metadata(&ready).unwrap());
+    fs::write(&ready, vec![b'a'; 129]).unwrap();
+    assert!(cache.open_ready(&identity).is_err());
+
+    drop(prepare_ready(&cache, &source));
+    let manifest = entry.join("manifest.json");
+    make_writable(&manifest, &fs::metadata(&manifest).unwrap());
+    fs::write(&manifest, vec![b' '; 64 * 1_024 + 1]).unwrap();
+    assert!(cache.open_ready(&identity).is_err());
+}
+
+#[test]
 fn noninterlaced_png_stays_sequential_and_adam7_requires_backing() {
     let directory = TestDirectory::new("png-policy");
     let pixels = test_pixels(9, 7, 31);
@@ -246,6 +364,11 @@ fn noninterlaced_png_stays_sequential_and_adam7_requires_backing() {
     let sequential = inspect_raster_region_source(&sequential).unwrap().info;
     let adam7 = inspect_raster_region_source(&adam7).unwrap().info;
     assert_eq!(
+        (sequential.descriptor.width, sequential.descriptor.height),
+        (9, 7)
+    );
+    assert_eq!(sequential.descriptor.color_encoding, "rgba8");
+    assert_eq!(
         sequential.capability,
         RegionReadCapability::SequentialBounded
     );
@@ -255,7 +378,25 @@ fn noninterlaced_png_stays_sequential_and_adam7_requires_backing() {
 }
 
 #[test]
-fn sixteen_bit_sources_fall_back_and_tiff_is_only_a_future_capability() {
+fn encoded_source_hashing_enforces_the_read_limit() {
+    let directory = TestDirectory::new("encoded-limit");
+    let source = directory.path().join("source.webp");
+    DynamicImage::ImageRgba8(test_pixels(8, 6, 33))
+        .save_with_format(&source, ImageFormat::WebP)
+        .unwrap();
+    let source_bytes = fs::metadata(&source).unwrap().len();
+    let cache = DerivedBackingCache::new(
+        directory.path().join("cache"),
+        DerivedBackingLimits {
+            max_encoded_source_bytes: source_bytes - 1,
+            ..DerivedBackingLimits::default()
+        },
+    );
+    assert!(cache.identify(&source).is_err());
+}
+
+#[test]
+fn sixteen_bit_sources_and_uninspected_tiff_stay_full_decode_only() {
     let directory = TestDirectory::new("precision-policy");
     let sixteen_bit = directory.path().join("sixteen.png");
     DynamicImage::ImageRgba16(image::ImageBuffer::from_pixel(
@@ -274,7 +415,7 @@ fn sixteen_bit_sources_fall_back_and_tiff_is_only_a_future_capability() {
     assert_eq!(sixteen_bit.capability, RegionReadCapability::FullDecodeOnly);
     assert_eq!(sixteen_bit.readiness, RegionReadiness::Unsupported);
     let tiff = inspect_raster_region_source(&tiff).unwrap().info;
-    assert_eq!(tiff.capability, RegionReadCapability::SeekableChunks);
+    assert_eq!(tiff.capability, RegionReadCapability::FullDecodeOnly);
     assert_eq!(tiff.readiness, RegionReadiness::Unsupported);
 }
 

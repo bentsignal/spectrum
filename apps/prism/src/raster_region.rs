@@ -16,6 +16,11 @@ pub struct RasterRegionInspection {
     pub format: ImageFormat,
 }
 
+/// Inspects one raster without decoding pixels.
+///
+/// PNG reuses the signature reader for one bounded PNG header parse. The GUI's
+/// future source registry should cache this result by immutable content identity
+/// or linked-file generation rather than calling it on every paint frame.
 pub fn inspect_raster_region_source(path: &Path) -> Result<RasterRegionInspection> {
     let reader = image::ImageReader::open(path)
         .with_context(|| format!("could not open {}", path.display()))?
@@ -24,34 +29,22 @@ pub fn inspect_raster_region_source(path: &Path) -> Result<RasterRegionInspectio
     let format = reader
         .format()
         .with_context(|| format!("could not identify {}", path.display()))?;
+    if format == ImageFormat::Png {
+        return inspect_png(reader.into_inner(), format, path);
+    }
     let decoder = reader
         .into_decoder()
         .with_context(|| format!("could not inspect {}", path.display()))?;
     let (width, height) = decoder.dimensions();
     let color = decoder.color_type();
-    let mut sample_depth = image_sample_depth(color);
+    let sample_depth = image_sample_depth(color);
     let capability = match format {
-        ImageFormat::Png => {
-            let png = inspect_png(path)?;
-            sample_depth = png.sample_depth;
-            if sample_depth == SourceSampleDepth::SixteenBit {
-                RegionReadCapability::FullDecodeOnly
-            } else if png.interlaced && sample_depth == SourceSampleDepth::EightBit {
-                RegionReadCapability::DerivedBacking
-            } else if png.interlaced {
-                RegionReadCapability::FullDecodeOnly
-            } else {
-                RegionReadCapability::SequentialBounded
-            }
-        }
         ImageFormat::Jpeg | ImageFormat::WebP if sample_depth == SourceSampleDepth::EightBit => {
             RegionReadCapability::DerivedBacking
         }
-        // Container-level capability only. Readiness stays Unsupported until
-        // Prism inspects and reads the file's actual strip/tile organization.
-        ImageFormat::Tiff if sample_depth == SourceSampleDepth::EightBit => {
-            RegionReadCapability::SeekableChunks
-        }
+        // TIFF is FullDecodeOnly until a provider inspects and proves its
+        // concrete strip/tile organization is independently seekable.
+        ImageFormat::Tiff => RegionReadCapability::FullDecodeOnly,
         _ => RegionReadCapability::FullDecodeOnly,
     };
     let readiness = match capability {
@@ -104,21 +97,29 @@ fn image_sample_depth(color: ColorType) -> SourceSampleDepth {
 }
 
 struct PngInspection {
+    width: u32,
+    height: u32,
+    color_encoding: String,
     interlaced: bool,
     sample_depth: SourceSampleDepth,
 }
 
-fn inspect_png(path: &Path) -> Result<PngInspection> {
-    let file = File::open(path).with_context(|| format!("could not open {}", path.display()))?;
-    let decoder = png::Decoder::new_with_limits(
-        BufReader::new(file),
+fn inspect_png(
+    file: BufReader<File>,
+    format: ImageFormat,
+    path: &Path,
+) -> Result<RasterRegionInspection> {
+    let mut decoder = png::Decoder::new_with_limits(
+        file,
         png::Limits {
             bytes: PNG_HEADER_LIMIT_BYTES,
         },
     );
+    decoder.set_transformations(png::Transformations::EXPAND);
     let reader = decoder
         .read_info()
         .with_context(|| format!("could not inspect PNG {}", path.display()))?;
+    let (output_color, output_depth) = reader.output_color_type();
     let sample_depth = match reader.info().bit_depth {
         png::BitDepth::Eight => SourceSampleDepth::EightBit,
         png::BitDepth::Sixteen => SourceSampleDepth::SixteenBit,
@@ -129,8 +130,63 @@ fn inspect_png(path: &Path) -> Result<PngInspection> {
             png::BitDepth::Eight | png::BitDepth::Sixteen => unreachable!(),
         }),
     };
-    Ok(PngInspection {
+    let inspection = PngInspection {
+        width: reader.info().width,
+        height: reader.info().height,
+        color_encoding: png_color_encoding(output_color, output_depth),
         interlaced: reader.info().interlaced,
         sample_depth,
+    };
+    let capability = if inspection.sample_depth == SourceSampleDepth::SixteenBit {
+        RegionReadCapability::FullDecodeOnly
+    } else if inspection.interlaced && inspection.sample_depth == SourceSampleDepth::EightBit {
+        RegionReadCapability::DerivedBacking
+    } else if inspection.interlaced {
+        // Adam7 1/2/4-bit output can become exact RGBA8 after EXPAND, but the
+        // current key model intentionally defers that native/output-depth split.
+        RegionReadCapability::FullDecodeOnly
+    } else {
+        RegionReadCapability::SequentialBounded
+    };
+    let readiness = match capability {
+        RegionReadCapability::SequentialBounded => RegionReadiness::Ready,
+        RegionReadCapability::DerivedBacking => RegionReadiness::NeedsPreparation,
+        RegionReadCapability::SeekableChunks | RegionReadCapability::FullDecodeOnly => {
+            RegionReadiness::Unsupported
+        }
+    };
+    Ok(RasterRegionInspection {
+        info: RegionSourceInfo {
+            descriptor: RegionSourceDescriptor {
+                width: inspection.width,
+                height: inspection.height,
+                color_encoding: inspection.color_encoding,
+                sample_depth: inspection.sample_depth,
+                frame_index: 0,
+                page_index: 0,
+                decoder_contract: decoder_contract_for(format),
+            },
+            capability,
+            readiness,
+        },
+        format,
     })
+}
+
+fn png_color_encoding(color: png::ColorType, depth: png::BitDepth) -> String {
+    let channels = match color {
+        png::ColorType::Grayscale => "l",
+        png::ColorType::GrayscaleAlpha => "la",
+        png::ColorType::Rgb => "rgb",
+        png::ColorType::Rgba => "rgba",
+        png::ColorType::Indexed => unreachable!("EXPAND removes indexed PNG output"),
+    };
+    let bits = match depth {
+        png::BitDepth::Eight => 8,
+        png::BitDepth::Sixteen => 16,
+        png::BitDepth::One | png::BitDepth::Two | png::BitDepth::Four => {
+            unreachable!("EXPAND promotes sub-byte PNG output")
+        }
+    };
+    format!("{channels}{bits}")
 }

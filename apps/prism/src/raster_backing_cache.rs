@@ -17,12 +17,21 @@ use spectrum_imaging::{
 
 use crate::raster_region::{decoder_contract_for, inspect_raster_region_source};
 
+mod cache_fs;
+use cache_fs::{
+    is_cache_key, is_temporary_entry_name, metadata_is_link_or_reparse, open_trusted_cache_file,
+    read_bounded, read_exact_at, remove_cache_entry, same_file_identity, sync_directory,
+    trusted_cache_directory, trusted_cache_directory_if_present, trusted_cache_file_length,
+};
+
 const CACHE_SCHEMA_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "manifest.json";
 const PLANE_FILE: &str = "pixels.rgba8";
 const READY_FILE: &str = "ready";
 const PREPARE_LOCK: &str = ".prepare-lock";
 const PIXEL_FORMAT: &str = "rgba8-straight-unpremultiplied";
+const MAX_MANIFEST_BYTES: u64 = 64 * 1_024;
+const MAX_READY_BYTES: u64 = 128;
 static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug)]
@@ -100,12 +109,6 @@ impl DerivedBackingCache {
     /// per-frame operation.
     pub fn identify(&self, source: &Path) -> Result<DerivedBackingIdentity> {
         let inspection = inspect_raster_region_source(source)?;
-        let encoded_bytes = fs::metadata(source)
-            .with_context(|| format!("could not inspect {}", source.display()))?
-            .len();
-        if encoded_bytes > self.limits.max_encoded_source_bytes {
-            bail!("encoded raster exceeds the derived backing source byte limit");
-        }
         if inspection.info.capability != RegionReadCapability::DerivedBacking
             || !inspection.info.descriptor.supports_exact_rgba8_backing()
         {
@@ -116,7 +119,11 @@ impl DerivedBackingCache {
         {
             bail!("raster dimensions exceed the derived backing dimension limit");
         }
-        let source_sha256 = sha256_file(source)?;
+        let source_sha256 = sha256_path_bounded(
+            source,
+            self.limits.max_encoded_source_bytes,
+            "encoded raster",
+        )?;
         let confirmed = inspect_raster_region_source(source)?;
         if confirmed.info.capability != inspection.info.capability
             || confirmed.info.descriptor != inspection.info.descriptor
@@ -144,16 +151,29 @@ impl DerivedBackingCache {
         &self,
         identity: &DerivedBackingIdentity,
     ) -> Result<Option<DerivedRasterBacking>> {
-        let directory = self.entry_directory(identity);
-        let ready_path = directory.join(READY_FILE);
-        if !ready_path.is_file() {
+        if !trusted_cache_directory_if_present(&self.root)? {
             return Ok(None);
         }
+        let directory = self.entry_directory(identity);
+        if !trusted_cache_directory_if_present(&directory)? {
+            return Ok(None);
+        }
+        let ready_path = directory.join(READY_FILE);
+        match fs::symlink_metadata(&ready_path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
         let manifest_path = directory.join(MANIFEST_FILE);
-        let manifest_bytes = fs::read(&manifest_path)
-            .with_context(|| format!("could not read {}", manifest_path.display()))?;
-        let ready = fs::read_to_string(&ready_path)
-            .with_context(|| format!("could not read {}", ready_path.display()))?;
+        let mut manifest_file = open_trusted_cache_file(&manifest_path, MAX_MANIFEST_BYTES)?;
+        let manifest_bytes = read_bounded(&mut manifest_file, MAX_MANIFEST_BYTES, "manifest")?;
+        let mut ready_file = open_trusted_cache_file(&ready_path, MAX_READY_BYTES)?;
+        let ready = String::from_utf8(read_bounded(
+            &mut ready_file,
+            MAX_READY_BYTES,
+            "ready marker",
+        )?)
+        .context("derived raster backing ready marker is not UTF-8")?;
         if ready.trim() != sha256_bytes(&manifest_bytes) {
             bail!("derived raster backing ready marker does not match its manifest");
         }
@@ -161,15 +181,17 @@ impl DerivedBackingCache {
             .context("derived raster backing manifest is invalid")?;
         manifest.validate(identity, self.limits)?;
         let plane_path = directory.join(PLANE_FILE);
-        let plane_length = fs::metadata(&plane_path)
-            .with_context(|| format!("could not inspect {}", plane_path.display()))?
-            .len();
+        let mut plane = open_trusted_cache_file(&plane_path, self.limits.max_plane_bytes)?;
+        let plane_length = plane.metadata()?.len();
         if plane_length != manifest.plane_bytes {
             bail!("derived raster backing plane length does not match its manifest");
         }
-        if sha256_file(&plane_path)? != manifest.plane_sha256 {
+        if sha256_reader_bounded(&mut plane, self.limits.max_plane_bytes, "backing plane")?
+            != manifest.plane_sha256
+        {
             bail!("derived raster backing plane checksum does not match its manifest");
         }
+        plane.seek(SeekFrom::Start(0))?;
         Ok(Some(DerivedRasterBacking {
             info: RegionSourceInfo {
                 descriptor: identity.descriptor.clone(),
@@ -178,6 +200,7 @@ impl DerivedBackingCache {
             },
             key: identity.key.clone(),
             plane_path,
+            plane,
             max_region_pixels: self.limits.max_region_pixels,
         }))
     }
@@ -200,6 +223,7 @@ impl DerivedBackingCache {
         }
         fs::create_dir_all(&self.root)
             .with_context(|| format!("could not create {}", self.root.display()))?;
+        trusted_cache_directory(&self.root)?;
         let Some(_lease) = CachePrepareLease::acquire(self.root.join(PREPARE_LOCK))? else {
             return Ok(PrepareDerivedBacking::InProgress(identity));
         };
@@ -221,6 +245,7 @@ impl DerivedBackingCache {
                 })?;
             }
         }
+        self.scavenge_temporary_entries()?;
 
         let plane_bytes = identity
             .descriptor
@@ -285,7 +310,7 @@ impl DerivedBackingCache {
         sync_directory(&temporary.path)?;
 
         let destination = self.entry_directory(identity);
-        if destination.exists() {
+        if fs::symlink_metadata(&destination).is_ok() {
             remove_cache_entry(&destination).with_context(|| {
                 format!(
                     "could not discard corrupt cache entry {}",
@@ -308,16 +333,45 @@ impl DerivedBackingCache {
         let mut occupied = 0_u64;
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
-            if !entry.file_type()?.is_dir() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !is_cache_key(&name) || !trusted_cache_directory_if_present(&entry.path())? {
                 continue;
             }
-            if let Ok(metadata) = fs::metadata(entry.path().join(PLANE_FILE)) {
-                occupied = occupied
-                    .checked_add(metadata.len())
-                    .context("derived raster backing cache size overflows")?;
-            }
+            let ready = trusted_cache_file_length(&entry.path().join(READY_FILE), MAX_READY_BYTES);
+            let manifest =
+                trusted_cache_file_length(&entry.path().join(MANIFEST_FILE), MAX_MANIFEST_BYTES);
+            let plane = trusted_cache_file_length(
+                &entry.path().join(PLANE_FILE),
+                self.limits.max_plane_bytes,
+            );
+            let (Ok(Some(_)), Ok(Some(_)), Ok(Some(plane_bytes))) = (ready, manifest, plane) else {
+                continue;
+            };
+            occupied = occupied
+                .checked_add(plane_bytes)
+                .context("derived raster backing cache size overflows")?;
         }
         Ok(occupied)
+    }
+
+    fn scavenge_temporary_entries(&self) -> Result<()> {
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if is_temporary_entry_name(&name) {
+                remove_cache_entry(&entry.path()).with_context(|| {
+                    format!(
+                        "could not scavenge stale cache entry {}",
+                        entry.path().display()
+                    )
+                })?;
+            }
+        }
+        Ok(())
     }
 
     fn entry_directory(&self, identity: &DerivedBackingIdentity) -> PathBuf {
@@ -329,6 +383,7 @@ pub struct DerivedRasterBacking {
     info: RegionSourceInfo,
     key: String,
     plane_path: PathBuf,
+    plane: File,
     max_region_pixels: u64,
 }
 
@@ -359,15 +414,14 @@ impl ExactRegionSource for DerivedRasterBacking {
             .ok_or(DerivedBackingReadError::LayoutOverflow)?;
         let mut output = vec![0; output_bytes];
         let source_stride = u64::from(self.info.descriptor.width) * 4;
-        let mut plane = BufReader::new(File::open(&self.plane_path)?);
+        let plane = self.plane.try_clone()?;
         for row in 0..region.height {
             let offset = u64::from(region.y + row)
                 .checked_mul(source_stride)
                 .and_then(|offset| offset.checked_add(u64::from(region.x) * 4))
                 .ok_or(DerivedBackingReadError::LayoutOverflow)?;
-            plane.seek(SeekFrom::Start(offset))?;
             let start = row as usize * row_bytes;
-            plane.read_exact(&mut output[start..start + row_bytes])?;
+            read_exact_at(&plane, &mut output[start..start + row_bytes], offset)?;
         }
         RgbaImage::from_raw(region.width, region.height, output)
             .ok_or(DerivedBackingReadError::InvalidPlane)
@@ -468,14 +522,21 @@ fn decode_exact_rgba8(
 ) -> Result<RgbaImage> {
     let mut source_file =
         File::open(source).with_context(|| format!("could not open {}", source.display()))?;
-    if source_file.metadata()?.len() > limits.max_encoded_source_bytes {
-        bail!("encoded raster exceeds the derived backing source byte limit");
+    if !source_file.metadata()?.is_file() {
+        bail!("encoded raster source is not a regular file");
     }
-    let before_hash = sha256_reader(&mut source_file)?;
+    let before_hash = sha256_reader_bounded(
+        &mut source_file,
+        limits.max_encoded_source_bytes,
+        "encoded raster",
+    )?;
     if before_hash != identity.source_sha256 {
         bail!("raster source changed before its derived backing was prepared");
     }
     source_file.seek(SeekFrom::Start(0))?;
+    if source_file.metadata()?.len() > limits.max_encoded_source_bytes {
+        bail!("encoded raster exceeds the derived backing source byte limit");
+    }
     let reader = image::ImageReader::new(BufReader::new(&mut source_file))
         .with_guessed_format()
         .with_context(|| format!("could not identify {}", source.display()))?;
@@ -503,7 +564,12 @@ fn decode_exact_rgba8(
         .with_context(|| format!("could not decode {}", source.display()))?
         .to_rgba8();
     source_file.seek(SeekFrom::Start(0))?;
-    if sha256_reader(&mut source_file)? != identity.source_sha256 {
+    if sha256_reader_bounded(
+        &mut source_file,
+        limits.max_encoded_source_bytes,
+        "encoded raster",
+    )? != identity.source_sha256
+    {
         bail!("raster source changed while its derived backing was prepared");
     }
     if decoded.dimensions() != (identity.descriptor.width, identity.descriptor.height) {
@@ -522,59 +588,37 @@ fn write_immutable_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn remove_cache_entry(path: &Path) -> io::Result<()> {
-    make_cache_tree_removable(path)?;
-    fs::remove_dir_all(path)
-}
-
-#[cfg(not(windows))]
-fn make_cache_tree_removable(path: &Path) -> io::Result<()> {
-    fs::metadata(path).map(|_| ())
-}
-
-#[cfg(windows)]
-fn make_cache_tree_removable(path: &Path) -> io::Result<()> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            make_cache_tree_removable(&entry.path())?;
-        } else {
-            let mut permissions = metadata.permissions();
-            permissions.set_readonly(false);
-            fs::set_permissions(entry.path(), permissions)?;
-        }
+fn sha256_path_bounded(path: &Path, max_bytes: u64, label: &str) -> Result<String> {
+    let mut file =
+        File::open(path).with_context(|| format!("could not open {}", path.display()))?;
+    if !file.metadata()?.is_file() {
+        bail!("{label} is not a regular file");
     }
-    Ok(())
+    sha256_reader_bounded(&mut file, max_bytes, label)
 }
 
-#[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<()> {
-    File::open(path)?.sync_all()?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = BufReader::new(
-        File::open(path).with_context(|| format!("could not open {}", path.display()))?,
-    );
-    sha256_reader(&mut file)
-}
-
-fn sha256_reader(reader: &mut impl Read) -> Result<String> {
+fn sha256_reader_bounded(reader: &mut impl Read, max_bytes: u64, label: &str) -> Result<String> {
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 128 * 1_024];
+    let mut total = 0_u64;
     loop {
-        let read = reader.read(&mut buffer)?;
+        let remaining = max_bytes.saturating_sub(total);
+        let requested = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        if requested == 0 {
+            let mut extra = [0_u8; 1];
+            if reader.read(&mut extra)? != 0 {
+                bail!("{label} exceeds its byte limit");
+            }
+            break;
+        }
+        let read = reader.read(&mut buffer[..requested])?;
         if read == 0 {
             break;
         }
         digest.update(&buffer[..read]);
+        total = total
+            .checked_add(read as u64)
+            .context("hashed byte count overflows")?;
     }
     Ok(format!("{:x}", digest.finalize()))
 }
@@ -589,12 +633,26 @@ struct CachePrepareLease {
 
 impl CachePrepareLease {
     fn acquire(path: PathBuf) -> Result<Option<Self>> {
+        if let Ok(metadata) = fs::symlink_metadata(&path)
+            && (metadata_is_link_or_reparse(&metadata) || !metadata.is_file())
+        {
+            bail!("cache preparation lock is not a trusted regular file");
+        }
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
-            .open(path)?;
+            .open(&path)?;
+        let path_metadata = fs::symlink_metadata(&path)?;
+        let opened_metadata = file.metadata()?;
+        if metadata_is_link_or_reparse(&path_metadata)
+            || !path_metadata.is_file()
+            || !opened_metadata.is_file()
+            || !same_file_identity(&path_metadata, &opened_metadata)
+        {
+            bail!("cache preparation lock changed while it was opened");
+        }
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Some(Self { _file: file })),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
@@ -611,6 +669,7 @@ struct TemporaryDirectory {
 impl TemporaryDirectory {
     fn create(path: PathBuf) -> Result<Self> {
         fs::create_dir(&path).with_context(|| format!("could not create {}", path.display()))?;
+        trusted_cache_directory(&path)?;
         Ok(Self {
             path,
             committed: false,
@@ -625,7 +684,7 @@ impl TemporaryDirectory {
 impl Drop for TemporaryDirectory {
     fn drop(&mut self) {
         if !self.committed {
-            let _ = fs::remove_dir_all(&self.path);
+            let _ = remove_cache_entry(&self.path);
         }
     }
 }
