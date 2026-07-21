@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use eframe::egui;
 use prism_core::{
     DerivedBackingCache, DerivedBackingIdentity, DerivedBackingLimits, Document, LayerKind,
     PrepareDerivedBacking, RasterSourceEpoch, RasterSourceResolver, ResolvedRasterSource,

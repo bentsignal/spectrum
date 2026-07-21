@@ -24,7 +24,7 @@ fn generic_failures_stop_with_the_last_diagnostic() {
     for attempt in 1..=MAX_GENERIC_FAILURE_ATTEMPTS {
         coordinator.apply_result(
             PreparationResult {
-                path: request.path,
+                path: request.path.clone(),
                 generation: request.generation,
                 attempts: request.attempts,
                 outcome: PreparationOutcome::Failed(format!("failure {attempt}")),
