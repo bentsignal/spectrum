@@ -2756,6 +2756,7 @@ dependencies = [
  "epaint_default_fonts",
  "flate2",
  "fontdue",
+ "fs2",
  "image",
  "lumen-photo",
  "objc2 0.6.4",

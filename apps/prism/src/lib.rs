@@ -888,12 +888,19 @@ fn guide_output(action: &str, message: &str, guide_ids: Vec<u64>) -> CommandOutp
     }
 }
 
+mod raster_backing_cache;
+mod raster_region;
 mod render;
 mod render_fallback;
 mod render_region;
 mod text_render;
 mod text_rotation;
 
+pub use raster_backing_cache::{
+    DerivedBackingCache, DerivedBackingIdentity, DerivedBackingLimits, DerivedBackingReadError,
+    DerivedRasterBacking, PrepareDerivedBacking,
+};
+pub use raster_region::{RasterRegionInspection, inspect_raster_region_source};
 pub use render::{
     RegionRenderStats, RenderRegion, document_supports_region_native_zoom, export_document,
     load_document, render_document, render_document_region_scaled,
@@ -923,6 +930,10 @@ mod render_region_tests;
 #[cfg(test)]
 #[path = "render_fallback_tests.rs"]
 mod render_fallback_tests;
+
+#[cfg(test)]
+#[path = "raster_backing_cache_tests.rs"]
+mod raster_backing_cache_tests;
 
 #[cfg(test)]
 #[path = "rotation_tests.rs"]
