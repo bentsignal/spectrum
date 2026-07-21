@@ -86,6 +86,10 @@ impl TerminalContext {
         self.environment.get(key.as_ref()).map(OsString::as_os_str)
     }
 
+    pub fn environment_variables(&self) -> &BTreeMap<OsString, OsString> {
+        &self.environment
+    }
+
     fn command(&self) -> CommandBuilder {
         let mut command = shell_command();
         command.cwd(&self.working_directory);
@@ -141,6 +145,7 @@ pub trait TerminalSessionBackend: Send {
 /// native rendered surface remains a separate, platform-gated UI concern.
 pub struct TerminalSession {
     backend: Box<dyn TerminalSessionBackend>,
+    terminated: bool,
 }
 
 impl TerminalSession {
@@ -151,6 +156,7 @@ impl TerminalSession {
     pub fn from_backend(backend: impl TerminalSessionBackend + 'static) -> Self {
         Self {
             backend: Box::new(backend),
+            terminated: false,
         }
     }
 
@@ -179,7 +185,12 @@ impl TerminalSession {
     }
 
     pub fn terminate(&mut self) -> Result<()> {
-        self.backend.terminate()
+        if self.terminated {
+            return Ok(());
+        }
+        self.backend.terminate()?;
+        self.terminated = true;
+        Ok(())
     }
 }
 
@@ -357,7 +368,10 @@ fn drain_events(output: &Receiver<TerminalEvent>, byte_budget: usize) -> Vec<Ter
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        let _ = self.backend.terminate();
+        if !self.terminated {
+            let _ = self.backend.terminate();
+            self.terminated = true;
+        }
     }
 }
 
@@ -377,6 +391,10 @@ fn shell_command() -> CommandBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use std::time::{Duration, Instant};
 
     struct TestBackend {
@@ -385,6 +403,7 @@ mod tests {
         size: TerminalSize,
         events: Vec<TerminalEvent>,
         running: bool,
+        terminate_calls: Arc<AtomicUsize>,
     }
 
     impl TerminalSessionBackend for TestBackend {
@@ -415,6 +434,7 @@ mod tests {
         }
 
         fn terminate(&mut self) -> Result<()> {
+            self.terminate_calls.fetch_add(1, Ordering::Relaxed);
             self.running = false;
             Ok(())
         }
@@ -457,15 +477,38 @@ mod tests {
     }
 
     #[test]
+    fn context_exposes_every_environment_entry_without_allowing_mutation() {
+        let context = TerminalContext::new("a working directory")
+            .with_env("FIRST_CUSTOM_VALUE", "one")
+            .with_env("SECOND_CUSTOM_VALUE", "two");
+
+        assert_eq!(context.environment_variables().len(), 2);
+        assert_eq!(
+            context
+                .environment_variables()
+                .get(OsStr::new("FIRST_CUSTOM_VALUE")),
+            Some(&OsString::from("one"))
+        );
+        assert_eq!(
+            context
+                .environment_variables()
+                .get(OsStr::new("SECOND_CUSTOM_VALUE")),
+            Some(&OsString::from("two"))
+        );
+    }
+
+    #[test]
     fn session_contract_delegates_without_changing_the_portable_api() {
         let context = TerminalContext::new("backend working directory");
         let size = TerminalSize::new(40, 120);
+        let terminate_calls = Arc::new(AtomicUsize::new(0));
         let mut session = TerminalSession::from_backend(TestBackend {
             context: context.clone(),
             writes: Vec::new(),
             size,
             events: vec![TerminalEvent::Output(b"ready".to_vec())],
             running: true,
+            terminate_calls: Arc::clone(&terminate_calls),
         });
 
         assert_eq!(session.context(), &context);
@@ -479,6 +522,9 @@ mod tests {
         );
         session.terminate().unwrap();
         assert!(!session.is_running());
+        session.terminate().unwrap();
+        drop(session);
+        assert_eq!(terminate_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
