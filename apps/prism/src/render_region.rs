@@ -557,7 +557,7 @@ fn rotated_text_bounds(width: u32, height: u32, degrees: f32, pivot: (f32, f32))
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Layer, LayerKind, ShapeStroke};
+    use crate::{Layer, LayerKind, ShapeStroke, shapes::ShapeSampler};
 
     #[test]
     fn uniform_rectangles_bypass_procedural_and_triangle_sampling() {

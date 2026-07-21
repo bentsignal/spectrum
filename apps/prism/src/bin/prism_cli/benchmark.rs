@@ -376,7 +376,8 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         width: 960,
         height: 540,
     };
-    let bounded_staging_budget = bounded_staging_budget(&bounded_sources, 1.0, bounded_region)?;
+    let bounded_source_staging_budget =
+        bounded_staging_budget(&bounded_sources, 1.0, bounded_region)?;
     let adjusted_bounded_staging_budget =
         bounded_staging_budget(&adjusted_bounded_sources, 1.0, bounded_region)?;
     let mut bounded_source_samples = Vec::new();
@@ -389,8 +390,8 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         }
         if stats.full_source_pixels <= 4_096 * 4_096
             || stats.source_staging_pixels >= stats.full_source_pixels
-            || stats.max_source_staging_pixels > bounded_staging_budget
-            || stats.max_adjusted_staging_pixels > bounded_staging_budget
+            || stats.max_source_staging_pixels > bounded_source_staging_budget
+            || stats.max_adjusted_staging_pixels > bounded_source_staging_budget
             || stats.fallback_decode_bytes != 0
             || stats.transformed_surface_pixels != 0
         {

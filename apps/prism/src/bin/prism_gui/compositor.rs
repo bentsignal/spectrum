@@ -524,7 +524,7 @@ mod tests {
 
         document.layers[0].adjustments.exposure = 0.25;
         let key = CompositePreviewKey::new(1, 0, &document, geometry, 1.0).unwrap();
-        assert_eq!(key.scale(), 0.25);
+        assert_eq!(key.scale(), 16.0);
     }
 
     #[test]

@@ -12,9 +12,7 @@ use crate::{
     Document, FontAsset, Layer, LayerKind, Transform, blend_rgb,
     render_fallback::{MAX_REGION_FALLBACK_PEAK_BYTES, ensure_region_fallback_is_bounded},
     shapes::render_shape,
-    text_render::{
-        measure_text_geometry_with_typography, measure_text_with_typography, render_text,
-    },
+    text_render::{measure_text_geometry_with_typography, render_text},
 };
 
 pub fn save_document(document: &Document, path: &Path) -> Result<()> {
