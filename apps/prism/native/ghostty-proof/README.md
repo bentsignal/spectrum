@@ -10,7 +10,8 @@ The proof exercises the architectural unknowns that parser-only
 - a Ghostty-owned shell and PTY;
 - Metal rendering into a caller-owned AppKit `NSView`;
 - process-level `ghostty_app_t` wake/tick callbacks;
-- surface focus, point/backing-pixel resize, and close cleanup;
+- surface focus, point/backing-pixel resize, AppKit window occlusion, and close
+  cleanup;
 - basic physical-key and text input; and
 - the generated XCFramework and resource layout used by an app bundle.
 
@@ -24,8 +25,9 @@ tabs, and eframe OpenGL/Metal composition remain TODOs.
 [`ghostty-proof.lock`](../../../../packaging/prism/macos/ghostty-proof.lock)
 is the reviewed contract. It pins:
 
-- official Ghostty `v1.3.1`, tag revision
-  `22efb0be2bbea73e5339f5426fa3b20edabcaa11`, and the SHA-256 of Ghostty's
+- official Ghostty `v1.3.1`, annotated tag object
+  `22efb0be2bbea73e5339f5426fa3b20edabcaa11`, peeled source commit
+  `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`, and the SHA-256 of Ghostty's
   official source release;
 - official Zig 0.15.2 macOS archives and SHA-256 values for arm64 and x86_64;
 - macOS 13.0 as the minimum deployment target; and
@@ -34,6 +36,9 @@ is the reviewed contract. It pins:
 
 No downloaded source or generated binary is checked into the repository.
 Everything is placed below the ignored `target/ghostty-proof/` directory.
+The tag object and peeled commit are provenance metadata. Because the official
+release archive contains no Git-object manifest, its verified SHA-256—not an
+unprovable archive-to-commit equivalence—is the downloaded source trust anchor.
 
 ## Build
 
@@ -85,9 +90,11 @@ Check only the proof claims:
    stale backing-scale artifacts.
 3. Moving the window between Retina-scaled displays updates rendering scale.
 4. The surface gains focus on click and continues rendering command output.
-5. Closing an idle shell exits cleanly; closing with a foreground process asks
+5. Minimizing, hiding, and restoring the window suspends and resumes Ghostty
+   visibility without losing the live shell.
+6. Closing an idle shell exits cleanly; closing with a foreground process asks
    before stopping it.
-6. Activity Monitor shows no runaway idle repaint loop.
+7. Activity Monitor shows no runaway idle or occluded repaint loop.
 
 Do not use this harness to evaluate IME, VoiceOver, terminal selection, OSC 52,
 or Prism/egui overlay behavior; those paths are deliberately incomplete.

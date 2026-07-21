@@ -148,6 +148,7 @@ require_command msgfmt
 lock_format="$(lock_value LOCK_FORMAT)"
 ghostty_version="$(lock_value GHOSTTY_VERSION)"
 ghostty_tag="$(lock_value GHOSTTY_TAG)"
+ghostty_tag_object="$(lock_value GHOSTTY_TAG_OBJECT)"
 ghostty_revision="$(lock_value GHOSTTY_REVISION)"
 ghostty_url="$(lock_value GHOSTTY_SOURCE_URL)"
 ghostty_sha="$(lock_value GHOSTTY_SOURCE_SHA256)"
@@ -159,7 +160,12 @@ resource_sentinel="$(lock_value GHOSTTY_RESOURCE_SENTINEL)"
 
 [[ "$lock_format" == "1" ]] || die "unsupported lock format: $lock_format"
 [[ "$ghostty_tag" == "v$ghostty_version" ]] || die "Ghostty tag/version mismatch in lock file"
-[[ "$ghostty_revision" =~ ^[0-9a-f]{40}$ ]] || die "invalid Ghostty revision in lock file"
+[[ "$ghostty_tag_object" =~ ^[0-9a-f]{40}$ ]] \
+  || die "invalid Ghostty annotated tag object in lock file"
+[[ "$ghostty_revision" =~ ^[0-9a-f]{40}$ ]] \
+  || die "invalid Ghostty peeled source revision in lock file"
+[[ "$ghostty_tag_object" != "$ghostty_revision" ]] \
+  || die "Ghostty annotated tag object and peeled source revision must be distinct"
 [[ "$zig_version" == "0.15.2" ]] || die "this proof expects upstream's exact Zig 0.15.2 toolchain"
 [[ "$minimum_macos" == "13.0" ]] || die "this proof expects Ghostty's macOS 13.0 deployment target"
 for relative_path in "$xcframework_relative" "$resources_relative" "$resource_sentinel"; do
@@ -269,6 +275,9 @@ safe_remove_tree "$harness_stage"
 
 echo "Created source-only Ghostty proof harness:"
 echo "  $bundle"
-echo "Ghostty: $ghostty_tag ($ghostty_revision)"
+echo "Ghostty: $ghostty_tag"
+echo "  annotated tag object: $ghostty_tag_object"
+echo "  peeled source commit: $ghostty_revision"
+echo "  verified release archive: $ghostty_sha"
 echo "Zig: $zig_version ($machine_arch host)"
 echo "Run manually when ready: open '$bundle'"

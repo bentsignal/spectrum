@@ -6,6 +6,7 @@ final class GhosttyProofSurfaceView: NSView {
   private let runtime: GhosttyProofRuntime
   private(set) var surface: ghostty_surface_t?
   private var allowWindowClose = false
+  private var occlusionObserver: NSObjectProtocol?
 
   override var acceptsFirstResponder: Bool { true }
 
@@ -42,8 +43,9 @@ final class GhosttyProofSurfaceView: NSView {
     }
     surface = created
     // Despite the C API name, Ghostty 1.3.1 defines this argument as
-    // `visible`: true starts rendering and false suspends an occluded view.
-    ghostty_surface_set_occlusion(created, true)
+    // `visible`. The view has not entered a window yet, so rendering starts
+    // suspended until AppKit reports that its attached window is visible.
+    ghostty_surface_set_occlusion(created, false)
     syncSurfaceGeometry()
   }
 
@@ -52,22 +54,39 @@ final class GhosttyProofSurfaceView: NSView {
   }
 
   deinit {
+    stopObservingWindowOcclusion()
     if let surface {
+      ghostty_surface_set_occlusion(surface, false)
       ghostty_surface_free(surface)
     }
   }
 
   func destroySurface() {
     guard let surface else { return }
+    stopObservingWindowOcclusion()
     self.surface = nil
     ghostty_surface_set_focus(surface, false)
-    ghostty_surface_set_occlusion(surface, true)
+    ghostty_surface_set_occlusion(surface, false)
     ghostty_surface_free(surface)
   }
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
+    stopObservingWindowOcclusion()
+    guard let window else {
+      setSurfaceVisible(false)
+      return
+    }
+
+    occlusionObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.didChangeOcclusionStateNotification,
+      object: window,
+      queue: .main
+    ) { [weak self] _ in
+      self?.syncWindowOcclusion()
+    }
     syncSurfaceGeometry()
+    syncWindowOcclusion()
     if let surface {
       ghostty_surface_refresh(surface)
     }
@@ -81,6 +100,21 @@ final class GhosttyProofSurfaceView: NSView {
   override func viewDidChangeBackingProperties() {
     super.viewDidChangeBackingProperties()
     syncSurfaceGeometry()
+  }
+
+  private func stopObservingWindowOcclusion() {
+    guard let occlusionObserver else { return }
+    NotificationCenter.default.removeObserver(occlusionObserver)
+    self.occlusionObserver = nil
+  }
+
+  private func syncWindowOcclusion() {
+    setSurfaceVisible(window?.occlusionState.contains(.visible) == true)
+  }
+
+  private func setSurfaceVisible(_ visible: Bool) {
+    guard let surface else { return }
+    ghostty_surface_set_occlusion(surface, visible)
   }
 
   private func syncSurfaceGeometry() {
