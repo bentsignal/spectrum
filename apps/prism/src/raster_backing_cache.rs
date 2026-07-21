@@ -6,7 +6,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use fs2::FileExt;
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,14 +20,14 @@ mod cache_fs;
 mod maintenance;
 pub(crate) mod prepare;
 use cache_fs::{
-    RetainedPlane, open_or_create_trusted_lock_file, open_trusted_cache_file, read_bounded,
-    read_exact_at, remove_cache_entry, retain_plane, sync_directory, trusted_cache_directory,
-    trusted_cache_directory_if_present,
+    RetainedPlane, open_trusted_cache_file, read_bounded, read_exact_at, remove_cache_entry,
+    retain_plane, sync_directory, trusted_cache_directory, trusted_cache_directory_if_present,
 };
 use maintenance::{CacheMaintenanceLease, EntryReadLease};
 use prepare::prepare_exact_rgba8_plane;
 
 const CACHE_SCHEMA_VERSION: u32 = 2;
+const LEGACY_CACHE_SCHEMA_VERSION: u32 = 1;
 const CACHE_VERSION_DIRECTORY: &str = "v2";
 const MANIFEST_FILE: &str = "manifest.json";
 const PLANE_FILE: &str = "pixels.rgba8";
@@ -309,15 +308,14 @@ impl DerivedBackingCache {
                 memory_plan,
             });
         }
-        self.ensure_cache_layout()?;
+        self.ensure_cache_root()?;
         let version_root = self.version_root();
-        let Some(maintenance) = CacheMaintenanceLease::try_acquire(&version_root, self.limits)?
+        let Some(maintenance) =
+            CacheMaintenanceLease::try_acquire(&self.root, &version_root, self.limits)?
         else {
             return Ok(PrepareDerivedBacking::InProgress(identity.clone()));
         };
-        let Some(_lease) = CachePrepareLease::acquire(version_root.join(PREPARE_LOCK))? else {
-            return Ok(PrepareDerivedBacking::InProgress(identity.clone()));
-        };
+        maintenance.ensure_version_root()?;
         maintenance.scavenge_crash_entries()?;
         match self.open_ready(identity) {
             Ok(Some(backing)) => {
@@ -451,17 +449,10 @@ impl DerivedBackingCache {
         Ok(plan)
     }
 
-    fn ensure_cache_layout(&self) -> Result<()> {
+    fn ensure_cache_root(&self) -> Result<()> {
         fs::create_dir_all(&self.root)
             .with_context(|| format!("could not create {}", self.root.display()))?;
-        trusted_cache_directory(&self.root)?;
-        let version_root = self.version_root();
-        match fs::create_dir(&version_root) {
-            Ok(()) => sync_directory(&self.root)?,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
-        }
-        trusted_cache_directory(&version_root)
+        trusted_cache_directory(&self.root)
     }
 
     fn version_root(&self) -> PathBuf {
@@ -581,14 +572,24 @@ impl DerivedBackingManifest {
         identity: &DerivedBackingIdentity,
         limits: DerivedBackingLimits,
     ) -> Result<()> {
-        if self.schema_version != CACHE_SCHEMA_VERSION
+        self.validate_schema(identity, limits, CACHE_SCHEMA_VERSION)
+    }
+
+    fn validate_schema(
+        &self,
+        identity: &DerivedBackingIdentity,
+        limits: DerivedBackingLimits,
+        expected_schema: u32,
+    ) -> Result<()> {
+        if self.schema_version != expected_schema
             || self.key != identity.key
             || self.source_sha256 != identity.source_sha256
             || self.descriptor != identity.descriptor
         {
             bail!("derived raster backing manifest does not match its source identity");
         }
-        if self.pixel_format != PIXEL_FORMAT
+        if !is_lower_sha256(&self.plane_sha256)
+            || self.pixel_format != PIXEL_FORMAT
             || self.row_stride != u64::from(self.descriptor.width) * 4
         {
             bail!("derived raster backing manifest has an unsupported pixel layout");
@@ -630,6 +631,7 @@ fn validate_inventory_manifest(
     manifest: &DerivedBackingManifest,
     key: &str,
     limits: DerivedBackingLimits,
+    expected_schema: u32,
 ) -> Result<()> {
     if manifest.key != key || !is_lower_sha256(&manifest.source_sha256) {
         bail!("derived backing manifest has an invalid content identity");
@@ -646,7 +648,7 @@ fn validate_inventory_manifest(
         source_sha256: manifest.source_sha256.clone(),
         descriptor: manifest.descriptor.clone(),
     };
-    manifest.validate(&identity, limits)
+    manifest.validate_schema(&identity, limits, expected_schema)
 }
 
 fn sha256_path_bounded(path: &Path, max_bytes: u64, label: &str) -> Result<String> {
@@ -722,21 +724,6 @@ fn sha256_hex(digest: impl AsRef<[u8]>) -> String {
         encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     encoded
-}
-
-struct CachePrepareLease {
-    _file: File,
-}
-
-impl CachePrepareLease {
-    fn acquire(path: PathBuf) -> Result<Option<Self>> {
-        let file = open_or_create_trusted_lock_file(&path)?;
-        match FileExt::try_lock_exclusive(&file) {
-            Ok(()) => Ok(Some(Self { _file: file })),
-            Err(error) if error.kind() == fs2::lock_contended_error().kind() => Ok(None),
-            Err(error) => Err(error.into()),
-        }
-    }
 }
 
 struct TemporaryDirectory {

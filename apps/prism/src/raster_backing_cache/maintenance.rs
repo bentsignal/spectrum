@@ -16,12 +16,11 @@ use super::cache_fs::{
     trusted_cache_directory_if_present,
 };
 use super::{
-    ACCESS_FILE, ACCESS_MARKER_BYTES, DerivedBackingLimits, ENTRY_LEASE_FILE, MANIFEST_FILE,
-    MAX_MANIFEST_BYTES, MAX_READY_BYTES, PLANE_FILE, READY_FILE, is_eviction_tombstone_name,
-    is_lower_sha256, sha256_bytes,
+    ACCESS_FILE, ACCESS_MARKER_BYTES, DerivedBackingLimits, ENTRY_LEASE_FILE,
+    LEGACY_CACHE_SCHEMA_VERSION, MANIFEST_FILE, MAX_MANIFEST_BYTES, MAX_READY_BYTES, PLANE_FILE,
+    PREPARE_LOCK, READY_FILE, is_eviction_tombstone_name, is_lower_sha256, sha256_bytes,
 };
 
-const MAINTENANCE_LOCK: &str = ".maintenance-lock";
 static EVICTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static ACCESS_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -45,18 +44,24 @@ impl EntryReadLease {
 
 pub(super) struct CacheMaintenanceLease {
     root: PathBuf,
+    version_root: PathBuf,
     _file: File,
     limits: DerivedBackingLimits,
 }
 
 impl CacheMaintenanceLease {
-    pub fn try_acquire(root: &Path, limits: DerivedBackingLimits) -> Result<Option<Self>> {
+    pub fn try_acquire(
+        root: &Path,
+        version_root: &Path,
+        limits: DerivedBackingLimits,
+    ) -> Result<Option<Self>> {
         trusted_cache_directory(root)?;
-        let path = root.join(MAINTENANCE_LOCK);
+        let path = root.join(PREPARE_LOCK);
         let file = open_or_create_trusted_lock_file(&path)?;
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self {
                 root: root.to_owned(),
+                version_root: version_root.to_owned(),
                 _file: file,
                 limits,
             })),
@@ -65,14 +70,30 @@ impl CacheMaintenanceLease {
         }
     }
 
+    pub fn ensure_version_root(&self) -> Result<()> {
+        match fs::create_dir(&self.version_root) {
+            Ok(()) => sync_directory(&self.root)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        trusted_cache_directory(&self.version_root)
+    }
+
     pub fn scavenge_crash_entries(&self) -> Result<()> {
+        self.scavenge_directory(&self.root, false)?;
+        self.scavenge_directory(&self.version_root, true)
+    }
+
+    fn scavenge_directory(&self, directory: &Path, include_evictions: bool) -> Result<()> {
         let mut changed = false;
-        for entry in fs::read_dir(&self.root)? {
+        for entry in fs::read_dir(directory)? {
             let entry = entry?;
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if is_temporary_entry_name(&name) || is_eviction_tombstone_name(&name) {
+            if is_temporary_entry_name(&name)
+                || (include_evictions && is_eviction_tombstone_name(&name))
+            {
                 remove_cache_entry(&entry.path()).with_context(|| {
                     format!(
                         "could not scavenge stale cache entry {}",
@@ -83,13 +104,13 @@ impl CacheMaintenanceLease {
             }
         }
         if changed {
-            sync_directory(&self.root)?;
+            sync_directory(directory)?;
         }
         Ok(())
     }
 
     pub fn remove_corrupt_entry(&self, key: &str) -> Result<()> {
-        let path = self.root.join(key);
+        let path = self.version_root.join(key);
         if !trusted_cache_directory_if_present(&path)? {
             return Ok(());
         }
@@ -110,12 +131,16 @@ impl CacheMaintenanceLease {
         if incoming_bytes > self.limits.max_cache_bytes {
             bail!("derived raster backing exceeds the total cache quota");
         }
-        let mut entries = self.inventory()?;
-        let mut occupied = entries.iter().try_fold(0_u64, |total, entry| {
+        let mut entries = self.inventory_v2()?;
+        let v2_bytes = entries.iter().try_fold(0_u64, |total, entry| {
             total
                 .checked_add(entry.logical_bytes)
                 .context("derived raster backing cache size overflows")
         })?;
+        let legacy_bytes = self.inventory_legacy_bytes()?;
+        let mut occupied = legacy_bytes
+            .checked_add(v2_bytes)
+            .context("cross-version derived backing cache size overflows")?;
         if occupied
             .checked_add(incoming_bytes)
             .is_some_and(|total| total <= self.limits.max_cache_bytes)
@@ -157,12 +182,12 @@ impl CacheMaintenanceLease {
                 return Ok(());
             }
         }
-        bail!("derived raster backing cache quota cannot evict active entries")
+        bail!("derived raster backing cache quota cannot evict active or legacy entries")
     }
 
-    fn inventory(&self) -> Result<Vec<CacheEntryInventory>> {
+    fn inventory_v2(&self) -> Result<Vec<CacheEntryInventory>> {
         let mut entries = Vec::new();
-        for entry in fs::read_dir(&self.root)? {
+        for entry in fs::read_dir(&self.version_root)? {
             let entry = entry?;
             let Some(key) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
@@ -174,8 +199,24 @@ impl CacheMaintenanceLease {
         Ok(entries)
     }
 
+    fn inventory_legacy_bytes(&self) -> Result<u64> {
+        fs::read_dir(&self.root)?.try_fold(0_u64, |total, entry| {
+            let entry = entry?;
+            let Some(key) = entry.file_name().to_str().map(str::to_owned) else {
+                return Ok(total);
+            };
+            if !is_cache_key(&key) {
+                return Ok(total);
+            }
+            let bytes = inventory_legacy_entry(&entry.path(), &key, self.limits)?;
+            total
+                .checked_add(bytes)
+                .context("legacy derived backing cache size overflows")
+        })
+    }
+
     fn tombstone_and_remove(&self, path: &Path, key: &str, lease: Option<File>) -> Result<()> {
-        let tombstone = self.root.join(format!(
+        let tombstone = self.version_root.join(format!(
             ".evict-{key}-{}-{}",
             std::process::id(),
             EVICTION_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -186,7 +227,7 @@ impl CacheMaintenanceLease {
                 path.display()
             )
         })?;
-        sync_directory(&self.root)?;
+        sync_directory(&self.version_root)?;
         // Windows cannot recursively delete an entry while its lease handle is
         // retained. The durable rename happens first; only then release it.
         drop(lease);
@@ -196,7 +237,7 @@ impl CacheMaintenanceLease {
                 tombstone.display()
             )
         })?;
-        sync_directory(&self.root)?;
+        sync_directory(&self.version_root)?;
         Ok(())
     }
 }
@@ -243,7 +284,7 @@ fn inventory_complete_entry(
     let manifest_bytes = read_bounded(&mut manifest_file, MAX_MANIFEST_BYTES, "manifest")?;
     let manifest: super::DerivedBackingManifest = serde_json::from_slice(&manifest_bytes)
         .context("derived raster backing manifest is invalid")?;
-    super::validate_inventory_manifest(&manifest, key, limits)?;
+    super::validate_inventory_manifest(&manifest, key, limits, super::CACHE_SCHEMA_VERSION)?;
 
     let ready_path = path.join(READY_FILE);
     let mut ready_file = open_trusted_cache_file(&ready_path, MAX_READY_BYTES)?;
@@ -286,6 +327,61 @@ fn inventory_complete_entry(
         path: path.to_owned(),
         logical_bytes,
         last_access: access_metadata.modified()?,
+    })
+}
+
+fn inventory_legacy_entry(path: &Path, key: &str, limits: DerivedBackingLimits) -> Result<u64> {
+    if !is_lower_sha256(key) || !trusted_cache_directory_if_present(path)? {
+        bail!("legacy derived backing inventory encountered an invalid entry directory");
+    }
+    let mut seen = [false; 3];
+    for child in fs::read_dir(path)? {
+        let child = child?;
+        let Some(name) = child.file_name().to_str().map(str::to_owned) else {
+            bail!("legacy derived backing entry contains a non-UTF-8 file name");
+        };
+        let index = match name.as_str() {
+            MANIFEST_FILE => 0,
+            PLANE_FILE => 1,
+            READY_FILE => 2,
+            _ => bail!("legacy derived backing entry contains an unexpected file {name}"),
+        };
+        if std::mem::replace(&mut seen[index], true) {
+            bail!("legacy derived backing entry contains a duplicate file {name}");
+        }
+    }
+    if seen.iter().any(|present| !present) {
+        bail!("legacy derived backing inventory encountered an incomplete entry");
+    }
+
+    let mut manifest_file = open_trusted_cache_file(&path.join(MANIFEST_FILE), MAX_MANIFEST_BYTES)?;
+    let manifest_bytes = read_bounded(&mut manifest_file, MAX_MANIFEST_BYTES, "legacy manifest")?;
+    let manifest: super::DerivedBackingManifest = serde_json::from_slice(&manifest_bytes)
+        .context("legacy derived raster backing manifest is invalid")?;
+    super::validate_inventory_manifest(&manifest, key, limits, LEGACY_CACHE_SCHEMA_VERSION)?;
+
+    let mut ready_file = open_trusted_cache_file(&path.join(READY_FILE), MAX_READY_BYTES)?;
+    let ready_bytes = read_bounded(&mut ready_file, MAX_READY_BYTES, "legacy ready marker")?;
+    let ready = std::str::from_utf8(&ready_bytes)
+        .context("legacy derived backing ready marker is not UTF-8")?;
+    if ready.trim() != sha256_bytes(&manifest_bytes) {
+        bail!("legacy derived backing ready marker does not match its manifest");
+    }
+
+    let plane = open_trusted_cache_file(&path.join(PLANE_FILE), limits.max_plane_bytes)?;
+    if plane.metadata()?.len() != manifest.plane_bytes {
+        bail!("legacy derived backing plane length does not match its manifest");
+    }
+    [
+        manifest_file.metadata()?.len(),
+        plane.metadata()?.len(),
+        ready_file.metadata()?.len(),
+    ]
+    .into_iter()
+    .try_fold(0_u64, |total, bytes| {
+        total
+            .checked_add(bytes)
+            .context("legacy derived backing entry size overflows")
     })
 }
 

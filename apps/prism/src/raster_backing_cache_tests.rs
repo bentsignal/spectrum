@@ -361,7 +361,6 @@ fn busy_prepare_identified_retry_does_not_rehash_or_reinspect() {
         .unwrap();
     let cache_root = directory.path().join("cache");
     fs::create_dir(&cache_root).unwrap();
-    fs::create_dir(version_root(&cache_root)).unwrap();
     let cache = cache(&cache_root);
     let identity = cache.identify(&source).unwrap();
     let lock = OpenOptions::new()
@@ -369,7 +368,7 @@ fn busy_prepare_identified_retry_does_not_rehash_or_reinspect() {
         .read(true)
         .write(true)
         .truncate(false)
-        .open(version_root(&cache_root).join(".prepare-lock"))
+        .open(cache_root.join(".prepare-lock"))
         .unwrap();
     lock.try_lock_exclusive().unwrap();
     let parked_source = source.with_extension("parked");
@@ -413,13 +412,12 @@ fn prepare_lock_is_nonblocking_and_released_for_the_next_builder() {
         .unwrap();
     let cache_root = directory.path().join("cache");
     fs::create_dir(&cache_root).unwrap();
-    fs::create_dir(version_root(&cache_root)).unwrap();
     let lock = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
-        .open(version_root(&cache_root).join(".prepare-lock"))
+        .open(cache_root.join(".prepare-lock"))
         .unwrap();
     lock.try_lock_exclusive().unwrap();
     match cache(&cache_root).prepare(&source).unwrap() {
@@ -456,6 +454,12 @@ fn stale_temporary_planes_are_scavenged_and_do_not_consume_quota() {
     let stale_plane = File::create(stale.join("pixels.rgba8")).unwrap();
     stale_plane.set_len(1_024).unwrap();
     drop(stale_plane);
+    let legacy_stale = cache_root.join(format!(".tmp-{}-999-2", identity.key()));
+    fs::create_dir(&legacy_stale).unwrap();
+    File::create(legacy_stale.join("pixels.rgba8"))
+        .unwrap()
+        .set_len(1_024)
+        .unwrap();
     let invalid = version_root(&cache_root).join(".tmp-not-a-cache-build");
     fs::create_dir(&invalid).unwrap();
     File::create(invalid.join("pixels.rgba8"))
@@ -468,6 +472,7 @@ fn stale_temporary_planes_are_scavenged_and_do_not_consume_quota() {
         PrepareDerivedBacking::Ready { created: true, .. }
     ));
     assert!(!stale.exists());
+    assert!(!legacy_stale.exists());
     assert!(invalid.exists());
 }
 
