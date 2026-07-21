@@ -42,7 +42,24 @@ fn generic_failures_stop_with_the_last_diagnostic() {
         &coordinator.paths[&path].phase,
         PathPhase::Failed { diagnostic } if diagnostic == "failure 3"
     ));
+    assert_eq!(
+        coordinator.terminal_failure(),
+        Some((path.clone(), "failure 3".into()))
+    );
+    assert_eq!(
+        terminal_failure_status(&path, "failure 3"),
+        "Bounded preview failed for broken.jpg: failure 3"
+    );
     coordinator.dispatch_ready(now + MAX_RETRY_DELAY + Duration::from_secs(1));
+    assert!(requests.try_recv().is_err());
+    coordinator.set_tab_document(1, &document);
+    assert!(requests.try_recv().is_err());
+
+    let terminal_generation = coordinator.paths[&path].generation;
+    assert_eq!(coordinator.retry_terminal_failures(), 1);
+    let retry = requests.try_recv().unwrap();
+    assert_ne!(retry.generation, terminal_generation);
+    assert_eq!(coordinator.retry_terminal_failures(), 0);
     assert!(requests.try_recv().is_err());
 }
 
@@ -140,6 +157,88 @@ fn active_switch_releases_old_provider_and_prepares_new_visible_source() {
     assert!(active_generations.contains_key(&second_path));
     drop(active_generations);
     assert_eq!(requests.try_recv().unwrap().path, second_path);
+}
+
+#[test]
+fn atomic_active_replacement_preserves_overlapping_ready_provider() {
+    let path = PathBuf::from("shared.jpg");
+    let document = raster_document(path.clone());
+    let (mut coordinator, requests) = detached_coordinator();
+    coordinator.set_tab_document(1, &document);
+    coordinator.set_tab_document(2, &document);
+    coordinator.set_active_tab(1);
+    let request = requests.try_recv().unwrap();
+    coordinator.apply_result(
+        PreparationResult {
+            path: request.path,
+            generation: request.generation,
+            attempts: 0,
+            outcome: PreparationOutcome::Ready(resolved("shared", None)),
+        },
+        Instant::now(),
+    );
+    let snapshot = coordinator.snapshot();
+    let epoch = snapshot.epoch;
+    let generation = coordinator.paths[&path].generation;
+
+    coordinator.set_active_tab(2);
+    coordinator.remove_tab(1);
+
+    assert_eq!(coordinator.snapshot.epoch, epoch);
+    assert!(Arc::ptr_eq(&snapshot, &coordinator.snapshot));
+    assert_eq!(coordinator.paths[&path].generation, generation);
+    assert!(coordinator.snapshot.resolve(&path).is_some());
+    assert!(requests.try_recv().is_err());
+}
+
+#[test]
+fn stale_saturated_worker_queue_wakes_poll_to_dispatch_new_active_work() {
+    let stale_path = PathBuf::from("stale.jpg");
+    let active_path = PathBuf::from("active.jpg");
+    let (request_sender, request_receiver) = mpsc::sync_channel(1);
+    request_sender
+        .try_send(PreparationRequest {
+            path: stale_path,
+            generation: 1,
+            identity: None,
+            attempts: 0,
+        })
+        .unwrap();
+    let (result_sender, result_receiver) = mpsc::channel();
+    let active_generations = Arc::new(Mutex::new(HashMap::from([(active_path.clone(), 2)])));
+    let worker = spawn_preparation_worker(
+        request_receiver,
+        result_sender,
+        egui::Context::default(),
+        Arc::clone(&active_generations),
+        |_path, _identity| PreparationOutcome::LegacyNative,
+    );
+    let mut coordinator = RasterSourceCoordinator {
+        request_sender: Some(request_sender.clone()),
+        result_receiver,
+        tab_paths: HashMap::from([(1, HashSet::from([active_path.clone()]))]),
+        paths: HashMap::from([(
+            active_path.clone(),
+            PathState {
+                generation: 2,
+                phase: PathPhase::Needed,
+            },
+        )]),
+        active_tab: Some(1),
+        active_generations,
+        snapshot: Arc::new(RasterSourceSnapshot::empty()),
+        next_generation: 2,
+    };
+    let context = egui::Context::default();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !coordinator.snapshot.legacy_native.contains(&active_path) {
+        assert!(Instant::now() < deadline, "new active request was stranded");
+        coordinator.poll(&context);
+        std::thread::yield_now();
+    }
+    drop(coordinator);
+    drop(request_sender);
+    worker.join().unwrap();
 }
 
 #[test]

@@ -177,6 +177,49 @@ pub(super) struct RasterSourceCoordinator {
     next_generation: u64,
 }
 
+fn spawn_preparation_worker<F>(
+    request_receiver: Receiver<PreparationRequest>,
+    result_sender: mpsc::Sender<PreparationResult>,
+    repaint: egui::Context,
+    active_generations: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    prepare: F,
+) -> std::thread::JoinHandle<()>
+where
+    F: Fn(&Path, Option<&DerivedBackingIdentity>) -> PreparationOutcome + Send + 'static,
+{
+    std::thread::spawn(move || {
+        while let Ok(request) = request_receiver.recv() {
+            let request_is_active = active_generations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&request.path)
+                == Some(&request.generation);
+            if !request_is_active {
+                repaint.request_repaint();
+                continue;
+            }
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                prepare(&request.path, request.identity.as_ref())
+            }))
+            .unwrap_or_else(|_| {
+                PreparationOutcome::Failed("Raster source preparation panicked".into())
+            });
+            if result_sender
+                .send(PreparationResult {
+                    path: request.path,
+                    generation: request.generation,
+                    attempts: request.attempts,
+                    outcome,
+                })
+                .is_err()
+            {
+                break;
+            }
+            repaint.request_repaint();
+        }
+    })
+}
+
 impl RasterSourceCoordinator {
     pub(super) fn new(repaint: egui::Context) -> Self {
         let cache_root = eframe::storage_dir("Prism")
@@ -186,37 +229,13 @@ impl RasterSourceCoordinator {
         let request_sender = cache_root.map(|root| {
             let (request_sender, request_receiver) = mpsc::sync_channel(PREPARATION_QUEUE_CAPACITY);
             let cache = DerivedBackingCache::new(root, DerivedBackingLimits::default());
-            let active_generations = Arc::clone(&active_generations);
-            std::thread::spawn(move || {
-                while let Ok(request) = request_receiver.recv() {
-                    let request_is_active = active_generations
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .get(&request.path)
-                        == Some(&request.generation);
-                    if !request_is_active {
-                        continue;
-                    }
-                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        prepare_source(&cache, &request.path, request.identity.as_ref())
-                    }))
-                    .unwrap_or_else(|_| {
-                        PreparationOutcome::Failed("Raster source preparation panicked".into())
-                    });
-                    if result_sender
-                        .send(PreparationResult {
-                            path: request.path,
-                            generation: request.generation,
-                            attempts: request.attempts,
-                            outcome,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                    repaint.request_repaint();
-                }
-            });
+            let _worker = spawn_preparation_worker(
+                request_receiver,
+                result_sender,
+                repaint,
+                Arc::clone(&active_generations),
+                move |path, identity| prepare_source(&cache, path, identity),
+            );
             request_sender
         });
         Self {
@@ -233,6 +252,40 @@ impl RasterSourceCoordinator {
 
     pub(super) fn snapshot(&self) -> Arc<RasterSourceSnapshot> {
         Arc::clone(&self.snapshot)
+    }
+
+    pub(super) fn terminal_failure(&self) -> Option<(PathBuf, String)> {
+        self.paths
+            .iter()
+            .find_map(|(path, state)| match &state.phase {
+                PathPhase::Failed { diagnostic } => Some((path.clone(), diagnostic.clone())),
+                _ => None,
+            })
+    }
+
+    pub(super) fn retry_terminal_failures(&mut self) -> usize {
+        let failed: Vec<_> = self
+            .paths
+            .iter()
+            .filter_map(|(path, state)| {
+                matches!(&state.phase, PathPhase::Failed { .. }).then_some(path.clone())
+            })
+            .collect();
+        for path in &failed {
+            self.next_generation = self
+                .next_generation
+                .checked_add(1)
+                .expect("raster source generation exhausted");
+            if let Some(state) = self.paths.get_mut(path) {
+                state.generation = self.next_generation;
+                state.phase = PathPhase::Needed;
+            }
+        }
+        if !failed.is_empty() {
+            self.refresh_active_generations();
+            self.dispatch_ready(Instant::now());
+        }
+        failed.len()
     }
 
     pub(super) fn set_tab_document(&mut self, tab_id: u64, document: &Document) {
@@ -300,6 +353,14 @@ impl RasterSourceCoordinator {
                 },
             );
         }
+        self.refresh_active_generations();
+        if removed_published {
+            self.publish_snapshot();
+        }
+        self.dispatch_ready(Instant::now());
+    }
+
+    fn refresh_active_generations(&self) {
         *self
             .active_generations
             .lock()
@@ -308,10 +369,6 @@ impl RasterSourceCoordinator {
             .iter()
             .map(|(path, state)| (path.clone(), state.generation))
             .collect();
-        if removed_published {
-            self.publish_snapshot();
-        }
-        self.dispatch_ready(Instant::now());
     }
 
     pub(super) fn poll(&mut self, context: &egui::Context) {
@@ -457,6 +514,13 @@ fn derived_cache_root(storage_directory: &Path, app_version: &str) -> PathBuf {
         .join("Derived Raster Backings")
         .join(DERIVED_CACHE_COMPATIBILITY)
         .join(app_version)
+}
+
+pub(super) fn terminal_failure_status(path: &Path, diagnostic: &str) -> String {
+    format!(
+        "Bounded preview failed for {}: {diagnostic}",
+        path.display()
+    )
 }
 
 fn prepare_source(

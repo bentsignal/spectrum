@@ -444,16 +444,19 @@ impl PrismApp {
             return;
         };
         self.tab_ids.remove(position);
-        self.raster_sources.remove_tab(id);
         if id == self.active_tab_id {
             let replacement_id = self.tab_ids[position.min(self.tab_ids.len() - 1)];
             if let Some(replacement) = self.inactive_workspaces.remove(&replacement_id) {
                 self.workspace = replacement;
                 self.active_tab_id = replacement_id;
+                // Install the replacement source set before forgetting the old tab so an
+                // overlapping ready provider and its generation survive atomically.
+                self.sync_active_raster_sources();
             }
         } else {
             self.inactive_workspaces.remove(&id);
         }
+        self.raster_sources.remove_tab(id);
         self.history.workspace_changed();
         self.sync_active_raster_sources();
         self.reset_canvas_cache();
@@ -520,6 +523,14 @@ impl PrismApp {
                             .size(11.0)
                             .color(if self.status_error { DANGER } else { MUTED }),
                     );
+                    if self.raster_sources.terminal_failure().is_some()
+                        && ui.small_button("Retry preview").clicked()
+                    {
+                        let count = self.raster_sources.retry_terminal_failures();
+                        self.status = format!("Retrying {count} bounded preview source(s)");
+                        self.status_error = false;
+                        ui.ctx().request_repaint();
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         #[cfg(not(target_os = "macos"))]
                         self.terminal_status_control(ui);
@@ -562,6 +573,10 @@ impl eframe::App for PrismApp {
         let context = root.ctx().clone();
         self.composite_preview.begin_frame();
         self.raster_sources.poll(&context);
+        if let Some((path, diagnostic)) = self.raster_sources.terminal_failure() {
+            self.status = terminal_failure_status(&path, &diagnostic);
+            self.status_error = true;
+        }
         self.receive_open_documents(&context);
         self.sync_agent_collaborations(&context);
         self.poll_terminals(&context);
