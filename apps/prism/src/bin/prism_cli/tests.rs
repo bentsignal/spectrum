@@ -232,8 +232,12 @@ fn durable_font_source_ignores_newer_live_and_recovery_state_without_writes() {
         .unwrap()
         .project_info()
         .unwrap();
-    let working = directory
-        .join(".revision-cache")
+    let live_cache = directory.join(".revision-cache");
+    drop(
+        spectrum_revisions::LiveRevisionStore::open(&project, &live_cache)
+            .expect("test live cache should materialize from the canonical project"),
+    );
+    let working = live_cache
         .join(project_info.project_id.to_string())
         .join("live.sqlite");
     let canonical_writer = rusqlite::Connection::open(&project).unwrap();

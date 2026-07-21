@@ -248,8 +248,10 @@ fn font_source_read_is_bounded_before_allocating_file_contents() {
 
 #[test]
 fn source_snapshot_accepts_static_variable_and_cff_open_type_containers() {
-    let fixtures =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/spectrum-fonts/tests/fonts");
+    let fixtures = fs::canonicalize(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/spectrum-fonts/tests/fonts"),
+    )
+    .unwrap();
     for name in [
         "noto-sans-static-source.ttf",
         "noto-sans-variable-rejected.ttf",

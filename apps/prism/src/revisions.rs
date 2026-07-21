@@ -13,7 +13,9 @@ use spectrum_revisions::{
     RevisionId, Session, SessionId, TrackId,
 };
 
-use crate::{Command, Document, FontAsset, FontSourceSnapshot, LayerKind, apply_command};
+use crate::{
+    Command, Document, FontAsset, FontSourceSnapshot, LayerKind, LayerTransferFont, apply_command,
+};
 
 const APPLICATION_ID: &str = "spectrum.prism";
 const SNAPSHOT_COMMAND_BUDGET: u64 = 100;
@@ -757,7 +759,7 @@ impl PreparedOperations {
                         assets.push(prepared.asset);
                     }
                     if let Some(font) = &mut transfer.font_asset {
-                        let prepared = prepare_verified_font_asset(font)?;
+                        let prepared = prepare_verified_transfer_font_asset(font)?;
                         font.path = prepared.reference.path();
                         assets.push(prepared.asset);
                     }
@@ -860,6 +862,19 @@ fn prepare_font_snapshot(snapshot: &FontSourceSnapshot) -> Result<PreparedAsset>
 
 fn prepare_verified_font_asset(font: &FontAsset) -> Result<PreparedAsset> {
     prepare_font_snapshot(&font.source_snapshot()?)
+}
+
+fn prepare_verified_transfer_font_asset(font: &LayerTransferFont) -> Result<PreparedAsset> {
+    let snapshot = FontSourceSnapshot::read_verified(&font.path, &font.content_hash)?;
+    if snapshot.family != font.family
+        || snapshot.style != font.style
+        || snapshot.weight != font.weight
+        || snapshot.slant != font.slant
+        || snapshot.subset_allowed != font.subset_allowed
+    {
+        bail!("transferred font metadata does not match its immutable source snapshot");
+    }
+    prepare_font_snapshot(&snapshot)
 }
 
 struct AssetReference {

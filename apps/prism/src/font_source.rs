@@ -265,16 +265,16 @@ fn open_no_follow(path: &Path) -> Result<File> {
     };
     loop {
         let next = components.next();
-        let name = CString::new(name.as_bytes()).context("font path contains a null byte")?;
+        let component = CString::new(name.as_bytes()).context("font path contains a null byte")?;
         let flags = libc::O_RDONLY
             | libc::O_CLOEXEC
             | libc::O_NOFOLLOW
             | libc::O_NONBLOCK
             | if next.is_some() { libc::O_DIRECTORY } else { 0 };
-        // SAFETY: `directory` owns a live directory descriptor, `name` is a
+        // SAFETY: `directory` owns a live directory descriptor, `component` is a
         // null-terminated component, and a successful descriptor is immediately
         // transferred into `File`. O_NOFOLLOW binds every traversed component.
-        let descriptor = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+        let descriptor = unsafe { libc::openat(directory.as_raw_fd(), component.as_ptr(), flags) };
         if descriptor < 0 {
             return Err(std::io::Error::last_os_error())
                 .with_context(|| format!("could not securely open font {}", path.display()));
@@ -502,10 +502,7 @@ fn same_file(_left: &Metadata, _right: &Metadata) -> bool {
 }
 
 fn require_editable_embedding(face: &Face<'_>) -> Result<()> {
-    if !matches!(
-        face.permissions(),
-        Some(Permissions::Installable | Permissions::Editable)
-    ) {
+    if !permissions_allow_editable_embedding(face.permissions()) {
         bail!(
             "OpenType embedding metadata does not allow portable editable embedding (preview/print-only fonts are unsupported); verify the font license separately"
         );
@@ -516,6 +513,13 @@ fn require_editable_embedding(face: &Face<'_>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn permissions_allow_editable_embedding(permissions: Option<Permissions>) -> bool {
+    matches!(
+        permissions,
+        Some(Permissions::Installable | Permissions::Editable)
+    )
 }
 
 fn font_name(face: &Face<'_>, ids: &[u16]) -> Option<String> {
@@ -544,6 +548,35 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    #[test]
+    fn portable_editable_embedding_requires_installable_or_editable_permission() {
+        assert!(permissions_allow_editable_embedding(Some(
+            Permissions::Installable
+        )));
+        assert!(permissions_allow_editable_embedding(Some(
+            Permissions::Editable
+        )));
+        assert!(!permissions_allow_editable_embedding(Some(
+            Permissions::PreviewAndPrint
+        )));
+        assert!(!permissions_allow_editable_embedding(Some(
+            Permissions::Restricted
+        )));
+        assert!(!permissions_allow_editable_embedding(None));
+    }
+
+    #[test]
+    fn content_hash_is_lowercase_sha256_hex() {
+        let hash = sha256_hex(b"Spectrum typography");
+        assert_eq!(hash.len(), 64);
+        assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(hash, hash.to_ascii_lowercase());
+        assert_eq!(
+            hash,
+            "08bf2a874548a4cad5f52023922a20f1b4b8724372b71a296673e9b6f1ce6696"
+        );
+    }
 
     #[test]
     fn file_identity_rejects_same_length_path_replacement() {

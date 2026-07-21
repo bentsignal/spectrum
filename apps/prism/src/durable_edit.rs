@@ -173,9 +173,9 @@ fn prepare_staged_asset(project: &DurableProject, path: &Path) -> Result<(Prepar
 
 fn prepare_staged_font_asset(
     project: &DurableProject,
-    font: &FontAsset,
+    font: &LayerTransferFont,
 ) -> Result<(PreparedAsset, PathBuf)> {
-    let prepared = prepare_verified_font_asset(font)?;
+    let prepared = prepare_verified_transfer_font_asset(font)?;
     let staged_path = project.stage_asset(&prepared.reference, &prepared.asset.bytes)?;
     Ok((prepared, staged_path))
 }

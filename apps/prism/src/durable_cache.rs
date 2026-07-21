@@ -21,7 +21,9 @@ impl DurableProject {
     }
 
     fn materialized_asset_directory(&self) -> PathBuf {
-        std::env::temp_dir()
+        let temporary_root = std::env::temp_dir();
+        fs::canonicalize(&temporary_root)
+            .unwrap_or(temporary_root)
             .join("spectrum-prism-cache")
             .join(self.info.project_id.to_string())
     }
