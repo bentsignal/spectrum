@@ -271,7 +271,7 @@ pub(super) fn drag_transform(drag: DragState, preserve_aspect: bool) -> Transfor
 }
 
 fn rotate_vector(vector: Vec2, degrees: f32) -> Vec2 {
-    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (sin, cos) = prism_core::rotation_sin_cos(degrees);
     Vec2::new(
         vector.x * cos - vector.y * sin,
         vector.x * sin + vector.y * cos,

@@ -694,8 +694,7 @@ fn quad_mesh(
     ];
     if rotation_degrees.abs() >= 0.01 {
         let center = rotation_pivot.unwrap_or_else(|| rect.center());
-        let radians = rotation_degrees.to_radians();
-        let (sin, cos) = radians.sin_cos();
+        let (sin, cos) = prism_core::rotation_sin_cos(rotation_degrees);
         for position in &mut positions {
             let delta = *position - center;
             *position =
