@@ -1,6 +1,6 @@
 use std::{io::Write, path::PathBuf, time::Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::ValueEnum;
 use prism_core::{
     BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
@@ -17,6 +17,9 @@ use spectrum_imaging::Adjustments;
 #[path = "benchmark/raster_fixture.rs"]
 mod raster_fixture;
 use raster_fixture::PreparedRasterFixture;
+#[path = "benchmark/temporary_font.rs"]
+mod temporary_font;
+use temporary_font::TemporaryFont;
 
 #[derive(Clone, Copy, Default, ValueEnum)]
 pub(super) enum BenchmarkProfile {
@@ -800,32 +803,6 @@ struct TemporaryRaster {
     path: PathBuf,
 }
 
-struct TemporaryFont {
-    path: PathBuf,
-}
-
-impl TemporaryFont {
-    fn new() -> Result<Self> {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        // macOS reports `/var/folders/...`, where `/var` is a symlink. The production
-        // font reader correctly rejects symlinked ancestors, so construct this trusted
-        // benchmark fixture beneath the canonical temp root instead.
-        let temp_root = std::fs::canonicalize(std::env::temp_dir())
-            .context("could not canonicalize the benchmark font temp directory")?;
-        let path = temp_root.join(format!("prism-benchmark-font-{stamp}.ttf"));
-        std::fs::write(&path, epaint_default_fonts::HACK_REGULAR)?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for TemporaryFont {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
 impl TemporaryRaster {
     fn new(width: u32, height: u32) -> Result<Self> {
         let stamp = std::time::SystemTime::now()
@@ -883,14 +860,5 @@ mod staging_bound_tests {
         assert_eq!(triangle_source_extent(100.0, 1.0), 104);
         assert_eq!(triangle_source_extent(100.0, 2.0), 54);
         assert_eq!(triangle_source_extent(100.0, 0.5), 206);
-    }
-
-    #[test]
-    fn temporary_font_uses_the_canonical_temp_root() {
-        let font = TemporaryFont::new().unwrap();
-        assert_eq!(
-            font.path.parent().unwrap(),
-            std::fs::canonicalize(std::env::temp_dir()).unwrap()
-        );
     }
 }
