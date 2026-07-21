@@ -93,6 +93,7 @@ impl PrismApp {
             Ok(spectrum_revisions::CollaborationSync::Advanced { collaboration, .. }) => {
                 let agent = collaboration_agent_name(&self.workspace, collaboration.agent_session);
                 self.apply_canvas_invalidation(CanvasInvalidation::All);
+                self.sync_active_raster_sources();
                 self.history.mark_stale();
                 self.status = format!("Following {agent}'s latest changes");
                 self.status_error = false;
@@ -115,8 +116,14 @@ impl PrismApp {
             }
         }
 
-        for workspace in self.inactive_workspaces.values_mut() {
-            let _ = workspace.sync_together();
+        for (tab_id, workspace) in &mut self.inactive_workspaces {
+            if matches!(
+                workspace.sync_together(),
+                Ok(spectrum_revisions::CollaborationSync::Advanced { .. })
+            ) {
+                self.raster_sources
+                    .set_tab_document(*tab_id, &workspace.document);
+            }
         }
     }
 
@@ -145,6 +152,7 @@ impl PrismApp {
                     Ok(workspace) => {
                         self.settle_inline_text_editor();
                         self.workspace = workspace;
+                        self.sync_active_raster_sources();
                     }
                     Err(error) => {
                         self.status = format!("Could not create local project: {error:#}");
@@ -181,6 +189,7 @@ impl PrismApp {
             Ok(workspace) => {
                 self.settle_inline_text_editor();
                 self.workspace = workspace;
+                self.sync_active_raster_sources();
                 self.status = format!("Opened {}", path.display());
                 self.status_error = false;
             }

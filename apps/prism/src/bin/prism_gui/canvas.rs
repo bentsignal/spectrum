@@ -36,12 +36,14 @@ impl PrismApp {
                 if document_requires_composite_preview(&self.workspace.document)
                     && !direct_manipulation
                 {
+                    let raster_sources = self.raster_sources.snapshot();
                     let frame = match self.composite_preview.ensure(
                         ui.ctx(),
                         self.active_tab_id,
                         &self.workspace.document,
                         geometry,
                         ui.ctx().pixels_per_point(),
+                        raster_sources,
                     ) {
                         Ok(frame) => {
                             self.preview_error = None;

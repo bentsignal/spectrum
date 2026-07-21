@@ -45,6 +45,8 @@ mod model;
 use model::*;
 #[path = "prism_gui/project_lifecycle.rs"]
 mod project_lifecycle;
+#[path = "prism_gui/raster_sources.rs"]
+mod raster_sources;
 #[path = "prism_gui/renderer.rs"]
 mod renderer;
 #[path = "prism_gui/shortcuts.rs"]
@@ -62,6 +64,7 @@ mod theme;
 mod typography_ui;
 use history::HistoryViewState;
 use project_lifecycle::MoveProjectDialog;
+use raster_sources::*;
 use renderer::*;
 use terminal::TerminalDock;
 use theme::*;
@@ -96,6 +99,7 @@ struct PrismApp {
     layer_render_request_sender: Sender<LayerRenderRequest>,
     layer_render_receiver: Receiver<LayerRenderResult>,
     composite_preview: CompositePreview,
+    raster_sources: RasterSourceCoordinator,
     preview_error: Option<String>,
     layer_thumbnails: HashMap<u64, TextureHandle>,
     status: String,
@@ -199,6 +203,7 @@ impl PrismApp {
             layer_render_request_sender,
             layer_render_receiver,
             composite_preview: CompositePreview::new(creation.egui_ctx.clone()),
+            raster_sources: RasterSourceCoordinator::new(creation.egui_ctx.clone()),
             preview_error: None,
             layer_thumbnails: HashMap::new(),
             status: "Ready".into(),
@@ -246,6 +251,7 @@ impl PrismApp {
                 app.status_error = true;
             }
         }
+        app.sync_active_raster_sources();
         app
     }
 
@@ -257,6 +263,7 @@ impl PrismApp {
         match self.workspace.execute(command) {
             Ok(output) => {
                 self.apply_canvas_invalidation(invalidation);
+                self.sync_active_raster_sources();
                 if let Some(error) = self.workspace.pending_publish_error() {
                     self.status = format!(
                         "Edit is safe in Prism recovery storage, but the project file could not update: {error}"
@@ -321,6 +328,7 @@ impl PrismApp {
     fn finish_interaction(&mut self) {
         match self.workspace.commit_interaction() {
             Ok(true) => {
+                self.sync_active_raster_sources();
                 self.history.mark_stale();
                 if let Some(error) = self.workspace.pending_publish_error() {
                     self.status = format!(
@@ -380,6 +388,7 @@ impl PrismApp {
         self.next_tab_id += 1;
         self.tab_ids.push(id);
         self.active_tab_id = id;
+        self.sync_active_raster_sources();
         self.history.workspace_changed();
         self.reset_canvas_cache();
         self.layer_thumbnails.clear();
@@ -402,6 +411,7 @@ impl PrismApp {
         self.inactive_workspaces
             .insert(self.active_tab_id, previous);
         self.active_tab_id = id;
+        self.sync_active_raster_sources();
         self.history.workspace_changed();
         self.reset_canvas_cache();
         self.layer_thumbnails.clear();
@@ -439,11 +449,16 @@ impl PrismApp {
             if let Some(replacement) = self.inactive_workspaces.remove(&replacement_id) {
                 self.workspace = replacement;
                 self.active_tab_id = replacement_id;
+                // Install the replacement source set before forgetting the old tab so an
+                // overlapping ready provider and its generation survive atomically.
+                self.sync_active_raster_sources();
             }
         } else {
             self.inactive_workspaces.remove(&id);
         }
+        self.raster_sources.remove_tab(id);
         self.history.workspace_changed();
+        self.sync_active_raster_sources();
         self.reset_canvas_cache();
         self.layer_thumbnails.clear();
         self.fit_requested = true;
@@ -508,6 +523,14 @@ impl PrismApp {
                             .size(11.0)
                             .color(if self.status_error { DANGER } else { MUTED }),
                     );
+                    if self.raster_sources.terminal_failure().is_some()
+                        && ui.small_button("Retry preview").clicked()
+                    {
+                        let count = self.raster_sources.retry_terminal_failures();
+                        self.status = format!("Retrying {count} bounded preview source(s)");
+                        self.status_error = false;
+                        ui.ctx().request_repaint();
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         #[cfg(not(target_os = "macos"))]
                         self.terminal_status_control(ui);
@@ -548,6 +571,12 @@ impl eframe::App for PrismApp {
         #[cfg(target_os = "macos")]
         self.process_native_menu_actions(root.ctx());
         let context = root.ctx().clone();
+        self.composite_preview.begin_frame();
+        self.raster_sources.poll(&context);
+        if let Some((path, diagnostic)) = self.raster_sources.terminal_failure() {
+            self.status = terminal_failure_status(&path, &diagnostic);
+            self.status_error = true;
+        }
         self.receive_open_documents(&context);
         self.sync_agent_collaborations(&context);
         self.poll_terminals(&context);
@@ -569,6 +598,7 @@ impl eframe::App for PrismApp {
         self.handle_layer_clipboard_events(&context);
         #[cfg(target_os = "macos")]
         self.sync_native_menu_state(&context);
+        self.composite_preview.poll(&context);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
