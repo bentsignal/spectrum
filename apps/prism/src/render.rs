@@ -159,6 +159,8 @@ pub struct RegionRenderStats {
     pub source_staging_pixels: u64,
     pub source_staging_bytes: u64,
     pub max_source_staging_pixels: u64,
+    pub adjusted_staging_pixels: u64,
+    pub max_adjusted_staging_pixels: u64,
     pub full_source_pixels: u64,
     pub fallback_decode_bytes: u64,
     /// The region path never materializes transformed full-layer surfaces.

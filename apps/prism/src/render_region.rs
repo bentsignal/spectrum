@@ -1,20 +1,15 @@
-use std::{fs::File, io::BufReader, path::Path};
-
-use anyhow::{Context, Result, bail};
-use image::{ImageFormat, Rgba, RgbaImage};
+use anyhow::{Result, bail};
+use image::RgbaImage;
 
 use crate::{
-    FontAsset, Layer, LayerKind, RegionRenderStats, RenderRegion, TextTypography,
-    render::composite_pixel,
-    shapes::ShapeSampler,
-    text_render::{
-        measure_text_geometry_with_typography, measure_text_with_typography, render_text_region,
-    },
+    FontAsset, Layer, LayerKind, RegionRenderStats, RenderRegion, render::composite_pixel,
+    text_render::measure_text_geometry_with_typography,
 };
 
-const MAX_SOURCE_STAGING_PIXELS: u64 = 4_096 * 4_096;
-const MAX_FALLBACK_DECODE_BYTES: u64 = 64 * 1_024 * 1_024;
+mod source;
+use source::{SampleSource, SourceDescriptor, SourceRegion};
 
+const MAX_SOURCE_STAGING_PIXELS: u64 = 4_096 * 4_096;
 pub(crate) fn supports_bounded_source(layer: &Layer) -> bool {
     matches!(
         layer.kind,
@@ -22,7 +17,8 @@ pub(crate) fn supports_bounded_source(layer: &Layer) -> bool {
             | LayerKind::Text { .. }
             | LayerKind::Rectangle { .. }
             | LayerKind::Ellipse { .. }
-    ) && layer.adjustments == spectrum_imaging::Adjustments::default()
+    ) && layer.adjustments.spots.is_empty()
+        && source::layer_supports_region_reads(layer)
         && layer.transform.scale_x.is_finite()
         && layer.transform.scale_y.is_finite()
         && layer.transform.scale_x > 0.0
@@ -56,35 +52,16 @@ pub(crate) fn composite_bounded_source_region(
     let Some(intersection) = geometry.intersection(region) else {
         return Ok(true);
     };
-    let source = match &descriptor {
-        SourceDescriptor::Shape { sampler } => SampleSource::shape(*sampler),
-        SourceDescriptor::Raster { .. } | SourceDescriptor::Text { .. } => {
-            let Some(staging_region) = required_source_region(&geometry, intersection) else {
-                return Ok(true);
-            };
-            let staging_pixels = staging_region.pixel_count();
-            if staging_pixels > MAX_SOURCE_STAGING_PIXELS {
-                bail!(
-                    "layer {} requires more than the bounded source staging budget",
-                    render_layer.id
-                );
-            }
-            let (image, fallback_decode_bytes) = descriptor.stage(staging_region)?;
-            stats.source_staging_pixels =
-                stats.source_staging_pixels.saturating_add(staging_pixels);
-            stats.source_staging_bytes = stats
-                .source_staging_bytes
-                .saturating_add(staging_pixels.saturating_mul(4));
-            stats.max_source_staging_pixels = stats.max_source_staging_pixels.max(staging_pixels);
-            stats.fallback_decode_bytes = stats
-                .fallback_decode_bytes
-                .saturating_add(fallback_decode_bytes);
-            SampleSource::Pixels {
-                image,
-                region: staging_region,
-            }
-        }
+    let Some(staging_region) = required_source_region(&geometry, intersection) else {
+        return Ok(true);
     };
+    if staging_region.pixel_count() > MAX_SOURCE_STAGING_PIXELS {
+        bail!(
+            "layer {} requires more than the bounded source staging budget",
+            render_layer.id
+        );
+    }
+    let source = descriptor.sample(staging_region, stats)?;
     stats.full_source_pixels = stats
         .full_source_pixels
         .saturating_add(u64::from(geometry.source_width) * u64::from(geometry.source_height));
@@ -118,114 +95,6 @@ pub(crate) fn composite_bounded_source_region(
         }
     }
     Ok(true)
-}
-
-enum SourceDescriptor<'a> {
-    Raster {
-        path: &'a Path,
-        dimensions: (u32, u32),
-    },
-    Text {
-        text: &'a str,
-        font_size: f32,
-        color: [u8; 4],
-        typography: &'a TextTypography,
-        font_asset: Option<&'a FontAsset>,
-        dimensions: (u32, u32),
-    },
-    Shape {
-        sampler: ShapeSampler<'a>,
-    },
-}
-
-impl<'a> SourceDescriptor<'a> {
-    fn new(
-        render_layer: &'a Layer,
-        shape_scale: [f32; 2],
-        font_asset: Option<&'a FontAsset>,
-    ) -> Result<Self> {
-        match &render_layer.kind {
-            LayerKind::Raster { path, .. } => Ok(Self::Raster {
-                dimensions: image::image_dimensions(path).with_context(|| {
-                    format!("could not inspect layer source {}", path.display())
-                })?,
-                path,
-            }),
-            LayerKind::Text {
-                text,
-                font_size,
-                color,
-                typography,
-            } => Ok(Self::Text {
-                text,
-                font_size: *font_size,
-                color: *color,
-                typography,
-                font_asset,
-                dimensions: measure_text_with_typography(text, *font_size, typography, font_asset)?,
-            }),
-            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => Ok(Self::Shape {
-                sampler: ShapeSampler::new(render_layer, shape_scale)?,
-            }),
-        }
-    }
-
-    fn dimensions(&self) -> (u32, u32) {
-        match self {
-            Self::Raster { dimensions, .. } | Self::Text { dimensions, .. } => *dimensions,
-            Self::Shape { sampler } => sampler.dimensions(),
-        }
-    }
-
-    fn stage(&self, region: SourceRegion) -> Result<(RgbaImage, u64)> {
-        match self {
-            Self::Raster { path, dimensions } => stage_raster(path, *dimensions, region),
-            Self::Text {
-                text,
-                font_size,
-                color,
-                typography,
-                font_asset,
-                ..
-            } => Ok((
-                render_text_region(
-                    text,
-                    *font_size,
-                    *color,
-                    typography,
-                    *font_asset,
-                    region.into(),
-                )?,
-                0,
-            )),
-            Self::Shape { .. } => unreachable!("procedural shapes are sampled without staging"),
-        }
-    }
-}
-
-enum SampleSource<'a> {
-    Constant([u8; 4]),
-    Pixels {
-        image: RgbaImage,
-        region: SourceRegion,
-    },
-    Shape(ShapeSampler<'a>),
-}
-
-impl<'a> SampleSource<'a> {
-    fn shape(sampler: ShapeSampler<'a>) -> Self {
-        sampler
-            .uniform_pixel()
-            .map_or(Self::Shape(sampler), |pixel| Self::Constant(pixel.0))
-    }
-
-    fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        match self {
-            Self::Constant(pixel) => *pixel,
-            Self::Pixels { image, region } => image.get_pixel(x - region.x, y - region.y).0,
-            Self::Shape(sampler) => sampler.pixel(x, y).0,
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -389,31 +258,6 @@ struct CanvasIntersection {
     bottom: i64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SourceRegion {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
-impl SourceRegion {
-    fn pixel_count(self) -> u64 {
-        u64::from(self.width) * u64::from(self.height)
-    }
-}
-
-impl From<SourceRegion> for RenderRegion {
-    fn from(region: SourceRegion) -> Self {
-        Self {
-            x: region.x,
-            y: region.y,
-            width: region.width,
-            height: region.height,
-        }
-    }
-}
-
 fn required_source_region(
     geometry: &SamplingGeometry,
     intersection: CanvasIntersection,
@@ -445,114 +289,6 @@ fn required_source_region(
         width: right - left,
         height: bottom - top,
     })
-}
-
-fn stage_raster(
-    path: &Path,
-    dimensions: (u32, u32),
-    region: SourceRegion,
-) -> Result<(RgbaImage, u64)> {
-    let reader = image::ImageReader::open(path)
-        .with_context(|| format!("could not open {}", path.display()))?
-        .with_guessed_format()?;
-    if reader.format() == Some(ImageFormat::Png)
-        && let Some(image) = stage_png(path, dimensions, region)?
-    {
-        return Ok((image, 0));
-    }
-    let mut reader = reader;
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(MAX_FALLBACK_DECODE_BYTES);
-    reader.limits(limits);
-    let decoded = reader
-        .decode()
-        .with_context(|| format!("could not decode bounded fallback {}", path.display()))?;
-    let decoded_bytes = decoded.as_bytes().len() as u64;
-    let rgba_bytes = u64::from(dimensions.0)
-        .saturating_mul(u64::from(dimensions.1))
-        .saturating_mul(4);
-    if rgba_bytes > MAX_FALLBACK_DECODE_BYTES {
-        bail!("raster requires more than the bounded full-source decode budget");
-    }
-    let rgba = decoded.to_rgba8();
-    let staged = image::imageops::crop_imm(&rgba, region.x, region.y, region.width, region.height)
-        .to_image();
-    Ok((staged, decoded_bytes))
-}
-
-fn stage_png(
-    path: &Path,
-    dimensions: (u32, u32),
-    region: SourceRegion,
-) -> Result<Option<RgbaImage>> {
-    let file = File::open(path).with_context(|| format!("could not open {}", path.display()))?;
-    let mut decoder = png::Decoder::new_with_limits(
-        BufReader::new(file),
-        png::Limits {
-            bytes: MAX_FALLBACK_DECODE_BYTES as usize,
-        },
-    );
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder
-        .read_info()
-        .with_context(|| format!("could not decode PNG header {}", path.display()))?;
-    if reader.info().interlaced {
-        return Ok(None);
-    }
-    if (reader.info().width, reader.info().height) != dimensions {
-        bail!("PNG dimensions changed while staging {}", path.display());
-    }
-    let (color_type, bit_depth) = reader.output_color_type();
-    if bit_depth != png::BitDepth::Eight {
-        bail!("PNG staging requires 8-bit transformed rows");
-    }
-    let channels = png_channels(color_type);
-    let row_bytes = u64::from(dimensions.0) * channels as u64;
-    if row_bytes > MAX_FALLBACK_DECODE_BYTES {
-        bail!("PNG scanline exceeds the bounded source staging budget");
-    }
-    let mut output = RgbaImage::new(region.width, region.height);
-    for source_y in 0..region.y + region.height {
-        let row = reader
-            .next_row()
-            .with_context(|| format!("could not decode PNG row {}", path.display()))?
-            .context("PNG ended before the requested source region")?;
-        if source_y < region.y {
-            continue;
-        }
-        for source_x in region.x..region.x + region.width {
-            let offset = source_x as usize * channels;
-            output.put_pixel(
-                source_x - region.x,
-                source_y - region.y,
-                Rgba(png_pixel(
-                    &row.data()[offset..offset + channels],
-                    color_type,
-                )),
-            );
-        }
-    }
-    Ok(Some(output))
-}
-
-fn png_channels(color_type: png::ColorType) -> usize {
-    match color_type {
-        png::ColorType::Grayscale => 1,
-        png::ColorType::GrayscaleAlpha => 2,
-        png::ColorType::Rgb => 3,
-        png::ColorType::Rgba => 4,
-        png::ColorType::Indexed => unreachable!("EXPAND removes indexed PNG output"),
-    }
-}
-
-fn png_pixel(bytes: &[u8], color_type: png::ColorType) -> [u8; 4] {
-    match color_type {
-        png::ColorType::Grayscale => [bytes[0], bytes[0], bytes[0], 255],
-        png::ColorType::GrayscaleAlpha => [bytes[0], bytes[0], bytes[0], bytes[1]],
-        png::ColorType::Rgb => [bytes[0], bytes[1], bytes[2], 255],
-        png::ColorType::Rgba => [bytes[0], bytes[1], bytes[2], bytes[3]],
-        png::ColorType::Indexed => unreachable!("EXPAND removes indexed PNG output"),
-    }
 }
 
 fn sample_triangle_resize(

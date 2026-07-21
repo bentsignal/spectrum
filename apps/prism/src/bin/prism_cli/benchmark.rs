@@ -251,6 +251,15 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     bounded_sources.layers = vec![
         Layer {
             id: 100,
+            adjustments: Adjustments {
+                exposure: 0.22,
+                vignette: -14.0,
+                noise_reduction: 10.0,
+                sharpening: 8.0,
+                rotation: 90,
+                straighten: 3.0,
+                ..Default::default()
+            },
             transform: Transform {
                 x: 7_760.0,
                 y: 260.0,
@@ -268,6 +277,13 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             id: 101,
             opacity: 0.78,
             blend_mode: BlendMode::Overlay,
+            adjustments: Adjustments {
+                contrast: 11.0,
+                vignette: -9.0,
+                rotation: 270,
+                straighten: -2.0,
+                ..Default::default()
+            },
             transform: Transform {
                 x: 7_940.0,
                 y: 380.0,
@@ -299,6 +315,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         }
         if stats.full_source_pixels <= 4_096 * 4_096
             || stats.source_staging_pixels >= stats.full_source_pixels
+            || stats.adjusted_staging_pixels == 0
             || stats.fallback_decode_bytes != 0
             || stats.transformed_surface_pixels != 0
         {
@@ -311,6 +328,14 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         Layer {
             id: 110,
             opacity: 0.83,
+            adjustments: Adjustments {
+                exposure: 0.25,
+                vignette: -16.0,
+                noise_reduction: 12.0,
+                sharpening: 9.0,
+                straighten: 3.0,
+                ..Default::default()
+            },
             transform: Transform {
                 rotation: 17.0,
                 ..Transform::default()
@@ -332,6 +357,12 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             opacity: 0.71,
             blend_mode: BlendMode::SoftLight,
             clip_to_below: true,
+            adjustments: Adjustments {
+                contrast: 10.0,
+                rotation: 90,
+                straighten: -2.5,
+                ..Default::default()
+            },
             transform: Transform {
                 x: 1_500.0,
                 y: 1_200.0,
@@ -372,7 +403,9 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         let (rendered, stats) =
             render_document_region_scaled_with_stats(&vector_sources, 8.0, vector_region)?;
         if (rendered.width(), rendered.height()) != (vector_region.width, vector_region.height)
-            || stats.source_staging_pixels != 0
+            || stats.max_source_staging_pixels
+                > u64::from(vector_region.width) * u64::from(vector_region.height)
+            || stats.adjusted_staging_pixels == 0
             || stats.transformed_surface_pixels != 0
         {
             bail!("vector viewport compositor violated its allocation contract");
@@ -457,18 +490,18 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             pass: viewport_composite_p95 <= 500.0,
         },
         BenchmarkMetric {
-            name: "large_rotated_raster_text_bounded_staging",
+            name: "large_adjusted_raster_text_bounded_staging",
             median_ms: bounded_source_median,
             p95_ms: bounded_source_p95,
-            budget_ms: 750.0,
-            pass: bounded_source_p95 <= 750.0,
+            budget_ms: 1_000.0,
+            pass: bounded_source_p95 <= 1_000.0,
         },
         BenchmarkMetric {
-            name: "8x_zoom_16k_stroked_vector_viewport_composite",
+            name: "8x_zoom_16k_adjusted_vector_viewport_composite",
             median_ms: vector_source_median,
             p95_ms: vector_source_p95,
-            budget_ms: 500.0,
-            pass: vector_source_p95 <= 500.0,
+            budget_ms: 750.0,
+            pass: vector_source_p95 <= 750.0,
         },
     ];
     let passed = metrics.iter().all(|metric| metric.pass);
