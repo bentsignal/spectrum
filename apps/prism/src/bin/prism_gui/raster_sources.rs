@@ -177,15 +177,16 @@ pub(super) struct RasterSourceCoordinator {
     next_generation: u64,
 }
 
-fn spawn_preparation_worker<F>(
+fn spawn_preparation_worker<F, W>(
     request_receiver: Receiver<PreparationRequest>,
     result_sender: mpsc::Sender<PreparationResult>,
-    repaint: egui::Context,
     active_generations: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    wake: W,
     prepare: F,
 ) -> std::thread::JoinHandle<()>
 where
     F: Fn(&Path, Option<&DerivedBackingIdentity>) -> PreparationOutcome + Send + 'static,
+    W: Fn() + Send + 'static,
 {
     std::thread::spawn(move || {
         while let Ok(request) = request_receiver.recv() {
@@ -195,7 +196,7 @@ where
                 .get(&request.path)
                 == Some(&request.generation);
             if !request_is_active {
-                repaint.request_repaint();
+                wake();
                 continue;
             }
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -215,7 +216,7 @@ where
             {
                 break;
             }
-            repaint.request_repaint();
+            wake();
         }
     })
 }
@@ -229,11 +230,12 @@ impl RasterSourceCoordinator {
         let request_sender = cache_root.map(|root| {
             let (request_sender, request_receiver) = mpsc::sync_channel(PREPARATION_QUEUE_CAPACITY);
             let cache = DerivedBackingCache::new(root, DerivedBackingLimits::default());
+            let wake = move || repaint.request_repaint();
             let _worker = spawn_preparation_worker(
                 request_receiver,
                 result_sender,
-                repaint,
                 Arc::clone(&active_generations),
+                wake,
                 move |path, identity| prepare_source(&cache, path, identity),
             );
             request_sender

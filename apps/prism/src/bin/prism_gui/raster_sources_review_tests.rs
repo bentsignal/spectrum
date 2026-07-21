@@ -205,12 +205,15 @@ fn stale_saturated_worker_queue_wakes_poll_to_dispatch_new_active_work() {
         })
         .unwrap();
     let (result_sender, result_receiver) = mpsc::channel();
+    let (wake_sender, wake_receiver) = mpsc::channel();
     let active_generations = Arc::new(Mutex::new(HashMap::from([(active_path.clone(), 2)])));
     let worker = spawn_preparation_worker(
         request_receiver,
         result_sender,
-        egui::Context::default(),
         Arc::clone(&active_generations),
+        move || {
+            let _ = wake_sender.send(());
+        },
         |_path, _identity| PreparationOutcome::LegacyNative,
     );
     let mut coordinator = RasterSourceCoordinator {
@@ -230,12 +233,15 @@ fn stale_saturated_worker_queue_wakes_poll_to_dispatch_new_active_work() {
         next_generation: 2,
     };
     let context = egui::Context::default();
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while !coordinator.snapshot.legacy_native.contains(&active_path) {
-        assert!(Instant::now() < deadline, "new active request was stranded");
-        coordinator.poll(&context);
-        std::thread::yield_now();
-    }
+    wake_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("stale request skip did not wake the coordinator");
+    coordinator.poll(&context);
+    wake_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("new active request completion did not wake the coordinator");
+    coordinator.poll(&context);
+    assert!(coordinator.snapshot.legacy_native.contains(&active_path));
     drop(coordinator);
     drop(request_sender);
     worker.join().unwrap();
