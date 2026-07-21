@@ -12,6 +12,30 @@ impl LayerSourceOverride {
     }
 }
 
+pub(super) fn restore_source_override_after_cancel(
+    source_overrides: &mut HashMap<u64, LayerSourceOverride>,
+    document: &Document,
+    drag: DragState,
+) {
+    if !matches!(
+        drag.action,
+        DragAction::Resize(ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight)
+    ) {
+        return;
+    }
+    let Some(id) = drag.layer_id else {
+        return;
+    };
+    match (drag.paragraph_source_override, document.layer(id).ok()) {
+        (Some(geometry), Some(layer)) => {
+            source_overrides.insert(id, LayerSourceOverride::new(layer.kind.clone(), geometry));
+        }
+        _ => {
+            source_overrides.remove(&id);
+        }
+    }
+}
+
 pub(super) fn current_layer_source_geometry(
     layer: &Layer,
     source_override: Option<&LayerSourceOverride>,

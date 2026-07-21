@@ -258,9 +258,11 @@ impl PrismApp {
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
             if let Some(drag) = self.drag {
                 self.workspace.cancel_interaction();
-                if let Some(id) = drag.layer_id {
-                    self.layer_source_overrides.remove(&id);
-                }
+                restore_source_override_after_cancel(
+                    &mut self.layer_source_overrides,
+                    &self.workspace.document,
+                    drag,
+                );
             }
             self.tool_palette = None;
             self.shape_palette = None;

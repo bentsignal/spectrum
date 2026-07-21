@@ -59,6 +59,7 @@ fn width_drag(layer: &Layer, source: LayerSourceGeometry, handle: ResizeHandle) 
         bounds: layer_bounds(layer, Some(source)),
         paragraph_bounds: paragraph_layer_bounds(layer, Some(source)),
         paragraph_width: paragraph_box_width(layer),
+        paragraph_source_override: None,
     }
 }
 
@@ -192,6 +193,68 @@ fn one_preview_layout_serves_both_outlines_and_the_next_drag() {
     )
     .unwrap();
     assert_eq!(canceled_source, stale_source);
+}
+
+#[test]
+fn canceling_a_second_width_drag_restores_the_committed_geometry_override() {
+    let stale_layer = paragraph_layer(Transform::default(), 180.0);
+    let stale_key = LayerVisualKey::new(&stale_layer, 1.0);
+    let stale_source = source_for(&stale_layer);
+    let committed = paragraph_layer(Transform::default(), 340.0);
+    let committed_source = source_for(&committed);
+    let preview = paragraph_layer(Transform::default(), 360.0);
+    let preview_source = source_for(&preview);
+
+    let mut source_overrides = HashMap::from([(
+        committed.id,
+        LayerSourceOverride::new(preview.kind.clone(), preview_source),
+    )]);
+    let mut drag = width_drag(&committed, committed_source, ResizeHandle::ParagraphRight);
+    drag.paragraph_source_override = Some(committed_source);
+    let mut document = Document::new("Paragraph", 800, 600);
+    document.layers.push(committed.clone());
+
+    restore_source_override_after_cancel(&mut source_overrides, &document, drag);
+    let redundant_layouts = std::cell::Cell::new(0);
+    let restored = current_layer_source_geometry_with_resolver(
+        &committed,
+        source_overrides.get(&committed.id),
+        Some((&stale_key, stale_source)),
+        || {
+            redundant_layouts.set(redundant_layouts.get() + 1);
+            None
+        },
+    )
+    .unwrap();
+    assert_eq!(restored, committed_source);
+    assert_eq!(redundant_layouts.get(), 0);
+}
+
+#[test]
+fn unrelated_drag_cancellation_preserves_pending_paragraph_geometry() {
+    let paragraph = paragraph_layer(Transform::default(), 340.0);
+    let source = source_for(&paragraph);
+    let baseline = HashMap::from([(
+        paragraph.id,
+        LayerSourceOverride::new(paragraph.kind.clone(), source),
+    )]);
+    let mut document = Document::new("Paragraph", 800, 600);
+    document.layers.push(paragraph);
+
+    for action in [DragAction::Move, DragAction::Draw] {
+        let mut source_overrides = baseline.clone();
+        let drag = DragState {
+            action,
+            layer_id: Some(7),
+            ..width_drag(
+                document.layer(7).unwrap(),
+                source,
+                ResizeHandle::ParagraphRight,
+            )
+        };
+        restore_source_override_after_cancel(&mut source_overrides, &document, drag);
+        assert_eq!(source_overrides, baseline);
+    }
 }
 
 #[test]

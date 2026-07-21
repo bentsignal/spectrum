@@ -688,6 +688,7 @@ mod tests {
             )),
             paragraph_bounds: None,
             paragraph_width: None,
+            paragraph_source_override: None,
         };
         let transform = drag_transform(drag, true);
         assert_eq!(transform.x, 10.0);
@@ -714,6 +715,7 @@ mod tests {
             )),
             paragraph_bounds: None,
             paragraph_width: None,
+            paragraph_source_override: None,
         };
         let before = drag_transform(make_drag(Pos2::new(560.0, 129.0)), true);
         let after = drag_transform(make_drag(Pos2::new(560.0, 131.0)), true);
@@ -739,6 +741,7 @@ mod tests {
             )),
             paragraph_bounds: None,
             paragraph_width: None,
+            paragraph_source_override: None,
         };
         let transform = drag_transform(drag, false);
         assert!((transform.scale_x - 1.5).abs() < 0.001);

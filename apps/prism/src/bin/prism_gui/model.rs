@@ -103,6 +103,7 @@ pub(super) struct DragState {
     pub bounds: Option<Rect>,
     pub paragraph_bounds: Option<Rect>,
     pub paragraph_width: Option<f32>,
+    pub paragraph_source_override: Option<LayerSourceGeometry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

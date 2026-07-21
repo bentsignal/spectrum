@@ -214,6 +214,9 @@ impl PrismApp {
                 }
             }
             let selected = self.selected_layer().cloned();
+            let selected_source_geometry = selected
+                .as_ref()
+                .and_then(|layer| self.layer_source_geometry(layer));
             let action = match (self.tool, resize, guide) {
                 (Tool::Move, _, Some(id)) => DragAction::Guide(id),
                 (Tool::Move, Some(handle), None) => DragAction::Resize(handle),
@@ -230,6 +233,14 @@ impl PrismApp {
             if editable {
                 self.workspace.begin_interaction();
             }
+            let paragraph_source_override = if matches!(
+                action,
+                DragAction::Resize(ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight)
+            ) {
+                selected_source_geometry
+            } else {
+                None
+            };
             self.drag = Some(DragState {
                 start_canvas: canvas,
                 current_canvas: geometry.screen_to_canvas(pointer),
@@ -245,13 +256,14 @@ impl PrismApp {
                     .as_ref()
                     .map(|layer| layer.transform)
                     .unwrap_or_default(),
-                bounds: self
-                    .selected_layer()
-                    .and_then(|layer| layer_bounds(layer, self.layer_source_geometry(layer))),
-                paragraph_bounds: self.selected_layer().and_then(|layer| {
-                    paragraph_layer_bounds(layer, self.layer_source_geometry(layer))
-                }),
-                paragraph_width: self.selected_layer().and_then(paragraph_box_width),
+                bounds: selected
+                    .as_ref()
+                    .and_then(|layer| layer_bounds(layer, selected_source_geometry)),
+                paragraph_bounds: selected
+                    .as_ref()
+                    .and_then(|layer| paragraph_layer_bounds(layer, selected_source_geometry)),
+                paragraph_width: selected.as_ref().and_then(paragraph_box_width),
+                paragraph_source_override,
                 action,
             });
             self.smart_guides = SmartGuides::default();
@@ -675,6 +687,7 @@ mod direct_manipulation_tests {
             bounds: None,
             paragraph_bounds: None,
             paragraph_width: None,
+            paragraph_source_override: None,
         }
     }
 

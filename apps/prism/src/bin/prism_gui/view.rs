@@ -682,6 +682,7 @@ mod tests {
             bounds: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 100.0))),
             paragraph_bounds: None,
             paragraph_width: None,
+            paragraph_source_override: None,
         }
     }
 
@@ -857,6 +858,7 @@ mod tests {
             bounds: Some(bounds),
             paragraph_bounds: None,
             paragraph_width: None,
+            paragraph_source_override: None,
         };
         let resized = drag_transform(drag, false);
         assert!((resized.scale_x - 1.2).abs() < 0.001);
@@ -893,6 +895,7 @@ mod tests {
             bounds: Some(bounds),
             paragraph_bounds: None,
             paragraph_width: None,
+            paragraph_source_override: None,
         };
 
         let resized = drag_transform(drag, false);
