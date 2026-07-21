@@ -20,6 +20,15 @@ struct BenchmarkMetric {
     pass: bool,
 }
 
+// spectrum-imaging expands adjusted regions by four pixels for denoise and two
+// more for sharpening; benchmark staging may not exceed that documented halo.
+const DEVELOPMENT_FILTER_HALO: u64 = 6;
+
+fn bounded_staging_budget(region: RenderRegion) -> u64 {
+    (u64::from(region.width) + DEVELOPMENT_FILTER_HALO * 2)
+        * (u64::from(region.height) + DEVELOPMENT_FILTER_HALO * 2)
+}
+
 pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let mut command_samples = Vec::new();
     let mut workspace = None;
@@ -251,15 +260,6 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     bounded_sources.layers = vec![
         Layer {
             id: 100,
-            adjustments: Adjustments {
-                exposure: 0.22,
-                vignette: -14.0,
-                noise_reduction: 10.0,
-                sharpening: 8.0,
-                rotation: 90,
-                straighten: 3.0,
-                ..Default::default()
-            },
             transform: Transform {
                 x: 7_760.0,
                 y: 260.0,
@@ -277,13 +277,6 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             id: 101,
             opacity: 0.78,
             blend_mode: BlendMode::Overlay,
-            adjustments: Adjustments {
-                contrast: 11.0,
-                vignette: -9.0,
-                rotation: 270,
-                straighten: -2.0,
-                ..Default::default()
-            },
             transform: Transform {
                 x: 7_940.0,
                 y: 380.0,
@@ -299,12 +292,30 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             ..Layer::default()
         },
     ];
+    let mut adjusted_bounded_sources = bounded_sources.clone();
+    adjusted_bounded_sources.layers[0].adjustments = Adjustments {
+        exposure: 0.22,
+        vignette: -14.0,
+        noise_reduction: 10.0,
+        sharpening: 8.0,
+        rotation: 90,
+        straighten: 3.0,
+        ..Default::default()
+    };
+    adjusted_bounded_sources.layers[1].adjustments = Adjustments {
+        contrast: 11.0,
+        vignette: -9.0,
+        rotation: 270,
+        straighten: -2.0,
+        ..Default::default()
+    };
     let bounded_region = RenderRegion {
         x: 8_000,
         y: 400,
         width: 960,
         height: 540,
     };
+    let bounded_staging_budget = bounded_staging_budget(bounded_region);
     let mut bounded_source_samples = Vec::new();
     for _ in 0..3 {
         let started = Instant::now();
@@ -315,7 +326,8 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         }
         if stats.full_source_pixels <= 4_096 * 4_096
             || stats.source_staging_pixels >= stats.full_source_pixels
-            || stats.adjusted_staging_pixels == 0
+            || stats.max_source_staging_pixels > bounded_staging_budget
+            || stats.max_adjusted_staging_pixels > bounded_staging_budget
             || stats.fallback_decode_bytes != 0
             || stats.transformed_surface_pixels != 0
         {
@@ -323,19 +335,32 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         }
         bounded_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    let mut adjusted_bounded_source_samples = Vec::new();
+    for _ in 0..3 {
+        let started = Instant::now();
+        let (rendered, stats) = render_document_region_scaled_with_stats(
+            &adjusted_bounded_sources,
+            1.0,
+            bounded_region,
+        )?;
+        if (rendered.width(), rendered.height()) != (bounded_region.width, bounded_region.height)
+            || stats.full_source_pixels <= 4_096 * 4_096
+            || stats.source_staging_pixels >= stats.full_source_pixels
+            || stats.adjusted_staging_pixels == 0
+            || stats.max_source_staging_pixels > bounded_staging_budget
+            || stats.max_adjusted_staging_pixels > bounded_staging_budget
+            || stats.fallback_decode_bytes != 0
+            || stats.transformed_surface_pixels != 0
+        {
+            bail!("adjusted bounded source compositor regressed to full-source staging");
+        }
+        adjusted_bounded_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     let mut vector_sources = Document::new("Vector viewport", 16_384, 16_384);
     vector_sources.layers = vec![
         Layer {
             id: 110,
             opacity: 0.83,
-            adjustments: Adjustments {
-                exposure: 0.25,
-                vignette: -16.0,
-                noise_reduction: 12.0,
-                sharpening: 9.0,
-                straighten: 3.0,
-                ..Default::default()
-            },
             transform: Transform {
                 rotation: 17.0,
                 ..Transform::default()
@@ -357,12 +382,6 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             opacity: 0.71,
             blend_mode: BlendMode::SoftLight,
             clip_to_below: true,
-            adjustments: Adjustments {
-                contrast: 10.0,
-                rotation: 90,
-                straighten: -2.5,
-                ..Default::default()
-            },
             transform: Transform {
                 x: 1_500.0,
                 y: 1_200.0,
@@ -391,26 +410,57 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             ..Layer::default()
         },
     ];
+    let mut adjusted_vector_sources = vector_sources.clone();
+    adjusted_vector_sources.layers[0].adjustments = Adjustments {
+        exposure: 0.25,
+        vignette: -16.0,
+        noise_reduction: 12.0,
+        sharpening: 9.0,
+        straighten: 3.0,
+        ..Default::default()
+    };
+    adjusted_vector_sources.layers[1].adjustments = Adjustments {
+        contrast: 10.0,
+        rotation: 90,
+        straighten: -2.5,
+        ..Default::default()
+    };
     let vector_region = RenderRegion {
         x: 72_000,
         y: 72_000,
         width: 640,
         height: 360,
     };
+    let vector_staging_budget = bounded_staging_budget(vector_region);
     let mut vector_source_samples = Vec::new();
     for _ in 0..5 {
         let started = Instant::now();
         let (rendered, stats) =
             render_document_region_scaled_with_stats(&vector_sources, 8.0, vector_region)?;
         if (rendered.width(), rendered.height()) != (vector_region.width, vector_region.height)
-            || stats.max_source_staging_pixels
-                > u64::from(vector_region.width) * u64::from(vector_region.height)
-            || stats.adjusted_staging_pixels == 0
+            || stats.source_staging_pixels != 0
+            || stats.max_source_staging_pixels > vector_staging_budget
+            || stats.max_adjusted_staging_pixels > vector_staging_budget
             || stats.transformed_surface_pixels != 0
         {
             bail!("vector viewport compositor violated its allocation contract");
         }
         vector_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
+    let mut adjusted_vector_source_samples = Vec::new();
+    for _ in 0..5 {
+        let started = Instant::now();
+        let (rendered, stats) =
+            render_document_region_scaled_with_stats(&adjusted_vector_sources, 8.0, vector_region)?;
+        if (rendered.width(), rendered.height()) != (vector_region.width, vector_region.height)
+            || stats.adjusted_staging_pixels == 0
+            || stats.max_source_staging_pixels > vector_staging_budget
+            || stats.max_adjusted_staging_pixels > vector_staging_budget
+            || stats.transformed_surface_pixels != 0
+        {
+            bail!("adjusted vector viewport compositor violated its allocation contract");
+        }
+        adjusted_vector_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
     let (command_median, command_p95) = sample_summary(&mut command_samples);
     let (interaction_median, interaction_p95) = sample_summary(&mut interaction_samples);
@@ -425,6 +475,10 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         sample_summary(&mut viewport_composite_samples);
     let (bounded_source_median, bounded_source_p95) = sample_summary(&mut bounded_source_samples);
     let (vector_source_median, vector_source_p95) = sample_summary(&mut vector_source_samples);
+    let (adjusted_bounded_source_median, adjusted_bounded_source_p95) =
+        sample_summary(&mut adjusted_bounded_source_samples);
+    let (adjusted_vector_source_median, adjusted_vector_source_p95) =
+        sample_summary(&mut adjusted_vector_source_samples);
     let metrics = [
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
@@ -490,18 +544,32 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             pass: viewport_composite_p95 <= 500.0,
         },
         BenchmarkMetric {
-            name: "large_adjusted_raster_text_bounded_staging",
+            name: "large_rotated_raster_text_bounded_staging",
             median_ms: bounded_source_median,
             p95_ms: bounded_source_p95,
+            budget_ms: 750.0,
+            pass: bounded_source_p95 <= 750.0,
+        },
+        BenchmarkMetric {
+            name: "8x_zoom_16k_stroked_vector_viewport_composite",
+            median_ms: vector_source_median,
+            p95_ms: vector_source_p95,
+            budget_ms: 500.0,
+            pass: vector_source_p95 <= 500.0,
+        },
+        BenchmarkMetric {
+            name: "large_adjusted_raster_text_bounded_staging",
+            median_ms: adjusted_bounded_source_median,
+            p95_ms: adjusted_bounded_source_p95,
             budget_ms: 1_000.0,
-            pass: bounded_source_p95 <= 1_000.0,
+            pass: adjusted_bounded_source_p95 <= 1_000.0,
         },
         BenchmarkMetric {
             name: "8x_zoom_16k_adjusted_vector_viewport_composite",
-            median_ms: vector_source_median,
-            p95_ms: vector_source_p95,
+            median_ms: adjusted_vector_source_median,
+            p95_ms: adjusted_vector_source_p95,
             budget_ms: 750.0,
-            pass: vector_source_p95 <= 750.0,
+            pass: adjusted_vector_source_p95 <= 750.0,
         },
     ];
     let passed = metrics.iter().all(|metric| metric.pass);

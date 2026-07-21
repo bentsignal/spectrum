@@ -919,6 +919,10 @@ mod shape_tests;
 mod render_region_tests;
 
 #[cfg(test)]
+#[path = "render_fallback_tests.rs"]
+mod render_fallback_tests;
+
+#[cfg(test)]
 #[path = "rotation_tests.rs"]
 mod rotation_tests;
 

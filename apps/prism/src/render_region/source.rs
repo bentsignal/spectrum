@@ -1,6 +1,6 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::{error::Error, fmt, fs::File, io::BufReader, path::Path};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use image::{Rgba, RgbaImage};
 
 use crate::{
@@ -11,6 +11,21 @@ use crate::{
 
 const MAX_PNG_SCANLINE_BYTES: u64 = 64 * 1_024 * 1_024;
 const MAX_SOURCE_STAGING_PIXELS: u64 = 4_096 * 4_096;
+
+#[derive(Debug)]
+struct SourceReadError(anyhow::Error);
+
+impl fmt::Display for SourceReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl Error for SourceReadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
 
 pub(super) fn layer_supports_region_reads(layer: &Layer) -> bool {
     match &layer.kind {
@@ -75,10 +90,15 @@ impl<'a> SourceDescriptor<'a> {
         }
     }
 
-    pub(super) fn dimensions(&self) -> (u32, u32) {
+    pub(super) fn dimensions(&self) -> Result<(u32, u32)> {
         let base = self.base_dimensions();
-        spectrum_imaging::adjusted_image_dimensions(base.0, base.1, self.adjustments())
-            .expect("Prism layer sources always have positive dimensions")
+        let dimensions =
+            spectrum_imaging::adjusted_image_dimensions(base.0, base.1, self.adjustments())
+                .context("Prism layer source must have positive dimensions")?;
+        if dimensions.0 == 0 || dimensions.1 == 0 {
+            bail!("Prism adjusted layer source must have positive dimensions");
+        }
+        Ok(dimensions)
     }
 
     pub(super) fn sample(
@@ -112,10 +132,10 @@ impl<'a> SourceDescriptor<'a> {
             adjusted_region.into(),
             |requested| {
                 self.stage_base(requested.into(), stats)
-                    .map_err(|error| format!("{error:#}"))
+                    .map_err(SourceReadError)
             },
         )
-        .map_err(|error| anyhow!(error.to_string()))?;
+        .map_err(anyhow::Error::new)?;
         Ok(SampleSource::Pixels {
             image,
             region: adjusted_region,
@@ -248,15 +268,18 @@ impl From<spectrum_imaging::PixelRegion> for SourceRegion {
 }
 
 fn png_supports_region_reads(path: &Path) -> bool {
-    png_reader(path)
-        .ok()
-        .is_some_and(|reader| !reader.info().interlaced)
+    png_reader(path).ok().is_some_and(|reader| {
+        !reader.info().interlaced && reader.info().bit_depth != png::BitDepth::Sixteen
+    })
 }
 
 fn stage_png(path: &Path, dimensions: (u32, u32), region: SourceRegion) -> Result<RgbaImage> {
     let mut reader = png_reader(path)?;
     if reader.info().interlaced {
         bail!("interlaced PNG does not support bounded region reads");
+    }
+    if reader.info().bit_depth == png::BitDepth::Sixteen {
+        bail!("16-bit PNG does not support bounded region reads");
     }
     if (reader.info().width, reader.info().height) != dimensions {
         bail!("PNG dimensions changed while staging {}", path.display());

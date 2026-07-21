@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
+use image::{DynamicImage, ImageDecoder, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
 use crate::{
@@ -162,9 +162,17 @@ pub struct RegionRenderStats {
     pub adjusted_staging_pixels: u64,
     pub max_adjusted_staging_pixels: u64,
     pub full_source_pixels: u64,
+    /// Bytes materialized by full-source fallback decoding or rendering.
     pub fallback_decode_bytes: u64,
-    /// The region path never materializes transformed full-layer surfaces.
+    /// Pixels materialized in post-transform full-layer fallback surfaces.
     pub transformed_surface_pixels: u64,
+}
+
+const MAX_REGION_FALLBACK_PEAK_BYTES: u64 = 256 * 1_024 * 1_024;
+
+#[derive(Clone, Copy)]
+struct FallbackAllocation {
+    source_bytes: u64,
 }
 
 /// Whether every visible layer can be sampled directly into a viewport region
@@ -315,16 +323,30 @@ fn render_document_region_scaled_impl(
             previous_coverage = Some(coverage);
             continue;
         }
-        if bound_fallback_layers {
-            ensure_region_fallback_is_bounded(
+        let fallback_source_bytes = if bound_fallback_layers {
+            Some(ensure_region_fallback_is_bounded(
                 &render_layer,
                 &scaled_layer,
                 shape_scale,
                 font_asset,
-            )?;
+            )?)
+        } else {
+            None
+        };
+        let source = render_layer_preview_scaled_with_font_limits(
+            &render_layer,
+            None,
+            shape_scale,
+            font_asset,
+            fallback_source_bytes.map(|_| MAX_REGION_FALLBACK_PEAK_BYTES),
+        )?;
+        if let Some(fallback_allocation) = fallback_source_bytes {
+            let materialized_bytes = u64::try_from(source.as_bytes().len())
+                .context("fallback render byte count overflows")?;
+            stats.fallback_decode_bytes = stats
+                .fallback_decode_bytes
+                .saturating_add(fallback_allocation.source_bytes.max(materialized_bytes));
         }
-        let source =
-            render_layer_preview_scaled_with_font(&render_layer, None, shape_scale, font_asset)?;
         let source = if matches!(render_layer.kind, LayerKind::Text { .. }) {
             let LayerKind::Text {
                 text: base_text,
@@ -362,6 +384,13 @@ fn render_document_region_scaled_impl(
         } else {
             transform_layer(source, scaled_layer.transform)
         };
+        if bound_fallback_layers {
+            stats.transformed_surface_pixels = stats.transformed_surface_pixels.saturating_add(
+                u64::from(source.width())
+                    .checked_mul(u64::from(source.height()))
+                    .context("fallback transformed surface area overflows")?,
+            );
+        }
         composite_layer_region(
             &mut canvas,
             &mut coverage,
@@ -380,27 +409,37 @@ fn ensure_region_fallback_is_bounded(
     scaled_layer: &Layer,
     shape_scale: [f32; 2],
     font_asset: Option<&FontAsset>,
-) -> Result<()> {
+) -> Result<FallbackAllocation> {
     const MAX_FALLBACK_PIXELS: u64 = 4_096 * 4_096;
-    let (base_width, base_height) = match &render_layer.kind {
-        LayerKind::Raster { path, .. } => image::image_dimensions(path)
-            .with_context(|| format!("could not inspect layer source {}", path.display()))?,
+    let (base_width, base_height, source_bytes_per_pixel) = match &render_layer.kind {
+        LayerKind::Raster { path, .. } => inspect_raster_decode_layout(path)?,
         LayerKind::Text {
             text,
             font_size,
             typography,
             ..
-        } => measure_text_with_typography(text, *font_size, typography, font_asset)?,
+        } => {
+            let (width, height) =
+                measure_text_with_typography(text, *font_size, typography, font_asset)?;
+            (width, height, 4)
+        }
         LayerKind::Rectangle { width, height, .. } | LayerKind::Ellipse { width, height, .. } => (
             (*width as f32 * shape_scale[0]).round().max(1.0) as u32,
             (*height as f32 * shape_scale[1]).round().max(1.0) as u32,
+            4,
         ),
     };
-    let scaled_width = (base_width as f32 * scaled_layer.transform.scale_x)
+    let (adjusted_width, adjusted_height) = spectrum_imaging::adjusted_image_dimensions(
+        base_width,
+        base_height,
+        &render_layer.adjustments,
+    )
+    .context("fallback source has invalid adjusted dimensions")?;
+    let scaled_width = (adjusted_width as f32 * scaled_layer.transform.scale_x)
         .abs()
         .round()
         .max(1.0) as u32;
-    let scaled_height = (base_height as f32 * scaled_layer.transform.scale_y)
+    let scaled_height = (adjusted_height as f32 * scaled_layer.transform.scale_y)
         .abs()
         .round()
         .max(1.0) as u32;
@@ -418,23 +457,78 @@ fn ensure_region_fallback_is_bounded(
                 .max(1.0) as u32,
         )
     };
-    let base_pixels = u64::from(base_width) * u64::from(base_height);
-    let scaled_pixels = u64::from(scaled_width) * u64::from(scaled_height);
-    let transformed_pixels = u64::from(transformed_width) * u64::from(transformed_height);
+    let base_pixels = u64::from(base_width)
+        .checked_mul(u64::from(base_height))
+        .context("fallback base area overflows")?;
+    let adjusted_pixels = u64::from(adjusted_width)
+        .checked_mul(u64::from(adjusted_height))
+        .context("fallback adjusted area overflows")?;
+    let scaled_pixels = u64::from(scaled_width)
+        .checked_mul(u64::from(scaled_height))
+        .context("fallback scaled area overflows")?;
+    let transformed_pixels = u64::from(transformed_width)
+        .checked_mul(u64::from(transformed_height))
+        .context("fallback transformed area overflows")?;
+    let source_bytes = base_pixels
+        .checked_mul(source_bytes_per_pixel)
+        .context("fallback source byte count overflows")?;
+    let adjusted_bytes = adjusted_pixels
+        .checked_mul(source_bytes_per_pixel.max(4))
+        .context("fallback adjusted byte count overflows")?;
+    let scaled_bytes = scaled_pixels
+        .checked_mul(4)
+        .context("fallback scaled byte count overflows")?;
+    let transformed_bytes = transformed_pixels
+        .checked_mul(4)
+        .context("fallback transformed byte count overflows")?;
+    let mut peak_bytes = source_bytes
+        .checked_add(adjusted_bytes)
+        .and_then(|bytes| bytes.checked_add(scaled_bytes))
+        .context("fallback peak byte count overflows")?;
+    if scaled_layer.transform.rotation.abs() >= 0.01 {
+        peak_bytes = peak_bytes
+            .checked_add(transformed_bytes)
+            .context("fallback peak byte count overflows")?;
+    }
     if base_width > crate::MAX_CANVAS_DIMENSION
         || base_height > crate::MAX_CANVAS_DIMENSION
+        || adjusted_width > crate::MAX_CANVAS_DIMENSION
+        || adjusted_height > crate::MAX_CANVAS_DIMENSION
         || transformed_width > crate::MAX_CANVAS_DIMENSION
         || transformed_height > crate::MAX_CANVAS_DIMENSION
         || base_pixels > MAX_FALLBACK_PIXELS
+        || adjusted_pixels > MAX_FALLBACK_PIXELS
         || scaled_pixels > MAX_FALLBACK_PIXELS
         || transformed_pixels > MAX_FALLBACK_PIXELS
+        || peak_bytes > MAX_REGION_FALLBACK_PEAK_BYTES
     {
         bail!(
             "layer {} exceeds the bounded viewport fallback; lower zoom or simplify the layer",
             render_layer.id
         );
     }
-    Ok(())
+    Ok(FallbackAllocation { source_bytes })
+}
+
+fn inspect_raster_decode_layout(path: &Path) -> Result<(u32, u32, u64)> {
+    let mut reader = image::ImageReader::open(path)
+        .with_context(|| format!("could not open {}", path.display()))?
+        .with_guessed_format()
+        .with_context(|| format!("could not inspect layer source {}", path.display()))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(crate::MAX_CANVAS_DIMENSION);
+    limits.max_image_height = Some(crate::MAX_CANVAS_DIMENSION);
+    limits.max_alloc = Some(MAX_REGION_FALLBACK_PEAK_BYTES);
+    reader.limits(limits);
+    let decoder = reader
+        .into_decoder()
+        .with_context(|| format!("could not inspect layer source {}", path.display()))?;
+    let (width, height) = decoder.dimensions();
+    Ok((
+        width,
+        height,
+        u64::from(decoder.color_type().bytes_per_pixel()),
+    ))
 }
 
 fn scaled_document_dimensions(document: &Document, scale: f32) -> Result<(u32, u32)> {
@@ -473,7 +567,23 @@ pub fn render_layer_preview_scaled_with_font(
     shape_scale: [f32; 2],
     font_asset: Option<&FontAsset>,
 ) -> Result<DynamicImage> {
-    let image = render_layer_base_scaled_with_font(layer, max_size, shape_scale, font_asset)?;
+    render_layer_preview_scaled_with_font_limits(layer, max_size, shape_scale, font_asset, None)
+}
+
+fn render_layer_preview_scaled_with_font_limits(
+    layer: &Layer,
+    max_size: Option<u32>,
+    shape_scale: [f32; 2],
+    font_asset: Option<&FontAsset>,
+    decode_max_alloc: Option<u64>,
+) -> Result<DynamicImage> {
+    let image = render_layer_base_scaled_with_font_limits(
+        layer,
+        max_size,
+        shape_scale,
+        font_asset,
+        decode_max_alloc,
+    )?;
     Ok(render_image(
         image,
         layer.adjustments.clone(),
@@ -501,12 +611,32 @@ pub fn render_layer_base_scaled_with_font(
     shape_scale: [f32; 2],
     font_asset: Option<&FontAsset>,
 ) -> Result<DynamicImage> {
+    render_layer_base_scaled_with_font_limits(layer, max_size, shape_scale, font_asset, None)
+}
+
+fn render_layer_base_scaled_with_font_limits(
+    layer: &Layer,
+    max_size: Option<u32>,
+    shape_scale: [f32; 2],
+    font_asset: Option<&FontAsset>,
+    decode_max_alloc: Option<u64>,
+) -> Result<DynamicImage> {
     let mut image = match &layer.kind {
-        LayerKind::Raster { path, .. } => image::ImageReader::open(path)
-            .with_context(|| format!("could not open {}", path.display()))?
-            .with_guessed_format()?
-            .decode()
-            .with_context(|| format!("could not decode {}", path.display()))?,
+        LayerKind::Raster { path, .. } => {
+            let mut reader = image::ImageReader::open(path)
+                .with_context(|| format!("could not open {}", path.display()))?
+                .with_guessed_format()?;
+            if let Some(max_alloc) = decode_max_alloc {
+                let mut limits = image::Limits::default();
+                limits.max_image_width = Some(crate::MAX_CANVAS_DIMENSION);
+                limits.max_image_height = Some(crate::MAX_CANVAS_DIMENSION);
+                limits.max_alloc = Some(max_alloc);
+                reader.limits(limits);
+            }
+            reader
+                .decode()
+                .with_context(|| format!("could not decode {}", path.display()))?
+        }
         LayerKind::Text {
             text,
             font_size,

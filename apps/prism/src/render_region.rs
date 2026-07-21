@@ -131,7 +131,7 @@ impl SamplingGeometry {
         descriptor: &SourceDescriptor<'_>,
         font_asset: Option<&FontAsset>,
     ) -> Result<Self> {
-        let (source_width, source_height) = descriptor.dimensions();
+        let (source_width, source_height) = descriptor.dimensions()?;
         let scaled_width = scaled_dimension(source_width, scaled_layer.transform.scale_x);
         let scaled_height = scaled_dimension(source_height, scaled_layer.transform.scale_y);
         let degrees = scaled_layer.transform.rotation;

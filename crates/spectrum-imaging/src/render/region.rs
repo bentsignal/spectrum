@@ -182,13 +182,15 @@ impl AdjustedGeometry {
             adjustments
                 .crop
                 .map_or((0, 0, oriented_width, oriented_height), |crop| {
-                    let x = (crop.x * oriented_width as f32).round() as u32;
-                    let y = (crop.y * oriented_height as f32).round() as u32;
+                    let x =
+                        ((crop.x * oriented_width as f32).round() as u32).min(oriented_width - 1);
+                    let y =
+                        ((crop.y * oriented_height as f32).round() as u32).min(oriented_height - 1);
                     let width = (crop.width * oriented_width as f32).round().max(1.0) as u32;
                     let height = (crop.height * oriented_height as f32).round().max(1.0) as u32;
                     (
-                        x.min(oriented_width - 1),
-                        y.min(oriented_height - 1),
+                        x,
+                        y,
                         width.min(oriented_width - x),
                         height.min(oriented_height - y),
                     )
