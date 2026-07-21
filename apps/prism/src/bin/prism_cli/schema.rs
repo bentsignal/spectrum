@@ -48,6 +48,8 @@ pub(super) fn schema() -> Value {
         "typography": {
             "portable_fonts": "font-import embeds permitted OpenType font bytes as content-addressed project assets",
             "discovery": "font-list --query <text> searches embedded family and style metadata",
+            "optimization_analysis": "font-usage [--font-id <id>] reports deterministic Unicode usage, cmap gaps, license permission, and source size without modifying the project",
+            "editable_default": "complete imported font bytes remain embedded so portable projects can introduce new characters in later edits",
             "selection": "typography <layer> accepts --font-id or --family with optional --weight and --style",
             "paragraph": ["multiline", "wrap", "left/center/right alignment", "line height", "tracking"],
             "effects": ["outline", "offset shadow"]

@@ -308,6 +308,77 @@ impl PrismApp {
                 id,
                 typography: with_font_id(current, font_id),
             });
+            return;
+        }
+
+        if let Some(font_id) = current.font_id {
+            self.font_usage_controls(ui, font_id);
+        }
+    }
+
+    fn font_usage_controls(&mut self, ui: &mut egui::Ui, font_id: u64) {
+        let Ok(usage) = prism_core::font_usage(&self.workspace.document, font_id) else {
+            return;
+        };
+        let Some(font) = self
+            .workspace
+            .document
+            .font_assets
+            .iter()
+            .find(|font| font.id == font_id)
+        else {
+            return;
+        };
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(format!(
+                "{} characters across {} text layers",
+                usage.codepoints.len(),
+                usage.layer_ids.len()
+            ))
+            .size(10.0)
+            .color(MUTED),
+        );
+        let cached_is_current = self.font_usage_analysis.as_ref().is_some_and(|analysis| {
+            analysis.usage == usage && analysis.content_hash == font.content_hash
+        });
+        if !cached_is_current {
+            self.font_usage_analysis = None;
+        }
+        if ui.small_button("Analyze font coverage").clicked() {
+            match prism_core::analyze_font_usage(&self.workspace.document, font_id) {
+                Ok(analysis) => {
+                    self.status = format!("Analyzed {} font characters", usage.codepoints.len());
+                    self.status_error = false;
+                    self.font_usage_analysis = Some(analysis);
+                }
+                Err(error) => {
+                    self.status = error.to_string();
+                    self.status_error = true;
+                }
+            }
+        }
+        if let Some(analysis) = &self.font_usage_analysis {
+            let size_kib = analysis.source_bytes.div_ceil(1024);
+            let coverage = if analysis.missing_codepoints.is_empty() {
+                "Current text coverage verified".to_owned()
+            } else {
+                format!(
+                    "{} current characters are missing",
+                    analysis.missing_codepoints.len()
+                )
+            };
+            ui.label(
+                RichText::new(format!("{coverage} · {size_kib} KiB source"))
+                    .size(10.0)
+                    .color(MUTED),
+            );
+            let policy = if analysis.subset_allowed {
+                "Subsetting permitted · full font retained for future edits"
+            } else {
+                "Font license prohibits subsetting"
+            };
+            ui.label(RichText::new(policy).size(10.0).color(MUTED));
         }
     }
 

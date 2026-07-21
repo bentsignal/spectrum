@@ -91,6 +91,12 @@ enum CliCommand {
         #[arg(long)]
         query: Option<String>,
     },
+    /// Analyze current embedded-font character usage and cmap coverage without modifying bytes.
+    FontUsage {
+        /// Limit analysis to one embedded font asset.
+        #[arg(long)]
+        font_id: Option<u64>,
+    },
     /// Update one text layer's font, paragraph metrics, and effects.
     Typography(TypographyArgs),
     /// Serialize one layer and its referenced font for cross-document transfer.
@@ -499,6 +505,9 @@ fn run(cli: Cli) -> Result<Value> {
             &session_document(&cli.project, cli.session)?,
             query,
         )),
+        CliCommand::FontUsage { font_id } => {
+            typography::font_usage(&session_document(&cli.project, cli.session)?, font_id)
+        }
         CliCommand::LayerCopy(arguments) => {
             transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)
         }
@@ -800,6 +809,7 @@ fn run(cli: Cli) -> Result<Value> {
                 CliCommand::Init { .. }
                 | CliCommand::List
                 | CliCommand::FontList { .. }
+                | CliCommand::FontUsage { .. }
                 | CliCommand::LayerCopy(..)
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }
