@@ -8,7 +8,7 @@ pub struct Workspace {
     redo: Vec<Document>,
     dirty: bool,
     interaction_before: Option<Document>,
-    interaction_command: Option<Command>,
+    interaction_commands: Vec<Command>,
 }
 
 impl Default for Workspace {
@@ -27,7 +27,7 @@ impl Workspace {
             redo: Vec::new(),
             dirty: false,
             interaction_before: None,
-            interaction_command: None,
+            interaction_commands: Vec::new(),
         }
     }
 
@@ -364,7 +364,7 @@ impl Workspace {
     pub fn begin_interaction(&mut self) {
         if self.interaction_before.is_none() {
             self.interaction_before = Some(self.document.clone());
-            self.interaction_command = None;
+            self.interaction_commands.clear();
         }
     }
 
@@ -379,25 +379,62 @@ impl Workspace {
             bail!("history and selection commands cannot preview an interaction");
         }
         let output = apply_command(&mut self.document, command.clone())?;
-        self.interaction_command = Some(command);
+        self.interaction_commands.clear();
+        self.interaction_commands.push(command);
         Ok(output)
+    }
+
+    pub fn preview_batch(&mut self, mut commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
+        if commands.is_empty() {
+            bail!("preview command batch is empty");
+        }
+        if commands.len() == 1 {
+            let command = commands
+                .pop()
+                .context("single preview batch lost its command")?;
+            return self.preview(command).map(|output| vec![output]);
+        }
+        if self.interaction_before.is_none() {
+            bail!("begin an interaction before applying preview commands");
+        }
+        if commands.iter().any(|command| {
+            matches!(
+                command,
+                Command::Undo | Command::Redo | Command::SelectLayer { .. }
+            )
+        }) {
+            bail!("history and selection commands cannot preview an interaction");
+        }
+        let before = self.document.clone();
+        let mut outputs = Vec::with_capacity(commands.len());
+        for command in commands.iter().cloned() {
+            match apply_command(&mut self.document, command) {
+                Ok(output) => outputs.push(output),
+                Err(error) => {
+                    self.document = before;
+                    return Err(error);
+                }
+            }
+        }
+        self.interaction_commands = commands;
+        Ok(outputs)
     }
 
     pub fn commit_interaction(&mut self) -> Result<bool> {
         let Some(before) = self.interaction_before.take() else {
             return Ok(false);
         };
-        let command = self.interaction_command.take();
+        let commands = std::mem::take(&mut self.interaction_commands);
         if self.document == before {
             return Ok(false);
         }
         if let Some(durable) = &mut self.durable {
-            let Some(command) = command else {
+            if commands.is_empty() {
                 self.document = before;
                 bail!("completed interaction has no semantic command");
-            };
+            }
             if let Err(error) = durable.commit(
-                &[command],
+                &commands,
                 &self.document,
                 "Changed object with pointer gesture",
             ) {
@@ -415,7 +452,7 @@ impl Workspace {
         let Some(before) = self.interaction_before.take() else {
             return false;
         };
-        self.interaction_command = None;
+        self.interaction_commands.clear();
         self.document = before;
         true
     }
@@ -433,7 +470,7 @@ impl Workspace {
             redo: Vec::new(),
             dirty: false,
             interaction_before: None,
-            interaction_command: None,
+            interaction_commands: Vec::new(),
         }
     }
 

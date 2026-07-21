@@ -72,6 +72,24 @@ fn continuous_inspector_controls_use_gesture_transactions() {
 }
 
 #[test]
+fn single_command_previews_do_not_clone_the_document_per_frame() {
+    let workspace =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/workspace.rs"))
+            .expect("workspace source should be readable");
+    let preview_start = workspace.find("pub fn preview(").unwrap();
+    let batch_start = workspace.find("pub fn preview_batch(").unwrap();
+    let single_preview = &workspace[preview_start..batch_start];
+    assert!(single_preview.contains("apply_command(&mut self.document"));
+    assert!(!single_preview.contains("self.document.clone()"));
+    let commit_start = workspace.find("pub fn commit_interaction(").unwrap();
+    let batch_preview = &workspace[batch_start..commit_start];
+    assert!(
+        batch_preview.find("commands.len() == 1").unwrap()
+            < batch_preview.find("self.document.clone()").unwrap()
+    );
+}
+
+#[test]
 fn inline_text_editor_owns_existing_edits_and_click_to_type_creation() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let inline = fs::read_to_string(manifest.join("src/bin/prism_gui/inline_text.rs"))
