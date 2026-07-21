@@ -54,8 +54,11 @@ mod project_lifecycle;
 mod raster_sources;
 #[path = "prism_gui/renderer.rs"]
 mod renderer;
+#[path = "prism_gui/shadow_preview.rs"]
+mod shadow_preview;
 #[path = "prism_gui/shortcuts.rs"]
 mod shortcuts;
+use shadow_preview::{bounded_shadow_mask, for_each_shadow_preview_sample};
 #[path = "prism_gui/source_geometry.rs"]
 mod source_geometry;
 use compositor::*;

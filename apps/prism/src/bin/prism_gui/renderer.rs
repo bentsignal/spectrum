@@ -167,13 +167,11 @@ impl PrismApp {
                         TextureOptions::LINEAR,
                     );
                     let shadow_mask = result.key.colored_shadow_mask.then(|| {
-                        let mask = rgba
-                            .pixels()
-                            .flat_map(|pixel| [255, 255, 255, pixel[3]])
-                            .collect::<Vec<_>>();
+                        let mask = bounded_shadow_mask(&rgba);
+                        let mask_size = [mask.width() as usize, mask.height() as usize];
                         context.load_texture(
                             format!("prism-layer-shadow-mask-{}", result.layer_id),
-                            egui::ColorImage::from_rgba_unmultiplied(size, &mask),
+                            egui::ColorImage::from_rgba_unmultiplied(mask_size, mask.as_raw()),
                             TextureOptions::LINEAR,
                         )
                     });
@@ -711,49 +709,6 @@ fn paint_texture_shadow_preview(
             ),
         );
     });
-}
-
-fn for_each_shadow_preview_sample(
-    shadow: prism_core::DropShadow,
-    layer_opacity: f32,
-    mut visit: impl FnMut(Vec2, Color32),
-) {
-    let target_alpha = f32::from(shadow.color[3]) / 255.0 * layer_opacity.clamp(0.0, 1.0);
-    if target_alpha <= 0.0 {
-        return;
-    }
-    let color = |weight: u32| {
-        let exponent = weight as f32 / prism_core::DROP_SHADOW_KERNEL_TOTAL_WEIGHT as f32;
-        let alpha = 1.0 - (1.0 - target_alpha).powf(exponent);
-        Color32::from_rgba_unmultiplied(
-            shadow.color[0],
-            shadow.color[1],
-            shadow.color[2],
-            (alpha * 255.0).round().clamp(0.0, 255.0) as u8,
-        )
-    };
-    if shadow.blur_radius < 0.5 {
-        visit(
-            Vec2::new(shadow.offset_x, shadow.offset_y),
-            Color32::from_rgba_unmultiplied(
-                shadow.color[0],
-                shadow.color[1],
-                shadow.color[2],
-                (target_alpha * 255.0).round().clamp(0.0, 255.0) as u8,
-            ),
-        );
-        return;
-    }
-    // One quad per fixed kernel tap keeps interaction cost independent of blur radius.
-    for (unit_x, unit_y, weight) in prism_core::DROP_SHADOW_KERNEL {
-        visit(
-            Vec2::new(
-                shadow.offset_x - unit_x * shadow.blur_radius,
-                shadow.offset_y - unit_y * shadow.blur_radius,
-            ),
-            color(weight),
-        );
-    }
 }
 
 fn layer_texture_bounds(layer: &Layer, entry: &LayerVisualEntry) -> Rect {
