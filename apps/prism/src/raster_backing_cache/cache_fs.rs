@@ -43,19 +43,15 @@ pub(super) fn trusted_cache_directory(path: &Path) -> Result<()> {
     }
 }
 
-pub(super) fn trusted_cache_file_length(path: &Path, max_bytes: u64) -> Result<Option<u64>> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if metadata_is_link_or_reparse(&metadata) || !metadata.is_file() || metadata.len() > max_bytes {
-        return Ok(None);
-    }
-    Ok(Some(metadata.len()))
+pub(super) fn open_trusted_cache_file(path: &Path, max_bytes: u64) -> Result<File> {
+    open_trusted_cache_file_with(path, max_bytes, false)
 }
 
-pub(super) fn open_trusted_cache_file(path: &Path, max_bytes: u64) -> Result<File> {
+pub(super) fn open_trusted_cache_file_rw(path: &Path, max_bytes: u64) -> Result<File> {
+    open_trusted_cache_file_with(path, max_bytes, true)
+}
+
+fn open_trusted_cache_file_with(path: &Path, max_bytes: u64, write: bool) -> Result<File> {
     let path_metadata = fs::symlink_metadata(path)
         .with_context(|| format!("could not inspect cache file {}", path.display()))?;
     if metadata_is_link_or_reparse(&path_metadata) || !path_metadata.is_file() {
@@ -69,6 +65,7 @@ pub(super) fn open_trusted_cache_file(path: &Path, max_bytes: u64) -> Result<Fil
     }
     let file = OpenOptions::new()
         .read(true)
+        .write(write)
         .open(path)
         .with_context(|| format!("could not open cache file {}", path.display()))?;
     let opened_metadata = file.metadata()?;
@@ -77,6 +74,33 @@ pub(super) fn open_trusted_cache_file(path: &Path, max_bytes: u64) -> Result<Fil
     }
     if opened_metadata.len() > max_bytes {
         bail!("cache file {} exceeds its byte limit", path.display());
+    }
+    Ok(file)
+}
+
+pub(super) fn open_or_create_trusted_lock_file(path: &Path) -> Result<File> {
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && (metadata_is_link_or_reparse(&metadata) || !metadata.is_file() || metadata.len() != 0)
+    {
+        bail!("cache lock {} is not a trusted empty file", path.display());
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("could not open cache lock {}", path.display()))?;
+    let path_metadata = fs::symlink_metadata(path)?;
+    let opened_metadata = file.metadata()?;
+    if metadata_is_link_or_reparse(&path_metadata)
+        || !path_metadata.is_file()
+        || path_metadata.len() != 0
+        || !opened_metadata.is_file()
+        || opened_metadata.len() != 0
+        || !path_refers_to_file(path, &file)?
+    {
+        bail!("cache lock {} changed while it was opened", path.display());
     }
     Ok(file)
 }

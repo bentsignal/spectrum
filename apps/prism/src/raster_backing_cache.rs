@@ -18,19 +18,24 @@ use spectrum_imaging::{
 use crate::raster_region::{decoder_contract_for, inspect_raster_region_source};
 
 mod cache_fs;
+mod maintenance;
 pub(crate) mod prepare;
 use cache_fs::{
-    RetainedPlane, is_cache_key, is_temporary_entry_name, metadata_is_link_or_reparse,
-    open_trusted_cache_file, path_refers_to_file, read_bounded, read_exact_at, remove_cache_entry,
-    retain_plane, sync_directory, trusted_cache_directory, trusted_cache_directory_if_present,
-    trusted_cache_file_length,
+    RetainedPlane, open_or_create_trusted_lock_file, open_trusted_cache_file, read_bounded,
+    read_exact_at, remove_cache_entry, retain_plane, sync_directory, trusted_cache_directory,
+    trusted_cache_directory_if_present,
 };
+use maintenance::{CacheMaintenanceLease, EntryReadLease};
 use prepare::prepare_exact_rgba8_plane;
 
-const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_SCHEMA_VERSION: u32 = 2;
+const CACHE_VERSION_DIRECTORY: &str = "v2";
 const MANIFEST_FILE: &str = "manifest.json";
 const PLANE_FILE: &str = "pixels.rgba8";
 const READY_FILE: &str = "ready";
+const ENTRY_LEASE_FILE: &str = ".lease";
+const ACCESS_FILE: &str = ".access";
+const ACCESS_MARKER_BYTES: u64 = 1;
 const PREPARE_LOCK: &str = ".prepare-lock";
 const PIXEL_FORMAT: &str = "rgba8-straight-unpremultiplied";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1_024;
@@ -215,10 +220,15 @@ impl DerivedBackingCache {
         if !trusted_cache_directory_if_present(&self.root)? {
             return Ok(None);
         }
+        let version_root = self.version_root();
+        if !trusted_cache_directory_if_present(&version_root)? {
+            return Ok(None);
+        }
         let directory = self.entry_directory(identity);
         if !trusted_cache_directory_if_present(&directory)? {
             return Ok(None);
         }
+        let entry_lease = EntryReadLease::acquire(&directory)?;
         let ready_path = directory.join(READY_FILE);
         match fs::symlink_metadata(&ready_path) {
             Ok(_) => {}
@@ -262,6 +272,7 @@ impl DerivedBackingCache {
             key: identity.key.clone(),
             plane_path,
             plane: retain_plane(plane),
+            _entry_lease: entry_lease,
             max_region_pixels: self.limits.max_region_pixels,
         }))
     }
@@ -298,12 +309,16 @@ impl DerivedBackingCache {
                 memory_plan,
             });
         }
-        fs::create_dir_all(&self.root)
-            .with_context(|| format!("could not create {}", self.root.display()))?;
-        trusted_cache_directory(&self.root)?;
-        let Some(_lease) = CachePrepareLease::acquire(self.root.join(PREPARE_LOCK))? else {
+        self.ensure_cache_layout()?;
+        let version_root = self.version_root();
+        let Some(maintenance) = CacheMaintenanceLease::try_acquire(&version_root, self.limits)?
+        else {
             return Ok(PrepareDerivedBacking::InProgress(identity.clone()));
         };
+        let Some(_lease) = CachePrepareLease::acquire(version_root.join(PREPARE_LOCK))? else {
+            return Ok(PrepareDerivedBacking::InProgress(identity.clone()));
+        };
+        maintenance.scavenge_crash_entries()?;
         match self.open_ready(identity) {
             Ok(Some(backing)) => {
                 return Ok(PrepareDerivedBacking::Ready {
@@ -314,16 +329,9 @@ impl DerivedBackingCache {
             }
             Ok(None) => {}
             Err(_) => {
-                let corrupt = self.entry_directory(identity);
-                remove_cache_entry(&corrupt).with_context(|| {
-                    format!(
-                        "could not discard corrupt cache entry {}",
-                        corrupt.display()
-                    )
-                })?;
+                maintenance.remove_corrupt_entry(identity.key())?;
             }
         }
-        self.scavenge_temporary_entries()?;
 
         let plane_bytes = identity
             .descriptor
@@ -332,21 +340,13 @@ impl DerivedBackingCache {
         if plane_bytes > self.limits.max_plane_bytes {
             bail!("derived raster backing exceeds the per-source byte limit");
         }
-        let occupied = self.occupied_plane_bytes()?;
-        if occupied
-            .checked_add(plane_bytes)
-            .is_none_or(|total| total > self.limits.max_cache_bytes)
-        {
-            bail!("derived raster backing cache quota would be exceeded");
-        }
-
         let temporary_name = format!(
             ".tmp-{}-{}-{}",
             identity.key,
             std::process::id(),
             TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        let temporary = TemporaryDirectory::create(self.root.join(temporary_name))?;
+        let temporary = TemporaryDirectory::create(version_root.join(temporary_name))?;
         let prepared = prepare_exact_rgba8_plane(
             source,
             identity,
@@ -366,7 +366,7 @@ impl DerivedBackingCache {
             plane_bytes,
             plane_sha256: prepared.plane_sha256,
         };
-        self.publish(identity, &manifest, temporary)?;
+        self.publish(identity, &manifest, temporary, &maintenance)?;
         let backing = self
             .open_ready(identity)?
             .context("published derived raster backing is not ready")?;
@@ -382,6 +382,7 @@ impl DerivedBackingCache {
         identity: &DerivedBackingIdentity,
         manifest: &DerivedBackingManifest,
         temporary: TemporaryDirectory,
+        maintenance: &CacheMaintenanceLease,
     ) -> Result<()> {
         let manifest_bytes = serde_json::to_vec(manifest)?;
         write_immutable_file(&temporary.path.join(MANIFEST_FILE), &manifest_bytes)?;
@@ -389,16 +390,15 @@ impl DerivedBackingCache {
             &temporary.path.join(READY_FILE),
             format!("{}\n", sha256_bytes(&manifest_bytes)).as_bytes(),
         )?;
+        write_mutable_file(&temporary.path.join(ENTRY_LEASE_FILE), &[])?;
+        write_mutable_file(&temporary.path.join(ACCESS_FILE), b"0")?;
         sync_directory(&temporary.path)?;
+        let incoming = maintenance.staged_logical_bytes(&temporary.path, identity.key())?;
+        maintenance.ensure_quota(incoming, identity.key())?;
 
         let destination = self.entry_directory(identity);
         if fs::symlink_metadata(&destination).is_ok() {
-            remove_cache_entry(&destination).with_context(|| {
-                format!(
-                    "could not discard corrupt cache entry {}",
-                    destination.display()
-                )
-            })?;
+            bail!("derived backing destination appeared during publication");
         }
         fs::rename(&temporary.path, &destination).with_context(|| {
             format!(
@@ -406,7 +406,7 @@ impl DerivedBackingCache {
                 destination.display()
             )
         })?;
-        sync_directory(&self.root)?;
+        sync_directory(&self.version_root())?;
         temporary.commit();
         Ok(())
     }
@@ -451,53 +451,25 @@ impl DerivedBackingCache {
         Ok(plan)
     }
 
-    fn occupied_plane_bytes(&self) -> Result<u64> {
-        let mut occupied = 0_u64;
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            if !is_cache_key(&name) || !trusted_cache_directory_if_present(&entry.path())? {
-                continue;
-            }
-            let ready = trusted_cache_file_length(&entry.path().join(READY_FILE), MAX_READY_BYTES);
-            let manifest =
-                trusted_cache_file_length(&entry.path().join(MANIFEST_FILE), MAX_MANIFEST_BYTES);
-            let plane = trusted_cache_file_length(
-                &entry.path().join(PLANE_FILE),
-                self.limits.max_plane_bytes,
-            );
-            let (Ok(Some(_)), Ok(Some(_)), Ok(Some(plane_bytes))) = (ready, manifest, plane) else {
-                continue;
-            };
-            occupied = occupied
-                .checked_add(plane_bytes)
-                .context("derived raster backing cache size overflows")?;
+    fn ensure_cache_layout(&self) -> Result<()> {
+        fs::create_dir_all(&self.root)
+            .with_context(|| format!("could not create {}", self.root.display()))?;
+        trusted_cache_directory(&self.root)?;
+        let version_root = self.version_root();
+        match fs::create_dir(&version_root) {
+            Ok(()) => sync_directory(&self.root)?,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
         }
-        Ok(occupied)
+        trusted_cache_directory(&version_root)
     }
 
-    fn scavenge_temporary_entries(&self) -> Result<()> {
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            if is_temporary_entry_name(&name) {
-                remove_cache_entry(&entry.path()).with_context(|| {
-                    format!(
-                        "could not scavenge stale cache entry {}",
-                        entry.path().display()
-                    )
-                })?;
-            }
-        }
-        Ok(())
+    fn version_root(&self) -> PathBuf {
+        self.root.join(CACHE_VERSION_DIRECTORY)
     }
 
     fn entry_directory(&self, identity: &DerivedBackingIdentity) -> PathBuf {
-        self.root.join(&identity.key)
+        self.version_root().join(&identity.key)
     }
 }
 
@@ -506,6 +478,7 @@ pub struct DerivedRasterBacking {
     key: String,
     plane_path: PathBuf,
     plane: RetainedPlane,
+    _entry_lease: EntryReadLease,
     max_region_pixels: u64,
 }
 
@@ -646,6 +619,36 @@ fn write_immutable_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn write_mutable_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn validate_inventory_manifest(
+    manifest: &DerivedBackingManifest,
+    key: &str,
+    limits: DerivedBackingLimits,
+) -> Result<()> {
+    if manifest.key != key || !is_lower_sha256(&manifest.source_sha256) {
+        bail!("derived backing manifest has an invalid content identity");
+    }
+    let expected_key = sha256_bytes(&serde_json::to_vec(&CacheKeyMaterial {
+        source_sha256: &manifest.source_sha256,
+        descriptor: &manifest.descriptor,
+    })?);
+    if expected_key != key {
+        bail!("derived backing manifest content address is invalid");
+    }
+    let identity = DerivedBackingIdentity {
+        key: manifest.key.clone(),
+        source_sha256: manifest.source_sha256.clone(),
+        descriptor: manifest.descriptor.clone(),
+    };
+    manifest.validate(&identity, limits)
+}
+
 fn sha256_path_bounded(path: &Path, max_bytes: u64, label: &str) -> Result<String> {
     let mut file =
         File::open(path).with_context(|| format!("could not open {}", path.display()))?;
@@ -692,6 +695,23 @@ fn is_lower_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn is_eviction_tombstone_name(value: &str) -> bool {
+    let Some(value) = value.strip_prefix(".evict-") else {
+        return false;
+    };
+    let mut fields = value.split('-');
+    let (Some(key), Some(process), Some(counter), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return false;
+    };
+    is_lower_sha256(key)
+        && !process.is_empty()
+        && process.bytes().all(|byte| byte.is_ascii_digit())
+        && !counter.is_empty()
+        && counter.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 fn sha256_hex(digest: impl AsRef<[u8]>) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
@@ -710,29 +730,10 @@ struct CachePrepareLease {
 
 impl CachePrepareLease {
     fn acquire(path: PathBuf) -> Result<Option<Self>> {
-        if let Ok(metadata) = fs::symlink_metadata(&path)
-            && (metadata_is_link_or_reparse(&metadata) || !metadata.is_file())
-        {
-            bail!("cache preparation lock is not a trusted regular file");
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&path)?;
-        let path_metadata = fs::symlink_metadata(&path)?;
-        let opened_metadata = file.metadata()?;
-        if metadata_is_link_or_reparse(&path_metadata)
-            || !path_metadata.is_file()
-            || !opened_metadata.is_file()
-            || !path_refers_to_file(&path, &file)?
-        {
-            bail!("cache preparation lock changed while it was opened");
-        }
-        match file.try_lock_exclusive() {
+        let file = open_or_create_trusted_lock_file(&path)?;
+        match FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self { _file: file })),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) if error.kind() == fs2::lock_contended_error().kind() => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
