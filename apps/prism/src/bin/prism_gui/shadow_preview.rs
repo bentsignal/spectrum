@@ -89,25 +89,39 @@ fn quantize_nonzero_alpha(alpha: f32) -> u8 {
 
 fn blurred_shadow_preview_alphas(target_alpha: f32) -> [u8; prism_core::DROP_SHADOW_KERNEL.len()] {
     let mut alphas = [0; prism_core::DROP_SHADOW_KERNEL.len()];
-    let mut outer_transmittance = 1.0_f32;
-    for (index, (_, _, weight)) in prism_core::DROP_SHADOW_KERNEL
-        .into_iter()
-        .enumerate()
-        .skip(1)
-    {
-        let exponent = weight as f32 / prism_core::DROP_SHADOW_KERNEL_TOTAL_WEIGHT as f32;
-        let ideal = 1.0 - (1.0 - target_alpha).powf(exponent);
-        let alpha = (ideal * 255.0).floor().clamp(0.0, 255.0) as u8;
-        alphas[index] = alpha;
-        outer_transmittance *= 1.0 - f32::from(alpha) / 255.0;
+    let mut remainders = [0.0; prism_core::DROP_SHADOW_KERNEL.len()];
+    let target_bytes = target_alpha.clamp(0.0, 1.0) * 255.0;
+    let byte_budget = target_bytes.round() as u16;
+    let total_weight = prism_core::DROP_SHADOW_KERNEL_TOTAL_WEIGHT as f32;
+    let mut allocated = 0_u16;
+
+    for (index, (_, _, weight)) in prism_core::DROP_SHADOW_KERNEL.into_iter().enumerate() {
+        let desired = target_bytes * weight as f32 / total_weight;
+        let floor = desired.floor() as u8;
+        alphas[index] = floor;
+        remainders[index] = desired - f32::from(floor);
+        allocated += u16::from(floor);
     }
-    let center = if outer_transmittance <= f32::EPSILON {
-        255
-    } else {
-        let residual = 1.0 - (1.0 - target_alpha) / outer_transmittance;
-        quantize_nonzero_alpha(residual.clamp(0.0, 1.0))
-    };
-    alphas[0] = center;
+
+    // Preserve the rounded alpha-byte budget exactly. Largest-remainder allocation keeps each
+    // isolated edge tap within one byte of its kernel-relative ideal; index order breaks ties.
+    let mut received_residual = [false; prism_core::DROP_SHADOW_KERNEL.len()];
+    for _ in allocated..byte_budget {
+        let mut best = None;
+        for (index, remainder) in remainders.into_iter().enumerate() {
+            if received_residual[index] {
+                continue;
+            }
+            if best.is_none_or(|best_index| remainder > remainders[best_index]) {
+                best = Some(index);
+            }
+        }
+        let Some(index) = best else {
+            break;
+        };
+        alphas[index] += 1;
+        received_residual[index] = true;
+    }
     alphas
 }
 
@@ -152,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn blurred_shadow_preview_is_bounded_and_preserves_fully_overlapped_alpha() {
+    fn blurred_shadow_preview_uses_a_bounded_kernel_relative_alpha_budget() {
         let shadow = prism_core::DropShadow {
             color: [12, 24, 36, 160],
             offset_x: 28.0,
@@ -175,14 +189,71 @@ mod tests {
             actual_tint[..3]
                 .iter()
                 .zip([12, 24, 36])
-                .all(|(actual, expected)| actual.abs_diff(expected) <= 3)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 5)
         );
         let composed_alpha = samples.iter().fold(0.0_f32, |alpha, (_, color)| {
             let source = f32::from(color.a()) / 255.0;
             alpha + source * (1.0 - alpha)
         });
         let expected_alpha = f32::from(shadow.color[3]) / 255.0 * 0.75;
-        assert!((composed_alpha - expected_alpha).abs() <= 1.0 / 255.0);
+        let alpha_sum = samples
+            .iter()
+            .map(|(_, color)| u16::from(color.a()))
+            .sum::<u16>();
+        assert_eq!(alpha_sum, (expected_alpha * 255.0).round() as u16);
+        assert!(composed_alpha <= expected_alpha);
+        assert!(expected_alpha - composed_alpha < 0.1);
+    }
+
+    #[test]
+    fn opaque_blur_distributes_alpha_by_kernel_weight_without_opaque_taps() {
+        let alphas = blurred_shadow_preview_alphas(1.0);
+
+        assert_eq!(alphas[0], 51);
+        assert!(alphas[1..5].iter().all(|alpha| (25..=26).contains(alpha)));
+        assert!(alphas[5..].iter().all(|alpha| (12..=13).contains(alpha)));
+        assert_eq!(
+            alphas.iter().map(|alpha| u16::from(*alpha)).sum::<u16>(),
+            255
+        );
+
+        for target_byte in 1..=255 {
+            let target_alpha = target_byte as f32 / 255.0;
+            let taps = blurred_shadow_preview_alphas(target_alpha);
+            assert_eq!(
+                taps.iter().map(|alpha| u16::from(*alpha)).sum::<u16>(),
+                target_byte
+            );
+            assert!(taps[1..5].iter().all(|alpha| taps[0] >= *alpha));
+            assert!(
+                taps[5..]
+                    .iter()
+                    .all(|edge| taps[1..5].iter().all(|middle| middle >= edge))
+            );
+            for (alpha, (_, _, weight)) in taps.into_iter().zip(prism_core::DROP_SHADOW_KERNEL) {
+                let ideal = target_byte as f32 * weight as f32
+                    / prism_core::DROP_SHADOW_KERNEL_TOTAL_WEIGHT as f32;
+                assert!((f32::from(alpha) - ideal).abs() <= 1.0);
+            }
+            let composed = taps.into_iter().fold(0.0_f32, |alpha, source| {
+                alpha + f32::from(source) / 255.0 * (1.0 - alpha)
+            });
+            assert!(composed <= target_alpha + f32::EPSILON);
+        }
+
+        assert_eq!(
+            blurred_shadow_preview_alphas(10.0 / 255.0),
+            [2, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]
+        );
+
+        // The preview draws overlapping quads, so source-over composition intentionally underfills
+        // the exact convolution in the fully overlapping interior. It remains bounded and is
+        // replaced by the exact compositor when interaction ends.
+        let composed = alphas.into_iter().fold(0.0_f32, |alpha, source| {
+            alpha + f32::from(source) / 255.0 * (1.0 - alpha)
+        });
+        assert!(composed < 1.0);
+        assert!(1.0 - composed < 0.36);
     }
 
     #[test]
@@ -199,7 +270,12 @@ mod tests {
                     alphas.push(color.a());
                 });
 
-                assert!(alphas.iter().any(|alpha| *alpha > 0));
+                let byte_budget = (f32::from(source_alpha) * opacity).round() as u16;
+                assert_eq!(
+                    alphas.iter().map(|alpha| u16::from(*alpha)).sum::<u16>(),
+                    byte_budget
+                );
+                assert_eq!(alphas.iter().any(|alpha| *alpha > 0), byte_budget > 0);
                 assert!(alphas.len() <= prism_core::DROP_SHADOW_KERNEL.len());
                 let composed = alphas.iter().fold(0.0_f32, |alpha, source| {
                     alpha + f32::from(*source) / 255.0 * (1.0 - alpha)
