@@ -73,16 +73,11 @@ pub fn render_image(
     if let Some(crop) = adjustments.crop {
         let width = image.width();
         let height = image.height();
-        let x = (crop.x * width as f32).round() as u32;
-        let y = (crop.y * height as f32).round() as u32;
+        let x = ((crop.x * width as f32).round() as u32).min(width - 1);
+        let y = ((crop.y * height as f32).round() as u32).min(height - 1);
         let w = (crop.width * width as f32).round().max(1.0) as u32;
         let h = (crop.height * height as f32).round().max(1.0) as u32;
-        image = image.crop_imm(
-            x.min(width - 1),
-            y.min(height - 1),
-            w.min(width - x),
-            h.min(height - y),
-        );
+        image = image.crop_imm(x, y, w.min(width - x), h.min(height - y));
     }
     if let Some(max_size) = options
         .max_size

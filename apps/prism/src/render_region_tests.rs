@@ -91,6 +91,19 @@ fn viewport_regions_match_the_export_oracle_for_every_blend_mode() {
                 id: 2,
                 opacity: 0.73,
                 blend_mode,
+                adjustments: spectrum_imaging::Adjustments {
+                    exposure: 0.21,
+                    vignette: -12.0,
+                    rotation: 90,
+                    straighten: 3.5,
+                    crop: Some(spectrum_imaging::CropRect {
+                        x: 0.04,
+                        y: 0.06,
+                        width: 0.9,
+                        height: 0.86,
+                    }),
+                    ..Default::default()
+                },
                 transform: Transform {
                     x: 9.0,
                     y: 7.0,
@@ -265,6 +278,72 @@ fn rotated_raster_region_matches_export_without_full_source_staging() {
 }
 
 #[test]
+fn adjusted_raster_region_matches_export_with_development_and_layer_geometry() {
+    let raster_path = temporary_raster("adjusted-raster", 73, 51);
+    let mut document = Document::new("Adjusted raster parity", 260, 210);
+    document.background = [22, 37, 53, 179];
+    document.layers.push(Layer {
+        id: 141,
+        opacity: 0.77,
+        blend_mode: BlendMode::SoftLight,
+        adjustments: spectrum_imaging::Adjustments {
+            exposure: 0.3,
+            vignette: -18.0,
+            noise_reduction: 16.0,
+            sharpening: 11.0,
+            rotation: 90,
+            flip_horizontal: true,
+            straighten: 5.0,
+            crop: Some(spectrum_imaging::CropRect {
+                x: 0.07,
+                y: 0.09,
+                width: 0.82,
+                height: 0.76,
+            }),
+            ..Default::default()
+        },
+        transform: Transform {
+            x: 38.0,
+            y: 27.0,
+            scale_x: 1.9,
+            scale_y: 1.45,
+            rotation: 23.0,
+        },
+        mask: LayerMask {
+            enabled: true,
+            invert: true,
+            x: 0.08,
+            y: 0.12,
+            width: 0.81,
+            height: 0.72,
+        },
+        kind: LayerKind::Raster {
+            path: raster_path.clone(),
+            original_path: None,
+        },
+        ..Layer::default()
+    });
+    assert!(document_supports_region_native_zoom(&document));
+    let full = render_document_scaled(&document, 1.5).unwrap().to_rgba8();
+    let region = RenderRegion {
+        x: 35,
+        y: 24,
+        width: 170,
+        height: 140,
+    };
+    let (viewport, stats) =
+        render_document_region_scaled_with_stats(&document, 1.5, region).unwrap();
+    let oracle = image::imageops::crop_imm(&full, region.x, region.y, region.width, region.height)
+        .to_image();
+    let _ = std::fs::remove_file(raster_path);
+    assert_eq!(viewport.to_rgba8(), oracle);
+    assert!(stats.source_staging_pixels < stats.full_source_pixels);
+    assert!(stats.adjusted_staging_pixels > 0);
+    assert_eq!(stats.fallback_decode_bytes, 0);
+    assert_eq!(stats.transformed_surface_pixels, 0);
+}
+
+#[test]
 fn rotated_text_region_matches_off_center_visible_pivot_export() {
     let mut document = Document::new("Text pivot parity", 220, 160);
     document.background = [19, 25, 38, 213];
@@ -327,6 +406,20 @@ fn imported_typography_effect_region_matches_rotated_export_crop() {
             scale_y: 0.92,
             rotation: 19.0,
         },
+        adjustments: spectrum_imaging::Adjustments {
+            exposure: 0.18,
+            contrast: 9.0,
+            vignette: -13.0,
+            rotation: 90,
+            straighten: -3.0,
+            crop: Some(spectrum_imaging::CropRect {
+                x: 0.03,
+                y: 0.05,
+                width: 0.92,
+                height: 0.88,
+            }),
+            ..Default::default()
+        },
         kind: LayerKind::Text {
             text: "Imported fonts wrap\nwith visible effects".into(),
             font_size: 44.0,
@@ -378,6 +471,7 @@ fn imported_typography_effect_region_matches_rotated_export_crop() {
     let _ = std::fs::remove_file(font_path);
     assert_eq!(viewport.to_rgba8(), oracle);
     assert!(stats.source_staging_pixels < stats.full_source_pixels);
+    assert!(stats.adjusted_staging_pixels > 0);
     assert_eq!(stats.fallback_decode_bytes, 0);
     assert_eq!(stats.transformed_surface_pixels, 0);
 }
@@ -489,6 +583,14 @@ fn huge_stroked_rotated_shapes_render_without_source_staging() {
     document.layers.push(Layer {
         id: 9,
         blend_mode: BlendMode::Screen,
+        adjustments: spectrum_imaging::Adjustments {
+            exposure: 0.24,
+            vignette: -15.0,
+            noise_reduction: 12.0,
+            sharpening: 9.0,
+            straighten: 3.0,
+            ..Default::default()
+        },
         transform: Transform {
             rotation: 11.0,
             ..Transform::default()
@@ -519,10 +621,49 @@ fn huge_stroked_rotated_shapes_render_without_source_staging() {
     )
     .unwrap();
     assert_eq!((rendered.width(), rendered.height()), (320, 180));
-    assert_eq!(stats.source_staging_pixels, 0);
-    assert_eq!(stats.source_staging_bytes, 0);
+    assert!(stats.source_staging_pixels < 320 * 180);
+    assert!(stats.adjusted_staging_pixels < 320 * 180);
     assert_eq!(stats.transformed_surface_pixels, 0);
     assert!(stats.full_source_pixels > 4_096 * 4_096);
+}
+
+#[test]
+fn spots_and_non_png_rasters_do_not_claim_region_native_zoom() {
+    let mut spotted = Document::new("Spots", 64, 64);
+    spotted.layers.push(Layer {
+        adjustments: spectrum_imaging::Adjustments {
+            spots: vec![spectrum_imaging::SpotRemoval {
+                x: 0.5,
+                y: 0.5,
+                radius: 0.1,
+                opacity: 1.0,
+            }],
+            ..Default::default()
+        },
+        kind: LayerKind::Rectangle {
+            width: 32,
+            height: 24,
+            color: [120, 180, 220, 255],
+            corner_radius: 0.0,
+        },
+        ..Layer::default()
+    });
+    assert!(!document_supports_region_native_zoom(&spotted));
+
+    let temporary_png = temporary_raster("unsupported-roi", 32, 24);
+    let jpeg_path = temporary_png.with_extension("jpg");
+    image::RgbImage::new(32, 24).save(&jpeg_path).unwrap();
+    let mut jpeg = Document::new("JPEG", 64, 64);
+    jpeg.layers.push(Layer {
+        kind: LayerKind::Raster {
+            path: jpeg_path.clone(),
+            original_path: None,
+        },
+        ..Layer::default()
+    });
+    assert!(!document_supports_region_native_zoom(&jpeg));
+    let _ = std::fs::remove_file(temporary_png);
+    let _ = std::fs::remove_file(jpeg_path);
 }
 
 #[test]

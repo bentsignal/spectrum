@@ -24,8 +24,8 @@ impl CropRect {
     pub fn sanitized(mut self) -> Self {
         self.x = self.x.clamp(0.0, 0.99);
         self.y = self.y.clamp(0.0, 0.99);
-        self.width = self.width.clamp(0.01, 1.0 - self.x);
-        self.height = self.height.clamp(0.01, 1.0 - self.y);
+        self.width = self.width.clamp(0.01, (1.0 - self.x).max(0.01));
+        self.height = self.height.clamp(0.01, (1.0 - self.y).max(0.01));
         self
     }
 }

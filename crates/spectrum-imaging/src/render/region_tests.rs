@@ -217,6 +217,80 @@ fn invalid_dimensions_and_regions_fail_before_the_reader_is_invoked() {
 }
 
 #[test]
+fn single_column_crop_origin_rounding_stays_positive() {
+    let source = patterned_source(1, 7);
+    let adjustments = Adjustments {
+        crop: Some(CropRect {
+            x: 0.99,
+            y: 0.0,
+            width: 0.01,
+            height: 1.0,
+        }),
+        ..Default::default()
+    };
+    let dimensions = adjusted_image_dimensions(source.width(), source.height(), &adjustments);
+    let full = render_image(
+        DynamicImage::ImageRgba8(source.clone()),
+        adjustments.clone(),
+        RenderOptions::default(),
+    )
+    .to_rgba8();
+
+    assert_eq!(dimensions, Some((1, 7)));
+    assert_eq!(full.dimensions(), (1, 7));
+    assert_eq!(
+        render_region_from_image(
+            &source,
+            adjustments,
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 7,
+            },
+        ),
+        full
+    );
+}
+
+#[test]
+fn single_row_crop_origin_rounding_stays_positive() {
+    let source = patterned_source(7, 1);
+    let adjustments = Adjustments {
+        crop: Some(CropRect {
+            x: 0.0,
+            y: 0.99,
+            width: 1.0,
+            height: 0.01,
+        }),
+        ..Default::default()
+    };
+    let dimensions = adjusted_image_dimensions(source.width(), source.height(), &adjustments);
+    let full = render_image(
+        DynamicImage::ImageRgba8(source.clone()),
+        adjustments.clone(),
+        RenderOptions::default(),
+    )
+    .to_rgba8();
+
+    assert_eq!(dimensions, Some((7, 1)));
+    assert_eq!(full.dimensions(), (7, 1));
+    assert_eq!(
+        render_region_from_image(
+            &source,
+            adjustments,
+            PixelRegion {
+                x: 0,
+                y: 0,
+                width: 7,
+                height: 1,
+            },
+        ),
+        full
+    );
+}
+
+#[test]
 fn adjusted_regions_match_full_render_with_geometry_filters_vignette_and_alpha() {
     let source = patterned_source(53, 41);
     let adjustments = Adjustments {

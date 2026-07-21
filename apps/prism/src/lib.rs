@@ -889,6 +889,7 @@ fn guide_output(action: &str, message: &str, guide_ids: Vec<u64>) -> CommandOutp
 }
 
 mod render;
+mod render_fallback;
 mod render_region;
 mod text_render;
 mod text_rotation;
@@ -901,6 +902,7 @@ pub use render::{
     render_layer_preview, render_layer_preview_scaled, render_layer_preview_scaled_with_font,
     render_solid_color, save_document,
 };
+pub use render_region::{RegionSourceScales, region_source_scales};
 pub use text_render::{
     TextGeometry, measure_text, measure_text_geometry, measure_text_geometry_with_typography,
     measure_text_with_typography,
@@ -917,6 +919,10 @@ mod shape_tests;
 #[cfg(test)]
 #[path = "render_region_tests.rs"]
 mod render_region_tests;
+
+#[cfg(test)]
+#[path = "render_fallback_tests.rs"]
+mod render_fallback_tests;
 
 #[cfg(test)]
 #[path = "rotation_tests.rs"]
