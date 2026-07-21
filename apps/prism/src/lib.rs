@@ -20,7 +20,8 @@ pub use typography::{FontAsset, FontSlant, TextAlignment, TextEffects, TextTypog
 
 mod font_usage;
 pub use font_usage::{
-    FontUsage, FontUsageAnalysis, analyze_all_font_usage, analyze_font_usage, font_usage,
+    FontUsage, FontUsageAnalysis, UnicodeVariationSequence, analyze_all_font_usage,
+    analyze_font_usage, font_usage,
 };
 
 mod transfer;

@@ -72,6 +72,35 @@ fn continuous_inspector_controls_use_gesture_transactions() {
 }
 
 #[test]
+fn font_subset_analysis_is_button_gated_and_revision_cached() {
+    let typography = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/typography_ui.rs"),
+    )
+    .expect("typography inspector source should be readable");
+    let start = typography.find("fn font_usage_controls(").unwrap();
+    let end = typography[start..]
+        .find("pub(super) fn paragraph_controls(")
+        .map(|offset| start + offset)
+        .unwrap();
+    let controls = &typography[start..end];
+    let button = controls
+        .find("small_button(\"Analyze subset retention\").clicked()")
+        .unwrap();
+    let analysis = controls.find("analyze_font_usage(").unwrap();
+    assert!(button < analysis);
+    assert_eq!(controls.matches("analyze_font_usage(").count(), 1);
+    assert!(!controls.contains("prism_core::font_usage("));
+    for stable_key_part in [
+        "active_tab_id",
+        "document_identity",
+        "document_generation",
+        "content_hash",
+    ] {
+        assert!(typography.contains(stable_key_part));
+    }
+}
+
+#[test]
 fn single_command_previews_do_not_clone_the_document_per_frame() {
     let workspace =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/workspace.rs"))

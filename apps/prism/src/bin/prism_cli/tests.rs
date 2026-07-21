@@ -87,11 +87,14 @@ fn font_usage_cli_accepts_an_optional_asset_filter() {
 }
 
 #[test]
-fn font_usage_output_declares_analysis_only_editable_policy() {
+fn font_usage_output_limits_its_non_mutation_and_coverage_claims() {
     let output = typography::font_usage(&Document::new("Usage", 320, 200), None).unwrap();
     assert_eq!(output["action"], "font_usage");
-    assert_eq!(output["mutates_project"], false);
+    assert_eq!(output["analysis_scope"], "unicode_cmap_subset_retention");
+    assert_eq!(output["font_bytes_modified"], false);
+    assert!(output.get("mutates_project").is_none());
     assert_eq!(output["editable_font_bytes_preserved"], true);
+    assert_eq!(output["limitations"].as_array().unwrap().len(), 3);
     assert_eq!(output["fonts"], serde_json::json!([]));
 }
 
@@ -111,6 +114,8 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert!(schema["alignment"].is_object());
     assert!(schema["typography"].is_object());
     assert!(schema["typography"]["optimization_analysis"].is_string());
+    assert!(schema["typography"]["optimization_limitations"].is_string());
+    assert!(schema["typography"]["embedding_metadata"].is_string());
     assert!(schema["typography"]["editable_default"].is_string());
     assert_eq!(schema["layer_transfer"]["version"], 1);
     let insert = examples

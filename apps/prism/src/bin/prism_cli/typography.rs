@@ -138,8 +138,14 @@ pub(super) fn font_usage(document: &Document, font_id: Option<u64>) -> Result<Va
     Ok(json!({
         "ok": true,
         "action": "font_usage",
-        "mutates_project": false,
+        "analysis_scope": "unicode_cmap_subset_retention",
+        "font_bytes_modified": false,
         "editable_font_bytes_preserved": true,
+        "limitations": [
+            "does not inspect symbol or other non-Unicode cmaps",
+            "does not model shaping, renderer fallback, or legal license terms",
+            "opening --session retains Prism's standard session-resume behavior"
+        ],
         "fonts": fonts,
     }))
 }

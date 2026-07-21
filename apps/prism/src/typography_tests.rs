@@ -299,7 +299,7 @@ fn font_usage_analysis_is_sorted_deduplicated_and_non_mutating() {
         })
         .unwrap();
     let font_id = workspace.document.font_assets[0].id;
-    for text in ["BA\nA".to_owned(), format!(" A{}", '\u{10ffff}')] {
+    for text in ["BA\u{fe0f}\nA".to_owned(), format!(" A{}", '\u{10ffff}')] {
         workspace
             .execute(Command::AddText {
                 text,
@@ -325,6 +325,14 @@ fn font_usage_analysis_is_sorted_deduplicated_and_non_mutating() {
     let usage = font_usage(&workspace.document, font_id).unwrap();
     assert_eq!(usage.layer_ids, vec![1, 2]);
     assert_eq!(usage.codepoints, vec![32, 65, 66, 0x10ffff]);
+    assert_eq!(
+        usage.variation_sequences,
+        vec![crate::UnicodeVariationSequence {
+            base_codepoint: 65,
+            selector_codepoint: 0xfe0f,
+        }]
+    );
+    assert!(usage.unpaired_variation_selectors.is_empty());
 
     let analysis = analyze_font_usage(&workspace.document, font_id).unwrap();
     assert_eq!(analysis.usage, usage);
@@ -333,6 +341,16 @@ fn font_usage_analysis_is_sorted_deduplicated_and_non_mutating() {
         epaint_default_fonts::HACK_REGULAR.len() as u64
     );
     assert_eq!(analysis.missing_codepoints, vec![0x10ffff]);
+    assert_eq!(
+        analysis.missing_variation_sequences,
+        usage.variation_sequences
+    );
+    assert_eq!(analysis.source_name, "Hack-Regular.ttf");
+    let canonical_source = fs::canonicalize(&source).unwrap();
+    assert_eq!(
+        analysis.original_path.as_deref(),
+        Some(canonical_source.as_path())
+    );
     assert_eq!(
         analyze_all_font_usage(&workspace.document).unwrap(),
         vec![analysis]

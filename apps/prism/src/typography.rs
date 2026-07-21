@@ -27,6 +27,8 @@ pub struct FontAsset {
     pub weight: u16,
     pub slant: FontSlant,
     pub source_name: String,
+    /// Whether OpenType OS/2 embedding metadata allows technical subsetting.
+    /// This is not a legal license conclusion.
     pub subset_allowed: bool,
     pub content_hash: String,
     pub path: PathBuf,
@@ -48,11 +50,13 @@ impl FontAsset {
             .with_context(|| format!("{} is not a supported OpenType font", path.display()))?;
         if !permissions_allow_editable_embedding(face.permissions()) {
             bail!(
-                "font license does not permit portable editable embedding (preview/print-only fonts are unsupported)"
+                "OpenType embedding metadata does not allow portable editable embedding (preview/print-only fonts are unsupported); verify the font license separately"
             );
         }
         if !face.is_outline_embedding_allowed() {
-            bail!("font license does not permit editable outline embedding");
+            bail!(
+                "OpenType embedding metadata does not allow editable outline embedding; verify the font license separately"
+            );
         }
         let family = font_name(&face, &[name_id::TYPOGRAPHIC_FAMILY, name_id::FAMILY])
             .unwrap_or_else(|| "Imported Font".into());

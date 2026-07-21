@@ -124,7 +124,7 @@ struct PrismApp {
     inline_text_editor: Option<inline_text::InlineTextEditor>,
     next_inline_text_creation_id: u64,
     font_query: String,
-    font_usage_analysis: Option<prism_core::FontUsageAnalysis>,
+    font_usage_analysis: Option<typography_ui::CachedFontUsageAnalysis>,
     delete_confirmation: Option<u64>,
     layer_drag: Option<u64>,
     layer_drop_index: Option<usize>,
