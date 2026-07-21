@@ -45,6 +45,11 @@ pub(super) fn schema() -> Value {
             "luminosity"
         ],
         "layer_types": ["raster", "text", "rectangle", "ellipse"],
+        "layer_styles": {
+            "drop_shadow": "shadow <layer> [--x <px>] [--y <px>] [--blur <px>] [--color <RRGGBBAA>] [--clear]",
+            "shape_gradient": "gradient <shape> [--angle <degrees>] [--start <RRGGBBAA>] [--end <RRGGBBAA>] [--clear]",
+            "rendering": "portable CPU export and exact interactive composite preview share the same fixed-kernel shadow and shape sampler"
+        },
         "typography": {
             "portable_fonts": "font-import embeds permitted OpenType font bytes as content-addressed project assets",
             "discovery": "font-list --query <text> searches embedded family and style metadata",
@@ -58,7 +63,7 @@ pub(super) fn schema() -> Value {
         },
         "layer_transfer": {
             "format": "spectrum.prism.layer",
-            "version": 1,
+            "version": 2,
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
@@ -78,6 +83,8 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "insert_layer", "transfer": {"format": "spectrum.prism.layer", "version": 1, "layer": {"id": 0, "name": "Card", "visible": true, "locked": false, "opacity": 1.0, "blend_mode": "normal", "transform": {}, "adjustments": {}, "mask": {}, "stroke": {}, "clip_to_below": false, "kind": {"type": "rectangle", "width": 320, "height": 180, "color": [174,123,255,255], "corner_radius": 24.0}}}}),
         json!({"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0}),
         json!({"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}}),
+        json!({"command": "set_shape_fill", "id": 1, "fill": {"type": "gradient", "kind": "linear", "angle": 30.0, "stops": [{"position": 0.0, "color": [93,216,199,255]}, {"position": 1.0, "color": [174,123,255,255]}]}}),
+        json!({"command": "set_layer_style", "id": 1, "style": {"drop_shadow": {"color": [0,0,0,160], "offset_x": 12.0, "offset_y": 12.0, "blur_radius": 10.0}}}),
         json!({"command": "rasterize_shape", "id": 1, "path": "/generated/shape.png", "scale": 2.0}),
         json!({"command": "set_transform", "id": 1, "transform": {"x": 220.0, "y": 160.0, "scale_x": 1.2, "scale_y": 1.2, "rotation": 8.0}}),
         json!({"command": "set_rotation", "id": 1, "degrees": 15.0}),

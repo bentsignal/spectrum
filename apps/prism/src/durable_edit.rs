@@ -22,7 +22,6 @@ impl PreparedEdit {
         if commands.is_empty() {
             bail!("cannot prepare an empty Prism action");
         }
-        let version = operations_version(commands);
         let mut portable_commands = commands.to_vec();
         let mut execution_commands = commands.to_vec();
         let mut provenance = Vec::with_capacity(commands.len());
@@ -106,6 +105,8 @@ impl PreparedEdit {
             provenance.push(command_provenance);
         }
 
+        downgrade_compatible_transfers(&mut portable_commands);
+        let version = operations_version(&portable_commands);
         Ok(Self {
             execution_commands,
             provenance,

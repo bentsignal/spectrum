@@ -155,6 +155,10 @@ impl<'a> SourceDescriptor<'a> {
         Ok(dimensions)
     }
 
+    pub(super) fn is_unadjusted_shape(&self) -> bool {
+        matches!(self, Self::Shape { adjustments, .. } if **adjustments == spectrum_imaging::Adjustments::default())
+    }
+
     pub(super) fn sample(
         &self,
         adjusted_region: SourceRegion,
@@ -310,6 +314,121 @@ impl<'a> SampleSource<'a> {
             Self::Shape(sampler) => sampler.pixel(x, y).0,
         }
     }
+
+    pub(super) fn alpha(&self, x: u32, y: u32) -> u8 {
+        match self {
+            Self::Constant(pixel) => pixel[3],
+            Self::Pixels { image, region } => image.get_pixel(x - region.x, y - region.y)[3],
+            Self::Shape(sampler) => sampler.alpha(x, y),
+        }
+    }
+
+    pub(super) fn supports_unstaged_alpha_tile(&self) -> bool {
+        matches!(self, Self::Constant(_) | Self::Shape(_))
+    }
+}
+
+pub(super) fn sample_triangle_resize_alpha(
+    source_pixels: &SampleSource<'_>,
+    source: (u32, u32),
+    output: (u32, u32),
+    coordinate: (u32, u32),
+) -> u8 {
+    if source == output {
+        return source_pixels.alpha(coordinate.0, coordinate.1);
+    }
+    let x_weights = triangle_weights(source.0, output.0, coordinate.0);
+    let y_weights = triangle_weights(source.1, output.1, coordinate.1);
+    let mut horizontal = 0.0_f32;
+    for source_x in x_weights.start..x_weights.end {
+        let mut vertical = 0.0_f32;
+        for source_y in y_weights.start..y_weights.end {
+            let weight =
+                triangle_weight(source_y, y_weights.center, y_weights.scale) / y_weights.sum;
+            vertical += f32::from(source_pixels.alpha(source_x, source_y)) * weight;
+        }
+        let weight = triangle_weight(source_x, x_weights.center, x_weights.scale) / x_weights.sum;
+        horizontal += vertical * weight;
+    }
+    horizontal.round().clamp(0.0, 255.0) as u8
+}
+
+pub(super) fn sample_triangle_resize(
+    source_pixels: &SampleSource<'_>,
+    source: (u32, u32),
+    output: (u32, u32),
+    coordinate: (u32, u32),
+) -> [u8; 4] {
+    if let SampleSource::Constant(pixel) = source_pixels {
+        return *pixel;
+    }
+    if source == output {
+        return source_pixels.pixel(coordinate.0, coordinate.1);
+    }
+    let x_weights = triangle_weights(source.0, output.0, coordinate.0);
+    let y_weights = triangle_weights(source.1, output.1, coordinate.1);
+    let mut horizontal = [0.0_f32; 4];
+    for source_x in x_weights.start..x_weights.end {
+        let mut vertical = [0.0_f32; 4];
+        for source_y in y_weights.start..y_weights.end {
+            let pixel = source_pixels.pixel(source_x, source_y);
+            let weight =
+                triangle_weight(source_y, y_weights.center, y_weights.scale) / y_weights.sum;
+            for channel in 0..4 {
+                vertical[channel] += f32::from(pixel[channel]) * weight;
+            }
+        }
+        let weight = triangle_weight(source_x, x_weights.center, x_weights.scale) / x_weights.sum;
+        for channel in 0..4 {
+            horizontal[channel] += vertical[channel] * weight;
+        }
+    }
+    horizontal.map(|channel| channel.round().clamp(0.0, 255.0) as u8)
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct TriangleWeights {
+    pub(super) start: u32,
+    pub(super) end: u32,
+    center: f32,
+    scale: f32,
+    sum: f32,
+}
+
+pub(super) fn source_sample_bounds(source: u32, output: u32, coordinate: u32) -> TriangleWeights {
+    if source == output {
+        return TriangleWeights {
+            start: coordinate,
+            end: coordinate + 1,
+            center: coordinate as f32,
+            scale: 1.0,
+            sum: 1.0,
+        };
+    }
+    triangle_weights(source, output, coordinate)
+}
+
+fn triangle_weights(source: u32, output: u32, coordinate: u32) -> TriangleWeights {
+    let ratio = source as f32 / output as f32;
+    let scale = ratio.max(1.0);
+    let input = (coordinate as f32 + 0.5) * ratio;
+    let start = ((input - scale).floor() as i64).clamp(0, i64::from(source) - 1) as u32;
+    let end = ((input + scale).ceil() as i64).clamp(i64::from(start) + 1, i64::from(source)) as u32;
+    let center = input - 0.5;
+    let sum = (start..end)
+        .map(|sample| triangle_weight(sample, center, scale))
+        .sum();
+    TriangleWeights {
+        start,
+        end,
+        center,
+        scale,
+        sum,
+    }
+}
+
+fn triangle_weight(sample: u32, center: f32, scale: f32) -> f32 {
+    (1.0 - ((sample as f32 - center) / scale).abs()).max(0.0)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

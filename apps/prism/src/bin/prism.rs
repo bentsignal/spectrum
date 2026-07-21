@@ -21,7 +21,10 @@ mod agent;
 use agent::{AgentCommand, agent_command};
 #[path = "prism_cli/benchmark.rs"]
 mod benchmark;
-use benchmark::benchmark;
+use benchmark::{BenchmarkProfile, benchmark};
+#[path = "prism_cli/effects.rs"]
+mod effects;
+use effects::{GradientArgs, ShadowArgs};
 #[path = "prism_cli/schema.rs"]
 mod schema;
 use schema::schema;
@@ -172,6 +175,10 @@ enum CliCommand {
         #[arg(long, default_value = "ffffffff")]
         color: String,
     },
+    /// Add, update, or clear a portable layer drop shadow.
+    Shadow(ShadowArgs),
+    /// Add, update, or clear a two-stop linear shape gradient.
+    Gradient(GradientArgs),
     /// Freeze an editable shape into an embedded raster asset.
     RasterizeShape {
         id: u64,
@@ -341,6 +348,9 @@ enum CliCommand {
     Benchmark {
         #[arg(long)]
         strict: bool,
+        /// Budget calibration: workstation interaction or GitHub's shared Linux runner.
+        #[arg(long, value_enum, default_value_t = BenchmarkProfile::Interactive)]
+        profile: BenchmarkProfile,
     },
 }
 
@@ -523,7 +533,7 @@ fn run(cli: Cli) -> Result<Value> {
         } => from_lumen(&catalog, photo, &output),
         CliCommand::Agent { command } => agent_command(&cli.project, cli.session, command),
         CliCommand::Schema => Ok(schema()),
-        CliCommand::Benchmark { strict } => benchmark(strict),
+        CliCommand::Benchmark { strict, profile } => benchmark(strict, profile),
         command => {
             let mut workspace = match cli.session {
                 Some(session) => Workspace::open_session(&cli.project, session)?,
@@ -641,6 +651,12 @@ fn run(cli: Cli) -> Result<Value> {
                         color: parse_color(&color)?,
                     },
                 })?],
+                CliCommand::Shadow(arguments) => {
+                    vec![workspace.execute(effects::shadow_command(arguments)?)?]
+                }
+                CliCommand::Gradient(arguments) => {
+                    vec![workspace.execute(effects::gradient_command(arguments)?)?]
+                }
                 CliCommand::RasterizeShape { id, scale } => {
                     let layer = workspace.document.layer(id)?;
                     let scale = scale

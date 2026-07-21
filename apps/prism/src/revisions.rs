@@ -9,20 +9,13 @@ use anyhow::{Context, Result, bail};
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use spectrum_revisions::{
     Actor, ActorKind, AppendRevision, Asset, AssetId, Collaboration, CollaborationMode,
-    CollaborationSync, Compatibility, Encoding, LiveRevisionStore, NewProject, Payload,
-    ProjectInfo, Revision, RevisionId, Session, SessionId, TrackId,
+    CollaborationSync, Encoding, LiveRevisionStore, NewProject, Payload, ProjectInfo, Revision,
+    RevisionId, Session, SessionId, TrackId,
 };
 
 use crate::{Command, Document, LayerKind, apply_command};
 
 const APPLICATION_ID: &str = "spectrum.prism";
-const SNAPSHOT_FAMILY: &str = "spectrum.prism.document";
-const OPERATIONS_FAMILY: &str = "spectrum.prism.commands";
-const LEGACY_SNAPSHOT_VERSION: u32 = 1;
-const COMPRESSED_SNAPSHOT_VERSION: u32 = 2;
-const LEGACY_OPERATIONS_VERSION: u32 = 1;
-const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
-const DEFLATE_CAPABILITY: &str = "deflate";
 const SNAPSHOT_COMMAND_BUDGET: u64 = 100;
 const SNAPSHOT_OPERATION_BYTE_BUDGET: usize = 64 * 1024;
 const ASSET_PREFIX: &str = "spectrum-asset:";
@@ -32,28 +25,9 @@ mod durable_cache;
 #[path = "durable_edit.rs"]
 mod durable_edit;
 pub(crate) use durable_edit::PreparedEdit;
-
-struct PrismCompatibility;
-
-impl Compatibility for PrismCompatibility {
-    fn supports_snapshot(&self, encoding: &Encoding) -> bool {
-        encoding.family == SNAPSHOT_FAMILY
-            && match encoding.version {
-                LEGACY_SNAPSHOT_VERSION => encoding.required_capabilities.is_empty(),
-                COMPRESSED_SNAPSHOT_VERSION => {
-                    encoding.required_capabilities == [DEFLATE_CAPABILITY]
-                }
-                _ => false,
-            }
-    }
-
-    fn supports_operations(&self, encoding: &Encoding) -> bool {
-        encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=LAYER_TRANSFER_OPERATIONS_VERSION)
-                .contains(&encoding.version)
-            && encoding.required_capabilities.is_empty()
-    }
-}
+#[path = "revision_encoding.rs"]
+mod revision_encoding;
+use revision_encoding::*;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct SnapshotTail {
@@ -521,6 +495,7 @@ impl DurableProject {
         for step in plan.steps {
             let mut commands: Vec<Command> = serde_json::from_slice(&step.operations.bytes)
                 .context("invalid Prism operation batch")?;
+            validate_operations_version(&commands, step.operations.encoding.version)?;
             let materialized = self.materialize_command_assets(&mut commands)?;
             for command in commands {
                 apply_command(&mut document, command)?;
@@ -712,7 +687,22 @@ impl PreparedSnapshot {
             assets.push(prepared.asset);
         }
         let serialized = serde_json::to_vec(&portable)?;
-        let payload = if compressed {
+        let effects_schema = document.version >= crate::PRISM_VERSION
+            || document
+                .layers
+                .iter()
+                .any(|layer| !layer.style.is_empty() || layer.shape_fill.is_some());
+        let payload = if effects_schema {
+            let encoding = Encoding::new(SNAPSHOT_FAMILY, LAYER_EFFECTS_SNAPSHOT_VERSION);
+            if compressed {
+                Payload::new(
+                    encoding.requiring(DEFLATE_CAPABILITY),
+                    deflate(&serialized)?,
+                )
+            } else {
+                Payload::new(encoding, serialized)
+            }
+        } else if compressed {
             Payload::new(
                 Encoding::new(SNAPSHOT_FAMILY, COMPRESSED_SNAPSHOT_VERSION)
                     .requiring(DEFLATE_CAPABILITY),
@@ -735,7 +725,6 @@ struct PreparedOperations {
 
 impl PreparedOperations {
     fn new(commands: &[Command]) -> Result<Self> {
-        let version = operations_version(commands);
         let mut portable = commands.to_vec();
         let mut assets = Vec::new();
         for command in &mut portable {
@@ -768,6 +757,8 @@ impl PreparedOperations {
                 _ => {}
             }
         }
+        downgrade_compatible_transfers(&mut portable);
+        let version = operations_version(&portable);
         Self::from_portable(version, portable, assets)
     }
 
@@ -779,17 +770,6 @@ impl PreparedOperations {
             ),
             assets,
         })
-    }
-}
-
-fn operations_version(commands: &[Command]) -> u32 {
-    if commands
-        .iter()
-        .any(|command| matches!(command, Command::InsertLayer { .. }))
-    {
-        LAYER_TRANSFER_OPERATIONS_VERSION
-    } else {
-        LEGACY_OPERATIONS_VERSION
     }
 }
 
@@ -805,6 +785,16 @@ fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             Ok(payload.bytes.clone())
         }
         COMPRESSED_SNAPSHOT_VERSION
+            if payload.encoding.required_capabilities == [DEFLATE_CAPABILITY] =>
+        {
+            let mut decoded = Vec::new();
+            ZlibDecoder::new(payload.bytes.as_slice()).read_to_end(&mut decoded)?;
+            Ok(decoded)
+        }
+        LAYER_EFFECTS_SNAPSHOT_VERSION if payload.encoding.required_capabilities.is_empty() => {
+            Ok(payload.bytes.clone())
+        }
+        LAYER_EFFECTS_SNAPSHOT_VERSION
             if payload.encoding.required_capabilities == [DEFLATE_CAPABILITY] =>
         {
             let mut decoded = Vec::new();

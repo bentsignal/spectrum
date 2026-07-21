@@ -7,8 +7,9 @@ use std::{
 use image::{Rgba, RgbaImage};
 
 use crate::{
-    BlendMode, Command, Document, DurableProject, Layer, LayerKind, LayerMask, LayerTransfer,
-    ShapeStroke, TextAlignment, TextEffects, TextTypography, Transform, Workspace,
+    BlendMode, Command, Document, DropShadow, DurableProject, GradientStop, Layer, LayerKind,
+    LayerMask, LayerStyle, LayerTransfer, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment,
+    TextEffects, TextTypography, Transform, Workspace,
 };
 
 fn test_directory(label: &str) -> PathBuf {
@@ -52,6 +53,17 @@ fn transfer_preserves_every_layer_field_except_local_ids_in_one_undo_step() {
             height: 0.6,
             invert: true,
         },
+        style: LayerStyle {
+            drop_shadow: Some(DropShadow::default()),
+        },
+        shape_fill: Some(ShapeFill::Gradient(ShapeGradient {
+            angle: 35.0,
+            stops: vec![
+                GradientStop::new(0.0, [8, 16, 32, 255]),
+                GradientStop::new(1.0, [240, 180, 90, 220]),
+            ],
+            ..ShapeGradient::default()
+        })),
         stroke: ShapeStroke {
             enabled: true,
             width: 7.0,
@@ -279,17 +291,22 @@ fn durable_raster_transfer_embeds_pixels_in_a_version_two_operation() {
     fs::remove_file(&source_path).unwrap();
 
     let connection = rusqlite::Connection::open(&project_path).unwrap();
-    let operation_version: u32 = connection
+    let (operation_version, operation_bytes): (u32, Vec<u8>) = connection
         .query_row(
-            "SELECT version FROM operation_payloads LIMIT 1",
+            "SELECT version, bytes FROM operation_payloads LIMIT 1",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
     let asset_count: u32 = connection
         .query_row("SELECT count(*) FROM assets", [], |row| row.get(0))
         .unwrap();
     assert_eq!(operation_version, 2);
+    let commands: Vec<Command> = serde_json::from_slice(&operation_bytes).unwrap();
+    let Command::InsertLayer { transfer, .. } = &commands[0] else {
+        panic!("durable transfer should remain a layer insert");
+    };
+    assert_eq!(transfer.version, 1);
     assert_eq!(asset_count, 1);
     drop(connection);
 

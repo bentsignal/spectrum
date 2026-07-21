@@ -1,12 +1,14 @@
 use std::{io::Write, path::PathBuf, time::Instant};
 
 use anyhow::{Result, bail};
+use clap::ValueEnum;
 use prism_core::{
-    BlendMode, Command, Document, FontAsset, Layer, LayerKind, LayerMask, RenderRegion,
-    ShapeStroke, TextAlignment, TextEffects, TextTypography, Transform, Workspace,
-    region_source_scales, render_document, render_document_region_scaled,
-    render_document_region_scaled_with_sources_and_stats, render_document_region_scaled_with_stats,
-    render_layer_base_scaled, render_layer_base_scaled_with_font, render_solid_color,
+    BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
+    LayerStyle, RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment, TextEffects,
+    TextTypography, Transform, Workspace, region_source_scales, render_document,
+    render_document_region_scaled, render_document_region_scaled_with_sources_and_stats,
+    render_document_region_scaled_with_stats, render_layer_base_scaled,
+    render_layer_base_scaled_with_font, render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -15,6 +17,33 @@ use spectrum_imaging::Adjustments;
 #[path = "benchmark/raster_fixture.rs"]
 mod raster_fixture;
 use raster_fixture::PreparedRasterFixture;
+
+#[derive(Clone, Copy, Default, ValueEnum)]
+pub(super) enum BenchmarkProfile {
+    #[default]
+    Interactive,
+    HostedCi,
+}
+
+impl BenchmarkProfile {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive-workstation",
+            Self::HostedCi => "github-hosted-linux",
+        }
+    }
+
+    pub(super) fn gradient_shadow_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 500.0,
+            // The reviewed implementation measured 880.788 ms p95 on GitHub's
+            // shared Linux runner versus 222.508 ms locally. A 1,250 ms ceiling
+            // keeps 42% host-jitter headroom while the original 2,061.886 ms
+            // regression still fails decisively.
+            Self::HostedCi => 1_250.0,
+        }
+    }
+}
 
 #[derive(Serialize)]
 struct BenchmarkMetric {
@@ -94,7 +123,7 @@ fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
     (output_extent * inverse_scale + filter_radius * 2.0 + 2.0).ceil() as u64
 }
 
-pub(super) fn benchmark(strict: bool) -> Result<Value> {
+pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value> {
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -429,6 +458,22 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         Layer {
             id: 110,
             opacity: 0.83,
+            style: LayerStyle {
+                drop_shadow: Some(DropShadow {
+                    color: [0, 0, 0, 150],
+                    offset_x: 18.0,
+                    offset_y: 16.0,
+                    blur_radius: 12.0,
+                }),
+            },
+            shape_fill: Some(ShapeFill::Gradient(ShapeGradient {
+                angle: 28.0,
+                stops: vec![
+                    GradientStop::new(0.0, [64, 142, 220, 218]),
+                    GradientStop::new(1.0, [181, 92, 220, 218]),
+                ],
+                ..ShapeGradient::default()
+            })),
             transform: Transform {
                 rotation: 17.0,
                 ..Transform::default()
@@ -512,6 +557,11 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             || stats.max_source_staging_pixels > vector_staging_budget
             || stats.max_adjusted_staging_pixels > vector_staging_budget
             || stats.transformed_surface_pixels != 0
+            || stats.shadow_samples > stats.output_pixels * 13
+            || stats.shadow_alpha_tile_pixels == 0
+            || stats.shadow_alpha_tile_bytes != stats.shadow_alpha_tile_pixels
+            || stats.max_shadow_alpha_tile_pixels > 4_096 * 4_096
+            || stats.max_shadow_alpha_tile_bytes != stats.max_shadow_alpha_tile_pixels
         {
             bail!("vector viewport compositor violated its allocation contract");
         }
@@ -615,6 +665,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let (adjusted_vector_source_median, adjusted_vector_source_p95) =
         sample_summary(&mut adjusted_vector_source_samples);
     let (cached_spot_median, cached_spot_p95) = sample_summary(&mut cached_spot_samples);
+    let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = [
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
@@ -687,11 +738,11 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             pass: bounded_source_p95 <= 750.0,
         },
         BenchmarkMetric {
-            name: "8x_zoom_16k_stroked_vector_viewport_composite",
+            name: "8x_zoom_16k_gradient_shadow_viewport_composite",
             median_ms: vector_source_median,
             p95_ms: vector_source_p95,
-            budget_ms: 500.0,
-            pass: vector_source_p95 <= 500.0,
+            budget_ms: gradient_shadow_budget_ms,
+            pass: vector_source_p95 <= gradient_shadow_budget_ms,
         },
         BenchmarkMetric {
             name: "large_adjusted_raster_text_bounded_staging",
@@ -734,6 +785,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         "ok": true,
         "action": "benchmark",
         "strict": strict,
+        "profile": profile.name(),
         "passed": passed,
         "output": [rendered.as_ref().unwrap().width(), rendered.as_ref().unwrap().height()],
         "setup": {

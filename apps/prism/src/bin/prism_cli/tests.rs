@@ -8,6 +8,36 @@ fn colors_accept_rgb_and_rgba() {
 }
 
 #[test]
+fn benchmark_cli_defaults_to_interactive_and_accepts_hosted_ci() {
+    let default = Cli::try_parse_from(["prism", "benchmark", "--strict"]).unwrap();
+    let CliCommand::Benchmark {
+        strict,
+        profile: default_profile,
+    } = default.command
+    else {
+        panic!("benchmark subcommand should parse");
+    };
+    assert!(strict);
+    assert_eq!(default_profile.name(), "interactive-workstation");
+    assert_eq!(default_profile.gradient_shadow_budget_ms(), 500.0);
+
+    let hosted =
+        Cli::try_parse_from(["prism", "benchmark", "--strict", "--profile", "hosted-ci"]).unwrap();
+    let CliCommand::Benchmark {
+        profile: hosted_profile,
+        ..
+    } = hosted.command
+    else {
+        panic!("benchmark subcommand should parse");
+    };
+    assert_eq!(hosted_profile.name(), "github-hosted-linux");
+    assert_eq!(hosted_profile.gradient_shadow_budget_ms(), 1_250.0);
+    assert!(222.508 <= default_profile.gradient_shadow_budget_ms());
+    assert!(880.788 <= hosted_profile.gradient_shadow_budget_ms());
+    assert!(hosted_profile.gradient_shadow_budget_ms() < 2_061.886);
+}
+
+#[test]
 fn typography_cli_parses_face_paragraph_and_effect_controls() {
     let cli = Cli::try_parse_from([
         "prism",
@@ -117,7 +147,10 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert!(schema["typography"]["optimization_limitations"].is_string());
     assert!(schema["typography"]["embedding_metadata"].is_string());
     assert!(schema["typography"]["editable_default"].is_string());
-    assert_eq!(schema["layer_transfer"]["version"], 1);
+    assert_eq!(
+        schema["layer_transfer"]["version"],
+        prism_core::LAYER_TRANSFER_VERSION
+    );
     let insert = examples
         .iter()
         .find(|example| example["command"] == "insert_layer")
@@ -157,7 +190,7 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
     .unwrap();
     let copied = run(copy).unwrap();
     assert_eq!(copied["action"], "layer_copy");
-    assert_eq!(copied["version"], 1);
+    assert_eq!(copied["version"], prism_core::LAYER_TRANSFER_VERSION);
     assert!(transfer.exists());
 
     let paste = Cli::try_parse_from([
