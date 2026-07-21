@@ -40,6 +40,15 @@ task-oriented CLI subcommands for shell automation. Successful CLI calls emit
 structured JSON so agents can inspect exact IDs and state rather than scraping
 human UI text.
 
+A Prism GUI workspace is a live in-memory editing session. Do not run a direct
+mutating `prism --project <path> ...` command against that same project while it
+is open in the non-collaborative GUI: the GUI will not reload that unrelated
+session automatically, and a later GUI edit can publish from stale state. Close
+the target tab (open or create another document first) or quit Prism before
+direct CLI work, then reopen the project afterward. For coordinated live work,
+use `prism --project <path> agent start --mode together` and pass its reported
+`--session` to every subsequent command.
+
 The global `--project <path>` option selects an editable `.prism` document.
 Commands cover project creation, raster/text/rectangle/ellipse layers, editable
 shape fills and inside strokes, explicit shape rasterization, selection and

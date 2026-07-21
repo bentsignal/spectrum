@@ -1,5 +1,67 @@
 use super::*;
 
+const KEEP_ONLY_TAB_STATUS: &str =
+    "This project is still open. Open or create another document before closing its tab.";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabClosePlan {
+    Close { position: usize },
+    KeepOnlyTab,
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TabCloseAffordance {
+    pub(super) enabled: bool,
+    pub(super) hover_text: &'static str,
+}
+
+fn tab_close_plan(tab_ids: &[u64], id: u64) -> TabClosePlan {
+    let Some(position) = tab_ids.iter().position(|tab| *tab == id) else {
+        return TabClosePlan::Missing;
+    };
+    if tab_ids.len() == 1 {
+        TabClosePlan::KeepOnlyTab
+    } else {
+        TabClosePlan::Close { position }
+    }
+}
+
+fn begin_tab_close(
+    tab_ids: &[u64],
+    id: u64,
+    status: &mut String,
+    status_error: &mut bool,
+) -> Option<usize> {
+    match tab_close_plan(tab_ids, id) {
+        TabClosePlan::Close { position } => Some(position),
+        TabClosePlan::KeepOnlyTab => {
+            *status = KEEP_ONLY_TAB_STATUS.into();
+            *status_error = true;
+            None
+        }
+        TabClosePlan::Missing => {
+            *status = "That document tab is no longer open".into();
+            *status_error = true;
+            None
+        }
+    }
+}
+
+pub(super) fn tab_close_affordance(tab_count: usize) -> TabCloseAffordance {
+    if tab_count <= 1 {
+        TabCloseAffordance {
+            enabled: false,
+            hover_text: "Keep at least one document open",
+        }
+    } else {
+        TabCloseAffordance {
+            enabled: true,
+            hover_text: "Close document",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct MoveProjectDialog {
     destination_directory: Option<PathBuf>,
@@ -73,6 +135,65 @@ fn safe_project_stem(name: &str) -> String {
 }
 
 impl PrismApp {
+    pub(super) fn close_tab(&mut self, id: u64) {
+        // Decide before settling inline text: refusing a close must not commit or cancel any live
+        // project interaction.
+        let Some(position) =
+            begin_tab_close(&self.tab_ids, id, &mut self.status, &mut self.status_error)
+        else {
+            return;
+        };
+
+        self.settle_inline_text_editor();
+        let dirty = if id == self.active_tab_id {
+            self.workspace.is_dirty()
+        } else {
+            self.inactive_workspaces
+                .get(&id)
+                .is_some_and(Workspace::is_dirty)
+        };
+        if dirty {
+            self.activate_tab(id);
+            self.status = "This legacy document must be converted before its tab can close".into();
+            self.status_error = true;
+            return;
+        }
+
+        let closed_name = if id == self.active_tab_id {
+            self.workspace.document.name.clone()
+        } else {
+            self.inactive_workspaces.get(&id).map_or_else(
+                || "document".into(),
+                |workspace| workspace.document.name.clone(),
+            )
+        };
+        self.tab_ids.remove(position);
+        if id == self.active_tab_id {
+            let replacement_id = self.tab_ids[position.min(self.tab_ids.len() - 1)];
+            if let Some(replacement) = self.inactive_workspaces.remove(&replacement_id) {
+                self.workspace = replacement;
+                self.active_tab_id = replacement_id;
+                // Install the replacement source set before forgetting the old tab so an
+                // overlapping ready provider and its generation survive atomically.
+                self.sync_active_raster_sources();
+            }
+        } else {
+            self.inactive_workspaces.remove(&id);
+        }
+        self.raster_sources.remove_tab(id);
+        self.history.workspace_changed();
+        self.sync_active_raster_sources();
+        self.reset_canvas_cache();
+        self.layer_thumbnails.clear();
+        self.fit_requested = true;
+        self.pan = Vec2::ZERO;
+        self.drag = None;
+        self.smart_guides = SmartGuides::default();
+        self.alignment_reference = None;
+        self.status = format!("Closed {closed_name}");
+        self.status_error = false;
+    }
+
     pub(super) fn open_project_dialog(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Prism project", &["prism", "mica"])
@@ -391,6 +512,46 @@ mod tests {
             "Campaign  Summer 2026"
         );
         assert_eq!(safe_project_stem("..."), "Untitled artwork");
+    }
+
+    #[test]
+    fn lone_tab_close_is_explicit_and_cannot_mutate_its_workspace() {
+        let workspace = Workspace::new(Document::new("Still open", 320, 200), None);
+        let before = workspace.document.clone();
+        let generation = workspace.document_generation();
+        let mut status = "Ready".to_owned();
+        let mut status_error = false;
+
+        assert_eq!(
+            begin_tab_close(&[7], 7, &mut status, &mut status_error),
+            None
+        );
+        assert_eq!(status, KEEP_ONLY_TAB_STATUS);
+        assert!(status_error);
+        assert_eq!(workspace.document, before);
+        assert_eq!(workspace.document_generation(), generation);
+    }
+
+    #[test]
+    fn lone_tab_close_affordance_is_disabled_and_annotated() {
+        let lone = tab_close_affordance(1);
+        assert!(!lone.enabled);
+        assert_eq!(lone.hover_text, "Keep at least one document open");
+
+        let multiple = tab_close_affordance(2);
+        assert!(multiple.enabled);
+        assert_eq!(multiple.hover_text, "Close document");
+    }
+
+    #[test]
+    fn tab_close_plan_rejects_stale_ids_without_changing_the_tab_list() {
+        let tabs = vec![3, 9];
+        assert_eq!(tab_close_plan(&tabs, 4), TabClosePlan::Missing);
+        assert_eq!(tabs, vec![3, 9]);
+        assert_eq!(
+            tab_close_plan(&tabs, 9),
+            TabClosePlan::Close { position: 1 }
+        );
     }
 
     #[test]

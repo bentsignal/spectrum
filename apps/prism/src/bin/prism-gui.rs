@@ -462,52 +462,6 @@ impl PrismApp {
         self.alignment_reference = None;
     }
 
-    fn close_tab(&mut self, id: u64) {
-        self.settle_inline_text_editor();
-        let dirty = if id == self.active_tab_id {
-            self.workspace.is_dirty()
-        } else {
-            self.inactive_workspaces
-                .get(&id)
-                .is_some_and(Workspace::is_dirty)
-        };
-        if dirty {
-            self.activate_tab(id);
-            self.status = "This legacy document must be converted before its tab can close".into();
-            self.status_error = true;
-            return;
-        }
-        if self.tab_ids.len() == 1 {
-            return;
-        }
-        let Some(position) = self.tab_ids.iter().position(|tab| *tab == id) else {
-            return;
-        };
-        self.tab_ids.remove(position);
-        if id == self.active_tab_id {
-            let replacement_id = self.tab_ids[position.min(self.tab_ids.len() - 1)];
-            if let Some(replacement) = self.inactive_workspaces.remove(&replacement_id) {
-                self.workspace = replacement;
-                self.active_tab_id = replacement_id;
-                // Install the replacement source set before forgetting the old tab so an
-                // overlapping ready provider and its generation survive atomically.
-                self.sync_active_raster_sources();
-            }
-        } else {
-            self.inactive_workspaces.remove(&id);
-        }
-        self.raster_sources.remove_tab(id);
-        self.history.workspace_changed();
-        self.sync_active_raster_sources();
-        self.reset_canvas_cache();
-        self.layer_thumbnails.clear();
-        self.fit_requested = true;
-        self.pan = Vec2::ZERO;
-        self.drag = None;
-        self.smart_guides = SmartGuides::default();
-        self.alignment_reference = None;
-    }
-
     fn export(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("PNG image", &["png"])
