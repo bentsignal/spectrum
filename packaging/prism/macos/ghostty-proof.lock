@@ -20,14 +20,21 @@ GHOSTTY_SOURCE_SHA256=3349d25600ffbda281197a18314f7d18791969cffe9474f0ff16a45a9e
 # Ghostty 1.3.x is guaranteed by upstream to build with exactly Zig 0.15.2.
 # These URLs and checksums come from Zig's official download index. Official
 # Zig 0.15.2 predates Xcode 26.4's arm64e-only root TBD label (Ghostty #11991;
-# fixed in Zig 0.16 by Zig PR #31673, without a 0.15 backport). On affected arm64
-# SDKs the build script runs this same pinned x86_64 archive under Rosetta;
-# Ghostty still emits its explicitly targeted universal XCFramework.
+# fixed in Zig 0.16 by Zig PR #31673, without a 0.15 backport). The official
+# archives remain the reproducible toolchains for compatible arm64 SDKs and
+# native x86_64 hosts. On affected arm64 SDKs the script instead requires the
+# already-installed Homebrew zig@0.15 bottle, which carries Homebrew's patch for
+# this SDK incompatibility. That local installation is trusted input rather
+# than a checksum-pinned artifact: the script constrains its formula prefix,
+# resolved keg binary, exact reported version, and poured-bottle receipt, but
+# never installs or builds it.
 ZIG_VERSION=0.15.2
 ZIG_ARM64_URL=https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz
 ZIG_ARM64_SHA256=3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b
 ZIG_X86_64_URL=https://ziglang.org/download/0.15.2/zig-x86_64-macos-0.15.2.tar.xz
 ZIG_X86_64_SHA256=375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f
+HOMEBREW_ZIG_FORMULA=zig@0.15
+HOMEBREW_ZIG_ARM64_PATH=/opt/homebrew/opt/zig@0.15/bin/zig
 
 # Upstream Ghostty 1.3.1 builds its macOS library for Ventura or newer.
 MINIMUM_MACOS_VERSION=13.0

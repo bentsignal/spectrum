@@ -17,7 +17,9 @@ License. The exact official source archive checksum, annotated tag object,
 peeled source revision, toolchain, and generated artifact contract are recorded
 in `packaging/prism/macos/ghostty-proof.lock`. The proof bundle includes
 Ghostty's license as `Contents/Resources/GHOSTTY-LICENSE`. Ghostty is not linked
-into the production Prism application by this proof.
+into the production Prism application by this proof. Compatible hosts use the
+checksummed official Zig 0.15.2 archives; affected arm64 SDKs require an
+already-installed Homebrew `zig@0.15` bottle carrying Homebrew's SDK patch.
 
 Packaged builds include this notice. Anyone distributing the suite should review
 the LGPL requirements for their distribution model and retain a relinkable or

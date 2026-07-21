@@ -165,6 +165,8 @@ ghostty_revision="$(lock_value GHOSTTY_REVISION)"
 ghostty_url="$(lock_value GHOSTTY_SOURCE_URL)"
 ghostty_sha="$(lock_value GHOSTTY_SOURCE_SHA256)"
 zig_version="$(lock_value ZIG_VERSION)"
+homebrew_zig_formula="$(lock_value HOMEBREW_ZIG_FORMULA)"
+homebrew_zig_arm64_path="$(lock_value HOMEBREW_ZIG_ARM64_PATH)"
 minimum_macos="$(lock_value MINIMUM_MACOS_VERSION)"
 xcframework_relative="$(lock_value GHOSTTY_XCFRAMEWORK_PATH)"
 resources_relative="$(lock_value GHOSTTY_RESOURCES_PATH)"
@@ -179,6 +181,10 @@ resource_sentinel="$(lock_value GHOSTTY_RESOURCE_SENTINEL)"
 [[ "$ghostty_tag_object" != "$ghostty_revision" ]] \
   || die "Ghostty annotated tag object and peeled source revision must be distinct"
 [[ "$zig_version" == "0.15.2" ]] || die "this proof expects upstream's exact Zig 0.15.2 toolchain"
+[[ "$homebrew_zig_formula" == "zig@0.15" ]] \
+  || die "this proof expects Homebrew's zig@0.15 patched toolchain formula"
+[[ "$homebrew_zig_arm64_path" == "/opt/homebrew/opt/zig@0.15/bin/zig" ]] \
+  || die "unexpected Homebrew Zig path in lock file: $homebrew_zig_arm64_path"
 [[ "$minimum_macos" == "13.0" ]] || die "this proof expects Ghostty's macOS 13.0 deployment target"
 for relative_path in "$xcframework_relative" "$resources_relative" "$resource_sentinel"; do
   case "$relative_path" in
@@ -187,7 +193,8 @@ for relative_path in "$xcframework_relative" "$resources_relative" "$resource_se
 done
 
 machine_arch="$(uname -m)"
-zig_via_rosetta=false
+zig_source_kind="official"
+zig_binary=""
 case "$machine_arch" in
   arm64)
     swift_arch="arm64"
@@ -199,16 +206,38 @@ case "$machine_arch" in
       zig_url="$(lock_value ZIG_ARM64_URL)"
       zig_sha="$(lock_value ZIG_ARM64_SHA256)"
     else
-      # Zig 0.15.2 predates Xcode 26.4's arm64e-only root TBD labels. Its
-      # x86_64 build runner remains compatible, and Ghostty explicitly creates
-      # the arm64/x86_64 macOS and arm64 iOS XCFramework slices itself.
-      [[ -x /usr/bin/arch ]] || die "Rosetta compatibility requires /usr/bin/arch"
-      /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1 \
-        || die "the active SDK requires Zig's x86_64 fallback; install Rosetta and retry"
-      zig_arch="x86_64"
-      zig_url="$(lock_value ZIG_X86_64_URL)"
-      zig_sha="$(lock_value ZIG_X86_64_SHA256)"
-      zig_via_rosetta=true
+      # Official Zig 0.15.2 cannot parse the arm64e-only root TBD labels in
+      # current SDKs. Ghostty #11991 recommends Homebrew's patched 0.15.2
+      # bottle. Do not fall back to the official x86_64 binary under Rosetta:
+      # its libc++ build fails under Xcode 27.
+      zig_arch="aarch64"
+      zig_source_kind="homebrew"
+      zig_binary="$homebrew_zig_arm64_path"
+      homebrew_zig_install="brew install --force-bottle $homebrew_zig_formula"
+      command -v brew >/dev/null 2>&1 \
+        || die "the active SDK requires Homebrew's patched Zig $zig_version; install it with: $homebrew_zig_install"
+      command -v realpath >/dev/null 2>&1 \
+        || die "realpath is required to validate the Homebrew Zig bottle"
+      actual_homebrew_prefix="$(brew --prefix "$homebrew_zig_formula" 2>/dev/null || true)"
+      expected_homebrew_prefix="${homebrew_zig_arm64_path%/bin/zig}"
+      [[ "$actual_homebrew_prefix" == "$expected_homebrew_prefix" ]] \
+        || die "the active SDK requires $homebrew_zig_formula at $expected_homebrew_prefix; install it with: $homebrew_zig_install"
+      [[ -x "$zig_binary" ]] \
+        || die "the active SDK requires Homebrew's patched Zig $zig_version; install it with: $homebrew_zig_install"
+      resolved_homebrew_prefix="$(realpath "$actual_homebrew_prefix")"
+      resolved_zig_binary="$(realpath "$zig_binary")"
+      expected_resolved_zig_binary="$(realpath "$resolved_homebrew_prefix/bin/zig")"
+      [[ "$resolved_zig_binary" == "$expected_resolved_zig_binary" ]] \
+        || die "Homebrew Zig resolves outside the installed $homebrew_zig_formula keg; reinstall it with: $homebrew_zig_install"
+      homebrew_receipt="$resolved_homebrew_prefix/INSTALL_RECEIPT.json"
+      [[ -f "$homebrew_receipt" ]] \
+        || die "Homebrew Zig has no installation receipt; reinstall the bottle with: $homebrew_zig_install"
+      poured_from_bottle="$(plutil -extract poured_from_bottle raw -o - "$homebrew_receipt" 2>/dev/null || true)"
+      [[ "$poured_from_bottle" == "true" ]] \
+        || die "Homebrew Zig was not poured from a bottle; reinstall it with: $homebrew_zig_install"
+      actual_zig_version="$("$zig_binary" version)"
+      [[ "$actual_zig_version" == "$zig_version" ]] \
+        || die "wrong Homebrew Zig version at $zig_binary (expected $zig_version, got $actual_zig_version); install the exact bottle with: $homebrew_zig_install"
     fi
     ;;
   x86_64)
@@ -224,26 +253,27 @@ mkdir -p "$downloads_dir" "$sources_dir" "$toolchains_dir" \
   "$install_root" "$scratch_root" "$zig_global_cache" "$dist_root"
 
 ghostty_archive="$downloads_dir/ghostty-$ghostty_version.tar.gz"
-zig_archive="$downloads_dir/zig-$zig_arch-macos-$zig_version.tar.xz"
 download_verified "$ghostty_url" "$ghostty_sha" "$ghostty_archive"
-download_verified "$zig_url" "$zig_sha" "$zig_archive"
 
 ghostty_source="$sources_dir/ghostty-$ghostty_version"
-zig_source="$toolchains_dir/zig-$zig_arch-macos-$zig_version"
 extract_once "$ghostty_archive" "$ghostty_sha" "ghostty-$ghostty_version" \
   "$ghostty_source" gz
-extract_once "$zig_archive" "$zig_sha" "zig-$zig_arch-macos-$zig_version" \
-  "$zig_source" xz
-
-zig_binary="$zig_source/zig"
-[[ -x "$zig_binary" ]] || die "verified Zig archive did not provide: $zig_binary"
-zig_command=("$zig_binary")
-if [[ "$zig_via_rosetta" == true ]]; then
-  zig_command=(/usr/bin/arch -x86_64 "$zig_binary")
+if [[ "$zig_source_kind" == "official" ]]; then
+  zig_archive="$downloads_dir/zig-$zig_arch-macos-$zig_version.tar.xz"
+  download_verified "$zig_url" "$zig_sha" "$zig_archive"
+  zig_source="$toolchains_dir/zig-$zig_arch-macos-$zig_version"
+  extract_once "$zig_archive" "$zig_sha" "zig-$zig_arch-macos-$zig_version" \
+    "$zig_source" xz
+  zig_binary="$zig_source/zig"
+  [[ -x "$zig_binary" ]] || die "verified Zig archive did not provide: $zig_binary"
 fi
-actual_zig_version="$("${zig_command[@]}" version)"
-[[ "$actual_zig_version" == "$zig_version" ]] \
-  || die "wrong Zig version after extraction (expected $zig_version, got $actual_zig_version)"
+
+zig_command=("$zig_binary")
+if [[ "$zig_source_kind" == "official" ]]; then
+  actual_zig_version="$("${zig_command[@]}" version)"
+  [[ "$actual_zig_version" == "$zig_version" ]] \
+    || die "wrong Zig version after extraction (expected $zig_version, got $actual_zig_version)"
+fi
 
 ghostty_prefix="$install_root/ghostty-$ghostty_version"
 mkdir -p "$ghostty_prefix"
@@ -313,7 +343,7 @@ echo "  annotated tag object: $ghostty_tag_object"
 echo "  peeled source commit: $ghostty_revision"
 echo "  verified release archive: $ghostty_sha"
 echo "Zig: $zig_version ($zig_arch toolchain on $machine_arch host)"
-if [[ "$zig_via_rosetta" == true ]]; then
-  echo "  compatibility mode: official x86_64 archive under Rosetta"
+if [[ "$zig_source_kind" == "homebrew" ]]; then
+  echo "  compatibility mode: Homebrew patched $homebrew_zig_formula bottle at $zig_binary"
 fi
 echo "Run manually when ready: open '$bundle'"

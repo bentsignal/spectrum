@@ -29,9 +29,9 @@ is the reviewed contract. It pins:
   `22efb0be2bbea73e5339f5426fa3b20edabcaa11`, peeled source commit
   `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`, and the SHA-256 of Ghostty's
   official source release;
-- official Zig 0.15.2 macOS archives and SHA-256 values for arm64 and x86_64,
-  including the conditional x86_64-on-arm64 compatibility route described
-  below;
+- official Zig 0.15.2 macOS archives and SHA-256 values for compatible arm64
+  SDKs and native x86_64 hosts, plus the exact Homebrew formula and path used
+  by the affected-arm64-SDK compatibility route described below;
 - macOS 13.0 as the minimum deployment target; and
 - the expected `GhosttyKit.xcframework`, resources directory, and terminfo
   sentinel paths.
@@ -52,11 +52,18 @@ and fixed in Zig 0.16 (Zig PR #31673), without a Zig 0.15 backport.
 
 The proof remains pinned to Ghostty's required Zig 0.15.2. On an arm64 Mac, the
 script inspects only the root target block of the selected SDK's
-`libSystem.tbd`. If that block lacks `arm64-macos`, it runs the separately
-checksummed official x86_64 Zig 0.15.2 archive under Rosetta. This changes only
-the host build runner: Ghostty's build definition still explicitly produces
-the universal arm64/x86_64 macOS library and arm64 iOS slices. The fallback
-does not install Zig or any Homebrew package globally.
+`libSystem.tbd`. If that block lacks `arm64-macos`, it requires Homebrew's
+patched `zig@0.15` bottle at `/opt/homebrew/opt/zig@0.15/bin/zig` and verifies
+that it reports exactly 0.15.2. This is the route recommended in Ghostty
+#11991. The official x86_64 archive is deliberately not used under Rosetta on
+Xcode 27 because that combination fails while building libc++. The script only
+consumes an already-installed bottle: it does not install Homebrew software or
+build Zig from source. Compatible arm64 SDKs and native x86_64 hosts continue
+to use the checksummed official archives. Unlike those archives, the local
+Homebrew bottle is trusted input rather than a checksum-pinned artifact; the
+script verifies the formula prefix, resolved keg binary, exact reported Zig
+version, and `poured_from_bottle` installation receipt before downloading
+Ghostty.
 
 ## Build
 
@@ -67,8 +74,9 @@ Requirements:
   Metal Toolchain component installed. Before any download, the script runs the
   non-compiling `xcrun --sdk macosx metal -v` availability probe; if it fails,
   install the component with `xcodebuild -downloadComponent MetalToolchain`;
-- Rosetta when building on arm64 against an SDK whose root `libSystem.tbd`
-  advertises `arm64e-macos` but not `arm64-macos`;
+- Homebrew's exact `zig@0.15` bottle when building on arm64 against an SDK whose
+  root `libSystem.tbd` advertises `arm64e-macos` but not `arm64-macos`; install
+  it separately with `brew install --force-bottle zig@0.15`;
 - `gettext`/`msgfmt`; and
 - network access to the HTTPS URLs in the lock file.
 
@@ -78,11 +86,12 @@ From the repository root:
 bash scripts/build-prism-ghostty-macos.sh
 ```
 
-The script is noninteractive. It verifies both downloads before extraction,
-uses Ghostty's required Zig toolchain (with the narrow Rosetta fallback above),
-limits the Ghostty build to two jobs, stages a SwiftPM build against the
-generated XCFramework, copies Ghostty's resources and license into the proof
-app, and applies an ad-hoc local signature. It does not launch the app.
+The script is noninteractive. It verifies every downloaded archive before
+extraction, uses Ghostty's required Zig toolchain (with the narrow
+Homebrew-patched route above), limits the Ghostty build to two jobs, stages a
+SwiftPM build against the generated XCFramework, copies Ghostty's resources and
+license into the proof app, and applies an ad-hoc local signature. It does not
+launch the app.
 
 Expected output:
 
