@@ -12,7 +12,7 @@ install -m 0755 "$repo_root/target/release/lumen-gui" "$bundle/Contents/MacOS/lu
 install -m 0755 "$repo_root/target/release/lumen" "$bundle/Contents/MacOS/lumen"
 install -m 0644 "$repo_root/packaging/macos/Info.plist" "$bundle/Contents/Info.plist"
 "$repo_root/scripts/package-macos-icon.sh" \
-  "$repo_root/assets/branding/lumen-violet-final-clean.png" \
+  "$repo_root/assets/branding/lumen-app-icon.png" \
   "$bundle/Contents/Resources/Lumen.icns"
 install -m 0644 "$repo_root/LICENSE" "$bundle/Contents/Resources/LICENSE"
 install -m 0644 "$repo_root/THIRD_PARTY.md" "$bundle/Contents/Resources/THIRD_PARTY.md"
