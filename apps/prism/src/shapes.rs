@@ -34,7 +34,16 @@ pub fn rasterize_shape_asset(
         MAX_CANVAS_DIMENSION,
     )?;
     let scale = constrained[0].min(constrained[1]);
-    let image = render_shape(layer, [scale; 2])?;
+    let mut image = render_shape(layer, [scale; 2])?;
+    let (width, height) = image.dimensions();
+    crate::paths::apply_vector_mask_to_image(
+        &mut image,
+        layer.vector_mask.as_ref(),
+        width,
+        height,
+        0,
+        0,
+    )?;
     let directory = std::env::temp_dir().join("spectrum-prism-generated");
     fs::create_dir_all(&directory)
         .with_context(|| format!("could not create {}", directory.display()))?;
@@ -75,10 +84,12 @@ pub fn interactive_shape_scale(layer: &Layer, zoom: f32) -> Result<[u32; 2]> {
 }
 
 pub fn shape_dimensions(layer: &Layer) -> Option<(u32, u32)> {
-    match layer.kind {
+    match &layer.kind {
         LayerKind::Rectangle { width, height, .. } | LayerKind::Ellipse { width, height, .. } => {
-            Some((width, height))
+            Some((*width, *height))
         }
+        LayerKind::Path { .. } => crate::paths::path_source_bounds(layer)
+            .and_then(|bounds| bounds.raster_dimensions([1.0; 2]).ok()),
         _ => None,
     }
 }
@@ -98,6 +109,9 @@ pub(crate) fn constrained_shape_scale(
 }
 
 pub(crate) fn render_shape(layer: &Layer, scale: [f32; 2]) -> Result<RgbaImage> {
+    if matches!(layer.kind, LayerKind::Path { .. }) {
+        return crate::paths::render_path(layer, scale);
+    }
     let sampler = ShapeSampler::new(layer, scale)?;
     let (width, height) = sampler.dimensions();
     let mut output = RgbaImage::new(width, height);

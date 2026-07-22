@@ -138,11 +138,12 @@ fn transfer_rejects_foreign_ids_versions_and_invalid_values_atomically() {
         9,
     )
     .unwrap();
-    transfer.version += 1;
+    let compatible_version = transfer.version;
+    transfer.version = crate::LAYER_TRANSFER_VERSION + 1;
     let encoded = serde_json::to_string(&transfer).unwrap();
     assert!(LayerTransfer::from_json(&encoded).is_err());
 
-    transfer.version -= 1;
+    transfer.version = compatible_version;
     transfer.layer.id = 99;
     assert!(transfer.to_json().is_err());
     transfer.layer.id = 0;
@@ -232,6 +233,44 @@ fn unmasked_transfer_envelopes_remain_legacy_readable() {
         drop_shadow: Some(DropShadow::default()),
     };
     assert!(LayerTransfer::from_json(&transfer.to_json().unwrap()).is_ok());
+}
+
+#[test]
+fn version_four_transfers_preserve_paths_and_reusable_vector_masks() {
+    let path = crate::PathGeometry::new(
+        100,
+        80,
+        true,
+        crate::PathFillRule::EvenOdd,
+        vec![
+            crate::PathAnchor::corner(50.0, 0.0),
+            crate::PathAnchor::corner(100.0, 80.0),
+            crate::PathAnchor::corner(0.0, 80.0),
+        ],
+    )
+    .unwrap();
+    let mut source = Document::new("Path transfer", 200, 160);
+    source.layers.push(Layer {
+        id: 1,
+        vector_mask: Some(crate::VectorMask::new(path.clone(), true).unwrap()),
+        kind: LayerKind::Path {
+            geometry: path.clone(),
+            color: [40, 120, 220, 200],
+        },
+        ..Layer::default()
+    });
+    let transfer = LayerTransfer::from_document(&source, 1).unwrap();
+    assert_eq!(transfer.version, 4);
+    let decoded = LayerTransfer::from_json(&transfer.to_json().unwrap()).unwrap();
+    let LayerKind::Path { geometry, .. } = &decoded.layer.kind else {
+        panic!("v4 transfer lost path kind")
+    };
+    assert_eq!(geometry, &path);
+    assert_eq!(decoded.layer.vector_mask.as_ref().unwrap().path, path);
+
+    let mut forged_legacy = decoded;
+    forged_legacy.version = 3;
+    assert!(forged_legacy.to_json().is_err());
 }
 
 #[test]

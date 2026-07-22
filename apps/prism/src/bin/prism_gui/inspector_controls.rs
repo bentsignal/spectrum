@@ -47,6 +47,7 @@ pub(super) fn layer_kind_label(kind: &LayerKind) -> &'static str {
         LayerKind::Text { .. } => "TEXT",
         LayerKind::Rectangle { .. } => "RECTANGLE",
         LayerKind::Ellipse { .. } => "ELLIPSE",
+        LayerKind::Path { .. } => "PATH",
     }
 }
 

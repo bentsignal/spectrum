@@ -2887,6 +2887,7 @@ dependencies = [
  "spectrum-revisions",
  "spectrum-terminal",
  "tiff",
+ "tiny-skia",
  "ttf-parser 0.21.1",
  "vt100",
  "windows-sys 0.61.2",

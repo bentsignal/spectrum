@@ -359,7 +359,10 @@ fn render_document_region_scaled_impl(
         scaled_layer.transform.scale_y = source_scales.outer_transform[1];
         scaled_layer.style = layer.style.scaled(scale);
         let mut coverage = RgbaImage::new(region.width, region.height);
-        if bound_fallback_layers
+        // Paths always use the same global-coordinate tiled sampler, including
+        // complete exports. Rasterizing a full intermediate here would put AA
+        // through a second transform and could differ at viewport tile edges.
+        if (bound_fallback_layers || matches!(layer.kind, LayerKind::Path { .. }))
             && crate::render_region::composite_bounded_source_region(
                 &mut canvas,
                 &mut coverage,
@@ -407,6 +410,12 @@ fn render_document_region_scaled_impl(
             stats.fallback_peak_bytes = stats
                 .fallback_peak_bytes
                 .max(fallback_allocation.estimated_peak_bytes);
+        }
+        if let Some(bounds) = crate::paths::path_source_bounds(layer) {
+            scaled_layer.transform.x +=
+                bounds.origin[0] * shape_scale[0] * scaled_layer.transform.scale_x;
+            scaled_layer.transform.y +=
+                bounds.origin[1] * shape_scale[1] * scaled_layer.transform.scale_y;
         }
         let source = if matches!(render_layer.kind, LayerKind::Text { .. }) {
             let LayerKind::Text {
@@ -538,11 +547,18 @@ fn render_layer_preview_scaled_with_font_limits(
         font_asset,
         decode_max_alloc,
     )?;
-    Ok(render_image(
-        image,
-        layer.adjustments.clone(),
-        RenderOptions::default(),
-    ))
+    let mut image =
+        render_image(image, layer.adjustments.clone(), RenderOptions::default()).to_rgba8();
+    let (width, height) = image.dimensions();
+    crate::paths::apply_vector_mask_to_image(
+        &mut image,
+        layer.vector_mask.as_ref(),
+        width,
+        height,
+        0,
+        0,
+    )?;
+    Ok(DynamicImage::ImageRgba8(image))
 }
 
 /// Decodes or rasterizes a layer without development adjustments. Keeping this
@@ -599,7 +615,7 @@ fn render_layer_base_scaled_with_font_limits(
         } => DynamicImage::ImageRgba8(render_text(
             text, *font_size, *color, typography, font_asset,
         )?),
-        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => {
+        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. } => {
             DynamicImage::ImageRgba8(render_shape(layer, shape_scale)?)
         }
     };

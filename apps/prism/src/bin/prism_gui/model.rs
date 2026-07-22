@@ -8,6 +8,7 @@ pub(super) enum Tool {
     Crop,
     Text,
     Shape,
+    Pen,
     Mask,
     Marquee,
     MagicWand,
@@ -20,11 +21,12 @@ pub(super) enum ToolActivation {
 }
 
 impl Tool {
-    pub(super) const ALL: [(Self, &'static str, &'static str); 7] = [
+    pub(super) const ALL: [(Self, &'static str, &'static str); 8] = [
         (Self::Move, "V", "Select / move"),
         (Self::Crop, "C", "Crop canvas"),
         (Self::Text, "T", "Text"),
         (Self::Shape, "S", "Shape"),
+        (Self::Pen, "P", "Pen path"),
         (Self::Mask, "K", "Layer mask"),
         (Self::Marquee, "M", "Rectangular marquee"),
         (Self::MagicWand, "W", "Magic wand"),
@@ -37,6 +39,7 @@ impl Tool {
             Self::Crop => "Crop canvas",
             Self::Text => "Add text",
             Self::Shape => "Shape",
+            Self::Pen => "Pen",
             Self::Mask => "Draw mask",
             Self::Marquee => "Rectangular marquee",
             Self::MagicWand => "Magic wand",
@@ -60,6 +63,9 @@ impl Tool {
             Self::Crop => "Draw the new canvas boundary.",
             Self::Text => "Click for point text, or drag a width for a wrapped paragraph.",
             Self::Shape => "Choose a rectangle, ellipse, or another shape to draw.",
+            Self::Pen => {
+                "Click anchors, drag cubic handles, click the first anchor to close, or press Enter for an open path."
+            }
             Self::Mask => "Draw the visible region of the focused element.",
             Self::Marquee => "Drag a persistent document-pixel selection, then clear or fill it.",
             Self::MagicWand => "Click a color to select a connected or canvas-wide range.",
@@ -147,6 +153,8 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::SetTextTypography { id, .. }
         | Command::UpdateRectangle { id, .. }
         | Command::UpdateEllipse { id, .. }
+        | Command::ReplacePath { id, .. }
+        | Command::SetVectorMask { id, .. }
         | Command::SetShapeStroke { id, .. }
         | Command::SetShapeFill { id, .. }
         | Command::SetLayerStyle { id, .. }
@@ -157,6 +165,7 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::AddText { .. }
         | Command::AddRectangle { .. }
         | Command::AddEllipse { .. }
+        | Command::AddPath { .. }
         | Command::FillSelection { .. }
         | Command::InsertLayer { .. }
         | Command::DuplicateLayer { .. }

@@ -128,6 +128,16 @@ fn resolved_source_geometry(
             *width as f32,
             *height as f32,
         ))),
+        LayerKind::Path { geometry, .. } => {
+            prism_core::path_source_bounds(layer).map(|bounds| LayerSourceGeometry {
+                size: Vec2::new(geometry.width() as f32, geometry.height() as f32),
+                visual_bounds: Rect::from_min_size(
+                    Pos2::new(bounds.origin[0], bounds.origin[1]),
+                    Vec2::new(bounds.size[0], bounds.size[1]),
+                ),
+                paragraph_bounds: None,
+            })
+        }
     })
 }
 

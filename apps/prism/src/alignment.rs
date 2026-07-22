@@ -274,5 +274,10 @@ fn layer_source_bounds(
         LayerKind::Rectangle { width, height, .. } | LayerKind::Ellipse { width, height, .. } => {
             Ok(([0.0, 0.0], [*width as f32, *height as f32]))
         }
+        LayerKind::Path { .. } => {
+            let bounds = crate::paths::path_source_bounds(layer)
+                .context("path layer is missing source bounds")?;
+            Ok((bounds.origin, bounds.size))
+        }
     }
 }

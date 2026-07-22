@@ -43,6 +43,9 @@ impl PreparedSnapshot {
                 .layers
                 .iter()
                 .any(|layer| layer.pixel_mask.is_some());
+        let path_schema = document.layers.iter().any(|layer| {
+            layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. })
+        });
         let selection_schema =
             document.version >= SELECTION_SNAPSHOT_VERSION || document.selection.is_some();
         let effects_schema = document.version >= LAYER_EFFECTS_SNAPSHOT_VERSION
@@ -50,7 +53,9 @@ impl PreparedSnapshot {
                 .layers
                 .iter()
                 .any(|layer| !layer.style.is_empty() || layer.shape_fill.is_some());
-        let snapshot_version = if color_selection_schema {
+        let snapshot_version = if path_schema {
+            PATH_SNAPSHOT_VERSION
+        } else if color_selection_schema {
             COLOR_SELECTION_SNAPSHOT_VERSION
         } else if selection_schema {
             SELECTION_SNAPSHOT_VERSION
@@ -112,14 +117,16 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
         (
             LAYER_EFFECTS_SNAPSHOT_VERSION
             | SELECTION_SNAPSHOT_VERSION
-            | COLOR_SELECTION_SNAPSHOT_VERSION,
+            | COLOR_SELECTION_SNAPSHOT_VERSION
+            | PATH_SNAPSHOT_VERSION,
             true,
             false,
         ) => bounded_snapshot_bytes(&payload.bytes),
         (
             LAYER_EFFECTS_SNAPSHOT_VERSION
             | SELECTION_SNAPSHOT_VERSION
-            | COLOR_SELECTION_SNAPSHOT_VERSION,
+            | COLOR_SELECTION_SNAPSHOT_VERSION
+            | PATH_SNAPSHOT_VERSION,
             false,
             true,
         ) => inflate_snapshot(&payload.bytes),
@@ -150,5 +157,33 @@ mod tests {
             Vec::new(),
         );
         assert!(decode_snapshot(&unknown_capability).is_err());
+    }
+
+    #[test]
+    fn v5_snapshot_remains_readable_with_default_empty_path_fields() {
+        let mut document = Document::new("V5 compatibility", 32, 24);
+        document.version = COLOR_SELECTION_SNAPSHOT_VERSION;
+        document.layers.push(crate::Layer {
+            id: 1,
+            kind: LayerKind::Rectangle {
+                width: 8,
+                height: 6,
+                color: [10, 20, 30, 255],
+                corner_radius: 0.0,
+            },
+            ..crate::Layer::default()
+        });
+        let payload = Payload::new(
+            Encoding::new(SNAPSHOT_FAMILY, COLOR_SELECTION_SNAPSHOT_VERSION),
+            serde_json::to_vec(&document).unwrap(),
+        );
+        let decoded: Document =
+            serde_json::from_slice(&decode_snapshot(&payload).unwrap()).unwrap();
+        assert_eq!(decoded.version, COLOR_SELECTION_SNAPSHOT_VERSION);
+        assert!(decoded.layers[0].vector_mask.is_none());
+        assert!(matches!(
+            decoded.layers[0].kind,
+            LayerKind::Rectangle { .. }
+        ));
     }
 }

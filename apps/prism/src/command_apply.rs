@@ -244,6 +244,35 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             document.selected = Some(id);
             Ok(output("add_ellipse", "added ellipse layer", vec![id]))
         }
+        Command::AddPath {
+            name,
+            geometry,
+            color,
+            x,
+            y,
+        } => {
+            require_finite("x", x)?;
+            require_finite("y", y)?;
+            let id = document.allocate_id();
+            document.layers.push(Layer {
+                id,
+                name: name.unwrap_or_else(|| "Path".into()),
+                transform: Transform {
+                    x,
+                    y,
+                    ..Default::default()
+                },
+                stroke: ShapeStroke {
+                    enabled: true,
+                    width: 2.0,
+                    color,
+                },
+                kind: LayerKind::Path { geometry, color },
+                ..Default::default()
+            });
+            document.selected = Some(id);
+            Ok(output("add_path", "added path layer", vec![id]))
+        }
         Command::UpdateText {
             id,
             text,
@@ -371,6 +400,27 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             *layer_height = height;
             *layer_color = color;
             Ok(output("update_ellipse", "updated ellipse layer", vec![id]))
+        }
+        Command::ReplacePath { id, geometry } => {
+            if document.layer(id)?.pixel_mask.is_some() {
+                bail!("path layers cannot carry pixel masks");
+            }
+            let layer = document.layer_mut(id)?;
+            if layer.locked {
+                bail!("layer {id} is locked");
+            }
+            let LayerKind::Path {
+                geometry: layer_geometry,
+                ..
+            } = &mut layer.kind
+            else {
+                bail!("layer {id} is not a path layer");
+            };
+            if !geometry.closed() {
+                layer.shape_fill = None;
+            }
+            *layer_geometry = geometry;
+            Ok(output("replace_path", "updated path geometry", vec![id]))
         }
         Command::RemoveLayer { id } => {
             let index = document
@@ -625,12 +675,23 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             document.layer_mut(id)?.mask = mask.sanitized();
             Ok(output("set_mask", "updated layer mask", vec![id]))
         }
+        Command::SetVectorMask { id, mask } => {
+            if let Some(mask) = &mask {
+                mask.validate()?;
+            }
+            let layer = document.layer_mut(id)?;
+            if layer.locked {
+                bail!("layer {id} is locked");
+            }
+            layer.vector_mask = mask;
+            Ok(output("set_vector_mask", "updated vector mask", vec![id]))
+        }
         Command::SetShapeStroke { id, stroke } => {
             validate_shape_stroke(stroke)?;
             let layer = document.layer_mut(id)?;
             if !matches!(
                 layer.kind,
-                LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+                LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. }
             ) {
                 bail!("layer {id} is not a shape layer");
             }
@@ -656,9 +717,14 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             }
             if !matches!(
                 layer.kind,
-                LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+                LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. }
             ) {
                 bail!("layer {id} is not a shape layer");
+            }
+            if matches!(&layer.kind, LayerKind::Path { geometry, .. } if !geometry.closed())
+                && fill.is_some()
+            {
+                bail!("open path layers cannot have a shape fill");
             }
             layer.shape_fill = fill.map(ShapeFill::sanitized);
             Ok(output("set_shape_fill", "updated shape fill", vec![id]))
@@ -668,8 +734,12 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             if scale <= 0.0 {
                 bail!("rasterization scale must be positive");
             }
+            let source_layer = document.layer(id)?;
             let (shape_width, shape_height) =
-                shape_dimensions(document.layer(id)?).context("layer is not a parametric shape")?;
+                shape_dimensions(source_layer).context("layer is not a parametric shape")?;
+            let path_origin = crate::paths::path_source_bounds(source_layer)
+                .map(|bounds| bounds.origin)
+                .unwrap_or([0.0; 2]);
             let path = fs::canonicalize(&path)
                 .with_context(|| format!("could not open rasterized shape {}", path.display()))?;
             let (width, height) = image::image_dimensions(&path).with_context(|| {
@@ -687,11 +757,14 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
                 path,
                 original_path: None,
             };
+            layer.transform.x += path_origin[0] * layer.transform.scale_x;
+            layer.transform.y += path_origin[1] * layer.transform.scale_y;
             layer.transform.scale_x /= scale;
             layer.transform.scale_y /= scale;
             layer.stroke = ShapeStroke::default();
             layer.shape_fill = None;
             layer.pixel_mask = None;
+            layer.vector_mask = None;
             Ok(output(
                 "rasterize_shape",
                 "rasterized shape layer",

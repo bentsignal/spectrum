@@ -9,13 +9,15 @@ pub(super) const LEGACY_SNAPSHOT_VERSION: u32 = 1;
 pub(super) const COMPRESSED_SNAPSHOT_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_SNAPSHOT_VERSION: u32 = 3;
 pub(super) const SELECTION_SNAPSHOT_VERSION: u32 = 4;
-pub(super) const COLOR_SELECTION_SNAPSHOT_VERSION: u32 = crate::PRISM_VERSION;
+pub(super) const COLOR_SELECTION_SNAPSHOT_VERSION: u32 = 5;
+pub(super) const PATH_SNAPSHOT_VERSION: u32 = 6;
 pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
 pub(super) const SELECTION_OPERATIONS_VERSION: u32 = 4;
 pub(super) const CROP_TO_SELECTION_OPERATIONS_VERSION: u32 = 5;
-pub(super) const COLOR_SELECTION_OPERATIONS_VERSION: u32 = crate::PRISM_COMMAND_OPERATIONS_VERSION;
+pub(super) const COLOR_SELECTION_OPERATIONS_VERSION: u32 = 6;
+pub(super) const PATH_OPERATIONS_VERSION: u32 = 7;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -40,19 +42,36 @@ impl Compatibility for PrismCompatibility {
                     encoding.required_capabilities.is_empty()
                         || encoding.required_capabilities == [DEFLATE_CAPABILITY]
                 }
+                PATH_SNAPSHOT_VERSION => {
+                    encoding.required_capabilities.is_empty()
+                        || encoding.required_capabilities == [DEFLATE_CAPABILITY]
+                }
                 _ => false,
             }
     }
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=COLOR_SELECTION_OPERATIONS_VERSION)
-                .contains(&encoding.version)
+            && (LEGACY_OPERATIONS_VERSION..=PATH_OPERATIONS_VERSION).contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands.iter().any(|command| {
+        matches!(
+            command,
+            Command::AddPath { .. } | Command::ReplacePath { .. } | Command::SetVectorMask { .. }
+        ) || matches!(
+            command,
+            Command::InsertLayer { transfer, .. }
+                if transfer.version >= crate::LAYER_TRANSFER_VERSION
+                    || transfer.layer.vector_mask.is_some()
+                    || matches!(transfer.layer.kind, crate::LayerKind::Path { .. })
+        )
+    }) {
+        return PATH_OPERATIONS_VERSION;
+    }
     if commands.iter().any(|command| {
         matches!(command, Command::MagicWandSelection { .. })
             || matches!(command, Command::MagicWandSnapshot { .. })
@@ -81,8 +100,7 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
         ) || matches!(
             command,
             Command::InsertLayer { transfer, .. }
-                if transfer.version >= crate::LAYER_TRANSFER_VERSION
-                    || !transfer.layer.style.is_empty()
+                if !transfer.layer.style.is_empty()
                     || transfer.layer.shape_fill.is_some()
         )
     }) {
@@ -101,14 +119,16 @@ pub(super) fn downgrade_compatible_transfers(commands: &mut [Command]) {
     for command in commands {
         if let Command::InsertLayer { transfer, .. } = command
             && transfer.version == crate::LAYER_TRANSFER_VERSION
-            && transfer.layer.pixel_mask.is_none()
+            && transfer.layer.vector_mask.is_none()
+            && !matches!(transfer.layer.kind, crate::LayerKind::Path { .. })
         {
-            transfer.version =
-                if transfer.layer.style.is_empty() && transfer.layer.shape_fill.is_none() {
-                    1
-                } else {
-                    2
-                };
+            transfer.version = if transfer.layer.pixel_mask.is_some() {
+                3
+            } else if transfer.layer.style.is_empty() && transfer.layer.shape_fill.is_none() {
+                1
+            } else {
+                2
+            };
         }
     }
 }
@@ -244,18 +264,55 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_advertises_operation_versions_one_through_six() {
-        for version in LEGACY_OPERATIONS_VERSION..=COLOR_SELECTION_OPERATIONS_VERSION {
+    fn compatibility_advertises_operation_versions_one_through_seven() {
+        for version in LEGACY_OPERATIONS_VERSION..=PATH_OPERATIONS_VERSION {
             assert!(
                 PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
-        for version in [0, COLOR_SELECTION_OPERATIONS_VERSION + 1] {
+        for version in [0, PATH_OPERATIONS_VERSION + 1] {
             assert!(
                 !PrismCompatibility
                     .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
+    }
+
+    #[test]
+    fn path_commands_require_v7_while_color_selection_stays_v6() {
+        let geometry = crate::PathGeometry::new(
+            10,
+            10,
+            false,
+            crate::PathFillRule::EvenOdd,
+            vec![
+                crate::PathAnchor::corner(0.0, 0.0),
+                crate::PathAnchor::corner(10.0, 10.0),
+            ],
+        )
+        .unwrap();
+        let path = [Command::AddPath {
+            name: None,
+            geometry,
+            color: [255; 4],
+            x: 0.0,
+            y: 0.0,
+        }];
+        assert_eq!(operations_version(&path), PATH_OPERATIONS_VERSION);
+        assert!(validate_operations_version(&path, COLOR_SELECTION_OPERATIONS_VERSION).is_err());
+        assert!(validate_operations_version(&path, PATH_OPERATIONS_VERSION).is_ok());
+
+        let color = [Command::MagicWandSnapshot {
+            x: 1,
+            y: 2,
+            tolerance: 10,
+            contiguous: true,
+            antialias: true,
+        }];
+        assert_eq!(
+            operations_version(&color),
+            COLOR_SELECTION_OPERATIONS_VERSION
+        );
     }
 
     #[test]
@@ -270,10 +327,7 @@ mod tests {
             transfer: Box::new(transfer.clone()),
             index: None,
         }];
-        assert_eq!(
-            operations_version(&compatible),
-            LAYER_EFFECTS_OPERATIONS_VERSION
-        );
+        assert_eq!(operations_version(&compatible), PATH_OPERATIONS_VERSION);
         assert!(
             validate_operations_version(&compatible, LAYER_TRANSFER_OPERATIONS_VERSION).is_err()
         );

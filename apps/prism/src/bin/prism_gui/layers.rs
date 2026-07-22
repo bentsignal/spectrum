@@ -50,6 +50,7 @@ impl From<&Layer> for LayerRowData {
             LayerKind::Text { color, .. } => LayerRowKind::Text(*color),
             LayerKind::Rectangle { color, .. } => LayerRowKind::Shape(*color),
             LayerKind::Ellipse { color, .. } => LayerRowKind::Shape(*color),
+            LayerKind::Path { color, .. } => LayerRowKind::Shape(*color),
         };
         Self {
             id: layer.id,

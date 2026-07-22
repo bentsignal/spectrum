@@ -5,7 +5,7 @@ use image::{Rgba, RgbaImage};
 
 use crate::{
     FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
-    ResolvedRasterSource, TextTypography,
+    ResolvedRasterSource, TextTypography, VectorMask,
     raster_region::inspect_raster_region_source,
     shapes::ShapeSampler,
     text_render::{measure_text_with_typography, render_text_region},
@@ -62,7 +62,10 @@ pub(super) fn layer_supports_region_reads(
                     .is_some_and(|source| source.source().info().supports_region_reads_now())
             },
         ),
-        LayerKind::Text { .. } | LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => true,
+        LayerKind::Text { .. }
+        | LayerKind::Rectangle { .. }
+        | LayerKind::Ellipse { .. }
+        | LayerKind::Path { .. } => true,
     }
 }
 
@@ -71,11 +74,13 @@ pub(super) enum SourceDescriptor<'a> {
         path: &'a Path,
         dimensions: (u32, u32),
         adjustments: &'a spectrum_imaging::Adjustments,
+        vector_mask: Option<&'a VectorMask>,
     },
     RasterProvider {
         source: ResolvedRasterSource,
         dimensions: (u32, u32),
         adjustments: &'a spectrum_imaging::Adjustments,
+        vector_mask: Option<&'a VectorMask>,
     },
     Text {
         text: &'a str,
@@ -85,10 +90,19 @@ pub(super) enum SourceDescriptor<'a> {
         font_asset: Option<&'a FontAsset>,
         dimensions: (u32, u32),
         adjustments: &'a spectrum_imaging::Adjustments,
+        vector_mask: Option<&'a VectorMask>,
     },
     Shape {
         sampler: ShapeSampler<'a>,
         adjustments: &'a spectrum_imaging::Adjustments,
+        vector_mask: Option<&'a VectorMask>,
+    },
+    Path {
+        layer: &'a Layer,
+        scale: [f32; 2],
+        dimensions: (u32, u32),
+        adjustments: &'a spectrum_imaging::Adjustments,
+        vector_mask: Option<&'a VectorMask>,
     },
 }
 
@@ -110,6 +124,7 @@ impl<'a> SourceDescriptor<'a> {
                         dimensions,
                         source,
                         adjustments: &render_layer.adjustments,
+                        vector_mask: render_layer.vector_mask.as_ref(),
                     });
                 }
                 if raster_sources.is_some() {
@@ -121,6 +136,7 @@ impl<'a> SourceDescriptor<'a> {
                     })?,
                     path,
                     adjustments: &render_layer.adjustments,
+                    vector_mask: render_layer.vector_mask.as_ref(),
                 })
             }
             LayerKind::Text {
@@ -136,11 +152,25 @@ impl<'a> SourceDescriptor<'a> {
                 font_asset,
                 dimensions: measure_text_with_typography(text, *font_size, typography, font_asset)?,
                 adjustments: &render_layer.adjustments,
+                vector_mask: render_layer.vector_mask.as_ref(),
             }),
             LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => Ok(Self::Shape {
                 sampler: ShapeSampler::new(render_layer, shape_scale)?,
                 adjustments: &render_layer.adjustments,
+                vector_mask: render_layer.vector_mask.as_ref(),
             }),
+            LayerKind::Path { .. } => {
+                let dimensions = crate::paths::path_source_bounds(render_layer)
+                    .expect("path layer has path bounds")
+                    .raster_dimensions(shape_scale)?;
+                Ok(Self::Path {
+                    layer: render_layer,
+                    scale: shape_scale,
+                    dimensions,
+                    adjustments: &render_layer.adjustments,
+                    vector_mask: render_layer.vector_mask.as_ref(),
+                })
+            }
         }
     }
 
@@ -156,7 +186,7 @@ impl<'a> SourceDescriptor<'a> {
     }
 
     pub(super) fn is_unadjusted_shape(&self) -> bool {
-        matches!(self, Self::Shape { adjustments, .. } if **adjustments == spectrum_imaging::Adjustments::default())
+        matches!(self, Self::Shape { adjustments, vector_mask: None, .. } if **adjustments == spectrum_imaging::Adjustments::default())
     }
 
     pub(super) fn sample(
@@ -165,12 +195,25 @@ impl<'a> SourceDescriptor<'a> {
         stats: &mut RegionRenderStats,
     ) -> Result<SampleSource<'a>> {
         if self.adjustments() == &spectrum_imaging::Adjustments::default()
-            && let Self::Shape { sampler, .. } = self
+            && let Self::Shape {
+                sampler,
+                vector_mask: None,
+                ..
+            } = self
         {
             return Ok(SampleSource::shape(*sampler));
         }
         if self.adjustments() == &spectrum_imaging::Adjustments::default() {
-            let image = self.stage_base(adjusted_region, stats)?;
+            let mut image = self.stage_base(adjusted_region, stats)?;
+            let dimensions = self.base_dimensions();
+            crate::paths::apply_vector_mask_to_image(
+                &mut image,
+                self.vector_mask(),
+                dimensions.0,
+                dimensions.1,
+                adjusted_region.x,
+                adjusted_region.y,
+            )?;
             return Ok(SampleSource::Pixels {
                 image,
                 region: adjusted_region,
@@ -179,7 +222,7 @@ impl<'a> SourceDescriptor<'a> {
 
         let base_dimensions = self.base_dimensions();
         let adjusted_staging_limit = adjusted_staging_pixel_limit(self.adjustments());
-        let (image, adjusted_staging_pixels) =
+        let (mut image, adjusted_staging_pixels) =
             spectrum_imaging::render_image_region_at_source_resolution_bounded(
                 base_dimensions.0,
                 base_dimensions.1,
@@ -192,6 +235,15 @@ impl<'a> SourceDescriptor<'a> {
                 },
             )
             .map_err(anyhow::Error::new)?;
+        let dimensions = self.dimensions()?;
+        crate::paths::apply_vector_mask_to_image(
+            &mut image,
+            self.vector_mask(),
+            dimensions.0,
+            dimensions.1,
+            adjusted_region.x,
+            adjusted_region.y,
+        )?;
         stats.adjusted_staging_pixels = stats
             .adjusted_staging_pixels
             .saturating_add(adjusted_staging_pixels);
@@ -208,7 +260,8 @@ impl<'a> SourceDescriptor<'a> {
         match self {
             Self::RasterPath { dimensions, .. }
             | Self::RasterProvider { dimensions, .. }
-            | Self::Text { dimensions, .. } => *dimensions,
+            | Self::Text { dimensions, .. }
+            | Self::Path { dimensions, .. } => *dimensions,
             Self::Shape { sampler, .. } => sampler.dimensions(),
         }
     }
@@ -218,7 +271,18 @@ impl<'a> SourceDescriptor<'a> {
             Self::RasterPath { adjustments, .. }
             | Self::RasterProvider { adjustments, .. }
             | Self::Text { adjustments, .. }
-            | Self::Shape { adjustments, .. } => adjustments,
+            | Self::Shape { adjustments, .. }
+            | Self::Path { adjustments, .. } => adjustments,
+        }
+    }
+
+    fn vector_mask(&self) -> Option<&'a VectorMask> {
+        match self {
+            Self::RasterPath { vector_mask, .. }
+            | Self::RasterProvider { vector_mask, .. }
+            | Self::Text { vector_mask, .. }
+            | Self::Shape { vector_mask, .. }
+            | Self::Path { vector_mask, .. } => *vector_mask,
         }
     }
 
@@ -272,6 +336,14 @@ impl<'a> SourceDescriptor<'a> {
                     sampler.pixel(region.x + x, region.y + y)
                 }))
             }
+            Self::Path { layer, scale, .. } => crate::paths::render_path_region(
+                layer,
+                *scale,
+                region.x,
+                region.y,
+                region.width,
+                region.height,
+            ),
         }
     }
 }

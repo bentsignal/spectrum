@@ -5,7 +5,8 @@ use spectrum_imaging::AdjustmentPatch;
 
 use crate::{
     Alignment, AlignmentReference, BlendMode, GuideOrientation, LayerMask, LayerStyle,
-    LayerTransfer, Selection, ShapeFill, ShapeStroke, TextTypography, Transform,
+    LayerTransfer, PathGeometry, Selection, ShapeFill, ShapeStroke, TextTypography, Transform,
+    VectorMask,
 };
 
 #[derive(Clone, Debug, Serialize)]
@@ -70,6 +71,13 @@ pub enum Command {
         x: f32,
         y: f32,
     },
+    AddPath {
+        name: Option<String>,
+        geometry: PathGeometry,
+        color: [u8; 4],
+        x: f32,
+        y: f32,
+    },
     UpdateText {
         id: u64,
         text: String,
@@ -92,6 +100,10 @@ pub enum Command {
         width: u32,
         height: u32,
         color: [u8; 4],
+    },
+    ReplacePath {
+        id: u64,
+        geometry: PathGeometry,
     },
     RemoveLayer {
         id: u64,
@@ -192,6 +204,10 @@ pub enum Command {
     SetMask {
         id: u64,
         mask: LayerMask,
+    },
+    SetVectorMask {
+        id: u64,
+        mask: Option<VectorMask>,
     },
     SetShapeStroke {
         id: u64,

@@ -7,6 +7,7 @@ pub(super) struct LayerVisualKey {
     stroke: ShapeStroke,
     shape_fill: Option<prism_core::ShapeFill>,
     pixel_mask_identity: Option<[u8; 32]>,
+    vector_mask_identity: Option<[u8; 32]>,
     textured_shape_preview: bool,
     colored_shadow_mask: bool,
     pub(super) text_raster_scale: u32,
@@ -24,6 +25,10 @@ impl LayerVisualKey {
                 .pixel_mask
                 .as_ref()
                 .map(prism_core::PixelMask::identity),
+            vector_mask_identity: layer
+                .vector_mask
+                .as_ref()
+                .map(prism_core::VectorMask::identity),
             textured_shape_preview: textured_shape_preview(layer),
             colored_shadow_mask: colored_shadow_mask(layer),
             text_raster_scale: preview_text_scale(layer, display_scale),
@@ -352,10 +357,13 @@ pub(super) fn spawn_layer_render_worker(
                 *font_size *= request.key.text_raster_scale as f32;
                 typography.scale_for_raster(request.key.text_raster_scale as f32);
             }
-            let texture_visual_bounds =
+            let texture_visual_bounds = if matches!(render_layer.kind, LayerKind::Path { .. }) {
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))
+            } else {
                 source_geometry_before_preview(&render_layer, request.font_asset.as_ref())
                     .map(normalized_visual_bounds)
-                    .unwrap_or_else(|| Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)));
+                    .unwrap_or_else(|| Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)))
+            };
             let cached = bases.get(&cache_id).filter(|cached| {
                 cached.kind == render_layer.kind
                     && cached.stroke == render_layer.stroke
@@ -401,14 +409,25 @@ pub(super) fn spawn_layer_render_worker(
             let source_geometry =
                 source_geometry_before_preview(&request.layer, request.font_asset.as_ref());
             let result = base
-                .map(|image| {
-                    spectrum_imaging::render_image(
+                .and_then(|image| {
+                    let mut image = spectrum_imaging::render_image(
                         image,
                         request.layer.adjustments.clone(),
                         spectrum_imaging::RenderOptions {
                             max_size: Some(request.max_size),
                         },
                     )
+                    .to_rgba8();
+                    let (width, height) = image.dimensions();
+                    prism_core::apply_vector_mask_to_image(
+                        &mut image,
+                        request.layer.vector_mask.as_ref(),
+                        width,
+                        height,
+                        0,
+                        0,
+                    )?;
+                    Ok(image::DynamicImage::ImageRgba8(image))
                 })
                 .map(|image| {
                     let geometry = source_geometry.unwrap_or_else(|| {
@@ -473,6 +492,16 @@ pub(super) fn source_geometry_before_preview(
             *width as f32,
             *height as f32,
         ))),
+        LayerKind::Path { geometry, .. } => {
+            prism_core::path_source_bounds(layer).map(|bounds| LayerSourceGeometry {
+                size: Vec2::new(geometry.width() as f32, geometry.height() as f32),
+                visual_bounds: Rect::from_min_size(
+                    Pos2::new(bounds.origin[0], bounds.origin[1]),
+                    Vec2::new(bounds.size[0], bounds.size[1]),
+                ),
+                paragraph_bounds: None,
+            })
+        }
     }
 }
 
@@ -502,7 +531,7 @@ fn required_preview_size(layer: &Layer, key: &LayerVisualKey, interaction_active
 fn textured_shape_preview(layer: &Layer) -> bool {
     matches!(
         layer.kind,
-        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. }
     ) && (layer.shape_fill.is_some() || layer.style.drop_shadow.is_some())
 }
 
@@ -513,7 +542,11 @@ fn colored_shadow_mask(layer: &Layer) -> bool {
 }
 
 fn solid_preview(layer: &Layer) -> Option<(u32, u32, [u8; 4])> {
-    if layer.stroke.enabled || layer.pixel_mask.is_some() || textured_shape_preview(layer) {
+    if layer.stroke.enabled
+        || layer.pixel_mask.is_some()
+        || layer.vector_mask.is_some()
+        || textured_shape_preview(layer)
+    {
         return None;
     }
     match &layer.kind {
@@ -727,6 +760,19 @@ fn paint_texture_shadow_preview(
 }
 
 fn layer_texture_bounds(layer: &Layer, entry: &LayerVisualEntry) -> Rect {
+    if matches!(layer.kind, LayerKind::Path { .. }) {
+        let visual = entry.source_geometry.visual_bounds;
+        return Rect::from_min_size(
+            Pos2::new(
+                layer.transform.x + visual.left() * layer.transform.scale_x,
+                layer.transform.y + visual.top() * layer.transform.scale_y,
+            ),
+            Vec2::new(
+                visual.width() * layer.transform.scale_x,
+                visual.height() * layer.transform.scale_y,
+            ),
+        );
+    }
     if !matches!(layer.kind, LayerKind::Text { .. }) {
         return layer_bounds_with_size(layer, entry.source_geometry.size);
     }
