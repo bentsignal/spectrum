@@ -221,6 +221,224 @@ fn fill_creates_one_editable_layer_and_undo_preserves_original_content() {
 }
 
 #[test]
+fn soft_disconnected_fill_preserves_alpha_in_export_and_region_preview() {
+    let directory = test_directory("soft-fill-export");
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut document = Document::new("Soft fill", 8, 4);
+    document.background = [0, 0, 0, 0];
+    let alpha = vec![255, 0, 128, 0, 0, 255, 0, 64];
+    let mut workspace = Workspace::new(document, None);
+    workspace
+        .execute(Command::SetSelection {
+            selection: Some(Selection::color_mask(1, 1, 4, 2, alpha.clone())),
+        })
+        .unwrap();
+    workspace
+        .execute(Command::FillSelection {
+            color: [200, 20, 40, 200],
+            name: Some("Soft pixels".into()),
+        })
+        .unwrap();
+    let mask = workspace.document.layers[0].pixel_mask.as_ref().unwrap();
+    assert_eq!(mask.alpha.as_ref(), alpha);
+    let full = render_document(&workspace.document, None)
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(full.get_pixel(1, 1)[3], 200);
+    assert_eq!(full.get_pixel(2, 1)[3], 0);
+    assert_eq!(full.get_pixel(3, 1)[3], 100);
+    assert_eq!(full.get_pixel(4, 2)[3], 50);
+    let region = render_document_region_scaled(
+        &workspace.document,
+        1.0,
+        RenderRegion {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 4,
+        },
+    )
+    .unwrap()
+    .to_rgba8();
+    assert_eq!(region, full);
+    let export = directory.join("soft-fill.png");
+    export_document(&workspace.document, &export, 92).unwrap();
+    assert_eq!(image::open(&export).unwrap().to_rgba8(), full);
+
+    workspace
+        .execute(Command::SetTransform {
+            id: 1,
+            transform: Transform {
+                x: 2.0,
+                y: 0.0,
+                scale_x: 1.25,
+                scale_y: 1.25,
+                rotation: 18.0,
+            },
+        })
+        .unwrap();
+    let transformed = render_document(&workspace.document, None)
+        .unwrap()
+        .to_rgba8();
+    let transformed_region = render_document_region_scaled(
+        &workspace.document,
+        1.0,
+        RenderRegion {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 4,
+        },
+    )
+    .unwrap()
+    .to_rgba8();
+    assert_eq!(transformed_region, transformed);
+    export_document(&workspace.document, &export, 92).unwrap();
+    assert_eq!(image::open(&export).unwrap().to_rgba8(), transformed);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_magic_wand_is_one_v6_marker_plus_exact_v5_snapshot() {
+    let directory = test_directory("durable-wand");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("wand.prism");
+    let session = spectrum_revisions::SessionId::new();
+    let mut document = Document::new("Durable wand", 10, 4);
+    document.background = [0, 0, 0, 255];
+    for (id, x) in [(1, 1.0), (2, 7.0)] {
+        document.layers.push(Layer {
+            id,
+            transform: Transform {
+                x,
+                y: 1.0,
+                ..Default::default()
+            },
+            kind: LayerKind::Rectangle {
+                width: 2,
+                height: 2,
+                color: [220, 20, 30, 255],
+                corner_radius: 0.0,
+            },
+            ..Default::default()
+        });
+    }
+    document.next_id = 3;
+    let mut workspace = Workspace::create_durable(document, &path, test_actor(), session).unwrap();
+    let before = workspace.document.clone();
+    let revisions_before = workspace.history().unwrap().unwrap().revisions.len();
+    let command = Command::MagicWandSelection {
+        x: 1,
+        y: 1,
+        tolerance: 0,
+        contiguous: false,
+        antialias: false,
+        resolved_selection: None,
+    };
+    workspace.execute(command.clone()).unwrap();
+    assert_eq!(
+        workspace.history().unwrap().unwrap().revisions.len(),
+        revisions_before + 1
+    );
+    let selected = workspace.document.selection.clone().unwrap();
+    assert_eq!(selected.bounds(), (1, 1, 8, 2));
+    assert!(selected.alpha().is_some());
+    let size_after_first = std::fs::metadata(&path).unwrap().len();
+    workspace.execute(command).unwrap();
+    assert_eq!(
+        workspace.history().unwrap().unwrap().revisions.len(),
+        revisions_before + 1
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), size_after_first);
+    drop(workspace);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let (version, bytes): (u32, Vec<u8>) = connection
+        .query_row(
+            "SELECT version, bytes FROM operation_payloads WHERE instr(CAST(bytes AS TEXT), 'magic_wand_snapshot') > 0",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(version, 6);
+    assert!(
+        bytes.len() < 512,
+        "marker operation unexpectedly stored mask bytes"
+    );
+    let v5_snapshots: u32 = connection
+        .query_row(
+            "SELECT count(*) FROM snapshots WHERE version = 5",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(v5_snapshots, 1);
+    drop(connection);
+
+    let marker = Command::MagicWandSnapshot {
+        x: 1,
+        y: 1,
+        tolerance: 0,
+        contiguous: false,
+        antialias: false,
+    };
+    let mut without_snapshot = before.clone();
+    assert!(crate::apply_command(&mut without_snapshot, marker).is_err());
+    assert_eq!(without_snapshot, before);
+
+    let mut reopened = Workspace::open_as(&path, test_actor(), session).unwrap();
+    // Reopen succeeds although the marker is fail-closed, proving the replay
+    // plan starts from the same-revision v5 snapshot and has zero marker steps.
+    assert_eq!(reopened.document.selection, Some(selected.clone()));
+    reopened.execute(Command::Undo).unwrap();
+    assert_eq!(reopened.document, before);
+    reopened.execute(Command::Redo).unwrap();
+    assert_eq!(reopened.document.selection, Some(selected));
+    drop(reopened);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn inline_mask_budget_failures_are_atomic_for_execute_and_preview() {
+    let alpha = Arc::<[u8]>::from(vec![255; 4_096 * 4_096]);
+    let mask = PixelMask::new(4_096, 4_096, alpha);
+    let mut document = Document::new("Mask budget", 4_096, 4_096);
+    for id in 1..=4 {
+        document.layers.push(Layer {
+            id,
+            pixel_mask: Some(mask.clone()),
+            kind: LayerKind::Rectangle {
+                width: 4_096,
+                height: 4_096,
+                color: [20, 40, 60, 255],
+                corner_radius: 0.0,
+            },
+            ..Default::default()
+        });
+    }
+    document.next_id = 5;
+    let mut workspace = Workspace::new(document, None);
+    let before = workspace.document.clone();
+    assert!(
+        workspace
+            .execute(Command::SetSelection {
+                selection: Some(Selection::color_mask(0, 0, 1, 1, vec![128])),
+            })
+            .is_err()
+    );
+    assert_eq!(workspace.document, before);
+
+    workspace.begin_interaction();
+    assert!(
+        workspace
+            .preview(Command::DuplicateLayer { id: 1 })
+            .is_err()
+    );
+    assert_eq!(workspace.document, before);
+    workspace.cancel_interaction();
+}
+
+#[test]
 fn fill_never_rewrites_or_repoints_original_raster_bytes() {
     let directory = test_directory("immutable-raster");
     std::fs::create_dir_all(&directory).unwrap();
@@ -414,7 +632,7 @@ fn durable_crop_to_selection_is_one_revision_with_reopen_undo_and_redo_parity() 
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(operation_version, PRISM_COMMAND_OPERATIONS_VERSION);
+    assert_eq!(operation_version, 5);
     assert_eq!(
         serde_json::from_slice::<Vec<Command>>(&operation_bytes).unwrap(),
         vec![Command::CropToSelection]

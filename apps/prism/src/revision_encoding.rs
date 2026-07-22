@@ -9,12 +9,13 @@ pub(super) const LEGACY_SNAPSHOT_VERSION: u32 = 1;
 pub(super) const COMPRESSED_SNAPSHOT_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_SNAPSHOT_VERSION: u32 = 3;
 pub(super) const SELECTION_SNAPSHOT_VERSION: u32 = 4;
+pub(super) const COLOR_SELECTION_SNAPSHOT_VERSION: u32 = crate::PRISM_VERSION;
 pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
 pub(super) const SELECTION_OPERATIONS_VERSION: u32 = 4;
-pub(super) const CROP_TO_SELECTION_OPERATIONS_VERSION: u32 =
-    crate::PRISM_COMMAND_OPERATIONS_VERSION;
+pub(super) const CROP_TO_SELECTION_OPERATIONS_VERSION: u32 = 5;
+pub(super) const COLOR_SELECTION_OPERATIONS_VERSION: u32 = crate::PRISM_COMMAND_OPERATIONS_VERSION;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -35,19 +36,31 @@ impl Compatibility for PrismCompatibility {
                     encoding.required_capabilities.is_empty()
                         || encoding.required_capabilities == [DEFLATE_CAPABILITY]
                 }
+                COLOR_SELECTION_SNAPSHOT_VERSION => {
+                    encoding.required_capabilities.is_empty()
+                        || encoding.required_capabilities == [DEFLATE_CAPABILITY]
+                }
                 _ => false,
             }
     }
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=CROP_TO_SELECTION_OPERATIONS_VERSION)
+            && (LEGACY_OPERATIONS_VERSION..=COLOR_SELECTION_OPERATIONS_VERSION)
                 .contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands.iter().any(|command| {
+        matches!(command, Command::MagicWandSelection { .. })
+            || matches!(command, Command::MagicWandSnapshot { .. })
+            || matches!(command, Command::SetSelection { selection: Some(selection) } if selection.alpha().is_some())
+            || matches!(command, Command::InsertLayer { transfer, .. } if transfer.layer.pixel_mask.is_some())
+    }) {
+        return COLOR_SELECTION_OPERATIONS_VERSION;
+    }
     if commands
         .iter()
         .any(|command| matches!(command, Command::CropToSelection))
@@ -88,10 +101,14 @@ pub(super) fn downgrade_compatible_transfers(commands: &mut [Command]) {
     for command in commands {
         if let Command::InsertLayer { transfer, .. } = command
             && transfer.version == crate::LAYER_TRANSFER_VERSION
-            && transfer.layer.style.is_empty()
-            && transfer.layer.shape_fill.is_none()
+            && transfer.layer.pixel_mask.is_none()
         {
-            transfer.version = 1;
+            transfer.version =
+                if transfer.layer.style.is_empty() && transfer.layer.shape_fill.is_none() {
+                    1
+                } else {
+                    2
+                };
         }
     }
 }
@@ -197,13 +214,43 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_advertises_operation_versions_one_through_five() {
-        for version in LEGACY_OPERATIONS_VERSION..=CROP_TO_SELECTION_OPERATIONS_VERSION {
+    fn color_selection_commands_require_v6_while_rectangles_remain_v4() {
+        let rectangle = [Command::SetSelection {
+            selection: Some(Selection::rectangle(1, 2, 3, 4)),
+        }];
+        assert_eq!(operations_version(&rectangle), SELECTION_OPERATIONS_VERSION);
+
+        let color = [Command::SetSelection {
+            selection: Some(Selection::color_mask(1, 2, 2, 1, vec![255, 64])),
+        }];
+        assert_eq!(
+            operations_version(&color),
+            COLOR_SELECTION_OPERATIONS_VERSION
+        );
+        assert!(validate_operations_version(&color, CROP_TO_SELECTION_OPERATIONS_VERSION).is_err());
+
+        let marker = [Command::MagicWandSnapshot {
+            x: 4,
+            y: 5,
+            tolerance: 32,
+            contiguous: true,
+            antialias: true,
+        }];
+        assert_eq!(
+            operations_version(&marker),
+            COLOR_SELECTION_OPERATIONS_VERSION
+        );
+        assert!(validate_operations_version(&marker, COLOR_SELECTION_OPERATIONS_VERSION).is_ok());
+    }
+
+    #[test]
+    fn compatibility_advertises_operation_versions_one_through_six() {
+        for version in LEGACY_OPERATIONS_VERSION..=COLOR_SELECTION_OPERATIONS_VERSION {
             assert!(
                 PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
-        for version in [0, CROP_TO_SELECTION_OPERATIONS_VERSION + 1] {
+        for version in [0, COLOR_SELECTION_OPERATIONS_VERSION + 1] {
             assert!(
                 !PrismCompatibility
                     .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))

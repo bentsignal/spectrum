@@ -170,6 +170,77 @@ fn cli_creates_and_styles_editable_ellipses() {
 }
 
 #[test]
+fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
+    let directory = std::env::temp_dir().join(format!(
+        "prism-cli-wand-{}",
+        spectrum_revisions::RevisionId::new()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("wand.prism");
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "init",
+        "Wand CLI",
+        "--width",
+        "20",
+        "--height",
+        "8",
+    ]);
+    for x in [2, 14] {
+        run_prism(&[
+            "--project",
+            project.to_str().unwrap(),
+            "add-rectangle",
+            "--width",
+            "3",
+            "--height",
+            "3",
+            "--radius",
+            "0",
+            "--color",
+            "e02030ff",
+            "--x",
+            &x.to_string(),
+            "--y",
+            "2",
+        ]);
+    }
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "selection",
+        "magic-wand",
+        "2",
+        "2",
+        "--tolerance",
+        "0",
+        "--no-antialias",
+    ]);
+    let contiguous = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    assert_eq!(contiguous["document"]["selection"]["type"], "rectangle");
+    assert_eq!(contiguous["document"]["selection"]["width"], 3);
+
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "selection",
+        "magic-wand",
+        "2",
+        "2",
+        "--tolerance",
+        "0",
+        "--noncontiguous",
+        "--no-antialias",
+    ]);
+    let global = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    assert_eq!(global["document"]["selection"]["type"], "color_mask");
+    assert_eq!(global["document"]["selection"]["x"], 2);
+    assert_eq!(global["document"]["selection"]["width"], 15);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn cli_rasterizes_a_shape_through_the_core_command() {
     let directory = std::env::temp_dir().join(format!(
         "prism-cli-rasterize-{}",

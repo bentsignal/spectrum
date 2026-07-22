@@ -109,6 +109,7 @@ fn benchmark_cli_defaults_to_interactive_and_accepts_hosted_ci() {
     assert!(strict);
     assert_eq!(default_profile.name(), "interactive-workstation");
     assert_eq!(default_profile.gradient_shadow_budget_ms(), 500.0);
+    assert_eq!(default_profile.magic_wand_budget_ms(), 5_000.0);
 
     let hosted =
         Cli::try_parse_from(["prism", "benchmark", "--strict", "--profile", "hosted-ci"]).unwrap();
@@ -121,6 +122,7 @@ fn benchmark_cli_defaults_to_interactive_and_accepts_hosted_ci() {
     };
     assert_eq!(hosted_profile.name(), "github-hosted-linux");
     assert_eq!(hosted_profile.gradient_shadow_budget_ms(), 1_250.0);
+    assert_eq!(hosted_profile.magic_wand_budget_ms(), 15_000.0);
     assert!(222.508 <= default_profile.gradient_shadow_budget_ms());
     assert!(880.788 <= hosted_profile.gradient_shadow_budget_ms());
     assert!(hosted_profile.gradient_shadow_budget_ms() < 2_061.886);

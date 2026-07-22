@@ -142,6 +142,8 @@ fn replay_command(store: &RevisionStore, document: &mut Document, command: Comma
             layer.transform.scale_x /= scale;
             layer.transform.scale_y /= scale;
             layer.stroke = ShapeStroke::default();
+            layer.shape_fill = None;
+            layer.pixel_mask = None;
             Ok(())
         }
         command => {

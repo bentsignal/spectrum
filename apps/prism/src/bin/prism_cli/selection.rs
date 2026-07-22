@@ -19,6 +19,20 @@ enum SelectionAction {
         width: u32,
         height: u32,
     },
+    /// Select pixels similar to the exact composited color at a canvas point.
+    MagicWand {
+        x: u32,
+        y: u32,
+        #[arg(long, default_value_t = 32)]
+        /// Max-channel distance in premultiplied RGBA (0 exact, 255 all colors).
+        tolerance: u8,
+        /// Match similar pixels across the whole canvas instead of one connected region.
+        #[arg(long)]
+        noncontiguous: bool,
+        /// Disable the soft one-pixel color boundary.
+        #[arg(long)]
+        no_antialias: bool,
+    },
     /// Clear the current document selection.
     Clear,
     /// Crop the canvas to the current rectangular selection and clear it atomically.
@@ -41,6 +55,20 @@ pub(super) fn command(arguments: SelectionArgs) -> Result<Command> {
             height,
         } => Command::SetSelection {
             selection: Some(Selection::rectangle(x, y, width, height)),
+        },
+        SelectionAction::MagicWand {
+            x,
+            y,
+            tolerance,
+            noncontiguous,
+            no_antialias,
+        } => Command::MagicWandSelection {
+            x,
+            y,
+            tolerance,
+            contiguous: !noncontiguous,
+            antialias: !no_antialias,
+            resolved_selection: None,
         },
         SelectionAction::Clear => Command::SetSelection { selection: None },
         SelectionAction::Crop => Command::CropToSelection,
@@ -70,6 +98,27 @@ mod tests {
             rectangle,
             Command::SetSelection {
                 selection: Some(Selection::rectangle(4, 5, 20, 10))
+            }
+        );
+
+        assert_eq!(
+            command(SelectionArgs {
+                action: SelectionAction::MagicWand {
+                    x: 12,
+                    y: 18,
+                    tolerance: 24,
+                    noncontiguous: true,
+                    no_antialias: false,
+                },
+            })
+            .unwrap(),
+            Command::MagicWandSelection {
+                x: 12,
+                y: 18,
+                tolerance: 24,
+                contiguous: false,
+                antialias: true,
+                resolved_selection: None,
             }
         );
 

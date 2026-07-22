@@ -215,6 +215,122 @@ fn rasterize_shape_freezes_pixels_and_is_undoable() {
 }
 
 #[test]
+fn masked_shape_dimension_edits_fail_atomically() {
+    let mut workspace = Workspace::new(Document::new("Masked edits", 40, 30), None);
+    workspace
+        .execute(Command::AddRectangle {
+            name: None,
+            width: 3,
+            height: 2,
+            color: [255; 4],
+            corner_radius: 0.0,
+            x: 0.0,
+            y: 0.0,
+        })
+        .unwrap();
+    workspace.document.layer_mut(1).unwrap().pixel_mask = Some(PixelMask::new(3, 2, vec![255; 6]));
+    let before = workspace.document.clone();
+    assert!(
+        workspace
+            .execute(Command::UpdateRectangle {
+                id: 1,
+                width: 4,
+                height: 2,
+                color: [10, 20, 30, 255],
+                corner_radius: 0.0,
+            })
+            .is_err()
+    );
+    assert_eq!(workspace.document, before);
+
+    workspace.document.layers[0].kind = LayerKind::Ellipse {
+        width: 3,
+        height: 2,
+        color: [255; 4],
+    };
+    let before = workspace.document.clone();
+    assert!(
+        workspace
+            .execute(Command::UpdateEllipse {
+                id: 1,
+                width: 3,
+                height: 4,
+                color: [10, 20, 30, 255],
+            })
+            .is_err()
+    );
+    assert_eq!(workspace.document, before);
+}
+
+#[test]
+fn rasterizing_a_masked_shape_bakes_and_clears_the_mask_across_reopen() {
+    let directory = test_directory("durable-masked-rasterized-shape");
+    std::fs::create_dir_all(&directory).unwrap();
+    let project_path = directory.join("masked-rasterized.prism");
+    let actor = spectrum_revisions::Actor {
+        id: "person:masked-rasterize".into(),
+        display_name: "Masked rasterize tester".into(),
+        kind: spectrum_revisions::ActorKind::Human,
+    };
+    let session = spectrum_revisions::SessionId::new();
+    let mut initial = Document::new("Masked rasterize", 12, 8);
+    initial.background = [0; 4];
+    let mut workspace =
+        Workspace::create_durable(initial, &project_path, actor.clone(), session).unwrap();
+    workspace
+        .execute(Command::SetSelection {
+            selection: Some(Selection::color_mask(
+                2,
+                3,
+                4,
+                2,
+                vec![255, 0, 255, 0, 0, 255, 0, 255],
+            )),
+        })
+        .unwrap();
+    workspace
+        .execute(Command::FillSelection {
+            color: [30, 100, 220, 255],
+            name: Some("Masked fill".into()),
+        })
+        .unwrap();
+    let before = render_document(&workspace.document, None)
+        .unwrap()
+        .to_rgba8();
+    let asset = rasterize_shape_asset(&workspace.document, 1, 1.0).unwrap();
+    workspace
+        .execute(Command::RasterizeShape {
+            id: 1,
+            path: asset.path,
+            scale: asset.scale,
+        })
+        .unwrap();
+    assert!(workspace.document.layer(1).unwrap().pixel_mask.is_none());
+    assert_eq!(
+        render_document(&workspace.document, None)
+            .unwrap()
+            .to_rgba8(),
+        before
+    );
+    drop(workspace);
+
+    let reopened = Workspace::open_as(&project_path, actor, session).unwrap();
+    assert!(reopened.document.layer(1).unwrap().pixel_mask.is_none());
+    assert!(matches!(
+        reopened.document.layer(1).unwrap().kind,
+        LayerKind::Raster { .. }
+    ));
+    assert_eq!(
+        render_document(&reopened.document, None)
+            .unwrap()
+            .to_rgba8(),
+        before
+    );
+    drop(reopened);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_rasterization_embeds_pixels_and_replays_history() {
     let directory = test_directory("durable-rasterized-shape");
     std::fs::create_dir_all(&directory).unwrap();

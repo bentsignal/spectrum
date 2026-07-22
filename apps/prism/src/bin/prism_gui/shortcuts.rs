@@ -245,10 +245,12 @@ impl PrismApp {
                 Some(Tool::Text)
             } else if input.key_pressed(egui::Key::S) {
                 Some(Tool::Shape)
-            } else if input.key_pressed(egui::Key::M) {
+            } else if input.key_pressed(egui::Key::K) {
                 Some(Tool::Mask)
-            } else if input.key_pressed(egui::Key::W) {
+            } else if input.key_pressed(egui::Key::M) {
                 Some(Tool::Marquee)
+            } else if input.key_pressed(egui::Key::W) {
+                Some(Tool::MagicWand)
             } else {
                 None
             }

@@ -25,6 +25,7 @@ path = "src/bin/prism-gui.rs"
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 clap.workspace = true
 eframe.workspace = true
 epaint_default_fonts.workspace = true

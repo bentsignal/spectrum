@@ -5,6 +5,7 @@ pub(crate) struct PreparedEdit {
     pub(super) execution_commands: Vec<Command>,
     provenance: Vec<CommandProvenance>,
     pub(super) operations: PreparedOperations,
+    pub(super) force_snapshot: bool,
 }
 
 enum CommandProvenance {
@@ -30,8 +31,27 @@ impl PreparedEdit {
         let mut execution_commands = commands.to_vec();
         let mut provenance = Vec::with_capacity(commands.len());
         let mut assets = Vec::new();
+        let mut force_snapshot = false;
 
         for (index, command) in commands.iter().enumerate() {
+            if let Command::MagicWandSelection {
+                x,
+                y,
+                tolerance,
+                contiguous,
+                antialias,
+                resolved_selection: Some(_),
+            } = command
+            {
+                portable_commands[index] = Command::MagicWandSnapshot {
+                    x: *x,
+                    y: *y,
+                    tolerance: *tolerance,
+                    contiguous: *contiguous,
+                    antialias: *antialias,
+                };
+                force_snapshot = true;
+            }
             let command_provenance = match command {
                 Command::AddRaster { path, name, .. } => {
                     let prepared = prepare_asset(path)?;
@@ -131,6 +151,7 @@ impl PreparedEdit {
             execution_commands,
             provenance,
             operations: PreparedOperations::from_portable(version, portable_commands, assets)?,
+            force_snapshot,
         })
     }
 

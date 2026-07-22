@@ -6,6 +6,7 @@ pub(super) struct LayerVisualKey {
     adjustments: spectrum_imaging::Adjustments,
     stroke: ShapeStroke,
     shape_fill: Option<prism_core::ShapeFill>,
+    pixel_mask_identity: Option<[u8; 32]>,
     textured_shape_preview: bool,
     colored_shadow_mask: bool,
     pub(super) text_raster_scale: u32,
@@ -19,6 +20,10 @@ impl LayerVisualKey {
             adjustments: layer.adjustments.clone(),
             stroke: layer.stroke,
             shape_fill: layer.shape_fill.clone(),
+            pixel_mask_identity: layer
+                .pixel_mask
+                .as_ref()
+                .map(prism_core::PixelMask::identity),
             textured_shape_preview: textured_shape_preview(layer),
             colored_shadow_mask: colored_shadow_mask(layer),
             text_raster_scale: preview_text_scale(layer, display_scale),
@@ -322,6 +327,7 @@ struct CachedLayerBase {
     kind: LayerKind,
     stroke: ShapeStroke,
     shape_fill: Option<prism_core::ShapeFill>,
+    pixel_mask_identity: Option<[u8; 32]>,
     max_size: u32,
     shape_raster_scale: [u32; 2],
     image: image::DynamicImage,
@@ -354,6 +360,11 @@ pub(super) fn spawn_layer_render_worker(
                 cached.kind == render_layer.kind
                     && cached.stroke == render_layer.stroke
                     && cached.shape_fill == render_layer.shape_fill
+                    && cached.pixel_mask_identity
+                        == render_layer
+                            .pixel_mask
+                            .as_ref()
+                            .map(prism_core::PixelMask::identity)
                     && cached.shape_raster_scale == request.key.shape_raster_scale
                     && cached.max_size >= request.max_size
             });
@@ -376,6 +387,10 @@ pub(super) fn spawn_layer_render_worker(
                             kind: render_layer.kind.clone(),
                             stroke: render_layer.stroke,
                             shape_fill: render_layer.shape_fill.clone(),
+                            pixel_mask_identity: render_layer
+                                .pixel_mask
+                                .as_ref()
+                                .map(prism_core::PixelMask::identity),
                             max_size: request.max_size,
                             shape_raster_scale: request.key.shape_raster_scale,
                             image: image.clone(),
@@ -498,7 +513,7 @@ fn colored_shadow_mask(layer: &Layer) -> bool {
 }
 
 fn solid_preview(layer: &Layer) -> Option<(u32, u32, [u8; 4])> {
-    if layer.stroke.enabled || textured_shape_preview(layer) {
+    if layer.stroke.enabled || layer.pixel_mask.is_some() || textured_shape_preview(layer) {
         return None;
     }
     match &layer.kind {

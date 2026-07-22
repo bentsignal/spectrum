@@ -30,6 +30,9 @@ pub(crate) use durable_edit::PreparedEdit;
 #[path = "revision_encoding.rs"]
 mod revision_encoding;
 use revision_encoding::*;
+#[path = "revision_snapshot.rs"]
+mod revision_snapshot;
+use revision_snapshot::*;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct SnapshotTail {
@@ -288,11 +291,13 @@ impl DurableProject {
         if commands.iter().any(command_embeds_asset) {
             bail!("asset commands must be committed through a Prism workspace");
         }
+        let (portable_commands, force_snapshot) = snapshot_backed_magic_wand_operations(commands);
         self.commit_operations(
-            PreparedOperations::new(commands)?,
+            PreparedOperations::new(&portable_commands)?,
             commands.len(),
             document,
             label,
+            force_snapshot,
         )
     }
 
@@ -307,7 +312,13 @@ impl DurableProject {
         label: impl Into<String>,
     ) -> Result<RevisionId> {
         let command_count = prepared.execution_commands.len();
-        self.commit_operations(prepared.operations, command_count, document, label)
+        self.commit_operations(
+            prepared.operations,
+            command_count,
+            document,
+            label,
+            prepared.force_snapshot,
+        )
     }
 
     fn commit_operations(
@@ -316,12 +327,12 @@ impl DurableProject {
         command_count: usize,
         document: &Document,
         label: impl Into<String>,
+        force_snapshot: bool,
     ) -> Result<RevisionId> {
         let next_tail = self
             .snapshot_tail
             .after(command_count, operations.payload.bytes.len());
-        let snapshot = next_tail
-            .needs_snapshot()
+        let snapshot = (force_snapshot || next_tail.needs_snapshot())
             .then(|| PreparedSnapshot::compressed(document))
             .transpose()?;
         let PreparedOperations {
@@ -351,7 +362,7 @@ impl DurableProject {
         };
         let revision = self.store.mutate(|store| store.append(request))?;
         self.cursor = revision.id;
-        self.snapshot_tail = if next_tail.needs_snapshot() {
+        self.snapshot_tail = if force_snapshot || next_tail.needs_snapshot() {
             SnapshotTail::default()
         } else {
             next_tail
@@ -594,6 +605,50 @@ impl DurableProject {
     }
 }
 
+fn snapshot_backed_magic_wand_operations(commands: &[Command]) -> (Vec<Command>, bool) {
+    let mut force_snapshot = false;
+    let commands = commands
+        .iter()
+        .map(|command| match command {
+            Command::MagicWandSelection {
+                x,
+                y,
+                tolerance,
+                contiguous,
+                antialias,
+                ..
+            } => {
+                force_snapshot = true;
+                Command::MagicWandSnapshot {
+                    x: *x,
+                    y: *y,
+                    tolerance: *tolerance,
+                    contiguous: *contiguous,
+                    antialias: *antialias,
+                }
+            }
+            Command::MagicWandSnapshot {
+                x,
+                y,
+                tolerance,
+                contiguous,
+                antialias,
+            } => {
+                force_snapshot = true;
+                Command::MagicWandSnapshot {
+                    x: *x,
+                    y: *y,
+                    tolerance: *tolerance,
+                    contiguous: *contiguous,
+                    antialias: *antialias,
+                }
+            }
+            command => command.clone(),
+        })
+        .collect();
+    (commands, force_snapshot)
+}
+
 pub(crate) fn command_embeds_asset(command: &Command) -> bool {
     match command {
         Command::AddRaster { .. } | Command::ImportFont { .. } | Command::RasterizeShape { .. } => {
@@ -659,85 +714,6 @@ fn live_cache_root(project_path: &Path) -> Result<PathBuf> {
         .parent()
         .context("test project has no parent directory")?
         .join(".revision-cache"))
-}
-
-struct PreparedSnapshot {
-    payload: Payload,
-    assets: Vec<Asset>,
-}
-
-impl PreparedSnapshot {
-    fn legacy(document: &Document) -> Result<Self> {
-        Self::prepare(document, false)
-    }
-
-    fn compressed(document: &Document) -> Result<Self> {
-        Self::prepare(document, true)
-    }
-
-    fn prepare(document: &Document, compressed: bool) -> Result<Self> {
-        let mut portable = document.clone();
-        let mut assets = Vec::new();
-        for layer in &mut portable.layers {
-            if let LayerKind::Raster {
-                path,
-                original_path,
-            } = &mut layer.kind
-            {
-                let prepared = prepare_asset(path)?;
-                *path = prepared.reference.path();
-                *original_path = None;
-                assets.push(prepared.asset);
-            }
-        }
-        for font in &mut portable.font_assets {
-            let prepared = prepare_verified_font_asset(font)?;
-            font.path = prepared.reference.path();
-            font.original_path = None;
-            assets.push(prepared.asset);
-        }
-        let serialized = serde_json::to_vec(&portable)?;
-        let selection_schema =
-            document.version >= crate::PRISM_VERSION || document.selection.is_some();
-        let effects_schema = document.version >= LAYER_EFFECTS_SNAPSHOT_VERSION
-            || document
-                .layers
-                .iter()
-                .any(|layer| !layer.style.is_empty() || layer.shape_fill.is_some());
-        let payload = if selection_schema {
-            let encoding = Encoding::new(SNAPSHOT_FAMILY, SELECTION_SNAPSHOT_VERSION);
-            if compressed {
-                Payload::new(
-                    encoding.requiring(DEFLATE_CAPABILITY),
-                    deflate(&serialized)?,
-                )
-            } else {
-                Payload::new(encoding, serialized)
-            }
-        } else if effects_schema {
-            let encoding = Encoding::new(SNAPSHOT_FAMILY, LAYER_EFFECTS_SNAPSHOT_VERSION);
-            if compressed {
-                Payload::new(
-                    encoding.requiring(DEFLATE_CAPABILITY),
-                    deflate(&serialized)?,
-                )
-            } else {
-                Payload::new(encoding, serialized)
-            }
-        } else if compressed {
-            Payload::new(
-                Encoding::new(SNAPSHOT_FAMILY, COMPRESSED_SNAPSHOT_VERSION)
-                    .requiring(DEFLATE_CAPABILITY),
-                deflate(&serialized)?,
-            )
-        } else {
-            Payload::new(
-                Encoding::new(SNAPSHOT_FAMILY, LEGACY_SNAPSHOT_VERSION),
-                serialized,
-            )
-        };
-        Ok(Self { payload, assets })
-    }
 }
 
 struct PreparedOperations {
@@ -811,48 +787,6 @@ impl PreparedOperations {
             ),
             assets,
         })
-    }
-}
-
-fn deflate(bytes: &[u8]) -> Result<Vec<u8>> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(bytes)?;
-    Ok(encoder.finish()?)
-}
-
-fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
-    match payload.encoding.version {
-        LEGACY_SNAPSHOT_VERSION if payload.encoding.required_capabilities.is_empty() => {
-            Ok(payload.bytes.clone())
-        }
-        COMPRESSED_SNAPSHOT_VERSION
-            if payload.encoding.required_capabilities == [DEFLATE_CAPABILITY] =>
-        {
-            let mut decoded = Vec::new();
-            ZlibDecoder::new(payload.bytes.as_slice()).read_to_end(&mut decoded)?;
-            Ok(decoded)
-        }
-        LAYER_EFFECTS_SNAPSHOT_VERSION if payload.encoding.required_capabilities.is_empty() => {
-            Ok(payload.bytes.clone())
-        }
-        LAYER_EFFECTS_SNAPSHOT_VERSION
-            if payload.encoding.required_capabilities == [DEFLATE_CAPABILITY] =>
-        {
-            let mut decoded = Vec::new();
-            ZlibDecoder::new(payload.bytes.as_slice()).read_to_end(&mut decoded)?;
-            Ok(decoded)
-        }
-        SELECTION_SNAPSHOT_VERSION if payload.encoding.required_capabilities.is_empty() => {
-            Ok(payload.bytes.clone())
-        }
-        SELECTION_SNAPSHOT_VERSION
-            if payload.encoding.required_capabilities == [DEFLATE_CAPABILITY] =>
-        {
-            let mut decoded = Vec::new();
-            ZlibDecoder::new(payload.bytes.as_slice()).read_to_end(&mut decoded)?;
-            Ok(decoded)
-        }
-        _ => bail!("unsupported Prism snapshot encoding"),
     }
 }
 

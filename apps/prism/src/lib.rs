@@ -7,7 +7,9 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use spectrum_imaging::Adjustments;
+use std::sync::Arc;
 
 mod commands;
 pub use commands::{Command, CommandOutput};
@@ -65,10 +67,11 @@ pub use shapes::{
     recommended_rasterization_scale, shape_dimensions,
 };
 
-pub const PRISM_VERSION: u32 = 4;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 5;
+pub const PRISM_VERSION: u32 = 5;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 6;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
+pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
 
 mod blend;
 pub use blend::{BlendMode, blend_rgb};
@@ -80,7 +83,7 @@ pub use alignment::{
 };
 
 mod selection;
-pub use selection::Selection;
+pub use selection::{MAX_COLOR_SELECTION_PIXELS, Selection, magic_wand_selection};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -125,6 +128,77 @@ pub struct LayerMask {
     pub width: f32,
     pub height: f32,
     pub invert: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PixelMask {
+    pub width: u32,
+    pub height: u32,
+    pub content_hash: [u8; 32],
+    #[serde(with = "pixel_mask_bytes")]
+    pub alpha: Arc<[u8]>,
+}
+
+impl PixelMask {
+    pub fn new(width: u32, height: u32, alpha: impl Into<Arc<[u8]>>) -> Self {
+        let alpha = alpha.into();
+        let content_hash = Sha256::digest(alpha.as_ref()).into();
+        Self {
+            width,
+            height,
+            content_hash,
+            alpha,
+        }
+    }
+
+    pub fn identity(&self) -> [u8; 32] {
+        self.content_hash
+    }
+
+    pub(crate) fn has_valid_identity(&self) -> bool {
+        self.content_hash == <[u8; 32]>::from(Sha256::digest(self.alpha.as_ref()))
+    }
+}
+
+impl PartialEq for PixelMask {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.content_hash == other.content_hash
+            && (Arc::ptr_eq(&self.alpha, &other.alpha)
+                || self.alpha.as_ref() == other.alpha.as_ref())
+    }
+}
+
+impl Eq for PixelMask {}
+
+mod pixel_mask_bytes {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    const MAX_ENCODED_BYTES: usize = ((crate::MAX_COLOR_SELECTION_PIXELS as usize + 2) / 3) * 4;
+
+    pub fn serialize<S: Serializer>(
+        bytes: &std::sync::Arc<[u8]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes.as_ref()))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<std::sync::Arc<[u8]>, D::Error> {
+        let encoded = String::deserialize(deserializer)?;
+        if encoded.len() > MAX_ENCODED_BYTES {
+            return Err(serde::de::Error::custom(
+                "pixel mask exceeds the encoded size limit",
+            ));
+        }
+        STANDARD
+            .decode(encoded)
+            .map(std::sync::Arc::from)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl Default for LayerMask {
@@ -195,6 +269,8 @@ pub struct Layer {
     pub transform: Transform,
     pub adjustments: Adjustments,
     pub mask: LayerMask,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_mask: Option<PixelMask>,
     #[serde(skip_serializing_if = "LayerStyle::is_empty")]
     pub style: LayerStyle,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,6 +292,7 @@ impl Default for Layer {
             transform: Transform::default(),
             adjustments: Adjustments::default(),
             mask: LayerMask::default(),
+            pixel_mask: None,
             style: LayerStyle::default(),
             shape_fill: None,
             stroke: ShapeStroke::default(),
@@ -318,6 +395,32 @@ impl Document {
         typography.font_id.and_then(|id| self.font_asset(id).ok())
     }
 
+    pub(crate) fn validate_inline_mask_budget(&self) -> Result<()> {
+        self.validate_projected_inline_mask_budget(self.selection.as_ref(), 0)
+    }
+
+    pub(crate) fn validate_projected_inline_mask_budget(
+        &self,
+        selection: Option<&Selection>,
+        additional_layer_bytes: usize,
+    ) -> Result<()> {
+        let selection_bytes = selection.and_then(Selection::alpha).map_or(0, <[u8]>::len);
+        let layer_bytes = self
+            .layers
+            .iter()
+            .filter_map(|layer| layer.pixel_mask.as_ref())
+            .try_fold(0_usize, |total, mask| total.checked_add(mask.alpha.len()))
+            .context("document inline pixel-mask byte count overflows")?;
+        let inline_mask_bytes = selection_bytes
+            .checked_add(layer_bytes)
+            .and_then(|total| total.checked_add(additional_layer_bytes))
+            .context("document inline pixel-mask byte count overflows")?;
+        if inline_mask_bytes > MAX_INLINE_PIXEL_MASK_BYTES {
+            bail!("document inline pixel masks exceed the 64 MiB aggregate limit");
+        }
+        Ok(())
+    }
+
     fn migrate(&mut self) -> Result<()> {
         if self.version > PRISM_VERSION {
             bail!(
@@ -335,6 +438,34 @@ impl Document {
             require_finite("layer opacity", layer.opacity)?;
             validate_transform(layer.transform)?;
             validate_mask(layer.mask)?;
+            if let Some(mask) = &layer.pixel_mask {
+                let pixels = u64::from(mask.width) * u64::from(mask.height);
+                if pixels > MAX_COLOR_SELECTION_PIXELS {
+                    bail!(
+                        "layer {} pixel mask exceeds the bounded pixel limit",
+                        layer.id
+                    );
+                }
+                let expected = usize::try_from(pixels)
+                    .context("pixel mask dimensions exceed platform limits")?;
+                if mask.width == 0 || mask.height == 0 || mask.alpha.len() != expected {
+                    bail!("layer {} has an invalid pixel mask", layer.id);
+                }
+                if !mask.has_valid_identity() {
+                    bail!(
+                        "layer {} pixel mask identity does not match its alpha",
+                        layer.id
+                    );
+                }
+                let dimensions =
+                    shape_dimensions(layer).context("only shape layers can carry a pixel mask")?;
+                if dimensions != (mask.width, mask.height) {
+                    bail!(
+                        "layer {} pixel mask dimensions do not match its shape",
+                        layer.id
+                    );
+                }
+            }
             effects::validate_layer_style(&layer.style)?;
             validate_shape_stroke(layer.stroke)?;
             if let Some(fill) = &layer.shape_fill {
@@ -366,7 +497,10 @@ impl Document {
         }
         self.selection = self
             .selection
-            .and_then(|selection| selection.clipped(self.width, self.height));
+            .take()
+            .map(|selection| selection.validated(self.width, self.height))
+            .transpose()?;
+        self.validate_inline_mask_budget()?;
         self.next_id = self
             .next_id
             .max(self.layers.iter().map(|layer| layer.id).max().unwrap_or(0) + 1);

@@ -284,3 +284,18 @@ fn styled_shapes_require_a_textured_preview_without_rerasterizing_style_values()
     assert_eq!(expected_transparent_key, transparent_key);
     assert!(!transparent_key.colored_shadow_mask);
 }
+
+#[test]
+fn pixel_mask_visual_keys_use_stable_digest_identity() {
+    let mut layer = Layer::default();
+    layer.pixel_mask = Some(prism_core::PixelMask::new(100, 100, vec![255; 10_000]));
+    let original = LayerVisualKey::new(&layer, 1.0);
+    let cloned_layer = layer.clone();
+    assert_eq!(original, LayerVisualKey::new(&cloned_layer, 1.0));
+
+    let mut changed = layer;
+    let mut alpha = vec![255; 10_000];
+    alpha[9_999] = 0;
+    changed.pixel_mask = Some(prism_core::PixelMask::new(100, 100, alpha));
+    assert_ne!(original, LayerVisualKey::new(&changed, 1.0));
+}

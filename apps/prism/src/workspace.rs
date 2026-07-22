@@ -382,6 +382,7 @@ impl Workspace {
     }
 
     fn execute_durable_batch(&mut self, commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
+        let commands = resolve_durable_commands(&self.document, commands)?;
         let prepared = self
             .durable
             .as_ref()
@@ -577,6 +578,36 @@ impl Workspace {
     fn bump_document_generation(&mut self) {
         self.document_generation = self.document_generation.wrapping_add(1);
     }
+}
+
+fn resolve_durable_commands(
+    document: &Document,
+    mut commands: Vec<Command>,
+) -> Result<Vec<Command>> {
+    let mut candidate = document.clone();
+    for command in &mut commands {
+        if let Command::MagicWandSelection {
+            x,
+            y,
+            tolerance,
+            contiguous,
+            antialias,
+            resolved_selection,
+        } = command
+            && resolved_selection.is_none()
+        {
+            *resolved_selection = Some(Box::new(crate::magic_wand_selection(
+                &candidate,
+                *x,
+                *y,
+                *tolerance,
+                *contiguous,
+                *antialias,
+            )?));
+        }
+        apply_command(&mut candidate, command.clone())?;
+    }
+    Ok(commands)
 }
 
 fn next_document_identity() -> u64 {
