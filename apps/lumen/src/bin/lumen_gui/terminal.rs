@@ -36,6 +36,7 @@ impl TerminalDock {
         self.visible
     }
 
+    #[cfg(target_os = "macos")]
     pub(super) fn native_session(&self) -> bool {
         self.session.as_ref().is_some_and(|session| session.native)
     }
