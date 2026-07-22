@@ -15,6 +15,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+#[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+pub mod native_ghostty;
+
 const OUTPUT_CHUNK_BYTES: usize = 8 * 1024;
 const OUTPUT_QUEUE_CHUNKS: usize = 128;
 const POLL_BYTE_BUDGET: usize = 256 * 1024;
@@ -124,9 +127,9 @@ pub enum TerminalEvent {
 /// The transport contract used by a byte-stream terminal client.
 ///
 /// Spectrum's portable terminal renderer consumes [`TerminalEvent::Output`]
-/// with a VT parser. Platform-native terminal surfaces (for example, a
-/// Ghostty-owned AppKit view) should remain in the owning application instead
-/// of forcing native rendering concerns through this app-neutral contract.
+/// with a VT parser. A neutral platform host may own native surface mechanics,
+/// while each application remains responsible for presentation policy and for
+/// constructing the session context supplied to that host.
 pub trait TerminalSessionBackend: Send {
     fn context(&self) -> &TerminalContext;
     fn process_id(&self) -> Option<u32>;

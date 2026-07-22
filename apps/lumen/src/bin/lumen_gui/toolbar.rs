@@ -1,4 +1,5 @@
 use super::*;
+use crate::terminal::terminal_shortcut_label;
 
 impl LumenApp {
     pub(super) fn toolbar(&mut self, root: &mut egui::Ui) {
@@ -32,8 +33,36 @@ impl LumenApp {
                         Stroke::new(1.0, Color32::from_gray(58)),
                     );
                     ui.add_space(2.0);
+                    if self.terminal.visible() {
+                        ui.label(RichText::new("TERMINAL").strong().color(ACCENT));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .button(format!("Back to Photos  {}", terminal_shortcut_label()))
+                                .clicked()
+                            {
+                                self.toggle_terminal();
+                            }
+                            ui.label(
+                                RichText::new(current_catalog_name(&self.workspace))
+                                    .color(Color32::GRAY),
+                            );
+                        });
+                        return;
+                    }
                     #[cfg(not(target_os = "macos"))]
                     {
+                        if ui
+                            .add_enabled(
+                                !self.history_open,
+                                egui::Button::new(format!(
+                                    "Terminal  {}",
+                                    terminal_shortcut_label()
+                                )),
+                            )
+                            .clicked()
+                        {
+                            self.toggle_terminal();
+                        }
                         if ui.button("Import Photos").clicked() {
                             self.import_dialog();
                         }

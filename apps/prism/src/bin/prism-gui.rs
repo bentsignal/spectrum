@@ -53,8 +53,6 @@ mod macos_menu_spec;
 #[path = "prism_gui/model.rs"]
 mod model;
 use model::*;
-#[path = "prism_gui/native_terminal.rs"]
-mod native_terminal;
 #[path = "prism_gui/project_lifecycle.rs"]
 mod project_lifecycle;
 #[path = "prism_gui/raster_sources.rs"]
@@ -87,6 +85,8 @@ use history::HistoryViewState;
 use project_lifecycle::MoveProjectDialog;
 use raster_sources::*;
 use renderer::*;
+#[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+use spectrum_terminal::native_ghostty as native_terminal;
 use terminal::TerminalDock;
 use theme::*;
 
@@ -215,7 +215,13 @@ impl PrismApp {
     ) -> Self {
         install_style(&creation.egui_ctx);
         #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
-        let native_terminal = native_terminal::NativeTerminalHost::from_environment(creation);
+        let native_terminal = native_terminal::NativeTerminalHost::from_environment(
+            creation,
+            native_terminal::NativeTerminalConfig::new(
+                "PRISM_EXPERIMENTAL_GHOSTTY",
+                "PRISM_GHOSTTY_BRIDGE",
+            ),
+        );
         #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
         let native_terminal_ready = native_terminal.is_ready();
         let (layer_render_request_sender, layer_render_request_receiver) = mpsc::channel();

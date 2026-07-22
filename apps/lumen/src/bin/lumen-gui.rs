@@ -38,9 +38,12 @@ mod macos;
 mod macos_menu_spec;
 #[path = "lumen_gui/state.rs"]
 mod state;
+#[path = "lumen_gui/terminal.rs"]
+mod terminal;
 #[path = "lumen_gui/toolbar.rs"]
 mod toolbar;
 use helpers::*;
+use terminal::TerminalDock;
 
 const ACCENT: Color32 = Color32::from_rgb(174, 123, 255);
 const ACCENT_COOL: Color32 = Color32::from_rgb(121, 161, 255);
@@ -202,6 +205,9 @@ struct LumenApp {
     history_selected: Option<spectrum_revisions::RevisionId>,
     history_scroll_to_current: bool,
     open_document_receiver: Receiver<PathBuf>,
+    terminal: TerminalDock,
+    #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+    native_terminal: spectrum_terminal::native_ghostty::NativeTerminalHost,
     #[cfg(target_os = "macos")]
     native_menu: macos::NativeMenuBridge,
 }
@@ -232,6 +238,17 @@ impl LumenApp {
             style.spacing.item_spacing = Vec2::new(8.0, 7.0);
             style.spacing.button_padding = Vec2::new(10.0, 6.0);
         });
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        let native_terminal =
+            spectrum_terminal::native_ghostty::NativeTerminalHost::from_environment(
+                creation,
+                spectrum_terminal::native_ghostty::NativeTerminalConfig::new(
+                    "LUMEN_EXPERIMENTAL_GHOSTTY",
+                    "LUMEN_GHOSTTY_BRIDGE",
+                ),
+            );
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        let native_terminal_ready = native_terminal.is_ready();
         let recent_catalogs = creation
             .storage
             .and_then(|storage| storage.get_string(RECENT_CATALOGS_KEY))
@@ -305,9 +322,22 @@ impl LumenApp {
             history_selected: None,
             history_scroll_to_current: false,
             open_document_receiver,
+            terminal: TerminalDock::new(
+                #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+                native_terminal_ready,
+                #[cfg(not(all(target_os = "macos", feature = "ghostty-terminal")))]
+                false,
+            ),
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            native_terminal,
             #[cfg(target_os = "macos")]
             native_menu,
         };
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        if let Some(diagnostic) = app.native_terminal.fallback_diagnostic() {
+            app.status = diagnostic.to_owned();
+            app.error = true;
+        }
         if let Some(path) = app.workspace.catalog_path.clone() {
             app.remember_catalog(path);
         }
@@ -321,6 +351,7 @@ impl eframe::App for LumenApp {
         self.receive_open_documents(&context);
         self.sync_agent_collaborations(&context);
         self.sync_draft();
+        self.poll_terminal(&context);
         #[cfg(target_os = "macos")]
         self.process_native_menu_actions(&context);
         self.handle_drop_and_shortcuts(&context);
@@ -328,10 +359,18 @@ impl eframe::App for LumenApp {
         self.toolbar(ui);
         self.status_bar(ui);
         if self.history_open {
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            self.native_terminal.hide_all();
             self.history_view(ui);
+        } else if self.terminal.visible() {
+            self.terminal_panel(ui);
         } else if self.library_mode {
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            self.native_terminal.hide_all();
             self.library_canvas(ui);
         } else {
+            #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+            self.native_terminal.hide_all();
             self.filmstrip(ui);
             self.inspector(ui);
             self.canvas(ui);
@@ -370,6 +409,13 @@ impl eframe::App for LumenApp {
         if let Ok(value) = serde_json::to_string(&self.recent_catalogs) {
             storage.set_string(RECENT_CATALOGS_KEY, value);
         }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let _ = self.workspace.checkpoint();
+        self.terminal.shutdown();
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        self.native_terminal.shutdown();
     }
 }
 

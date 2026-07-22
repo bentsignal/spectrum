@@ -211,6 +211,10 @@ impl Workspace {
         self.durable.is_some()
     }
 
+    pub fn session_id(&self) -> Option<SessionId> {
+        self.durable.as_ref().map(DurableCatalog::session_id)
+    }
+
     pub fn history(&self) -> Result<Option<ProjectHistory>> {
         let Some(durable) = &self.durable else {
             return Ok(None);

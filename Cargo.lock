@@ -2079,6 +2079,8 @@ dependencies = [
  "spectrum-history-ui",
  "spectrum-imaging",
  "spectrum-revisions",
+ "spectrum-terminal",
+ "vt100",
  "winit",
 ]
 
@@ -3538,7 +3540,10 @@ name = "spectrum-terminal"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "eframe",
  "portable-pty",
+ "serde_json",
+ "winit",
 ]
 
 [[package]]

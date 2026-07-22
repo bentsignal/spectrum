@@ -59,6 +59,9 @@ pub(super) struct NativeMenuState {
     all_shoots_visible: bool,
     history_visible: bool,
     keyboard_focus: bool,
+    terminal_visible: bool,
+    native_terminal_session: bool,
+    native_terminal_active: bool,
 }
 
 impl NativeMenuState {
@@ -73,20 +76,38 @@ impl NativeMenuState {
                     && !self.all_shoots_visible
                     && !self.history_visible
             }
-            NativeMenuAction::Undo => !self.modal_open && self.can_undo && !self.keyboard_focus,
-            NativeMenuAction::Redo => !self.modal_open && self.can_redo && !self.keyboard_focus,
-            NativeMenuAction::Cut | NativeMenuAction::Copy | NativeMenuAction::Paste => {
-                self.keyboard_focus
+            NativeMenuAction::Undo => {
+                !self.modal_open && self.can_undo && !self.keyboard_focus && !self.terminal_visible
+            }
+            NativeMenuAction::Redo => {
+                !self.modal_open && self.can_redo && !self.keyboard_focus && !self.terminal_visible
+            }
+            NativeMenuAction::Cut => {
+                self.keyboard_focus && (self.modal_open || !self.terminal_visible)
+            }
+            NativeMenuAction::Copy => {
+                self.native_terminal_active
+                    || self.keyboard_focus && (self.modal_open || !self.terminal_visible)
+            }
+            NativeMenuAction::Paste => {
+                self.native_terminal_active
+                    || self.keyboard_focus
+                    || self.terminal_visible && !self.native_terminal_session
             }
             NativeMenuAction::SelectAll => {
-                self.keyboard_focus
-                    || !self.modal_open
-                        && self.has_photos
-                        && !self.all_shoots_visible
-                        && !self.history_visible
+                !self.terminal_visible
+                    && (self.keyboard_focus
+                        || !self.modal_open
+                            && self.has_photos
+                            && !self.all_shoots_visible
+                            && !self.history_visible)
             }
+            NativeMenuAction::ToggleTerminal => !self.modal_open && !self.history_visible,
             NativeMenuAction::ToggleAllShoots => {
-                !self.modal_open && self.has_photos && !self.history_visible
+                !self.modal_open
+                    && self.has_photos
+                    && !self.history_visible
+                    && !self.terminal_visible
             }
             NativeMenuAction::PreviousPhoto => {
                 !self.modal_open
@@ -94,6 +115,7 @@ impl NativeMenuState {
                     && !self.all_shoots_visible
                     && !self.history_visible
                     && !self.keyboard_focus
+                    && !self.terminal_visible
             }
             NativeMenuAction::NextPhoto => {
                 !self.modal_open
@@ -101,18 +123,20 @@ impl NativeMenuState {
                     && !self.all_shoots_visible
                     && !self.history_visible
                     && !self.keyboard_focus
+                    && !self.terminal_visible
             }
             NativeMenuAction::ToggleHistory => {
                 !self.modal_open
                     && self.selection_present
                     && !self.all_shoots_visible
-                    && !self.keyboard_focus
+                    && (!self.keyboard_focus || self.terminal_visible)
             }
             NativeMenuAction::FitPhoto | NativeMenuAction::ZoomIn | NativeMenuAction::ZoomOut => {
                 !self.modal_open
                     && self.selection_present
                     && !self.all_shoots_visible
                     && !self.history_visible
+                    && !self.terminal_visible
             }
         }
     }
@@ -128,6 +152,11 @@ impl NativeMenuState {
                 "Hide History"
             } else {
                 "Show History"
+            }),
+            NativeMenuAction::ToggleTerminal => Some(if self.terminal_visible {
+                "Hide Terminal"
+            } else {
+                "Show Terminal"
             }),
             _ => None,
         }
@@ -469,12 +498,14 @@ impl LumenApp {
             .project
             .selected
             .and_then(|id| visible.iter().position(|visible_id| *visible_id == id));
+        let modal_open = self.reset_confirmation
+            || self.remove_confirmation
+            || self.pending_catalog_switch.is_some()
+            || self.rename_batch.is_some()
+            || self.export_open;
+        let native_terminal_session = self.terminal.native_session();
         NativeMenuState {
-            modal_open: self.reset_confirmation
-                || self.remove_confirmation
-                || self.pending_catalog_switch.is_some()
-                || self.rename_batch.is_some()
-                || self.export_open,
+            modal_open,
             catalog_movable: self.workspace.catalog_path.is_some(),
             has_photos: !self.workspace.project.photos.is_empty(),
             selection_present: self.workspace.project.selected.is_some(),
@@ -485,6 +516,13 @@ impl LumenApp {
             all_shoots_visible: self.library_mode,
             history_visible: self.history_open,
             keyboard_focus: context.egui_wants_keyboard_input(),
+            terminal_visible: self.terminal.visible(),
+            native_terminal_session,
+            native_terminal_active: self.terminal.visible()
+                && native_terminal_session
+                && !modal_open
+                && !self.history_open
+                && !self.library_mode,
         }
     }
 
@@ -514,6 +552,10 @@ impl LumenApp {
                 action @ (NativeMenuAction::Cut
                 | NativeMenuAction::Copy
                 | NativeMenuAction::Paste) => {
+                    #[cfg(feature = "ghostty-terminal")]
+                    if self.route_native_terminal_edit(action) {
+                        continue;
+                    }
                     context.send_viewport_cmd(
                         clipboard_viewport_command(action)
                             .expect("matched actions always have a clipboard command"),
@@ -533,6 +575,7 @@ impl LumenApp {
                         self.library_mode = true;
                     }
                 }
+                NativeMenuAction::ToggleTerminal => self.toggle_terminal(),
                 NativeMenuAction::PreviousPhoto => self.select_relative(-1),
                 NativeMenuAction::NextPhoto => self.select_relative(1),
                 NativeMenuAction::ToggleHistory => self.toggle_history(),
@@ -625,6 +668,52 @@ mod tests {
         };
         assert!(!state.allows(NativeMenuAction::ToggleAllShoots));
         assert!(state.allows(NativeMenuAction::ToggleHistory));
+        assert!(!state.allows(NativeMenuAction::ToggleTerminal));
+    }
+
+    #[test]
+    fn native_terminal_owns_copy_and_paste_but_not_cut_or_photo_edits() {
+        let state = NativeMenuState {
+            terminal_visible: true,
+            native_terminal_session: true,
+            native_terminal_active: true,
+            can_undo: true,
+            can_redo: true,
+            ..Default::default()
+        };
+        assert!(!state.allows(NativeMenuAction::Cut));
+        assert!(state.allows(NativeMenuAction::Copy));
+        assert!(state.allows(NativeMenuAction::Paste));
+        assert!(!state.allows(NativeMenuAction::Undo));
+        assert!(!state.allows(NativeMenuAction::Redo));
+        assert!(state.allows(NativeMenuAction::ToggleTerminal));
+    }
+
+    #[test]
+    fn portable_terminal_only_advertises_paste() {
+        let state = NativeMenuState {
+            terminal_visible: true,
+            keyboard_focus: true,
+            ..Default::default()
+        };
+        assert!(!state.allows(NativeMenuAction::Cut));
+        assert!(!state.allows(NativeMenuAction::Copy));
+        assert!(state.allows(NativeMenuAction::Paste));
+    }
+
+    #[test]
+    fn modal_text_owns_clipboard_over_a_logically_open_native_terminal() {
+        let state = NativeMenuState {
+            modal_open: true,
+            terminal_visible: true,
+            native_terminal_session: true,
+            native_terminal_active: false,
+            keyboard_focus: true,
+            ..Default::default()
+        };
+        assert!(state.allows(NativeMenuAction::Cut));
+        assert!(state.allows(NativeMenuAction::Copy));
+        assert!(state.allows(NativeMenuAction::Paste));
     }
 
     #[test]
