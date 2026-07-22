@@ -2,6 +2,7 @@ use super::*;
 
 impl LumenApp {
     pub(super) fn toolbar(&mut self, root: &mut egui::Ui) {
+        #[cfg(not(target_os = "macos"))]
         let recent_catalogs = self.recent_catalogs.clone();
         egui::Panel::top("toolbar")
             .frame(
@@ -31,53 +32,58 @@ impl LumenApp {
                         Stroke::new(1.0, Color32::from_gray(58)),
                     );
                     ui.add_space(2.0);
-                    if ui.button("Import Photos").clicked() {
-                        self.import_dialog();
-                    }
-                    ui.menu_button("Project", |ui| {
-                        if ui.button("New Project").clicked() {
-                            ui.close();
-                            self.new_catalog();
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        if ui.button("Import Photos").clicked() {
+                            self.import_dialog();
                         }
-                        if ui.button("Open Project...").clicked() {
-                            ui.close();
-                            self.open_catalog();
-                        }
-                        if ui.button("Move Project...").clicked() {
-                            ui.close();
-                            self.move_project();
-                        }
-                        if ui.button("History  ⌘H").clicked() {
-                            ui.close();
-                            self.history_open = true;
-                        }
-                        ui.separator();
-                        ui.label(
-                            RichText::new("RECENT PROJECTS")
-                                .size(10.0)
-                                .color(Color32::GRAY),
-                        );
-                        if recent_catalogs.is_empty() {
-                            ui.label(RichText::new("None yet").color(Color32::GRAY));
-                        } else {
-                            for path in &recent_catalogs {
-                                if ui
-                                    .add_enabled(
-                                        path.exists(),
-                                        egui::Button::new(catalog_label(path)),
-                                    )
-                                    .on_hover_text(path.display().to_string())
-                                    .clicked()
-                                {
-                                    self.request_catalog_switch(CatalogSwitch::Open(path.clone()));
-                                    ui.close();
+                        ui.menu_button("Catalog", |ui| {
+                            if ui.button("New Catalog").clicked() {
+                                ui.close();
+                                self.new_catalog();
+                            }
+                            if ui.button("Open Catalog...").clicked() {
+                                ui.close();
+                                self.open_catalog();
+                            }
+                            if ui.button("Move Catalog...").clicked() {
+                                ui.close();
+                                self.move_project();
+                            }
+                            if ui.button("History  ⌘H").clicked() {
+                                ui.close();
+                                self.history_open = true;
+                            }
+                            ui.separator();
+                            ui.label(
+                                RichText::new("RECENT CATALOGS")
+                                    .size(10.0)
+                                    .color(Color32::GRAY),
+                            );
+                            if recent_catalogs.is_empty() {
+                                ui.label(RichText::new("None yet").color(Color32::GRAY));
+                            } else {
+                                for path in &recent_catalogs {
+                                    if ui
+                                        .add_enabled(
+                                            path.exists(),
+                                            egui::Button::new(catalog_label(path)),
+                                        )
+                                        .on_hover_text(path.display().to_string())
+                                        .clicked()
+                                    {
+                                        self.request_catalog_switch(CatalogSwitch::Open(
+                                            path.clone(),
+                                        ));
+                                        ui.close();
+                                    }
                                 }
                             }
-                        }
-                    });
+                        });
+                    }
                     if self.library_mode {
                         ui.separator();
-                        ui.label(RichText::new("LIBRARY").strong().color(ACCENT));
+                        ui.label(RichText::new("ALL SHOOTS").strong().color(ACCENT));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(current_catalog_name(&self.workspace))
@@ -86,29 +92,32 @@ impl LumenApp {
                         });
                         return;
                     }
-                    if ui.button("Library").clicked() {
-                        self.library_mode = true;
-                    }
-                    ui.separator();
-                    let (can_back, can_forward) =
-                        (self.workspace.can_undo(), self.workspace.can_redo());
-                    if ui
-                        .add_enabled(can_back, egui::Button::new("Back"))
-                        .on_hover_text("Go back one edit (Cmd/Ctrl+Z)")
-                        .clicked()
-                        && self.execute(Command::Undo)
+                    #[cfg(not(target_os = "macos"))]
                     {
-                        self.draft_id = None;
-                        self.sync_draft();
-                    }
-                    if ui
-                        .add_enabled(can_forward, egui::Button::new("Forward"))
-                        .on_hover_text("Go forward one edit (Cmd/Ctrl+Shift+Z)")
-                        .clicked()
-                        && self.execute(Command::Redo)
-                    {
-                        self.draft_id = None;
-                        self.sync_draft();
+                        if ui.button("All Shoots").clicked() {
+                            self.library_mode = true;
+                        }
+                        ui.separator();
+                        let (can_back, can_forward) =
+                            (self.workspace.can_undo(), self.workspace.can_redo());
+                        if ui
+                            .add_enabled(can_back, egui::Button::new("Undo Edit"))
+                            .on_hover_text("Undo the last photo edit (Cmd/Ctrl+Z)")
+                            .clicked()
+                            && self.execute(Command::Undo)
+                        {
+                            self.draft_id = None;
+                            self.sync_draft();
+                        }
+                        if ui
+                            .add_enabled(can_forward, egui::Button::new("Redo Edit"))
+                            .on_hover_text("Redo the last photo edit (Cmd/Ctrl+Shift+Z)")
+                            .clicked()
+                            && self.execute(Command::Redo)
+                        {
+                            self.draft_id = None;
+                            self.sync_draft();
+                        }
                     }
                     ui.separator();
                     if ui.button("Fit").clicked() {
@@ -138,18 +147,24 @@ impl LumenApp {
                         .map(|photo| photo.pick)
                         .unwrap_or_default();
                     if ui
-                        .selectable_label(pick == PickState::Keep, "+ Keep")
+                        .selectable_label(pick == PickState::Keep, "Keep")
                         .on_hover_text("Mark selected photos as keeps (P)")
                         .clicked()
                     {
-                        self.set_pick(self.selected_photo_ids(), PickState::Keep);
+                        self.set_pick(
+                            self.selected_photo_ids(),
+                            toggled_pick(pick, PickState::Keep),
+                        );
                     }
                     if ui
-                        .selectable_label(pick == PickState::Reject, "x Reject")
+                        .selectable_label(pick == PickState::Reject, "Reject")
                         .on_hover_text("Mark selected photos as rejects (X)")
                         .clicked()
                     {
-                        self.set_pick(self.selected_photo_ids(), PickState::Reject);
+                        self.set_pick(
+                            self.selected_photo_ids(),
+                            toggled_pick(pick, PickState::Reject),
+                        );
                     }
                     if ui
                         .add_enabled(
@@ -181,20 +196,23 @@ impl LumenApp {
                     {
                         self.begin_crop();
                     }
-                    if ui
-                        .add_enabled(
-                            self.workspace.project.selected.is_some(),
-                            egui::Button::new(format!(
-                                "Export{}",
-                                match self.selected_photo_ids().len() {
-                                    0 | 1 => String::new(),
-                                    count => format!(" {count}"),
-                                }
-                            )),
-                        )
-                        .clicked()
+                    #[cfg(not(target_os = "macos"))]
                     {
-                        self.open_export();
+                        if ui
+                            .add_enabled(
+                                self.workspace.project.selected.is_some(),
+                                egui::Button::new(format!(
+                                    "Export{}",
+                                    match self.selected_photo_ids().len() {
+                                        0 | 1 => String::new(),
+                                        count => format!(" {count}"),
+                                    }
+                                )),
+                            )
+                            .clicked()
+                        {
+                            self.open_export();
+                        }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
@@ -295,12 +313,12 @@ impl LumenApp {
                             let selected = self.selected_ids.contains(&id);
                             let active = self.workspace.project.selected == Some(id);
                             let frame = egui::Frame::new()
-                                .fill(if selected {
-                                    Color32::from_rgb(50, 41, 67)
-                                } else if pick == PickState::Keep {
+                                .fill(if pick == PickState::Keep {
                                     Color32::from_rgb(31, 48, 43)
                                 } else if pick == PickState::Reject {
                                     Color32::from_rgb(45, 31, 34)
+                                } else if selected {
+                                    Color32::from_rgb(50, 41, 67)
                                 } else {
                                     SURFACE
                                 })
@@ -313,7 +331,6 @@ impl LumenApp {
                                 })
                                 .corner_radius(5.0)
                                 .inner_margin(6);
-                            let mut pick_action = None;
                             let inner = frame.show(ui, |ui| {
                                 let width = ui.available_width();
                                 ui.set_min_width(width);
@@ -326,32 +343,9 @@ impl LumenApp {
                                         ui.allocate_space(Vec2::new(width, 84.0));
                                     }
                                     ui.label(RichText::new(shorten(&name, 18)).size(11.0));
-                                    match pick {
-                                        PickState::Keep => {
-                                            if ui
-                                                .selectable_label(true, "+")
-                                                .on_hover_text("Kept - click to unmark")
-                                                .clicked()
-                                            {
-                                                pick_action = Some(PickState::Unmarked);
-                                            }
-                                        }
-                                        PickState::Reject => {
-                                            if ui
-                                                .selectable_label(true, "x")
-                                                .on_hover_text("Rejected - click to unmark")
-                                                .clicked()
-                                            {
-                                                pick_action = Some(PickState::Unmarked);
-                                            }
-                                        }
-                                        PickState::Unmarked => {}
-                                    }
                                 });
                             });
-                            if let Some(state) = pick_action {
-                                self.set_pick(vec![id], state);
-                            } else if inner.response.interact(Sense::click()).clicked() {
+                            if inner.response.interact(Sense::click()).clicked() {
                                 let modifiers = ui.input(|input| input.modifiers);
                                 self.select_in_filmstrip(id, project_index, modifiers);
                             }
@@ -359,5 +353,34 @@ impl LumenApp {
                         }
                     });
             });
+    }
+}
+
+fn toggled_pick(current: PickState, requested: PickState) -> PickState {
+    if current == requested {
+        PickState::Unmarked
+    } else {
+        requested
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keep_and_reject_controls_toggle_without_redundant_glyph_buttons() {
+        assert_eq!(
+            toggled_pick(PickState::Keep, PickState::Keep),
+            PickState::Unmarked
+        );
+        assert_eq!(
+            toggled_pick(PickState::Reject, PickState::Reject),
+            PickState::Unmarked
+        );
+        assert_eq!(
+            toggled_pick(PickState::Reject, PickState::Keep),
+            PickState::Keep
+        );
     }
 }

@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::Receiver,
     time::{Duration, Instant},
 };
 
@@ -33,6 +33,9 @@ mod library;
 #[cfg(target_os = "macos")]
 #[path = "lumen_gui/macos.rs"]
 mod macos;
+#[cfg(target_os = "macos")]
+#[path = "lumen_gui/macos_menu_spec.rs"]
+mod macos_menu_spec;
 #[path = "lumen_gui/state.rs"]
 mod state;
 #[path = "lumen_gui/toolbar.rs"]
@@ -129,7 +132,7 @@ fn lumen_icon() -> egui::IconData {
 #[cfg(not(target_os = "macos"))]
 fn main() -> eframe::Result {
     let initial_catalog = std::env::args_os().nth(1).map(PathBuf::from);
-    let (_, open_document_receiver) = mpsc::channel();
+    let (_, open_document_receiver) = std::sync::mpsc::channel();
     eframe::run_native(
         "Lumen",
         native_options(),
@@ -146,24 +149,7 @@ fn main() -> eframe::Result {
 #[cfg(target_os = "macos")]
 fn main() -> eframe::Result {
     let initial_catalog = std::env::args_os().nth(1).map(PathBuf::from);
-    let (open_document_sender, open_document_receiver) = mpsc::channel();
-    let event_loop =
-        winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
-    macos::install_open_document_handler(open_document_sender);
-    let mut application = eframe::create_native(
-        "Lumen",
-        native_options(),
-        Box::new(move |creation| {
-            Ok(Box::new(LumenApp::new(
-                creation,
-                initial_catalog.clone(),
-                open_document_receiver,
-            )))
-        }),
-        &event_loop,
-    );
-    event_loop.run_app(&mut application)?;
-    Ok(())
+    macos::run(initial_catalog)
 }
 
 struct LumenApp {
@@ -216,6 +202,8 @@ struct LumenApp {
     history_selected: Option<spectrum_revisions::RevisionId>,
     history_scroll_to_current: bool,
     open_document_receiver: Receiver<PathBuf>,
+    #[cfg(target_os = "macos")]
+    native_menu: macos::NativeMenuBridge,
 }
 
 impl LumenApp {
@@ -223,6 +211,7 @@ impl LumenApp {
         creation: &eframe::CreationContext<'_>,
         initial_catalog: Option<PathBuf>,
         open_document_receiver: Receiver<PathBuf>,
+        #[cfg(target_os = "macos")] native_menu: macos::NativeMenuBridge,
     ) -> Self {
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = PANEL;
@@ -316,6 +305,8 @@ impl LumenApp {
             history_selected: None,
             history_scroll_to_current: false,
             open_document_receiver,
+            #[cfg(target_os = "macos")]
+            native_menu,
         };
         if let Some(path) = app.workspace.catalog_path.clone() {
             app.remember_catalog(path);
@@ -330,6 +321,8 @@ impl eframe::App for LumenApp {
         self.receive_open_documents(&context);
         self.sync_agent_collaborations(&context);
         self.sync_draft();
+        #[cfg(target_os = "macos")]
+        self.process_native_menu_actions(&context);
         self.handle_drop_and_shortcuts(&context);
         spectrum_history_ui::reserve_history_shortcut();
         self.toolbar(ui);
@@ -348,6 +341,8 @@ impl eframe::App for LumenApp {
         self.catalog_switch_confirmation_window(&context);
         self.rename_batch_window(&context);
         self.export_window(&context);
+        #[cfg(target_os = "macos")]
+        self.sync_native_menu_state(&context);
         if !context.input(|input| input.raw.hovered_files.is_empty()) {
             let painter = context.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,

@@ -515,6 +515,7 @@ impl LumenApp {
                 self.error = false;
             }
         }
+        #[cfg(not(target_os = "macos"))]
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::H)) {
             self.toggle_history();
         }
@@ -530,22 +531,25 @@ impl LumenApp {
                     .position(|photo| photo.id == id)
             });
         }
-        let history = context.input(|input| {
-            if input.modifiers.command && input.key_pressed(egui::Key::Z) {
-                Some(input.modifiers.shift)
-            } else {
-                None
-            }
-        });
-        if let Some(forward) = history {
-            let command = if forward {
-                Command::Redo
-            } else {
-                Command::Undo
-            };
-            if self.execute(command) {
-                self.draft_id = None;
-                self.sync_draft();
+        #[cfg(not(target_os = "macos"))]
+        {
+            let history = context.input(|input| {
+                if input.modifiers.command && input.key_pressed(egui::Key::Z) {
+                    Some(input.modifiers.shift)
+                } else {
+                    None
+                }
+            });
+            if let Some(forward) = history {
+                let command = if forward {
+                    Command::Redo
+                } else {
+                    Command::Undo
+                };
+                if self.execute(command) {
+                    self.draft_id = None;
+                    self.sync_draft();
+                }
             }
         }
         let direction = context.input(|input| {

@@ -11,11 +11,13 @@ impl LumenApp {
             )
             .show(root, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(&self.status).size(12.0).color(if self.error {
-                        Color32::from_rgb(244, 122, 110)
-                    } else {
-                        Color32::LIGHT_GRAY
-                    }));
+                    if self.error {
+                        ui.label(
+                            RichText::new(&self.status)
+                                .size(12.0)
+                                .color(Color32::from_rgb(244, 122, 110)),
+                        );
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(photo) = self.workspace.project.selected_photo() {
                             ui.label(

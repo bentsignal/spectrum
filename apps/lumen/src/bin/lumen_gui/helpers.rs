@@ -651,6 +651,7 @@ pub(super) fn shorten(value: &str, max_chars: usize) -> String {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(super) fn catalog_label(path: &Path) -> String {
     let name = path
         .file_stem()
