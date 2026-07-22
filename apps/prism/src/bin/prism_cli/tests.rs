@@ -618,7 +618,7 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert!(schema["alignment"].is_object());
     assert_eq!(
         schema["command_protocol"]["supported_operation_versions"],
-        serde_json::json!([1, 2, 3, 4, 5])
+        serde_json::json!([1, 2, 3, 4, 5, 6])
     );
     assert_eq!(
         schema["command_protocol"]["selection_operations_version"],
@@ -627,6 +627,10 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert_eq!(
         schema["command_protocol"]["crop_to_selection_operations_version"],
         5
+    );
+    assert_eq!(
+        schema["command_protocol"]["color_selection_operations_version"],
+        6
     );
     assert!(schema["selection"].is_object());
     assert!(schema["selection"]["crop"].is_string());

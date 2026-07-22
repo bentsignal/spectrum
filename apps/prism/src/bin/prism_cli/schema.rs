@@ -29,7 +29,8 @@ pub(super) fn schema() -> Value {
             "operations_family": "spectrum.prism.commands",
             "supported_operation_versions": (1..=prism_core::PRISM_COMMAND_OPERATIONS_VERSION).collect::<Vec<_>>(),
             "selection_operations_version": 4,
-            "crop_to_selection_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "crop_to_selection_operations_version": 5,
+            "color_selection_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "gui_interactions": {
@@ -78,11 +79,11 @@ pub(super) fn schema() -> Value {
         },
         "layer_transfer": {
             "format": "spectrum.prism.layer",
-            "version": 2,
+            "version": prism_core::LAYER_TRANSFER_VERSION,
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
-            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision",
+            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks with verified content identity",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
         "color": "RRGGBB or RRGGBBAA",
