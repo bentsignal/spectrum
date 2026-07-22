@@ -146,9 +146,9 @@ impl PrismApp {
                         ui.separator();
                         if ui
                             .button(if self.history.visible {
-                                "Close history  ⌘H"
+                                format!("Close history  {}", shortcuts::SHORTCUT_LABELS.history)
                             } else {
-                                "History  ⌘H"
+                                format!("History  {}", shortcuts::SHORTCUT_LABELS.history)
                             })
                             .clicked()
                         {
@@ -157,9 +157,9 @@ impl PrismApp {
                         }
                         if ui
                             .button(if self.terminal.visible() {
-                                "Hide terminal  ⌘J"
+                                format!("Hide terminal  {}", shortcuts::SHORTCUT_LABELS.terminal)
                             } else {
-                                "Show terminal  ⌘J"
+                                format!("Show terminal  {}", shortcuts::SHORTCUT_LABELS.terminal)
                             })
                             .clicked()
                         {
@@ -169,21 +169,24 @@ impl PrismApp {
                     });
                     if ui
                         .add_enabled(self.workspace.can_undo(), egui::Button::new("Back"))
-                        .on_hover_text("Undo · ⌘Z")
+                        .on_hover_text(format!("Undo · {}", shortcuts::SHORTCUT_LABELS.undo))
                         .clicked()
                     {
                         self.execute(Command::Undo);
                     }
                     if ui
                         .add_enabled(self.workspace.can_redo(), egui::Button::new("Forward"))
-                        .on_hover_text("Redo · ⇧⌘Z")
+                        .on_hover_text(format!("Redo · {}", shortcuts::SHORTCUT_LABELS.redo))
                         .clicked()
                     {
                         self.execute(Command::Redo);
                     }
                     if ui
                         .selectable_label(self.history.visible, "History")
-                        .on_hover_text("Revision history · ⌘H")
+                        .on_hover_text(format!(
+                            "Revision history · {}",
+                            shortcuts::SHORTCUT_LABELS.history
+                        ))
                         .clicked()
                     {
                         self.toggle_history();
@@ -217,7 +220,10 @@ impl PrismApp {
                 egui::Button::new("+  New Document"),
             );
             if new_document
-                .on_hover_text("Create a new document · ⌘N")
+                .on_hover_text(format!(
+                    "Create a new document · {}",
+                    shortcuts::SHORTCUT_LABELS.new_document
+                ))
                 .clicked()
             {
                 self.new_dialog = Some(NewDocumentDialog::default());
@@ -583,9 +589,14 @@ impl PrismApp {
 const WORKBENCH_ACTION_SIZE: Vec2 = Vec2::new(148.0, CONTROL_HEIGHT);
 
 fn workbench_shortcut_rect(rect: Rect) -> Rect {
+    let width = if cfg!(target_os = "macos") {
+        43.0
+    } else {
+        51.0
+    };
     Rect::from_center_size(
-        Pos2::new(rect.right() - 31.5, rect.center().y),
-        Vec2::new(43.0, 20.0),
+        Pos2::new(rect.right() - 10.0 - width / 2.0, rect.center().y),
+        Vec2::new(width, 20.0),
     )
 }
 

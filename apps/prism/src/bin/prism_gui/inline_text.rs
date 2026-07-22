@@ -300,9 +300,15 @@ impl PrismApp {
             box_width,
         ));
         self.status = if let Some(width) = box_width {
-            format!("New paragraph · {width:.0} px wide · Command-Enter to add · Escape to cancel")
+            format!(
+                "New paragraph · {width:.0} px wide · {} to add · Escape to cancel",
+                shortcuts::SHORTCUT_LABELS.commit_text
+            )
         } else {
-            "New text · Command-Enter to add · Escape to cancel".into()
+            format!(
+                "New text · {} to add · Escape to cancel",
+                shortcuts::SHORTCUT_LABELS.commit_text
+            )
         };
         self.status_error = false;
         true
@@ -335,7 +341,10 @@ impl PrismApp {
         self.finish_interaction();
         self.workspace.begin_interaction();
         self.inline_text_editor = Some(editor);
-        self.status = "Editing text · Command-Enter to finish · Escape to cancel".into();
+        self.status = format!(
+            "Editing text · {} to finish · Escape to cancel",
+            shortcuts::SHORTCUT_LABELS.commit_text
+        );
         self.status_error = false;
         true
     }
@@ -490,9 +499,12 @@ impl PrismApp {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        RichText::new("⌘↵ Done · Esc Cancel")
-                                            .size(9.0)
-                                            .color(MUTED),
+                                        RichText::new(format!(
+                                            "{} Done · Esc Cancel",
+                                            shortcuts::SHORTCUT_LABELS.commit_text
+                                        ))
+                                        .size(9.0)
+                                        .color(MUTED),
                                     );
                                 },
                             );

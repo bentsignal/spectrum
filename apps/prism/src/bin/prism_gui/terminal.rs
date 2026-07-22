@@ -257,7 +257,10 @@ impl PrismApp {
     #[cfg(not(target_os = "macos"))]
     pub(super) fn terminal_status_control(&mut self, ui: &mut egui::Ui) {
         if ui
-            .selectable_label(self.terminal.visible(), "Terminal  ⌘J")
+            .selectable_label(
+                self.terminal.visible(),
+                format!("Terminal  {}", shortcuts::SHORTCUT_LABELS.terminal),
+            )
             .clicked()
         {
             self.toggle_terminal();
@@ -355,7 +358,14 @@ impl PrismApp {
                         if ui.small_button("+").on_hover_text("New terminal").clicked() {
                             new_session = true;
                         }
-                        if ui.small_button("‹").on_hover_text("Hide · ⌘J").clicked() {
+                        if ui
+                            .small_button("‹")
+                            .on_hover_text(format!(
+                                "Hide · {}",
+                                shortcuts::SHORTCUT_LABELS.terminal
+                            ))
+                            .clicked()
+                        {
                             hide = true;
                         }
                     });
@@ -417,7 +427,11 @@ impl PrismApp {
                     });
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(RichText::new("⌘J  editor").size(10.0).color(SUBTLE));
+                    ui.label(
+                        RichText::new(format!("{}  editor", shortcuts::SHORTCUT_LABELS.terminal))
+                            .size(10.0)
+                            .color(SUBTLE),
+                    );
                     if let Some(session) = self.terminal.sessions.get(self.terminal.active)
                         && let Some((message, is_error)) = &session.message
                     {

@@ -1,5 +1,42 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ShortcutLabels {
+    pub(super) history: &'static str,
+    pub(super) terminal: &'static str,
+    pub(super) undo: &'static str,
+    pub(super) redo: &'static str,
+    pub(super) new_document: &'static str,
+    pub(super) commit_text: &'static str,
+}
+
+impl ShortcutLabels {
+    const fn for_platform(macos: bool) -> Self {
+        if macos {
+            Self {
+                history: "⌘H",
+                terminal: "⌘J",
+                undo: "⌘Z",
+                redo: "⇧⌘Z",
+                new_document: "⌘N",
+                commit_text: "⌘↵",
+            }
+        } else {
+            Self {
+                history: "Ctrl+H",
+                terminal: "Ctrl+Shift+J",
+                undo: "Ctrl+Z",
+                redo: "Ctrl+Shift+Z",
+                new_document: "Ctrl+N",
+                commit_text: "Ctrl+Enter",
+            }
+        }
+    }
+}
+
+pub(super) const SHORTCUT_LABELS: ShortcutLabels =
+    ShortcutLabels::for_platform(cfg!(target_os = "macos"));
+
 /// Prism assigns modifiers by interaction domain rather than feature:
 ///
 /// - bare letters arm canvas tools;
@@ -330,6 +367,23 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn shortcut_labels_match_each_platform_chord() {
+        let macos = ShortcutLabels::for_platform(true);
+        assert_eq!(macos.history, "⌘H");
+        assert_eq!(macos.terminal, "⌘J");
+        assert_eq!(macos.redo, "⇧⌘Z");
+        assert_eq!(macos.new_document, "⌘N");
+
+        let portable = ShortcutLabels::for_platform(false);
+        assert_eq!(portable.history, "Ctrl+H");
+        assert_eq!(portable.terminal, "Ctrl+Shift+J");
+        assert_eq!(portable.undo, "Ctrl+Z");
+        assert_eq!(portable.redo, "Ctrl+Shift+Z");
+        assert_eq!(portable.new_document, "Ctrl+N");
+        assert_eq!(portable.commit_text, "Ctrl+Enter");
     }
 
     #[test]
