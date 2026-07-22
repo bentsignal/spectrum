@@ -196,7 +196,7 @@ pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 16] = [
         NativeMenuSection::View,
         "Show History",
         NativeMenuAction::ToggleHistory,
-        Some(ActionKeyEquivalent::command_shift("h")),
+        Some(ActionKeyEquivalent::command("h")),
         false,
     ),
     action_spec(
@@ -281,5 +281,15 @@ mod tests {
         );
         assert_eq!(deselect.section, NativeMenuSection::Edit);
         assert_eq!(deselect.equivalent, Some(ActionKeyEquivalent::command("d")));
+    }
+
+    #[test]
+    fn history_uses_command_h() {
+        let history = ACTION_MENU_ITEMS
+            .iter()
+            .find(|spec| spec.action == NativeMenuAction::ToggleHistory)
+            .unwrap();
+        assert_eq!(history.section, NativeMenuSection::View);
+        assert_eq!(history.equivalent, Some(ActionKeyEquivalent::command("h")));
     }
 }

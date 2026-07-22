@@ -127,85 +127,76 @@ impl PrismApp {
             .show(root, |ui| {
                 ui.spacing_mut().interact_size.y = COMPACT_CONTROL_HEIGHT;
                 ui.spacing_mut().item_spacing.y = 2.0;
+                #[cfg(not(target_os = "macos"))]
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("PRISM").size(12.0).strong().color(TEXT));
-                    #[cfg(not(target_os = "macos"))]
-                    {
+                    ui.menu_button("Project", |ui| {
+                        if ui.button("New document").clicked() {
+                            self.new_dialog = Some(NewDocumentDialog::default());
+                            ui.close();
+                        }
+                        if ui.button("Open…").clicked() {
+                            self.open_project_dialog();
+                            ui.close();
+                        }
                         ui.separator();
-                        ui.menu_button("Project", |ui| {
-                            if ui.button("New document").clicked() {
-                                self.new_dialog = Some(NewDocumentDialog::default());
-                                ui.close();
-                            }
-                            if ui.button("Open…").clicked() {
-                                self.open_project_dialog();
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("Move project…").clicked() {
-                                self.begin_move_project();
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui
-                                .button(if self.history.visible {
-                                    "Close history  ⌘H"
-                                } else {
-                                    "History  ⌘H"
-                                })
-                                .clicked()
-                            {
-                                self.toggle_history();
-                                ui.close();
-                            }
-                            if ui
-                                .button(if self.terminal.visible() {
-                                    "Hide terminal  ⌘J"
-                                } else {
-                                    "Show terminal  ⌘J"
-                                })
-                                .clicked()
-                            {
-                                self.toggle_terminal();
-                                ui.close();
-                            }
-                        });
-                        if ui
-                            .add_enabled(self.workspace.can_undo(), egui::Button::new("Back"))
-                            .on_hover_text("Undo · ⌘Z")
-                            .clicked()
-                        {
-                            self.execute(Command::Undo);
+                        if ui.button("Move project…").clicked() {
+                            self.begin_move_project();
+                            ui.close();
                         }
+                        ui.separator();
                         if ui
-                            .add_enabled(self.workspace.can_redo(), egui::Button::new("Forward"))
-                            .on_hover_text("Redo · ⇧⌘Z")
-                            .clicked()
-                        {
-                            self.execute(Command::Redo);
-                        }
-                        if ui
-                            .selectable_label(self.history.visible, "History")
-                            .on_hover_text("Revision history · ⌘H")
+                            .button(if self.history.visible {
+                                format!("Close history  {}", shortcuts::SHORTCUT_LABELS.history)
+                            } else {
+                                format!("History  {}", shortcuts::SHORTCUT_LABELS.history)
+                            })
                             .clicked()
                         {
                             self.toggle_history();
+                            ui.close();
                         }
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        #[cfg(not(target_os = "macos"))]
+                        if ui
+                            .button(if self.terminal.visible() {
+                                format!("Hide terminal  {}", shortcuts::SHORTCUT_LABELS.terminal)
+                            } else {
+                                format!("Show terminal  {}", shortcuts::SHORTCUT_LABELS.terminal)
+                            })
+                            .clicked()
                         {
-                            if primary_button(ui, "Export").clicked() {
-                                self.export();
-                            }
+                            self.toggle_terminal();
+                            ui.close();
                         }
-                        ui.label(
-                            RichText::new(&self.workspace.document.name)
-                                .size(12.0)
-                                .color(MUTED),
-                        );
                     });
+                    if ui
+                        .add_enabled(self.workspace.can_undo(), egui::Button::new("Back"))
+                        .on_hover_text(format!("Undo · {}", shortcuts::SHORTCUT_LABELS.undo))
+                        .clicked()
+                    {
+                        self.execute(Command::Undo);
+                    }
+                    if ui
+                        .add_enabled(self.workspace.can_redo(), egui::Button::new("Forward"))
+                        .on_hover_text(format!("Redo · {}", shortcuts::SHORTCUT_LABELS.redo))
+                        .clicked()
+                    {
+                        self.execute(Command::Redo);
+                    }
+                    if ui
+                        .selectable_label(self.history.visible, "History")
+                        .on_hover_text(format!(
+                            "Revision history · {}",
+                            shortcuts::SHORTCUT_LABELS.history
+                        ))
+                        .clicked()
+                    {
+                        self.toggle_history();
+                    }
+                    if primary_button(ui, "Export").clicked() {
+                        self.export();
+                    }
                 });
+                #[cfg(not(target_os = "macos"))]
+                ui.add_space(2.0);
                 self.document_tabs(ui);
             });
     }
@@ -223,45 +214,63 @@ impl PrismApp {
                 Some((*id, workspace.document.name.clone(), workspace.is_dirty()))
             })
             .collect();
-        egui::ScrollArea::horizontal()
-            .id_salt("document-tabs")
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut close = None;
-                    let close_affordance = project_lifecycle::tab_close_affordance(tabs.len());
-                    for (id, name, dirty) in tabs {
-                        let label = if dirty { format!("{name}  •") } else { name };
-                        let response = ui
-                            .selectable_label(
-                                id == self.active_tab_id,
-                                RichText::new(label).size(11.0).color(if dirty {
-                                    ACCENT_WARM
-                                } else {
-                                    TEXT
-                                }),
-                            )
-                            .on_hover_text("Switch document");
-                        if response.clicked() {
-                            self.activate_tab(id);
+        ui.horizontal(|ui| {
+            let new_document = ui.add_sized(
+                [112.0, COMPACT_CONTROL_HEIGHT],
+                egui::Button::new("+  New Document"),
+            );
+            if new_document
+                .on_hover_text(format!(
+                    "Create a new document · {}",
+                    shortcuts::SHORTCUT_LABELS.new_document
+                ))
+                .clicked()
+            {
+                self.new_dialog = Some(NewDocumentDialog::default());
+            }
+            ui.separator();
+            egui::ScrollArea::horizontal()
+                .id_salt("document-tabs")
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut close = None;
+                        let close_affordance = project_lifecycle::tab_close_affordance(tabs.len());
+                        for (id, name, dirty) in tabs {
+                            let label = if dirty { format!("{name}  •") } else { name };
+                            let response = ui
+                                .selectable_label(
+                                    id == self.active_tab_id,
+                                    RichText::new(label).size(11.0).color(if dirty {
+                                        ACCENT_WARM
+                                    } else {
+                                        TEXT
+                                    }),
+                                )
+                                .on_hover_text("Switch document");
+                            if response.clicked() {
+                                self.activate_tab(id);
+                            }
+                            let close_button = ui.add_enabled(
+                                close_affordance.enabled,
+                                egui::Button::new("×").small(),
+                            );
+                            let close_button = if !close_affordance.enabled {
+                                close_button.on_disabled_hover_text(close_affordance.hover_text)
+                            } else if dirty {
+                                close_button.on_hover_text("Project has not finished persisting")
+                            } else {
+                                close_button.on_hover_text(close_affordance.hover_text)
+                            };
+                            if close_button.clicked() {
+                                close = Some(id);
+                            }
                         }
-                        let close_button = ui
-                            .add_enabled(close_affordance.enabled, egui::Button::new("×").small());
-                        let close_button = if !close_affordance.enabled {
-                            close_button.on_disabled_hover_text(close_affordance.hover_text)
-                        } else if dirty {
-                            close_button.on_hover_text("Project has not finished persisting")
-                        } else {
-                            close_button.on_hover_text(close_affordance.hover_text)
-                        };
-                        if close_button.clicked() {
-                            close = Some(id);
+                        if let Some(id) = close {
+                            self.close_tab(id);
                         }
-                    }
-                    if let Some(id) = close {
-                        self.close_tab(id);
-                    }
+                    });
                 });
-            });
+        });
     }
 
     pub(super) fn workbench_bar(&mut self, root: &mut egui::Ui) {
@@ -367,6 +376,7 @@ impl PrismApp {
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut state.query)
                         .hint_text("Search tools and actions…")
+                        .margin(egui::Margin::symmetric(10, 8))
                         .desired_width(f32::INFINITY),
                 );
                 search.request_focus();
@@ -496,6 +506,7 @@ impl PrismApp {
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut state.query)
                         .hint_text("Search shapes…")
+                        .margin(egui::Margin::symmetric(10, 8))
                         .desired_width(f32::INFINITY),
                 );
                 search.request_focus();
@@ -578,9 +589,14 @@ impl PrismApp {
 const WORKBENCH_ACTION_SIZE: Vec2 = Vec2::new(148.0, CONTROL_HEIGHT);
 
 fn workbench_shortcut_rect(rect: Rect) -> Rect {
+    let width = if cfg!(target_os = "macos") {
+        43.0
+    } else {
+        51.0
+    };
     Rect::from_center_size(
-        Pos2::new(rect.right() - 31.5, rect.center().y),
-        Vec2::new(43.0, 20.0),
+        Pos2::new(rect.right() - 10.0 - width / 2.0, rect.center().y),
+        Vec2::new(width, 20.0),
     )
 }
 

@@ -623,11 +623,20 @@ fn paint_modified_shortcut(
 }
 
 pub(super) fn paint_command_shortcut(ui: &egui::Ui, rect: Rect, key: &str) {
-    paint_modified_shortcut(ui, rect, "⌘", 20.0, key);
+    if cfg!(target_os = "macos") {
+        paint_modified_shortcut(ui, rect, "⌘", 20.0, key);
+    } else {
+        paint_modified_shortcut(ui, rect, "Ctrl", 28.0, key);
+    }
 }
 
 pub(super) fn command_shortcut(ui: &mut egui::Ui, key: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(43.0, 20.0), Sense::hover());
+    let width = if cfg!(target_os = "macos") {
+        43.0
+    } else {
+        51.0
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::hover());
     paint_command_shortcut(ui, rect, key);
     response
 }

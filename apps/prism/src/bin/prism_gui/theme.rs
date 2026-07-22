@@ -29,9 +29,20 @@ pub(super) const CONTROL_HEIGHT: f32 = 28.0;
 pub(super) const COMPACT_CONTROL_HEIGHT: f32 = 24.0;
 pub(super) const PANEL_PADDING: i8 = 10;
 pub(super) const SECTION_GAP: f32 = 12.0;
-pub(super) const TOP_BAR_HEIGHT: f32 = 62.0;
+#[cfg(target_os = "macos")]
+pub(super) const TOP_BAR_HEIGHT: f32 = 36.0;
+#[cfg(not(target_os = "macos"))]
+pub(super) const TOP_BAR_HEIGHT: f32 = 64.0;
 pub(super) const WORKBENCH_HEIGHT: f32 = 40.0;
 pub(super) const STATUS_HEIGHT: f32 = 24.0;
+
+pub(super) fn inspector_group_heading(ui: &mut egui::Ui, label: &str) {
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(4.0);
+    ui.label(RichText::new(label).size(9.0).strong().color(SUBTLE));
+    ui.add_space(2.0);
+}
 
 pub(super) fn install_style(context: &egui::Context) {
     let radius = egui::CornerRadius::same(RADIUS as u8);
@@ -160,7 +171,10 @@ mod tests {
     fn chrome_reserves_less_space_than_the_previous_baseline() {
         const PREVIOUS_CHROME_HEIGHT: f32 = 82.0 + 52.0 + 30.0;
         let chrome_height = TOP_BAR_HEIGHT + WORKBENCH_HEIGHT + STATUS_HEIGHT;
-        assert_eq!(chrome_height, 126.0);
+        #[cfg(target_os = "macos")]
+        assert_eq!(chrome_height, 100.0);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(chrome_height, 128.0);
         assert!(chrome_height <= PREVIOUS_CHROME_HEIGHT - 36.0);
     }
 

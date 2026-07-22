@@ -660,8 +660,7 @@ impl PrismApp {
 }
 
 fn typography_section_label(ui: &mut egui::Ui, label: &str) {
-    ui.add_space(8.0);
-    ui.label(RichText::new(label).size(9.0).strong().color(MUTED));
+    inspector_group_heading(ui, label);
 }
 
 fn typography_color_row(ui: &mut egui::Ui, label: &str, color: &mut Color32) -> egui::Response {
