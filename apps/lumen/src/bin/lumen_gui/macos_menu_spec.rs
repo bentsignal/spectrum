@@ -12,6 +12,7 @@ pub(super) enum NativeMenuAction {
     Copy,
     Paste,
     SelectAll,
+    ToggleTerminal,
     ToggleAllShoots,
     PreviousPhoto,
     NextPhoto,
@@ -22,7 +23,7 @@ pub(super) enum NativeMenuAction {
 }
 
 impl NativeMenuAction {
-    pub(super) const ALL: [Self; 18] = [
+    pub(super) const ALL: [Self; 19] = [
         Self::NewCatalog,
         Self::OpenCatalog,
         Self::ImportPhotos,
@@ -34,6 +35,7 @@ impl NativeMenuAction {
         Self::Copy,
         Self::Paste,
         Self::SelectAll,
+        Self::ToggleTerminal,
         Self::ToggleAllShoots,
         Self::PreviousPhoto,
         Self::NextPhoto,
@@ -118,7 +120,7 @@ const fn action_spec(
     }
 }
 
-pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 18] = [
+pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 19] = [
     action_spec(
         NativeMenuSection::File,
         "New Catalog",
@@ -198,10 +200,17 @@ pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 18] = [
     ),
     action_spec(
         NativeMenuSection::View,
+        "Show Terminal",
+        NativeMenuAction::ToggleTerminal,
+        Some(ActionKeyEquivalent::command("j")),
+        false,
+    ),
+    action_spec(
+        NativeMenuSection::View,
         "Show All Shoots",
         NativeMenuAction::ToggleAllShoots,
         Some(ActionKeyEquivalent::command("l")),
-        false,
+        true,
     ),
     action_spec(
         NativeMenuSection::View,
@@ -304,5 +313,15 @@ mod tests {
             .find(|spec| spec.action == NativeMenuAction::ToggleHistory)
             .unwrap();
         assert_eq!(history.equivalent, Some(ActionKeyEquivalent::command("h")));
+    }
+
+    #[test]
+    fn terminal_uses_native_command_j() {
+        let terminal = ACTION_MENU_ITEMS
+            .iter()
+            .find(|spec| spec.action == NativeMenuAction::ToggleTerminal)
+            .unwrap();
+        assert_eq!(terminal.section, NativeMenuSection::View);
+        assert_eq!(terminal.equivalent, Some(ActionKeyEquivalent::command("j")));
     }
 }

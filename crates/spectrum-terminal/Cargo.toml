@@ -6,6 +6,16 @@ description = "App-neutral pseudo-terminal sessions for Spectrum clients"
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# Enables the shared macOS native host for a separately packaged Ghostty bridge.
+ghostty-terminal = ["dep:eframe", "dep:serde_json", "dep:winit"]
+
 [dependencies]
 anyhow.workspace = true
+eframe = { workspace = true, optional = true }
 portable-pty.workspace = true
+serde_json = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { workspace = true, optional = true }

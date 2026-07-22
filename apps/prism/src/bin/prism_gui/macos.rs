@@ -482,8 +482,9 @@ pub(super) fn update_menu_state(state: NativeMenuState) {
 impl PrismApp {
     fn native_menu_state(&self, context: &egui::Context) -> NativeMenuState {
         let clipboard = self.layer_clipboard_state(context);
+        let modal_open = self.has_modal_surface();
         NativeMenuState {
-            modal_open: self.has_modal_surface(),
+            modal_open,
             workspace_ready: self.workspace_initialized,
             can_move_project: self.workspace.project_path.is_some(),
             can_undo: self.workspace.can_undo(),
@@ -491,6 +492,8 @@ impl PrismApp {
             history_visible: self.history.visible,
             terminal_visible: self.terminal.visible(),
             native_terminal_active: self.terminal.visible()
+                && !modal_open
+                && !self.history.visible
                 && self
                     .terminal
                     .sessions
@@ -745,6 +748,21 @@ mod tests {
         assert!(!terminal.allows(NativeMenuAction::Cut));
         assert!(terminal.allows(NativeMenuAction::Copy));
         assert!(terminal.allows(NativeMenuAction::Paste));
+    }
+
+    #[test]
+    fn modal_text_owns_clipboard_over_a_logically_open_native_terminal() {
+        let state = NativeMenuState {
+            modal_open: true,
+            workspace_ready: true,
+            terminal_visible: true,
+            native_terminal_active: false,
+            keyboard_focus: true,
+            ..Default::default()
+        };
+        assert!(state.allows(NativeMenuAction::Cut));
+        assert!(state.allows(NativeMenuAction::Copy));
+        assert!(state.allows(NativeMenuAction::Paste));
     }
 
     #[test]

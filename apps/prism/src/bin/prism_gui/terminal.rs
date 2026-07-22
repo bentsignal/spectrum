@@ -645,6 +645,9 @@ impl PrismApp {
         &mut self,
         action: macos_menu_spec::NativeMenuAction,
     ) -> bool {
+        if self.has_modal_surface() || self.history.visible {
+            return false;
+        }
         let Some(session) = self.terminal.sessions.get_mut(self.terminal.active) else {
             return false;
         };

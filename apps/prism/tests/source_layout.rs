@@ -297,7 +297,7 @@ fn prism_macos_package_build_is_bash_3_safe_and_preserves_cargo_failure() {
         .find("\n}\ntrap cleanup_private_root EXIT")
         .map(|offset| cleanup_start + offset + 2)
         .expect("cleanup function should precede its EXIT trap");
-    let private_root = repository.join(format!("target/prism-ghostty-package.test-{stamp}"));
+    let private_root = repository.join(format!("target/spectrum-ghostty-package.test-{stamp}"));
     fs::create_dir_all(private_root.join("proof")).unwrap();
     let cleanup_harness = fixture.join("cleanup-harness.sh");
     fs::write(

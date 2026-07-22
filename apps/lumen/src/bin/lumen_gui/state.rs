@@ -299,6 +299,7 @@ impl LumenApp {
                     self.workspace = workspace;
                     self.remember_catalog(opened);
                     self.reset_catalog_view(true);
+                    self.reset_terminal_for_workspace();
                     self.status = "Opened Lumen project".into();
                     self.error = false;
                 }
@@ -319,6 +320,7 @@ impl LumenApp {
                     self.remember_catalog(path);
                 }
                 self.reset_catalog_view(true);
+                self.reset_terminal_for_workspace();
                 self.status = "Created a new Lumen project".into();
                 self.error = false;
             }
@@ -349,6 +351,7 @@ impl LumenApp {
         match self.workspace.move_project(&destination) {
             Ok(path) => {
                 self.remember_catalog(path.clone());
+                self.reset_terminal_for_workspace();
                 self.status = format!("Moved project to {}", path.display());
                 self.error = false;
             }
@@ -506,6 +509,13 @@ impl LumenApp {
         });
         if !dropped.is_empty() {
             self.import(dropped);
+        }
+        #[cfg(not(target_os = "macos"))]
+        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::J)) {
+            self.toggle_terminal();
+        }
+        if self.terminal.visible() {
+            return;
         }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
             if context.input(|input| input.modifiers.shift) {
