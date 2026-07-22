@@ -594,6 +594,11 @@ assert '"-ffile-prefix-map=$repo_root=/spectrum"' in consumer
 assert 'bash "$proof_builder" --storage-root "$proof_root"' in package
 assert 'chain_path_scrubber_sha' in package
 assert 'mktemp -d "$repo_root/target/prism-ghostty-package.XXXXXX"' in package
+assert 'cargo_features' not in package
+assert 'cargo build --release --locked -p prism --bins --features ghostty-terminal' in package
+assert 'cargo build --release --locked -p prism --bins\n' in package
+assert 'local exit_code=$?' in package
+assert 'return "$exit_code"' in package
 assert '"$proof_root" == "$private_root/proof"' in consumer
 assert 'bridge packaging rejects externally prepared proof roots' in consumer
 assert 'verified-proof-root' not in package
