@@ -243,6 +243,82 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
     assert!(windows.contains("Prism.png"));
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn prism_macos_package_build_is_bash_3_safe_and_preserves_cargo_failure() {
+    use std::{
+        os::unix::fs::PermissionsExt,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    let repository = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .expect("repository root should be canonicalizable");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let fixture = std::env::temp_dir().join(format!(
+        "prism-package-bash3-{}-{stamp}",
+        std::process::id()
+    ));
+    let shims = fixture.join("shims");
+    fs::create_dir_all(&shims).unwrap();
+    let cargo_log = fixture.join("cargo-arguments");
+    let cargo = shims.join("cargo");
+    fs::write(
+        &cargo,
+        "#!/bin/bash\nprintf '%s\\n' \"$@\" >\"$PRISM_PACKAGE_CARGO_LOG\"\nexit 47\n",
+    )
+    .unwrap();
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new("/bin/bash")
+        .arg(repository.join("scripts/package-prism-macos.sh"))
+        .current_dir(&repository)
+        .env("PATH", format!("{}:/usr/bin:/bin", shims.display()))
+        .env("PRISM_PACKAGE_CARGO_LOG", &cargo_log)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(47), "{output:#?}");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("unbound variable"));
+    assert_eq!(
+        fs::read_to_string(&cargo_log).unwrap(),
+        "build\n--release\n--locked\n-p\nprism\n--bins\n"
+    );
+
+    let package_source = fs::read_to_string(repository.join("scripts/package-prism-macos.sh"))
+        .expect("Prism package script should be readable");
+    let cleanup_start = package_source
+        .find("cleanup_private_root() {")
+        .expect("package script should define cleanup_private_root");
+    let cleanup_end = package_source[cleanup_start..]
+        .find("\n}\ntrap cleanup_private_root EXIT")
+        .map(|offset| cleanup_start + offset + 2)
+        .expect("cleanup function should precede its EXIT trap");
+    let private_root = repository.join(format!("target/prism-ghostty-package.test-{stamp}"));
+    fs::create_dir_all(private_root.join("proof")).unwrap();
+    let cleanup_harness = fixture.join("cleanup-harness.sh");
+    fs::write(
+        &cleanup_harness,
+        format!(
+            "#!/bin/bash\nset -euo pipefail\nrepo_root=\"$PRISM_TEST_REPO_ROOT\"\nprivate_root=\"$PRISM_TEST_PRIVATE_ROOT\"\n{}\ntrap cleanup_private_root EXIT\nexit 53\n",
+            &package_source[cleanup_start..cleanup_end]
+        ),
+    )
+    .unwrap();
+    let cleanup_status = Command::new("/bin/bash")
+        .arg(&cleanup_harness)
+        .env("PRISM_TEST_REPO_ROOT", &repository)
+        .env("PRISM_TEST_PRIVATE_ROOT", &private_root)
+        .status()
+        .unwrap();
+    assert_eq!(cleanup_status.code(), Some(53));
+    assert!(!private_root.exists());
+    fs::remove_dir_all(fixture).unwrap();
+}
+
 #[test]
 fn lone_document_tab_close_is_disabled_and_annotated() {
     let chrome = fs::read_to_string(

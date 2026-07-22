@@ -40,6 +40,7 @@ verify_chain_sources() {
 }
 
 cleanup_private_root() {
+  local exit_code=$?
   if [[ -n "${private_root:-}" && -d "$private_root" && ! -L "$private_root" \
     && "$(realpath "$private_root")" == "$private_root" ]]; then
     case "$private_root" in
@@ -47,17 +48,19 @@ cleanup_private_root() {
         live_marker="$private_root/proof/.live-process-group"
         if [[ -e "$live_marker" || -L "$live_marker" ]]; then
           echo "warning: retaining Ghostty private root with live-process marker: $private_root" >&2
-          return
+        else
+          chmod -R u+w "$private_root" ||
+            echo "warning: could not make Ghostty private root writable: $private_root" >&2
+          rm -rf -- "$private_root" ||
+            echo "warning: could not remove Ghostty private root: $private_root" >&2
         fi
-        chmod -R u+w "$private_root"
-        rm -rf -- "$private_root"
         ;;
     esac
   fi
+  return "$exit_code"
 }
 trap cleanup_private_root EXIT
 
-cargo_features=()
 if [[ "$ghostty_enabled" == true ]]; then
   lock_file="$repo_root/packaging/prism/macos/ghostty-proof.lock"
   proof_builder="$repo_root/scripts/build-prism-ghostty-macos.sh"
@@ -82,7 +85,6 @@ if [[ "$ghostty_enabled" == true ]]; then
   xcode_output="$(xcodebuild -version)"
   [[ "$(printf '%s\n' "$xcode_output" | sed -n '1p')" == "Xcode $expected_xcode_version" ]]
   [[ "$(printf '%s\n' "$xcode_output" | sed -n '2p')" == "Build version $expected_xcode_build" ]]
-  cargo_features=(--features ghostty-terminal)
   export MACOSX_DEPLOYMENT_TARGET="$minimum_macos"
   chain_lock_sha="$(sha256_file "$lock_file")"
   chain_package_sha="$(sha256_file "$repo_root/scripts/package-prism-macos.sh")"
@@ -138,7 +140,11 @@ if [[ "$ghostty_enabled" == true ]]; then
   packaged_resources_sha="$(python3 "$tree_hasher" "$ghostty_stage/Resources")"
   packaged_license_sha="$(sha256_file "$ghostty_stage/GHOSTTY-LICENSE")"
 fi
-cargo build --release --locked -p prism --bins "${cargo_features[@]}"
+if [[ "$ghostty_enabled" == true ]]; then
+  cargo build --release --locked -p prism --bins --features ghostty-terminal
+else
+  cargo build --release --locked -p prism --bins
+fi
 
 if [[ "$ghostty_enabled" == true ]]; then
   verify_chain_sources
