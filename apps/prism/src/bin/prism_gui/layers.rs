@@ -5,6 +5,7 @@ enum LayerRowKind {
     Raster(PathBuf),
     Text([u8; 4]),
     Shape([u8; 4]),
+    Paint,
 }
 
 #[derive(Clone)]
@@ -51,6 +52,7 @@ impl From<&Layer> for LayerRowData {
             LayerKind::Rectangle { color, .. } => LayerRowKind::Shape(*color),
             LayerKind::Ellipse { color, .. } => LayerRowKind::Shape(*color),
             LayerKind::Path { color, .. } => LayerRowKind::Shape(*color),
+            LayerKind::Paint { .. } => LayerRowKind::Paint,
         };
         Self {
             id: layer.id,
@@ -68,6 +70,7 @@ impl LayerRowData {
             LayerRowKind::Raster(_) => "Image",
             LayerRowKind::Text(_) => "Text",
             LayerRowKind::Shape(_) => "Shape",
+            LayerRowKind::Paint => "Paint",
         }
     }
 
@@ -75,12 +78,14 @@ impl LayerRowData {
         match &self.kind {
             LayerRowKind::Text(color) | LayerRowKind::Shape(color) => color32(*color),
             LayerRowKind::Raster(_) => RAISED,
+            LayerRowKind::Paint => ACCENT,
         }
     }
 
     fn raster_path(&self) -> Option<&Path> {
         match &self.kind {
             LayerRowKind::Raster(path) => Some(path),
+            LayerRowKind::Paint => None,
             _ => None,
         }
     }
@@ -366,6 +371,7 @@ impl PrismApp {
                 match kind {
                     "Image" => "IMG",
                     "Text" => "TXT",
+                    "Paint" => "PNT",
                     _ => "SHP",
                 },
                 FontId::monospace(8.0),

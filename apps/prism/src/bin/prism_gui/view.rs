@@ -138,6 +138,10 @@ fn resolved_source_geometry(
                 paragraph_bounds: None,
             })
         }
+        LayerKind::Paint { program } => Some(LayerSourceGeometry::full(Vec2::new(
+            program.width as f32,
+            program.height as f32,
+        ))),
     })
 }
 

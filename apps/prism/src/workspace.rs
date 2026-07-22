@@ -609,6 +609,21 @@ fn resolve_durable_commands(
                 *antialias,
             )?));
         }
+        let paint_selection = match command {
+            Command::AddBrushStroke { selection, .. }
+            | Command::AddPaintLayerWithStroke { selection, .. } => Some(selection),
+            _ => None,
+        };
+        if let Some(selection) = paint_selection
+            && matches!(selection, PaintSelection::Current)
+        {
+            *selection = candidate
+                .selection
+                .clone()
+                .map_or(PaintSelection::None, |selection| PaintSelection::Snapshot {
+                    selection: Box::new(selection),
+                });
+        }
         apply_command(&mut candidate, command.clone())?;
     }
     Ok(commands)

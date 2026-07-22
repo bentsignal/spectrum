@@ -442,6 +442,15 @@ impl PrismApp {
                         .color(MUTED),
                 );
             }
+            LayerKind::Paint { program } => {
+                inspector_group_heading(ui, "PAINT");
+                property_label(ui, "Nondestructive strokes");
+                ui.label(
+                    RichText::new(format!("{} strokes", program.strokes.len()))
+                        .size(10.0)
+                        .color(MUTED),
+                );
+            }
         }
         if matches!(
             layer.kind,

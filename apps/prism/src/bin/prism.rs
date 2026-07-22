@@ -31,6 +31,9 @@ use effects::{GradientArgs, ShadowArgs};
 #[path = "prism_cli/paths.rs"]
 mod paths;
 use paths::{PathArgs, PathCommand, VectorMaskArgs};
+#[path = "prism_cli/paint.rs"]
+mod paint;
+use paint::PaintArgs;
 #[path = "prism_cli/schema.rs"]
 mod schema;
 use schema::schema;
@@ -157,6 +160,8 @@ enum CliCommand {
     },
     /// Add or replace editable cubic paths.
     Path(PathArgs),
+    /// Add Paint layers or append nondestructive Brush/Eraser strokes.
+    Paint(PaintArgs),
     /// Apply or clear one reusable closed vector mask.
     VectorMask(VectorMaskArgs),
     EditText {
@@ -599,6 +604,9 @@ fn run(cli: Cli) -> Result<Value> {
                         }
                     })?]
                 }
+                CliCommand::Paint(arguments) => {
+                    vec![workspace.execute(paint::paint_command(arguments)?)?]
+                }
                 CliCommand::VectorMask(arguments) => {
                     vec![workspace.execute(paths::vector_mask_command(arguments)?)?]
                 }
@@ -922,6 +930,9 @@ fn parse_color(value: &str) -> Result<[u8; 4]> {
     ])
 }
 
+#[cfg(test)]
+#[path = "prism_cli/paint_tests.rs"]
+mod paint_tests;
 #[cfg(test)]
 #[path = "prism_cli/tests.rs"]
 mod tests;

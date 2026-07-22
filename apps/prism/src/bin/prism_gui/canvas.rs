@@ -38,14 +38,20 @@ impl PrismApp {
                     geometry.pixels_per_point * ui.ctx().pixels_per_point(),
                 );
                 let direct_manipulation = direct_manipulation_preview(self.drag);
-                if document_requires_composite_preview(&self.workspace.document)
+                let preview_document = self
+                    .brush
+                    .preview
+                    .as_ref()
+                    .unwrap_or(&self.workspace.document);
+                if (self.brush.preview.is_some()
+                    || document_requires_composite_preview(preview_document))
                     && !direct_manipulation
                 {
                     let raster_sources = self.raster_sources.snapshot();
                     let frame = match self.composite_preview.ensure(
                         ui.ctx(),
                         self.active_tab_id,
-                        &self.workspace.document,
+                        preview_document,
                         geometry,
                         ui.ctx().pixels_per_point(),
                         raster_sources,
@@ -68,17 +74,12 @@ impl PrismApp {
                         paint_interactive_document(
                             ui,
                             geometry,
-                            &self.workspace.document,
+                            preview_document,
                             &self.layer_visuals,
                         );
                     }
                 } else {
-                    paint_interactive_document(
-                        ui,
-                        geometry,
-                        &self.workspace.document,
-                        &self.layer_visuals,
-                    );
+                    paint_interactive_document(ui, geometry, preview_document, &self.layer_visuals);
                 }
                 self.paint_alignment_guides(ui, geometry);
                 let replacing_marquee = self.tool == Tool::Marquee
@@ -147,6 +148,10 @@ impl PrismApp {
         }
         if self.tool == Tool::Pen {
             self.pen_canvas_interaction(ui, response, geometry);
+            return;
+        }
+        if matches!(self.tool, Tool::Brush | Tool::Eraser) {
+            self.brush_canvas_interaction(ui, response, geometry);
             return;
         }
         if matches!(self.tool, Tool::Rotate | Tool::Marquee | Tool::MagicWand) && response.hovered()

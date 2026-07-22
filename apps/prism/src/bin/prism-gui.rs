@@ -18,6 +18,8 @@ use spectrum_imaging::AdjustmentPatch;
 
 #[path = "prism_gui/alignment.rs"]
 mod alignment;
+#[path = "prism_gui/brush_tool.rs"]
+mod brush_tool;
 #[path = "prism_gui/canvas.rs"]
 mod canvas;
 #[path = "prism_gui/canvas_drop.rs"]
@@ -117,6 +119,7 @@ struct PrismApp {
     shape_palette: Option<chrome::PaletteState>,
     selection_ui: selection_ui::SelectionUiState,
     pen: pen_tool::PenState,
+    brush: brush_tool::BrushState,
     inspector_section: inspector::InspectorSection,
     composition_query: String,
     composition_search_focus: bool,
@@ -245,6 +248,7 @@ impl PrismApp {
             shape_palette: None,
             selection_ui: selection_ui::SelectionUiState::default(),
             pen: pen_tool::PenState::default(),
+            brush: brush_tool::BrushState::configured(),
             inspector_section: inspector::InspectorSection::default(),
             composition_query: String::new(),
             composition_search_focus: false,
@@ -487,6 +491,7 @@ impl PrismApp {
     fn add_workspace_tab(&mut self, workspace: Workspace) {
         self.settle_inline_text_editor();
         self.cancel_pen();
+        self.cancel_brush();
         self.inactive_workspaces.insert(
             self.active_tab_id,
             std::mem::replace(&mut self.workspace, workspace),
@@ -512,6 +517,7 @@ impl PrismApp {
         }
         self.settle_inline_text_editor();
         self.cancel_pen();
+        self.cancel_brush();
         let Some(workspace) = self.inactive_workspaces.remove(&id) else {
             return;
         };

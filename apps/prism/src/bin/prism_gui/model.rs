@@ -9,6 +9,8 @@ pub(super) enum Tool {
     Text,
     Shape,
     Pen,
+    Brush,
+    Eraser,
     Mask,
     Marquee,
     MagicWand,
@@ -21,12 +23,14 @@ pub(super) enum ToolActivation {
 }
 
 impl Tool {
-    pub(super) const ALL: [(Self, &'static str, &'static str); 8] = [
+    pub(super) const ALL: [(Self, &'static str, &'static str); 10] = [
         (Self::Move, "V", "Select / move"),
         (Self::Crop, "C", "Crop canvas"),
         (Self::Text, "T", "Text"),
         (Self::Shape, "S", "Shape"),
         (Self::Pen, "P", "Pen path"),
+        (Self::Brush, "B", "Brush"),
+        (Self::Eraser, "E", "Eraser"),
         (Self::Mask, "K", "Layer mask"),
         (Self::Marquee, "M", "Rectangular marquee"),
         (Self::MagicWand, "W", "Magic wand"),
@@ -40,6 +44,8 @@ impl Tool {
             Self::Text => "Add text",
             Self::Shape => "Shape",
             Self::Pen => "Pen",
+            Self::Brush => "Brush",
+            Self::Eraser => "Eraser",
             Self::Mask => "Draw mask",
             Self::Marquee => "Rectangular marquee",
             Self::MagicWand => "Magic wand",
@@ -66,6 +72,8 @@ impl Tool {
             Self::Pen => {
                 "Click anchors, drag cubic handles, click the first anchor to close, or press Enter for an open path."
             }
+            Self::Brush => "Drag to paint one nondestructive stroke on a Paint layer.",
+            Self::Eraser => "Drag to erase nondestructively within the focused Paint layer.",
             Self::Mask => "Draw the visible region of the focused element.",
             Self::Marquee => "Drag a persistent document-pixel selection, then clear or fill it.",
             Self::MagicWand => "Click a color to select a connected or canvas-wide range.",
@@ -160,12 +168,15 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::SetLayerStyle { id, .. }
         | Command::RasterizeShape { id, .. }
         | Command::AdjustLayer { id, .. }
-        | Command::ResetLayerAdjustments { id } => CanvasInvalidation::Layer(*id),
+        | Command::ResetLayerAdjustments { id }
+        | Command::AddBrushStroke { id, .. } => CanvasInvalidation::Layer(*id),
         Command::AddRaster { .. }
         | Command::AddText { .. }
         | Command::AddRectangle { .. }
         | Command::AddEllipse { .. }
         | Command::AddPath { .. }
+        | Command::AddPaintLayer { .. }
+        | Command::AddPaintLayerWithStroke { .. }
         | Command::FillSelection { .. }
         | Command::InsertLayer { .. }
         | Command::DuplicateLayer { .. }
@@ -177,5 +188,52 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::CropToSelection => CanvasInvalidation::None,
         Command::RemoveLayer { .. } => CanvasInvalidation::Structure,
         _ => CanvasInvalidation::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stroke() -> prism_core::BrushStroke {
+        prism_core::BrushStroke::new(
+            prism_core::BrushStyle::default(),
+            vec![prism_core::BrushSample {
+                x: 1.5,
+                y: 1.5,
+                pressure: 1.0,
+            }],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn paint_commands_invalidate_structures_and_cached_layer_pixels() {
+        assert_eq!(
+            canvas_invalidation(&Command::AddPaintLayer {
+                name: None,
+                width: 10,
+                height: 10,
+            }),
+            CanvasInvalidation::All
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::AddPaintLayerWithStroke {
+                name: None,
+                width: 10,
+                height: 10,
+                stroke: stroke(),
+                selection: prism_core::PaintSelection::None,
+            }),
+            CanvasInvalidation::All
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::AddBrushStroke {
+                id: 42,
+                stroke: stroke(),
+                selection: prism_core::PaintSelection::None,
+            }),
+            CanvasInvalidation::Layer(42)
+        );
     }
 }

@@ -16,6 +16,9 @@ use crate::{
     text_render::{measure_text_geometry_with_typography, render_text},
 };
 
+mod tiles;
+use tiles::render_document_region_scaled_impl;
+
 pub fn save_document(document: &Document, path: &Path) -> Result<()> {
     let extension = path.extension().and_then(|value| value.to_str());
     if !matches!(extension, Some("prism" | "mica")) {
@@ -301,7 +304,7 @@ pub fn render_document_region_scaled_with_sources_and_stats(
     Ok((image, stats))
 }
 
-fn render_document_region_scaled_impl(
+pub(super) fn render_document_region_scaled_untiled(
     document: &Document,
     scale: f32,
     region: RenderRegion,
@@ -362,7 +365,8 @@ fn render_document_region_scaled_impl(
         // Paths always use the same global-coordinate tiled sampler, including
         // complete exports. Rasterizing a full intermediate here would put AA
         // through a second transform and could differ at viewport tile edges.
-        if (bound_fallback_layers || matches!(layer.kind, LayerKind::Path { .. }))
+        if (bound_fallback_layers
+            || matches!(layer.kind, LayerKind::Path { .. } | LayerKind::Paint { .. }))
             && crate::render_region::composite_bounded_source_region(
                 &mut canvas,
                 &mut coverage,
@@ -540,6 +544,9 @@ fn render_layer_preview_scaled_with_font_limits(
     font_asset: Option<&FontAsset>,
     decode_max_alloc: Option<u64>,
 ) -> Result<DynamicImage> {
+    if matches!(layer.kind, LayerKind::Paint { .. }) {
+        return render_paint_preview_exact(layer, max_size);
+    }
     let image = render_layer_base_scaled_with_font_limits(
         layer,
         max_size,
@@ -559,6 +566,38 @@ fn render_layer_preview_scaled_with_font_limits(
         0,
     )?;
     Ok(DynamicImage::ImageRgba8(image))
+}
+
+fn render_paint_preview_exact(layer: &Layer, max_size: Option<u32>) -> Result<DynamicImage> {
+    let LayerKind::Paint { program } = &layer.kind else {
+        bail!("exact Paint preview requires a Paint layer");
+    };
+    let mut preview_layer = layer.clone();
+    preview_layer.visible = true;
+    preview_layer.opacity = 1.0;
+    preview_layer.blend_mode = crate::BlendMode::Normal;
+    preview_layer.transform = Transform::default();
+    preview_layer.style = crate::LayerStyle::default();
+    preview_layer.mask = crate::LayerMask::default();
+    preview_layer.clip_to_below = false;
+    let adjusted_dimensions = spectrum_imaging::adjusted_image_dimensions(
+        program.width,
+        program.height,
+        &layer.adjustments,
+    )
+    .context("Paint preview has invalid adjusted dimensions")?;
+    let mut document = Document::new(
+        "Paint preview",
+        adjusted_dimensions.0,
+        adjusted_dimensions.1,
+    );
+    document.background = [0; 4];
+    document.layers.push(preview_layer);
+    let longest = adjusted_dimensions.0.max(adjusted_dimensions.1) as f32;
+    let scale = max_size
+        .filter(|size| *size > 0)
+        .map_or(1.0, |size| (size as f32 / longest).min(1.0));
+    render_document_scaled(&document, scale)
 }
 
 /// Decodes or rasterizes a layer without development adjustments. Keeping this
@@ -617,6 +656,26 @@ fn render_layer_base_scaled_with_font_limits(
         )?),
         LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. } => {
             DynamicImage::ImageRgba8(render_shape(layer, shape_scale)?)
+        }
+        LayerKind::Paint { program } => {
+            let mut base_layer = layer.clone();
+            base_layer.visible = true;
+            base_layer.opacity = 1.0;
+            base_layer.blend_mode = crate::BlendMode::Normal;
+            base_layer.transform = Transform::default();
+            base_layer.adjustments = spectrum_imaging::Adjustments::default();
+            base_layer.vector_mask = None;
+            base_layer.style = crate::LayerStyle::default();
+            base_layer.mask = crate::LayerMask::default();
+            base_layer.clip_to_below = false;
+            let mut document = Document::new("Paint preview", program.width, program.height);
+            document.background = [0; 4];
+            document.layers.push(base_layer);
+            let longest = program.width.max(program.height) as f32;
+            let scale = max_size
+                .filter(|size| *size > 0)
+                .map_or(1.0, |size| (size as f32 / longest).min(1.0));
+            return render_document_scaled(&document, scale);
         }
     };
     if let Some(max_size) =

@@ -376,7 +376,15 @@ pub(super) fn spawn_layer_render_worker(
                     && cached.shape_raster_scale == request.key.shape_raster_scale
                     && cached.max_size >= request.max_size
             });
-            let base = if let Some(cached) = cached {
+            let paint_final = matches!(render_layer.kind, LayerKind::Paint { .. });
+            let base = if paint_final {
+                prism_core::render_layer_preview_scaled_with_font(
+                    &render_layer,
+                    Some(request.max_size),
+                    [1.0; 2],
+                    request.font_asset.as_ref(),
+                )
+            } else if let Some(cached) = cached {
                 Ok(cached.image.clone())
             } else {
                 prism_core::render_layer_base_scaled_with_font(
@@ -410,6 +418,9 @@ pub(super) fn spawn_layer_render_worker(
                 source_geometry_before_preview(&request.layer, request.font_asset.as_ref());
             let result = base
                 .and_then(|image| {
+                    if paint_final {
+                        return Ok(image);
+                    }
                     let mut image = spectrum_imaging::render_image(
                         image,
                         request.layer.adjustments.clone(),
@@ -502,6 +513,10 @@ pub(super) fn source_geometry_before_preview(
                 paragraph_bounds: None,
             })
         }
+        LayerKind::Paint { program } => Some(LayerSourceGeometry::full(Vec2::new(
+            program.width as f32,
+            program.height as f32,
+        ))),
     }
 }
 

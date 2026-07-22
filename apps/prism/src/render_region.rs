@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use image::RgbaImage;
 
 use crate::{
@@ -15,6 +15,17 @@ use source::{
     SampleSource, SourceDescriptor, SourceRegion, sample_triangle_resize,
     sample_triangle_resize_alpha, source_sample_bounds,
 };
+
+#[derive(Debug)]
+pub(crate) struct SourceStagingBudgetExceeded;
+
+impl std::fmt::Display for SourceStagingBudgetExceeded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("layer exceeds the bounded source staging budget")
+    }
+}
+
+impl std::error::Error for SourceStagingBudgetExceeded {}
 
 const MAX_SOURCE_STAGING_PIXELS: u64 = 4_096 * 4_096;
 
@@ -87,6 +98,7 @@ pub(crate) fn supports_bounded_source(
             | LayerKind::Rectangle { .. }
             | LayerKind::Ellipse { .. }
             | LayerKind::Path { .. }
+            | LayerKind::Paint { .. }
     ) && source::layer_supports_region_reads(layer, raster_sources)
         && layer.transform.scale_x.is_finite()
         && layer.transform.scale_y.is_finite()
@@ -146,10 +158,8 @@ pub(crate) fn composite_bounded_source_region(
         staging_region
     };
     if staging_region.pixel_count() > MAX_SOURCE_STAGING_PIXELS {
-        bail!(
-            "layer {} requires more than the bounded source staging budget",
-            render_layer.id
-        );
+        return Err(anyhow::Error::new(SourceStagingBudgetExceeded))
+            .with_context(|| format!("layer {} cannot stage its source region", render_layer.id));
     }
     let source = descriptor.sample(staging_region, stats)?;
     stats.full_source_pixels = stats
@@ -430,6 +440,7 @@ impl SamplingGeometry {
             | LayerKind::Rectangle { .. }
             | LayerKind::Ellipse { .. }
             | LayerKind::Path { .. }
+            | LayerKind::Paint { .. }
                 if degrees.abs() >= 0.01 =>
             {
                 let bounds = centered_rotation_bounds(scaled_width, scaled_height, degrees);
@@ -444,7 +455,8 @@ impl SamplingGeometry {
             LayerKind::Raster { .. }
             | LayerKind::Rectangle { .. }
             | LayerKind::Ellipse { .. }
-            | LayerKind::Path { .. } => (
+            | LayerKind::Path { .. }
+            | LayerKind::Paint { .. } => (
                 scaled_width,
                 scaled_height,
                 (0.0, 0.0),

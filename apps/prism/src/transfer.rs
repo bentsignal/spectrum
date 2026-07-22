@@ -13,8 +13,9 @@ use crate::{
 };
 
 pub const LAYER_TRANSFER_FORMAT: &str = "spectrum.prism.layer";
-pub const LAYER_TRANSFER_VERSION: u32 = 4;
-const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 24 * 1024 * 1024;
+pub const PATH_LAYER_TRANSFER_VERSION: u32 = 4;
+pub const LAYER_TRANSFER_VERSION: u32 = 5;
+const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
 ///
@@ -62,9 +63,10 @@ impl LayerTransfer {
             },
             _ => None,
         };
-        let version = if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. })
-        {
+        let version = if matches!(layer.kind, LayerKind::Paint { .. }) {
             LAYER_TRANSFER_VERSION
+        } else if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. }) {
+            PATH_LAYER_TRANSFER_VERSION
         } else if layer.pixel_mask.is_some() {
             3
         } else if !layer.style.is_empty() || layer.shape_fill.is_some() {
@@ -92,7 +94,7 @@ impl LayerTransfer {
 
     pub fn from_json(value: &str) -> Result<Self> {
         if value.len() > MAX_LAYER_TRANSFER_JSON_BYTES {
-            bail!("Prism layer transfer exceeds the 24 MiB metadata limit");
+            bail!("Prism layer transfer exceeds the 64 MiB metadata limit");
         }
         let transfer: Self =
             serde_json::from_str(value).context("invalid Prism layer transfer JSON")?;
@@ -156,11 +158,14 @@ impl LayerTransfer {
         if self.version < 3 && self.layer.pixel_mask.is_some() {
             bail!("Prism layer transfer versions before 3 cannot contain pixel masks");
         }
-        if self.version < 4
+        if self.version < PATH_LAYER_TRANSFER_VERSION
             && (self.layer.vector_mask.is_some()
                 || matches!(self.layer.kind, LayerKind::Path { .. }))
         {
             bail!("Prism layer transfer versions before 4 cannot contain paths or vector masks");
+        }
+        if self.version < 5 && matches!(self.layer.kind, LayerKind::Paint { .. }) {
+            bail!("Prism layer transfer versions before 5 cannot contain Paint layers");
         }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");
@@ -274,6 +279,7 @@ fn sanitize_layer(layer: &mut Layer) -> Result<()> {
             *height = (*height).clamp(1, MAX_CANVAS_DIMENSION);
         }
         LayerKind::Path { .. } => {}
+        LayerKind::Paint { program } => program.validate()?,
     }
     Ok(())
 }
@@ -297,8 +303,11 @@ fn validate_pixel_mask(layer: &Layer) -> Result<()> {
     if !mask.has_valid_identity() {
         bail!("transferred pixel mask identity does not match its alpha");
     }
-    let dimensions =
-        crate::shape_dimensions(layer).context("only shape layers can carry a pixel mask")?;
+    let dimensions = match &layer.kind {
+        LayerKind::Paint { program } => (program.width, program.height),
+        _ => crate::shape_dimensions(layer)
+            .context("only shape and Paint layers can carry a pixel mask")?,
+    };
     if dimensions != (mask.width, mask.height) {
         bail!("transferred pixel mask dimensions do not match its shape");
     }
