@@ -149,24 +149,36 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             document.selected = Some(id);
             Ok(output("add_text", "added text layer", vec![id]))
         }
-        Command::ImportFont { path } => {
+        Command::ImportFont { path, source_name } => {
             let id = document.next_font_id;
-            let font = FontAsset::import(id, &path)?;
+            let mut font = FontAsset::import(id, &path)?;
+            if let Some(source_name) = source_name {
+                font.source_name = source_name;
+            }
             if let Some(existing) = document
                 .font_assets
                 .iter()
                 .find(|existing| existing.content_hash == font.content_hash)
             {
-                return Ok(output(
+                let mut result = output(
                     "import_font",
                     &format!("font already embedded as asset {}", existing.id),
                     Vec::new(),
-                ));
+                );
+                if let Some(advisory) = existing.embedding_permission.advisory() {
+                    result.warnings.push(advisory.to_owned());
+                }
+                return Ok(result);
             }
             document.next_font_id += 1;
             let message = format!("embedded {} {} as font asset {id}", font.family, font.style);
+            let advisory = font.embedding_permission.advisory().map(str::to_owned);
             document.font_assets.push(font);
-            Ok(output("import_font", &message, Vec::new()))
+            let mut result = output("import_font", &message, Vec::new());
+            if let Some(advisory) = advisory {
+                result.warnings.push(advisory);
+            }
+            Ok(result)
         }
         Command::AddRectangle {
             name,

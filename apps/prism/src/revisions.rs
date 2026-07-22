@@ -488,6 +488,7 @@ impl DurableProject {
         let mut document: Document =
             serde_json::from_slice(&snapshot_bytes).context("invalid Prism snapshot")?;
         self.materialize_assets(&mut document)?;
+        crate::typography::hydrate_legacy_font_permissions(&mut document.font_assets)?;
         document.migrate()?;
         let snapshot_tail = SnapshotTail {
             commands: plan
@@ -539,7 +540,7 @@ impl DurableProject {
         let mut materialized = MaterializedOrigins::default();
         for command in commands {
             match command {
-                Command::ImportFont { path } => {
+                Command::ImportFont { path, .. } => {
                     if let Some(reference) = AssetReference::parse(path) {
                         *path = self.materialize(reference)?;
                         materialized
@@ -750,13 +751,28 @@ impl PreparedOperations {
         let mut assets = Vec::new();
         for command in &mut portable {
             match command {
-                Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } => {
+                Command::AddRaster { path, .. } => {
                     let prepared = prepare_asset(path)?;
                     *path = prepared.reference.path();
                     assets.push(prepared.asset);
                 }
-                Command::ImportFont { path } => {
+                Command::RasterizeShape { path, .. } => {
+                    let prepared = prepare_generated_asset(path)?;
+                    *path = prepared.reference.path();
+                    assets.push(prepared.asset);
+                }
+                Command::ImportFont { path, source_name } => {
                     let snapshot = FontSourceSnapshot::read(path)?;
+                    if source_name.is_none() {
+                        *source_name = Some(
+                            snapshot
+                                .canonical_path()
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("font")
+                                .to_owned(),
+                        );
+                    }
                     let prepared = prepare_font_snapshot(&snapshot)?;
                     *path = prepared.reference.path();
                     assets.push(prepared.asset);
@@ -843,11 +859,10 @@ fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
 struct PreparedAsset {
     reference: AssetReference,
     asset: Asset,
+    source_path: PathBuf,
 }
 
-fn canonical_asset_path(path: &Path) -> Result<PathBuf> {
-    fs::canonicalize(path).with_context(|| format!("could not read asset {}", path.display()))
-}
+pub(crate) const MAX_EMBEDDED_RASTER_BYTES: usize = 512 * 1024 * 1024;
 
 fn prepare_asset(path: &Path) -> Result<PreparedAsset> {
     if let Some(reference) = AssetReference::parse(path) {
@@ -856,8 +871,19 @@ fn prepare_asset(path: &Path) -> Result<PreparedAsset> {
             reference.id
         );
     }
-    let bytes = fs::read(path).with_context(|| format!("could not embed {}", path.display()))?;
-    Ok(prepare_asset_bytes(path, bytes))
+    let (canonical, bytes) = crate::font_source::read_secure_regular_file(
+        path,
+        MAX_EMBEDDED_RASTER_BYTES,
+        "raster asset",
+    )
+    .with_context(|| format!("could not embed {}", path.display()))?;
+    Ok(prepare_asset_bytes(&canonical, bytes))
+}
+
+fn prepare_generated_asset(path: &Path) -> Result<PreparedAsset> {
+    let canonical = fs::canonicalize(path)
+        .with_context(|| format!("could not resolve generated asset {}", path.display()))?;
+    prepare_asset(&canonical)
 }
 
 fn prepare_asset_bytes(path: &Path, bytes: Vec<u8>) -> PreparedAsset {
@@ -874,6 +900,7 @@ fn prepare_asset_bytes(path: &Path, bytes: Vec<u8>) -> PreparedAsset {
             extension,
         },
         asset,
+        source_path: path.to_owned(),
     }
 }
 

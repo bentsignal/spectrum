@@ -15,6 +15,8 @@ pub struct CommandOutput {
     pub layer_ids: Vec<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guide_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -48,6 +50,8 @@ pub enum Command {
     },
     ImportFont {
         path: PathBuf,
+        #[serde(default)]
+        source_name: Option<String>,
     },
     AddRectangle {
         name: Option<String>,
@@ -203,6 +207,7 @@ pub(crate) fn output(action: &str, message: &str, layer_ids: Vec<u64>) -> Comman
         message: message.into(),
         layer_ids,
         guide_ids: Vec::new(),
+        warnings: Vec::new(),
     }
 }
 
@@ -212,5 +217,6 @@ pub(crate) fn guide_output(action: &str, message: &str, guide_ids: Vec<u64>) -> 
         message: message.into(),
         layer_ids: Vec::new(),
         guide_ids,
+        warnings: Vec::new(),
     }
 }

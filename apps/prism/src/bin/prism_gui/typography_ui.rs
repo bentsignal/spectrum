@@ -301,7 +301,10 @@ impl PrismApp {
                     .add_filter("OpenType font", &["ttf", "otf"])
                     .pick_file()
             {
-                self.execute(Command::ImportFont { path });
+                self.execute(Command::ImportFont {
+                    path,
+                    source_name: None,
+                });
             }
         });
 
@@ -381,6 +384,10 @@ impl PrismApp {
         else {
             return;
         };
+        if let Some(advisory) = font.embedding_permission.advisory() {
+            ui.add_space(4.0);
+            ui.label(RichText::new(advisory).size(10.0).color(ACCENT_WARM));
+        }
         let key = font_usage_analysis_key(self.active_tab_id, &self.workspace, font);
         ui.add_space(4.0);
         let cached_is_current = self
@@ -687,6 +694,7 @@ mod tests {
                 prism_core::FontSlant::Normal
             },
             source_name: format!("{family}-{style}.otf"),
+            embedding_permission: prism_core::FontEmbeddingPermission::Installable,
             subset_allowed: true,
             content_hash: format!("hash-{id}"),
             path: PathBuf::from(format!("font-{id}.otf")),

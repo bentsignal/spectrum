@@ -23,7 +23,9 @@ pub use effects::{
 mod text;
 
 mod typography;
-pub use typography::{FontAsset, FontSlant, TextAlignment, TextEffects, TextTypography};
+pub use typography::{
+    FontAsset, FontEmbeddingPermission, FontSlant, TextAlignment, TextEffects, TextTypography,
+};
 
 mod font_source;
 pub use font_source::{FontSourceSnapshot, VerifiedFontSource};

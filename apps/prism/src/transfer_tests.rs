@@ -171,6 +171,7 @@ fn text_transfer_deduplicates_font_bytes_and_remaps_the_font_id() {
     source
         .execute(Command::ImportFont {
             path: font_path.clone(),
+            source_name: None,
         })
         .unwrap();
     source
@@ -217,6 +218,7 @@ fn text_transfer_deduplicates_font_bytes_and_remaps_the_font_id() {
     destination
         .execute(Command::ImportFont {
             path: font_path.clone(),
+            source_name: None,
         })
         .unwrap();
     assert_eq!(destination.document.font_assets[0].id, 17);
@@ -347,6 +349,7 @@ fn durable_text_transfer_embeds_font_bytes_and_replays_the_remapped_id() {
     source
         .execute(Command::ImportFont {
             path: font_path.clone(),
+            source_name: None,
         })
         .unwrap();
     source

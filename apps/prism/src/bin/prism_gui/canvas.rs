@@ -27,6 +27,7 @@ impl PrismApp {
                     self.pan = Vec2::ZERO;
                     self.fit_requested = false;
                 }
+                self.handle_canvas_file_drops(ui, geometry);
                 self.canvas_interaction(ui, &response, geometry);
                 // Resolve the frame's gesture before deciding which preview raster work is
                 // needed. In particular, the first resize frame must reuse the existing layer

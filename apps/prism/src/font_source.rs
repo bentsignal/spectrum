@@ -8,9 +8,66 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use ttf_parser::{Face, Permissions, name_id};
 
-use crate::FontSlant;
+use crate::{FontEmbeddingPermission, FontSlant};
 
 pub(crate) const MAX_EMBEDDED_FONT_BYTES: usize = 32 * 1024 * 1024;
+
+pub(crate) fn read_secure_regular_file(
+    path: &Path,
+    max_bytes: usize,
+    kind: &str,
+) -> Result<(PathBuf, Vec<u8>)> {
+    let file = open_no_follow(path)?;
+    let before = file.metadata()?;
+    require_regular_metadata(&before, path)?;
+    let before_identity = file_identity(&file, &before)?;
+    if before.len() == 0 {
+        bail!("{kind} data cannot be empty");
+    }
+    if before.len() > max_bytes as u64 {
+        bail!(
+            "{kind} exceeds Prism's {} MiB embedded-asset limit",
+            max_bytes / (1024 * 1024)
+        );
+    }
+    let expected_len = usize::try_from(before.len()).context("asset length does not fit memory")?;
+    let mut bytes = Vec::with_capacity(expected_len);
+    let mut reader: Take<&File> = (&file).take(max_bytes as u64 + 1);
+    reader.read_to_end(&mut bytes)?;
+    let file = reader.into_inner();
+    let after = file.metadata()?;
+    let after_identity = file_identity(file, &after)?;
+    if !stable_file(&before, before_identity, &after, after_identity) || bytes.len() != expected_len
+    {
+        bail!("{kind} source changed while reading {}", path.display());
+    }
+    if bytes.len() > max_bytes {
+        bail!(
+            "{kind} exceeds Prism's {} MiB embedded-asset limit",
+            max_bytes / (1024 * 1024)
+        );
+    }
+    let canonical = verify_unchanged_path(path, file, &before, before_identity)?;
+    Ok((canonical, bytes))
+}
+
+pub(crate) fn secure_regular_file_len(path: &Path, max_bytes: usize, kind: &str) -> Result<u64> {
+    let file = open_no_follow(path)?;
+    let metadata = file.metadata()?;
+    require_regular_metadata(&metadata, path)?;
+    let identity = file_identity(&file, &metadata)?;
+    if metadata.len() == 0 {
+        bail!("{kind} data cannot be empty");
+    }
+    if metadata.len() > max_bytes as u64 {
+        bail!(
+            "{kind} exceeds Prism's {} MiB embedded-asset limit",
+            max_bytes / (1024 * 1024)
+        );
+    }
+    verify_unchanged_path(path, &file, &metadata, identity)?;
+    Ok(metadata.len())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FileIdentity {
@@ -32,6 +89,7 @@ pub struct FontSourceSnapshot {
     pub(crate) style: String,
     pub(crate) weight: u16,
     pub(crate) slant: FontSlant,
+    pub(crate) embedding_permission: FontEmbeddingPermission,
     pub(crate) subset_allowed: bool,
 }
 
@@ -47,6 +105,7 @@ pub struct VerifiedFontSource {
     pub(crate) style: String,
     pub(crate) weight: u16,
     pub(crate) slant: FontSlant,
+    pub(crate) embedding_permission: FontEmbeddingPermission,
     pub(crate) subset_allowed: bool,
 }
 
@@ -71,6 +130,7 @@ impl FontSourceSnapshot {
             style: verified.style,
             weight: verified.weight,
             slant: verified.slant,
+            embedding_permission: verified.embedding_permission,
             subset_allowed: verified.subset_allowed,
         })
     }
@@ -106,6 +166,10 @@ impl FontSourceSnapshot {
     pub fn subset_allowed(&self) -> bool {
         self.subset_allowed
     }
+
+    pub fn embedding_permission(&self) -> FontEmbeddingPermission {
+        self.embedding_permission
+    }
 }
 
 impl VerifiedFontSource {
@@ -127,7 +191,7 @@ impl VerifiedFontSource {
         }
         let face = Face::parse(&bytes, 0)
             .with_context(|| format!("{} is not a supported OpenType font", label.display()))?;
-        require_editable_embedding(&face)?;
+        let embedding_permission = require_local_editing_embedding(&face)?;
         let family = font_name(&face, &[name_id::TYPOGRAPHIC_FAMILY, name_id::FAMILY])
             .unwrap_or_else(|| "Imported Font".into());
         let style = font_name(&face, &[name_id::TYPOGRAPHIC_SUBFAMILY, name_id::SUBFAMILY])
@@ -140,7 +204,8 @@ impl VerifiedFontSource {
             FontSlant::Normal
         };
         let weight = face.weight().to_number();
-        let subset_allowed = face.is_subsetting_allowed();
+        let subset_allowed = face.is_subsetting_allowed()
+            && embedding_permission != FontEmbeddingPermission::Restricted;
         Ok(Self {
             content_hash,
             bytes,
@@ -148,6 +213,7 @@ impl VerifiedFontSource {
             style,
             weight,
             slant,
+            embedding_permission,
             subset_allowed,
         })
     }
@@ -170,6 +236,10 @@ impl VerifiedFontSource {
 
     pub fn subset_allowed(&self) -> bool {
         self.subset_allowed
+    }
+
+    pub fn embedding_permission(&self) -> FontEmbeddingPermission {
+        self.embedding_permission
     }
 }
 
@@ -558,25 +628,26 @@ fn file_identity(_file: &File, _metadata: &Metadata) -> Result<FileIdentity> {
     bail!("secure font source identity is unsupported on this platform")
 }
 
-fn require_editable_embedding(face: &Face<'_>) -> Result<()> {
-    if !permissions_allow_editable_embedding(face.permissions()) {
-        bail!(
-            "OpenType embedding metadata does not allow portable editable embedding (preview/print-only fonts are unsupported); verify the font license separately"
-        );
-    }
+fn require_local_editing_embedding(face: &Face<'_>) -> Result<FontEmbeddingPermission> {
+    let permission = embedding_permission(face.permissions())?;
     if !face.is_outline_embedding_allowed() {
         bail!(
-            "OpenType embedding metadata does not allow editable outline embedding; verify the font license separately"
+            "OpenType embedding metadata forbids outline embedding; bitmap-only fonts cannot be used for local editable text"
         );
     }
-    Ok(())
+    Ok(permission)
 }
 
-fn permissions_allow_editable_embedding(permissions: Option<Permissions>) -> bool {
-    matches!(
-        permissions,
-        Some(Permissions::Installable | Permissions::Editable)
-    )
+fn embedding_permission(permissions: Option<Permissions>) -> Result<FontEmbeddingPermission> {
+    match permissions {
+        Some(Permissions::Installable) => Ok(FontEmbeddingPermission::Installable),
+        Some(Permissions::Editable) => Ok(FontEmbeddingPermission::Editable),
+        Some(Permissions::PreviewAndPrint) => Ok(FontEmbeddingPermission::PreviewAndPrint),
+        Some(Permissions::Restricted) => Ok(FontEmbeddingPermission::Restricted),
+        None => bail!(
+            "OpenType embedding metadata is missing or malformed; Prism cannot safely determine whether this font may be embedded"
+        ),
+    }
 }
 
 fn font_name(face: &Face<'_>, ids: &[u16]) -> Option<String> {
@@ -607,20 +678,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn portable_editable_embedding_requires_installable_or_editable_permission() {
-        assert!(permissions_allow_editable_embedding(Some(
-            Permissions::Installable
-        )));
-        assert!(permissions_allow_editable_embedding(Some(
-            Permissions::Editable
-        )));
-        assert!(!permissions_allow_editable_embedding(Some(
-            Permissions::PreviewAndPrint
-        )));
-        assert!(!permissions_allow_editable_embedding(Some(
-            Permissions::Restricted
-        )));
-        assert!(!permissions_allow_editable_embedding(None));
+    fn local_editing_accepts_license_metadata_classes_but_rejects_malformed_metadata() {
+        assert_eq!(
+            embedding_permission(Some(Permissions::Installable)).unwrap(),
+            FontEmbeddingPermission::Installable
+        );
+        assert_eq!(
+            embedding_permission(Some(Permissions::Editable)).unwrap(),
+            FontEmbeddingPermission::Editable
+        );
+        assert_eq!(
+            embedding_permission(Some(Permissions::PreviewAndPrint)).unwrap(),
+            FontEmbeddingPermission::PreviewAndPrint
+        );
+        assert_eq!(
+            embedding_permission(Some(Permissions::Restricted)).unwrap(),
+            FontEmbeddingPermission::Restricted
+        );
+        assert!(embedding_permission(None).is_err());
     }
 
     #[test]

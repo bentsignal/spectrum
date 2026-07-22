@@ -173,6 +173,140 @@ fn durable_raster_uses_one_staged_snapshot_and_stable_name_across_history() {
 }
 
 #[test]
+fn oversized_raster_is_rejected_before_allocation_staging_or_history() {
+    let directory = test_directory("oversized-raster");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("oversized.png");
+    fs::File::create(&source)
+        .unwrap()
+        .set_len(crate::revisions::MAX_EMBEDDED_RASTER_BYTES as u64 + 1)
+        .unwrap();
+    let project = directory.join("oversized.prism");
+    let mut workspace = Workspace::create_durable(
+        Document::new("Oversized raster", 4, 4),
+        &project,
+        test_actor("oversized-raster"),
+        SessionId::new(),
+    )
+    .unwrap();
+    let history_before = workspace.history().unwrap().unwrap();
+    let assets_before = count_rows(&project, "assets");
+
+    let error = workspace
+        .execute(Command::AddRaster {
+            path: source,
+            name: None,
+            x: 0.0,
+            y: 0.0,
+        })
+        .unwrap_err();
+
+    assert!(format!("{error:#}").contains("512 MiB"));
+    assert!(workspace.document.layers.is_empty());
+    assert_eq!(count_rows(&project, "assets"), assets_before);
+    assert_eq!(
+        workspace.history().unwrap().unwrap().current,
+        history_before.current
+    );
+    drop(workspace);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn oversized_asset_batch_is_rejected_atomically_before_reads_or_staging() {
+    let directory = test_directory("oversized-asset-batch");
+    fs::create_dir_all(&directory).unwrap();
+    let first = directory.join("first.png");
+    let second = directory.join("second.png");
+    fs::File::create(&first)
+        .unwrap()
+        .set_len(300 * 1024 * 1024)
+        .unwrap();
+    fs::File::create(&second)
+        .unwrap()
+        .set_len(300 * 1024 * 1024)
+        .unwrap();
+    let project = directory.join("batch.prism");
+    let mut workspace = Workspace::create_durable(
+        Document::new("Oversized asset batch", 4, 4),
+        &project,
+        test_actor("oversized-asset-batch"),
+        SessionId::new(),
+    )
+    .unwrap();
+    let history_before = workspace.history().unwrap().unwrap();
+    let assets_before = count_rows(&project, "assets");
+
+    let error = workspace
+        .execute_batch(vec![
+            Command::AddRaster {
+                path: first,
+                name: None,
+                x: 0.0,
+                y: 0.0,
+            },
+            Command::AddRaster {
+                path: second,
+                name: None,
+                x: 0.0,
+                y: 0.0,
+            },
+        ])
+        .unwrap_err();
+
+    assert!(format!("{error:#}").contains("512 MiB across all assets"));
+    assert!(workspace.document.layers.is_empty());
+    assert_eq!(count_rows(&project, "assets"), assets_before);
+    assert_eq!(
+        workspace.history().unwrap().unwrap().current,
+        history_before.current
+    );
+    drop(workspace);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn durable_raster_rejects_symlinked_source_components() {
+    use std::os::unix::fs::symlink;
+
+    let directory = test_directory("linked-raster");
+    let real_directory = directory.join("real");
+    fs::create_dir_all(&real_directory).unwrap();
+    let source = real_directory.join("image.png");
+    save_pixel(&source, [1, 2, 3, 255]);
+    let linked_file = directory.join("linked.png");
+    let linked_directory = directory.join("linked-directory");
+    symlink(&source, &linked_file).unwrap();
+    symlink(&real_directory, &linked_directory).unwrap();
+    let project = directory.join("linked.prism");
+    let mut workspace = Workspace::create_durable(
+        Document::new("Linked raster", 4, 4),
+        &project,
+        test_actor("linked-raster"),
+        SessionId::new(),
+    )
+    .unwrap();
+
+    for path in [linked_file, linked_directory.join("image.png")] {
+        assert!(
+            workspace
+                .execute(Command::AddRaster {
+                    path,
+                    name: None,
+                    x: 0.0,
+                    y: 0.0,
+                })
+                .is_err()
+        );
+    }
+    assert!(workspace.document.layers.is_empty());
+    assert_eq!(count_rows(&project, "assets"), 0);
+    drop(workspace);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn failing_durable_asset_batch_changes_neither_document_history_nor_embedded_assets() {
     let directory = test_directory("atomic-failure");
     fs::create_dir_all(&directory).unwrap();
@@ -239,7 +373,10 @@ fn durable_font_import_rejects_oversize_before_staging_an_asset() {
     let asset_count_before = count_rows(&project, "assets");
 
     let error = workspace
-        .execute(Command::ImportFont { path: source })
+        .execute(Command::ImportFont {
+            path: source,
+            source_name: None,
+        })
         .unwrap_err();
 
     assert!(error.to_string().contains("32 MiB"));
@@ -278,7 +415,14 @@ fn durable_font_import_rejects_symlinked_final_and_ancestor_components() {
     let asset_count_before = count_rows(&project, "assets");
 
     for path in [linked_file, linked_directory.join("Hack-Regular.ttf")] {
-        assert!(workspace.execute(Command::ImportFont { path }).is_err());
+        assert!(
+            workspace
+                .execute(Command::ImportFont {
+                    path,
+                    source_name: None,
+                })
+                .is_err()
+        );
     }
 
     assert!(workspace.document.font_assets.is_empty());
@@ -305,6 +449,7 @@ fn durable_font_import_persists_the_verified_bytes_before_source_replacement() {
     workspace
         .execute(Command::ImportFont {
             path: source.clone(),
+            source_name: None,
         })
         .unwrap();
     fs::write(
@@ -339,7 +484,10 @@ fn periodic_snapshot_rejects_a_tampered_materialized_font() {
     )
     .unwrap();
     workspace
-        .execute(Command::ImportFont { path: source })
+        .execute(Command::ImportFont {
+            path: source,
+            source_name: None,
+        })
         .unwrap();
     let embedded = workspace.document.font_assets[0].path.clone();
     fs::write(

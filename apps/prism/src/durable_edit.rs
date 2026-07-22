@@ -1,4 +1,5 @@
 use super::*;
+use crate::font_source::MAX_EMBEDDED_FONT_BYTES;
 
 pub(crate) struct PreparedEdit {
     pub(super) execution_commands: Vec<Command>,
@@ -14,6 +15,7 @@ enum CommandProvenance {
     Font {
         staged_path: PathBuf,
         original_path: PathBuf,
+        source_name: String,
         content_hash: String,
     },
 }
@@ -23,6 +25,7 @@ impl PreparedEdit {
         if commands.is_empty() {
             bail!("cannot prepare an empty Prism action");
         }
+        preflight_asset_batch(commands)?;
         let mut portable_commands = commands.to_vec();
         let mut execution_commands = commands.to_vec();
         let mut provenance = Vec::with_capacity(commands.len());
@@ -31,8 +34,8 @@ impl PreparedEdit {
         for (index, command) in commands.iter().enumerate() {
             let command_provenance = match command {
                 Command::AddRaster { path, name, .. } => {
-                    let original_path = canonical_asset_path(path)?;
-                    let prepared = prepare_asset(&original_path)?;
+                    let prepared = prepare_asset(path)?;
+                    let original_path = prepared.source_path.clone();
                     let staged_path =
                         project.stage_asset(&prepared.reference, &prepared.asset.bytes)?;
                     let normalized_name = Some(name.clone().unwrap_or_else(|| {
@@ -55,23 +58,37 @@ impl PreparedEdit {
                     assets.push(prepared.asset);
                     CommandProvenance::Raster { original_path }
                 }
-                Command::ImportFont { path } => {
+                Command::ImportFont { path, .. } => {
                     let snapshot = FontSourceSnapshot::read(path)?;
                     let original_path = snapshot.canonical_path().to_owned();
+                    let source_name = original_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("font")
+                        .to_owned();
                     let prepared = prepare_font_snapshot(&snapshot)?;
                     let staged_path =
                         project.stage_asset(&prepared.reference, &prepared.asset.bytes)?;
-                    set_import_font_path(&mut portable_commands[index], prepared.reference.path());
-                    set_import_font_path(&mut execution_commands[index], staged_path.clone());
+                    set_import_font_path(
+                        &mut portable_commands[index],
+                        prepared.reference.path(),
+                        &source_name,
+                    );
+                    set_import_font_path(
+                        &mut execution_commands[index],
+                        staged_path.clone(),
+                        &source_name,
+                    );
                     assets.push(prepared.asset);
                     CommandProvenance::Font {
                         staged_path,
                         original_path,
+                        source_name,
                         content_hash: snapshot.content_hash().to_owned(),
                     }
                 }
                 Command::RasterizeShape { path, .. } => {
-                    let prepared = prepare_asset(&canonical_asset_path(path)?)?;
+                    let prepared = prepare_generated_asset(path)?;
                     let staged_path =
                         project.stage_asset(&prepared.reference, &prepared.asset.bytes)?;
                     set_rasterized_shape_path(
@@ -138,6 +155,7 @@ impl PreparedEdit {
                 CommandProvenance::Font {
                     staged_path,
                     original_path,
+                    source_name,
                     content_hash,
                 } => {
                     if document.font_assets.len() > font_count_before {
@@ -149,6 +167,7 @@ impl PreparedEdit {
                         if font.content_hash != *content_hash {
                             bail!("staged font bytes changed after their verified snapshot");
                         }
+                        font.source_name.clone_from(source_name);
                         font.original_path = Some(original_path.clone());
                     } else if !document
                         .font_assets
@@ -165,8 +184,62 @@ impl PreparedEdit {
     }
 }
 
+const MAX_PREPARED_ASSET_BATCH_COUNT: usize = 128;
+const MAX_PREPARED_ASSET_BATCH_BYTES: u64 = MAX_EMBEDDED_RASTER_BYTES as u64;
+
+fn preflight_asset_batch(commands: &[Command]) -> Result<()> {
+    let mut sources = Vec::new();
+    for command in commands {
+        match command {
+            Command::AddRaster { path, .. } => {
+                sources.push((path.clone(), MAX_EMBEDDED_RASTER_BYTES, "raster asset"));
+            }
+            Command::ImportFont { path, .. } => {
+                sources.push((path.clone(), MAX_EMBEDDED_FONT_BYTES, "font"));
+            }
+            Command::RasterizeShape { path, .. } => {
+                let path = fs::canonicalize(path).with_context(|| {
+                    format!("could not resolve generated asset {}", path.display())
+                })?;
+                sources.push((path, MAX_EMBEDDED_RASTER_BYTES, "raster asset"));
+            }
+            Command::InsertLayer { transfer, .. } => {
+                if let LayerKind::Raster { path, .. } = &transfer.layer.kind {
+                    sources.push((path.clone(), MAX_EMBEDDED_RASTER_BYTES, "raster asset"));
+                }
+                if let Some(font) = &transfer.font_asset {
+                    sources.push((font.path.clone(), MAX_EMBEDDED_FONT_BYTES, "font"));
+                }
+            }
+            _ => {}
+        }
+    }
+    if sources.len() > MAX_PREPARED_ASSET_BATCH_COUNT {
+        bail!(
+            "one Prism action can embed at most {MAX_PREPARED_ASSET_BATCH_COUNT} assets; place fewer files at a time"
+        );
+    }
+    let mut total = 0_u64;
+    for (path, per_asset_limit, kind) in sources {
+        let len = crate::font_source::secure_regular_file_len(&path, per_asset_limit, kind)
+            .map_err(|error| {
+                anyhow::anyhow!("could not preflight {}: {error:#}", path.display())
+            })?;
+        total = total
+            .checked_add(len)
+            .context("embedded-asset batch size overflowed")?;
+        if total > MAX_PREPARED_ASSET_BATCH_BYTES {
+            bail!(
+                "one Prism action can embed at most {} MiB across all assets; place fewer or smaller files at a time",
+                MAX_PREPARED_ASSET_BATCH_BYTES / (1024 * 1024)
+            );
+        }
+    }
+    Ok(())
+}
+
 fn prepare_staged_asset(project: &DurableProject, path: &Path) -> Result<(PreparedAsset, PathBuf)> {
-    let prepared = prepare_asset(&canonical_asset_path(path)?)?;
+    let prepared = prepare_asset(path)?;
     let staged_path = project.stage_asset(&prepared.reference, &prepared.asset.bytes)?;
     Ok((prepared, staged_path))
 }
@@ -193,11 +266,16 @@ fn set_add_raster_paths(command: &mut Command, path: PathBuf, name: Option<Strin
     *target_name = name;
 }
 
-fn set_import_font_path(command: &mut Command, path: PathBuf) {
-    let Command::ImportFont { path: target } = command else {
+fn set_import_font_path(command: &mut Command, path: PathBuf, original_name: &str) {
+    let Command::ImportFont {
+        path: target,
+        source_name,
+    } = command
+    else {
         unreachable!("prepared command changed variant")
     };
     *target = path;
+    *source_name = Some(original_name.to_owned());
 }
 
 fn set_rasterized_shape_path(command: &mut Command, path: PathBuf) {

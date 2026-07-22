@@ -18,6 +18,35 @@ pub enum FontSlant {
     Oblique,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FontEmbeddingPermission {
+    #[default]
+    LegacyUnknown,
+    Installable,
+    Editable,
+    PreviewAndPrint,
+    Restricted,
+}
+
+impl FontEmbeddingPermission {
+    pub fn advisory(self) -> Option<&'static str> {
+        match self {
+            Self::PreviewAndPrint => Some(
+                "This font declares preview/print embedding. Prism preserves the original bytes and allows local editable text, but portability or redistribution may be limited; verify the font license.",
+            ),
+            Self::Restricted => Some(
+                "This font declares restricted embedding. At the user's direction, Prism preserves the original bytes and allows local editable text, but portable editing and redistribution are not verified; subsetting is disabled. Verify the font license.",
+            ),
+            Self::Installable | Self::Editable | Self::LegacyUnknown => None,
+        }
+    }
+
+    pub fn portable_editing_verified(self) -> bool {
+        matches!(self, Self::Installable | Self::Editable)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FontAsset {
     pub id: u64,
@@ -26,6 +55,9 @@ pub struct FontAsset {
     pub weight: u16,
     pub slant: FontSlant,
     pub source_name: String,
+    /// The exact class decoded from the font's OpenType OS/2 embedding metadata.
+    #[serde(default)]
+    pub embedding_permission: FontEmbeddingPermission,
     /// Whether OpenType OS/2 embedding metadata allows technical subsetting.
     /// This is not a legal license conclusion.
     pub subset_allowed: bool,
@@ -49,6 +81,7 @@ impl FontAsset {
                 .and_then(|name| name.to_str())
                 .unwrap_or("font")
                 .to_owned(),
+            embedding_permission: snapshot.embedding_permission(),
             subset_allowed: snapshot.subset_allowed(),
             content_hash: snapshot.content_hash().to_owned(),
             path: snapshot.canonical_path().to_owned(),
@@ -62,6 +95,10 @@ impl FontAsset {
             || snapshot.style != self.style
             || snapshot.weight != self.weight
             || snapshot.slant != self.slant
+            || !embedding_permission_matches(
+                self.embedding_permission,
+                snapshot.embedding_permission,
+            )
             || snapshot.subset_allowed != self.subset_allowed
         {
             bail!("embedded font metadata does not match its immutable source snapshot");
@@ -88,6 +125,7 @@ impl FontAsset {
             weight: verified.weight,
             slant: verified.slant,
             source_name,
+            embedding_permission: verified.embedding_permission(),
             subset_allowed: verified.subset_allowed(),
             content_hash: verified.content_hash().to_owned(),
             path,
@@ -101,12 +139,47 @@ impl FontAsset {
             || verified.style != self.style
             || verified.weight != self.weight
             || verified.slant != self.slant
+            || !embedding_permission_matches(
+                self.embedding_permission,
+                verified.embedding_permission,
+            )
             || verified.subset_allowed != self.subset_allowed
         {
             bail!("embedded font metadata does not match its immutable source snapshot");
         }
         Ok(verified)
     }
+
+    pub(crate) fn hydrate_legacy_embedding_permission(&mut self) -> Result<()> {
+        if self.embedding_permission != FontEmbeddingPermission::LegacyUnknown {
+            return Ok(());
+        }
+        let verified = VerifiedFontSource::from_embedded_bytes(self.bytes()?, &self.content_hash)?;
+        self.embedding_permission = verified.embedding_permission();
+        self.subset_allowed = verified.subset_allowed();
+        Ok(())
+    }
+
+    pub(crate) fn hydrate_legacy_from_verified(&mut self, verified: &VerifiedFontSource) {
+        if self.embedding_permission == FontEmbeddingPermission::LegacyUnknown {
+            self.embedding_permission = verified.embedding_permission();
+            self.subset_allowed = verified.subset_allowed();
+        }
+    }
+}
+
+fn embedding_permission_matches(
+    stored: FontEmbeddingPermission,
+    parsed: FontEmbeddingPermission,
+) -> bool {
+    stored == FontEmbeddingPermission::LegacyUnknown || stored == parsed
+}
+
+pub(crate) fn hydrate_legacy_font_permissions(fonts: &mut [FontAsset]) -> Result<()> {
+    for font in fonts {
+        font.hydrate_legacy_embedding_permission()?;
+    }
+    Ok(())
 }
 
 pub(crate) fn make_fonts_portable(

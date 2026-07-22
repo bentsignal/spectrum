@@ -507,7 +507,10 @@ fn run(cli: Cli) -> Result<Value> {
             };
             let outputs = match command {
                 CliCommand::FontImport { path } => {
-                    vec![workspace.execute(Command::ImportFont { path })?]
+                    vec![workspace.execute(Command::ImportFont {
+                        path,
+                        source_name: None,
+                    })?]
                 }
                 CliCommand::Typography(arguments) => {
                     let typography = updated_typography(&workspace.document, &arguments)?;

@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use ttf_parser::Face;
 
-use crate::{Document, LayerKind};
+use crate::{Document, FontEmbeddingPermission, LayerKind};
 
 /// The exact Unicode scalar values currently requested from one embedded font.
 ///
@@ -41,6 +41,8 @@ pub struct FontUsageAnalysis {
     pub content_hash: String,
     pub source_name: String,
     pub original_path: Option<PathBuf>,
+    pub embedding_permission: FontEmbeddingPermission,
+    pub embedding_advisory: Option<String>,
     /// The OpenType OS/2 embedding metadata's no-subsetting bit, not legal advice.
     pub embedding_metadata_allows_subsetting: bool,
     pub source_bytes: u64,
@@ -158,6 +160,8 @@ pub(crate) fn analyze_font_usage_with_source(
         content_hash: font.content_hash.clone(),
         source_name: font.source_name.clone(),
         original_path: font.original_path.clone(),
+        embedding_permission: font.embedding_permission,
+        embedding_advisory: font.embedding_permission.advisory().map(str::to_owned),
         embedding_metadata_allows_subsetting: font.subset_allowed,
         source_bytes: bytes.len().try_into().unwrap_or(u64::MAX),
         missing_codepoints,
