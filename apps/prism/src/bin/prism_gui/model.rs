@@ -13,6 +13,7 @@ pub(super) enum Tool {
     Eraser,
     Mask,
     Marquee,
+    Lasso,
     MagicWand,
 }
 
@@ -23,7 +24,7 @@ pub(super) enum ToolActivation {
 }
 
 impl Tool {
-    pub(super) const ALL: [(Self, &'static str, &'static str); 10] = [
+    pub(super) const ALL: [(Self, &'static str, &'static str); 11] = [
         (Self::Move, "V", "Select / move"),
         (Self::Crop, "C", "Crop canvas"),
         (Self::Text, "T", "Text"),
@@ -33,6 +34,7 @@ impl Tool {
         (Self::Eraser, "E", "Eraser"),
         (Self::Mask, "K", "Layer mask"),
         (Self::Marquee, "M", "Rectangular marquee"),
+        (Self::Lasso, "L", "Freehand lasso"),
         (Self::MagicWand, "W", "Magic wand"),
     ];
 
@@ -48,6 +50,7 @@ impl Tool {
             Self::Eraser => "Eraser",
             Self::Mask => "Draw mask",
             Self::Marquee => "Rectangular marquee",
+            Self::Lasso => "Freehand lasso",
             Self::MagicWand => "Magic wand",
         }
     }
@@ -76,6 +79,9 @@ impl Tool {
             Self::Eraser => "Drag to erase nondestructively within the focused Paint layer.",
             Self::Mask => "Draw the visible region of the focused element.",
             Self::Marquee => "Drag a persistent document-pixel selection, then clear or fill it.",
+            Self::Lasso => {
+                "Drag a freehand selection; Shift adds, Option subtracts, and both intersect."
+            }
             Self::MagicWand => "Click a color to select a connected or canvas-wide range.",
         }
     }

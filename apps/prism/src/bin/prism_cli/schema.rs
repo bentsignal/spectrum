@@ -32,7 +32,8 @@ pub(super) fn schema() -> Value {
             "crop_to_selection_operations_version": 5,
             "color_selection_operations_version": 6,
             "path_operations_version": 7,
-            "paint_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "paint_operations_version": 8,
+            "lasso_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "gui_interactions": {
@@ -41,7 +42,8 @@ pub(super) fn schema() -> Value {
             "drag_guides": "Persistent horizontal and vertical guides can be added numerically, then dragged directly on the canvas",
             "pen": "Pen clicks create editable anchors; dragging creates paired cubic handles; Enter finishes an open path, clicking the first anchor closes it, and Escape cancels the local draft",
             "brush": "B selects Brush; a canvas drag previews the exact core renderer and commits one nondestructive stroke revision on release; Escape cancels the local draft",
-            "eraser": "E selects Eraser; a canvas drag applies destination-out marks to the selected unlocked Paint layer and commits one nondestructive stroke revision on release"
+            "eraser": "E selects Eraser; a canvas drag applies destination-out marks to the selected unlocked Paint layer and commits one nondestructive stroke revision on release",
+            "lasso": "L selects Lasso; one bounded freehand drag previews locally and commits exactly one fixed-point selection revision on release; Escape cancels"
         },
         "alignment": {
             "cli": "prism align <id> <left|horizontal-center|right|top|vertical-center|bottom> [--to-layer <id>]",
@@ -96,10 +98,13 @@ pub(super) fn schema() -> Value {
         "selection": {
             "rectangle": "selection rectangle <x> <y> <width> <height> uses integer document pixels and clips at canvas edges",
             "magic_wand": "selection magic-wand <x> <y> [--tolerance <0..255>] [--noncontiguous] [--no-antialias] samples the exact CPU composite; tolerance is deterministic max-channel distance over premultiplied RGBA (hidden RGB at alpha 0 is ignored, alpha differences remain visible), and anti-aliasing adds one soft boundary pixel",
+            "lasso": "selection lasso --point <x,y> --point <x,y> --point <x,y> [--mode <replace|add|subtract|intersect>] [--no-antialias] quantizes coordinates to 1/256 pixel and applies a deterministic even-odd polygon selection",
+            "lasso_limits": {"input_points": prism_core::MAX_LASSO_INPUT_POINTS, "simplified_vertices": prism_core::MAX_LASSO_VERTICES, "raster_edge_tests": prism_core::MAX_LASSO_RASTER_EDGE_TESTS, "mask_pixels": prism_core::MAX_COLOR_SELECTION_PIXELS},
             "clear": "selection clear removes the persistent marquee",
             "crop": "selection crop atomically crops the canvas to the current marquee and clears the selection in one revision",
             "fill": "selection fill [--color <RRGGBBAA>] [--name <label>] creates one new editable solid layer honoring rectangular or soft color-selection alpha without changing source pixels",
-            "history": "each completed marquee, magic wand click, clear, fill, or crop is one command and one durable revision"
+            "combination": "replace uses the new lasso; add uses a+b-round(ab/255); subtract uses round(a*(255-b)/255); intersect uses round(ab/255)",
+            "history": "each completed marquee, lasso drag, magic wand click, clear, fill, or crop is one command and one durable revision"
         },
         "typography": {
             "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot and transactionally embeds those exact bytes as a content-addressed project asset; installable/editable metadata is accepted, preview/print and restricted metadata are accepted for local editable text with clear advisories, and malformed, bitmap-only, unparseable, oversized, or unsafe sources fail closed; Windows final-handle proof rejects junction and 8.3 aliases unless the normalized handle path exactly matches",
@@ -150,6 +155,7 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "set_snapping", "enabled": true}),
         json!({"command": "set_selection", "selection": {"type": "rectangle", "x": 120, "y": 80, "width": 640, "height": 360}}),
         json!({"command": "magic_wand_selection", "x": 120, "y": 80, "tolerance": 32, "contiguous": true, "antialias": true}),
+        json!({"command": "lasso_selection", "points": [{"x": 30720, "y": 20480}, {"x": 153600, "y": 20480}, {"x": 30720, "y": 102400}], "mode": "replace", "antialias": true}),
         json!({"command": "fill_selection", "color": [93,216,199,255], "name": "Selection fill"}),
         json!({"command": "crop_to_selection"}),
         json!({"command": "add_guide", "orientation": "vertical", "position": 960.0}),

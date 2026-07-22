@@ -82,10 +82,14 @@ impl PrismApp {
                     paint_interactive_document(ui, geometry, preview_document, &self.layer_visuals);
                 }
                 self.paint_alignment_guides(ui, geometry);
-                let replacing_marquee = self.tool == Tool::Marquee
+                let replacing_marquee = (self.tool == Tool::Marquee
                     && self
                         .drag
-                        .is_some_and(|drag| drag.action == DragAction::Draw);
+                        .is_some_and(|drag| drag.action == DragAction::Draw))
+                    || (self.tool == Tool::Lasso
+                        && !self.selection_ui.lasso_points.is_empty()
+                        && self.selection_ui.lasso_gesture_mode
+                            == Some(prism_core::SelectionCombineMode::Replace));
                 let selection_overlay = self.ensure_selection_overlay(ui.ctx());
                 if !replacing_marquee && let Some(selection) = &self.workspace.document.selection {
                     paint_selection_overlay(ui, geometry, selection, selection_overlay);
@@ -154,7 +158,14 @@ impl PrismApp {
             self.brush_canvas_interaction(ui, response, geometry);
             return;
         }
-        if matches!(self.tool, Tool::Rotate | Tool::Marquee | Tool::MagicWand) && response.hovered()
+        if self.tool == Tool::Lasso {
+            self.lasso_canvas_interaction(ui, response, geometry);
+            return;
+        }
+        if matches!(
+            self.tool,
+            Tool::Rotate | Tool::Marquee | Tool::Lasso | Tool::MagicWand
+        ) && response.hovered()
         {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
@@ -700,8 +711,10 @@ fn canvas_interaction_position(
     geometry: CanvasGeometry,
     screen_position: Pos2,
 ) -> Option<Pos2> {
-    if matches!(tool, Tool::Text | Tool::Marquee | Tool::MagicWand)
-        && !geometry.canvas.contains(screen_position)
+    if matches!(
+        tool,
+        Tool::Text | Tool::Marquee | Tool::Lasso | Tool::MagicWand
+    ) && !geometry.canvas.contains(screen_position)
     {
         return None;
     }

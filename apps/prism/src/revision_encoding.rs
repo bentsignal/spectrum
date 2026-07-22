@@ -20,6 +20,7 @@ pub(super) const CROP_TO_SELECTION_OPERATIONS_VERSION: u32 = 5;
 pub(super) const COLOR_SELECTION_OPERATIONS_VERSION: u32 = 6;
 pub(super) const PATH_OPERATIONS_VERSION: u32 = 7;
 pub(super) const PAINT_OPERATIONS_VERSION: u32 = 8;
+pub(super) const LASSO_OPERATIONS_VERSION: u32 = 9;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -58,12 +59,18 @@ impl Compatibility for PrismCompatibility {
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=PAINT_OPERATIONS_VERSION).contains(&encoding.version)
+            && (LEGACY_OPERATIONS_VERSION..=LASSO_OPERATIONS_VERSION).contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands
+        .iter()
+        .any(|command| matches!(command, Command::LassoSelection { .. }))
+    {
+        return LASSO_OPERATIONS_VERSION;
+    }
     if commands.iter().any(|command| {
         matches!(
             command,
@@ -169,8 +176,8 @@ pub(super) fn validate_operations_version(
 mod tests {
     use super::*;
     use crate::{
-        DropShadow, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, Layer, LayerStyle,
-        LayerTransfer, Selection,
+        DropShadow, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LassoPath, LassoPoint, Layer,
+        LayerStyle, LayerTransfer, Selection, SelectionCombineMode,
     };
 
     #[test]
@@ -283,18 +290,35 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_advertises_operation_versions_one_through_eight() {
-        for version in LEGACY_OPERATIONS_VERSION..=PAINT_OPERATIONS_VERSION {
+    fn compatibility_advertises_operation_versions_one_through_nine() {
+        for version in LEGACY_OPERATIONS_VERSION..=LASSO_OPERATIONS_VERSION {
             assert!(
                 PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
-        for version in [0, PAINT_OPERATIONS_VERSION + 1] {
+        for version in [0, LASSO_OPERATIONS_VERSION + 1] {
             assert!(
                 !PrismCompatibility
                     .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
+    }
+
+    #[test]
+    fn lasso_commands_require_v9_while_paint_stays_v8() {
+        let lasso = [Command::LassoSelection {
+            points: LassoPath::new(vec![
+                LassoPoint::from_canvas(1.0, 1.0).unwrap(),
+                LassoPoint::from_canvas(5.0, 1.0).unwrap(),
+                LassoPoint::from_canvas(1.0, 5.0).unwrap(),
+            ])
+            .unwrap(),
+            mode: SelectionCombineMode::Replace,
+            antialias: true,
+        }];
+        assert_eq!(operations_version(&lasso), LASSO_OPERATIONS_VERSION);
+        assert!(validate_operations_version(&lasso, PAINT_OPERATIONS_VERSION).is_err());
+        assert!(validate_operations_version(&lasso, LASSO_OPERATIONS_VERSION).is_ok());
     }
 
     #[test]

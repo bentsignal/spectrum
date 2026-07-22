@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use spectrum_imaging::AdjustmentPatch;
 
 use crate::{
-    Alignment, AlignmentReference, BlendMode, BrushStroke, GuideOrientation, LayerMask, LayerStyle,
-    LayerTransfer, PathGeometry, Selection, ShapeFill, ShapeStroke, TextTypography, Transform,
-    VectorMask,
+    Alignment, AlignmentReference, BlendMode, BrushStroke, GuideOrientation, LassoPath, LayerMask,
+    LayerStyle, LayerTransfer, PathGeometry, Selection, SelectionCombineMode, ShapeFill,
+    ShapeStroke, TextTypography, Transform, VectorMask,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -166,6 +166,11 @@ pub enum Command {
         y: u32,
         tolerance: u8,
         contiguous: bool,
+        antialias: bool,
+    },
+    LassoSelection {
+        points: LassoPath,
+        mode: SelectionCombineMode,
         antialias: bool,
     },
     FillSelection {

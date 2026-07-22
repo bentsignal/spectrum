@@ -714,13 +714,14 @@ fn schema_keeps_guides_and_typography_commands_together() {
         "insert_layer",
         "add_paint_layer_with_stroke",
         "add_brush_stroke",
+        "lasso_selection",
     ] {
         assert!(examples.iter().any(|example| example["command"] == command));
     }
     assert!(schema["alignment"].is_object());
     assert_eq!(
         schema["command_protocol"]["supported_operation_versions"],
-        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8])
+        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9])
     );
     assert_eq!(
         schema["command_protocol"]["selection_operations_version"],

@@ -83,8 +83,15 @@ pub use paint::{
     MAX_BRUSH_STROKES_PER_LAYER, MAX_PAINT_REGION_PIXELS,
 };
 
+mod lasso;
+pub use lasso::{
+    LASSO_SUBPIXEL_SCALE, LassoPath, LassoPoint, MAX_LASSO_INPUT_POINTS,
+    MAX_LASSO_RASTER_EDGE_TESTS, MAX_LASSO_VERTICES, SelectionCombineMode, apply_lasso_selection,
+    combine_selections, lasso_selection,
+};
+
 pub const PRISM_VERSION: u32 = 7;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 8;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 9;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;

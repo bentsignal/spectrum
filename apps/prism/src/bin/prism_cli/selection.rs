@@ -1,6 +1,6 @@
 use anyhow::Result;
-use clap::{Args, Subcommand};
-use prism_core::{Command, Selection};
+use clap::{Args, Subcommand, ValueEnum};
+use prism_core::{Command, LassoPath, LassoPoint, Selection, SelectionCombineMode};
 
 use super::parse_color;
 
@@ -33,6 +33,17 @@ enum SelectionAction {
         #[arg(long)]
         no_antialias: bool,
     },
+    /// Draw a bounded fixed-point freehand polygon selection.
+    Lasso {
+        /// Document-space point as x,y. Repeat at least three times.
+        #[arg(long = "point", required = true, value_parser = parse_lasso_point)]
+        points: Vec<LassoPoint>,
+        #[arg(long, value_enum, default_value_t = SelectionModeArg::Replace)]
+        mode: SelectionModeArg,
+        /// Disable deterministic 4x4 coverage anti-aliasing.
+        #[arg(long)]
+        no_antialias: bool,
+    },
     /// Clear the current document selection.
     Clear,
     /// Crop the canvas to the current rectangular selection and clear it atomically.
@@ -44,6 +55,41 @@ enum SelectionAction {
         #[arg(long)]
         name: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum SelectionModeArg {
+    #[default]
+    Replace,
+    Add,
+    Subtract,
+    Intersect,
+}
+
+impl From<SelectionModeArg> for SelectionCombineMode {
+    fn from(value: SelectionModeArg) -> Self {
+        match value {
+            SelectionModeArg::Replace => Self::Replace,
+            SelectionModeArg::Add => Self::Add,
+            SelectionModeArg::Subtract => Self::Subtract,
+            SelectionModeArg::Intersect => Self::Intersect,
+        }
+    }
+}
+
+fn parse_lasso_point(value: &str) -> Result<LassoPoint, String> {
+    let (x, y) = value
+        .split_once(',')
+        .ok_or_else(|| "lasso point must be x,y".to_owned())?;
+    let x = x
+        .trim()
+        .parse::<f32>()
+        .map_err(|error| format!("invalid lasso x coordinate: {error}"))?;
+    let y = y
+        .trim()
+        .parse::<f32>()
+        .map_err(|error| format!("invalid lasso y coordinate: {error}"))?;
+    LassoPoint::from_canvas(x, y).map_err(|error| error.to_string())
 }
 
 pub(super) fn command(arguments: SelectionArgs) -> Result<Command> {
@@ -69,6 +115,15 @@ pub(super) fn command(arguments: SelectionArgs) -> Result<Command> {
             contiguous: !noncontiguous,
             antialias: !no_antialias,
             resolved_selection: None,
+        },
+        SelectionAction::Lasso {
+            points,
+            mode,
+            no_antialias,
+        } => Command::LassoSelection {
+            points: LassoPath::new(points)?,
+            mode: mode.into(),
+            antialias: !no_antialias,
         },
         SelectionAction::Clear => Command::SetSelection { selection: None },
         SelectionAction::Crop => Command::CropToSelection,
@@ -98,6 +153,31 @@ mod tests {
             rectangle,
             Command::SetSelection {
                 selection: Some(Selection::rectangle(4, 5, 20, 10))
+            }
+        );
+
+        assert_eq!(
+            command(SelectionArgs {
+                action: SelectionAction::Lasso {
+                    points: vec![
+                        parse_lasso_point("1,2").unwrap(),
+                        parse_lasso_point("5,2").unwrap(),
+                        parse_lasso_point("1,6").unwrap(),
+                    ],
+                    mode: SelectionModeArg::Add,
+                    no_antialias: true,
+                },
+            })
+            .unwrap(),
+            Command::LassoSelection {
+                points: LassoPath::new(vec![
+                    LassoPoint::from_canvas(1.0, 2.0).unwrap(),
+                    LassoPoint::from_canvas(5.0, 2.0).unwrap(),
+                    LassoPoint::from_canvas(1.0, 6.0).unwrap(),
+                ])
+                .unwrap(),
+                mode: SelectionCombineMode::Add,
+                antialias: false,
             }
         );
 

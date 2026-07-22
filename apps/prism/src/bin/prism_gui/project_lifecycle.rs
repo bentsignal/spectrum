@@ -163,6 +163,7 @@ impl PrismApp {
 
         self.settle_inline_text_editor();
         self.cancel_brush();
+        self.cancel_lasso();
         let dirty = if id == self.active_tab_id {
             self.workspace.is_dirty()
         } else {
