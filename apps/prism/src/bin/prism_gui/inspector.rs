@@ -406,6 +406,33 @@ impl PrismApp {
                 inspector_group_heading(ui, "GEOMETRY & FILL");
                 self.ellipse_content(ui, layer.id, *width, *height, *color);
             }
+            LayerKind::Path { geometry, .. } => {
+                inspector_group_heading(ui, "PATH GEOMETRY");
+                property_label(
+                    ui,
+                    if geometry.closed() {
+                        "Closed path"
+                    } else {
+                        "Open path"
+                    },
+                );
+                ui.label(
+                    RichText::new(format!("{} anchors", geometry.anchors().len()))
+                        .size(10.0)
+                        .color(MUTED),
+                );
+                if ui
+                    .add_enabled(!layer.locked, egui::Button::new("Edit with Pen  P"))
+                    .clicked()
+                {
+                    self.choose_tool(Tool::Pen);
+                }
+                ui.label(
+                    RichText::new("Edit anchors directly with the Pen tool.")
+                        .size(9.0)
+                        .color(MUTED),
+                );
+            }
             LayerKind::Raster { path, .. } => {
                 inspector_group_heading(ui, "SOURCE");
                 property_label(ui, "Linked image");
@@ -418,7 +445,7 @@ impl PrismApp {
         }
         if matches!(
             layer.kind,
-            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. }
         ) {
             inspector_group_heading(ui, "OUTPUT");
             if ui.button("Rasterize Shape").clicked() {
@@ -620,7 +647,7 @@ impl PrismApp {
         self.layer_effects_controls(ui, layer);
         if matches!(
             layer.kind,
-            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. }
         ) {
             inspector_group_heading(ui, "STROKE");
             self.shape_stroke(ui, layer);
@@ -681,6 +708,73 @@ impl PrismApp {
             if ui.button("Redraw on canvas  M").clicked() {
                 self.choose_tool(Tool::Mask);
             }
+        }
+        inspector_group_heading(ui, "VECTOR MASK");
+        if let LayerKind::Path { geometry, .. } = &layer.kind
+            && ui
+                .add_enabled(
+                    geometry.closed() && !geometry.is_fill_degenerate(),
+                    egui::Button::new("Copy this path as mask"),
+                )
+                .on_disabled_hover_text("Vector masks require a closed, nondegenerate path.")
+                .clicked()
+        {
+            self.copy_path_for_vector_mask(geometry.clone());
+        }
+        if let Some(mut vector_mask) = layer.vector_mask.clone() {
+            let enabled = ui.checkbox(&mut vector_mask.enabled, "Enable vector mask");
+            self.widget_command(
+                &enabled,
+                Command::SetVectorMask {
+                    id: layer.id,
+                    mask: Some(vector_mask.clone()),
+                },
+            );
+            let invert = ui.checkbox(&mut vector_mask.invert, "Invert vector mask");
+            self.widget_command(
+                &invert,
+                Command::SetVectorMask {
+                    id: layer.id,
+                    mask: Some(vector_mask),
+                },
+            );
+            if ui.button("Clear vector mask").clicked() {
+                self.execute(Command::SetVectorMask {
+                    id: layer.id,
+                    mask: None,
+                });
+            }
+        } else {
+            let copied = self.pen.copied_mask().cloned();
+            if ui
+                .add_enabled(
+                    copied.is_some() && !layer.locked,
+                    egui::Button::new("Apply copied path mask"),
+                )
+                .on_disabled_hover_text("Copy a closed path, then focus an unlocked target layer.")
+                .clicked()
+                && let Some(path) = copied
+            {
+                match prism_core::VectorMask::new(path, false) {
+                    Ok(mask) => {
+                        self.execute(Command::SetVectorMask {
+                            id: layer.id,
+                            mask: Some(mask),
+                        });
+                    }
+                    Err(error) => {
+                        self.status = format!("Could not apply vector mask: {error:#}");
+                        self.status_error = true;
+                    }
+                }
+            }
+            ui.label(
+                RichText::new(
+                    "Copied geometry stretches to the target source and remains editable/reusable.",
+                )
+                .size(9.0)
+                .color(MUTED),
+            );
         }
     }
 

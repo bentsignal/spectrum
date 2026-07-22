@@ -233,6 +233,10 @@ impl PrismApp {
             self.toggle_history();
             return;
         }
+        if self.tool == Tool::Pen && context.input(|input| input.key_pressed(egui::Key::Enter)) {
+            self.finish_pen_path(false);
+            return;
+        }
         let chosen_tool = context.input(|input| {
             if shortcut_domain(input.modifiers) != Some(ShortcutDomain::Tool) {
                 return None;
@@ -245,6 +249,8 @@ impl PrismApp {
                 Some(Tool::Text)
             } else if input.key_pressed(egui::Key::S) {
                 Some(Tool::Shape)
+            } else if input.key_pressed(egui::Key::P) {
+                Some(Tool::Pen)
             } else if input.key_pressed(egui::Key::K) {
                 Some(Tool::Mask)
             } else if input.key_pressed(egui::Key::M) {
@@ -320,6 +326,7 @@ impl PrismApp {
             self.delete_confirmation = self.workspace.document.selected;
         }
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.cancel_pen();
             if let Some(drag) = self.drag {
                 self.workspace.cancel_interaction();
                 restore_source_override_after_cancel(

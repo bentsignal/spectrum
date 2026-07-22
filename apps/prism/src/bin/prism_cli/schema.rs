@@ -30,13 +30,15 @@ pub(super) fn schema() -> Value {
             "supported_operation_versions": (1..=prism_core::PRISM_COMMAND_OPERATIONS_VERSION).collect::<Vec<_>>(),
             "selection_operations_version": 4,
             "crop_to_selection_operations_version": 5,
-            "color_selection_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "color_selection_operations_version": 6,
+            "path_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "gui_interactions": {
             "rotate_focused_object": "Option-R on macOS or Alt-R on Windows/Linux arms the next canvas drag; Shift snaps the absolute angle to 15-degree increments; Escape cancels",
             "move_with_smart_guides": "Move gestures snap transformed edges and centers to the canvas, persistent guides, and other visible layers; the document Snap toggle controls this behavior",
-            "drag_guides": "Persistent horizontal and vertical guides can be added numerically, then dragged directly on the canvas"
+            "drag_guides": "Persistent horizontal and vertical guides can be added numerically, then dragged directly on the canvas",
+            "pen": "Pen clicks create editable anchors; dragging creates paired cubic handles; Enter finishes an open path, clicking the first anchor closes it, and Escape cancels the local draft"
         },
         "alignment": {
             "cli": "prism align <id> <left|horizontal-center|right|top|vertical-center|bottom> [--to-layer <id>]",
@@ -49,7 +51,20 @@ pub(super) fn schema() -> Value {
             "difference", "exclusion", "subtract", "divide", "hue", "saturation", "color",
             "luminosity"
         ],
-        "layer_types": ["raster", "text", "rectangle", "ellipse"],
+        "layer_types": ["raster", "text", "rectangle", "ellipse", "path"],
+        "paths": {
+            "geometry_version": prism_core::PATH_GEOMETRY_VERSION,
+            "anchor_limit": prism_core::MAX_PATH_ANCHORS,
+            "geometry": "explicit local viewport with bounded cubic anchors and relative incoming/outgoing control handles; closed paths use even-odd fill",
+            "cli": "path add <geometry.json> [--name <label>] [--color <RRGGBBAA>] [--x <px>] [--y <px>]; path replace <id> <geometry.json>",
+            "history": "a finished creation or completed anchor/control-point drag is one durable command and revision"
+        },
+        "vector_masks": {
+            "cli": "vector-mask <layer> <closed-geometry.json> [--invert] or vector-mask <layer> --clear",
+            "fitting": "the path viewport is normalized and independently stretched to the complete target layer source width and height",
+            "rendering": "closed nondegenerate fill alpha is applied after source adjustments and before layer transform, shadow, rectangular mask, and clipping",
+            "reuse": "the same immutable PathGeometry value can back a path layer and any number of vector masks"
+        },
         "layer_styles": {
             "drop_shadow": "shadow <layer> [--x <px>] [--y <px>] [--blur <px>] [--color <RRGGBBAA>] [--clear]",
             "shape_gradient": "gradient <shape> [--angle <degrees>] [--start <RRGGBBAA>] [--end <RRGGBBAA>] [--clear]",
@@ -83,7 +98,7 @@ pub(super) fn schema() -> Value {
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
-            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks with verified content identity",
+            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks with verified content identity; v4 preserves paths and reusable vector masks",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
         "color": "RRGGBB or RRGGBBAA",
@@ -98,6 +113,8 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "set_text_typography", "id": 1, "typography": {"font_id": 1, "alignment": "center", "line_height": 1.3, "tracking": 2.0, "box_width": 480.0, "effects": {"outline_width": 1.0, "outline_color": [0,0,0,255], "shadow_offset_x": 4.0, "shadow_offset_y": 6.0, "shadow_color": [0,0,0,128]}}}),
         json!({"command": "insert_layer", "transfer": {"format": "spectrum.prism.layer", "version": 1, "layer": {"id": 0, "name": "Card", "visible": true, "locked": false, "opacity": 1.0, "blend_mode": "normal", "transform": {}, "adjustments": {}, "mask": {}, "stroke": {}, "clip_to_below": false, "kind": {"type": "rectangle", "width": 320, "height": 180, "color": [174,123,255,255], "corner_radius": 24.0}}}}),
         json!({"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0}),
+        json!({"command": "add_path", "name": "Curve", "geometry": {"version": 1, "width": 320, "height": 240, "closed": false, "fill_rule": "even_odd", "anchors": [{"point": [20.0,200.0]}, {"point": [160.0,20.0], "handle_in": [-80.0,0.0], "handle_out": [80.0,0.0]}, {"point": [300.0,200.0]}]}, "color": [255,255,255,255], "x": 100.0, "y": 120.0}),
+        json!({"command": "set_vector_mask", "id": 1, "mask": {"enabled": true, "invert": false, "path": {"version": 1, "width": 100, "height": 100, "closed": true, "fill_rule": "even_odd", "anchors": [{"point": [50.0,0.0]}, {"point": [100.0,100.0]}, {"point": [0.0,100.0]}]}}}),
         json!({"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}}),
         json!({"command": "set_shape_fill", "id": 1, "fill": {"type": "gradient", "kind": "linear", "angle": 30.0, "stops": [{"position": 0.0, "color": [93,216,199,255]}, {"position": 1.0, "color": [174,123,255,255]}]}}),
         json!({"command": "set_layer_style", "id": 1, "style": {"drop_shadow": {"color": [0,0,0,160], "offset_x": 12.0, "offset_y": 12.0, "blur_radius": 10.0}}}),

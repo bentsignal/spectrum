@@ -109,6 +109,7 @@ impl PrismApp {
                         );
                     }
                 }
+                self.paint_pen_overlay(ui, geometry);
                 if let Some(drag) = self.drag {
                     self.paint_drag(ui, geometry, drag);
                 }
@@ -142,6 +143,10 @@ impl PrismApp {
         }
         if ui.input(|input| input.pointer.middle_down()) && response.dragged() {
             self.pan += response.drag_delta();
+            return;
+        }
+        if self.tool == Tool::Pen {
+            self.pen_canvas_interaction(ui, response, geometry);
             return;
         }
         if matches!(self.tool, Tool::Rotate | Tool::Marquee | Tool::MagicWand) && response.hovered()
@@ -769,7 +774,7 @@ mod direct_manipulation_tests {
 }
 
 fn selection_outline_has_resize_handles(tool: Tool) -> bool {
-    tool != Tool::Rotate
+    !matches!(tool, Tool::Rotate | Tool::Pen)
 }
 
 #[cfg(test)]

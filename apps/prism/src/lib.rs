@@ -67,8 +67,14 @@ pub use shapes::{
     recommended_rasterization_scale, shape_dimensions,
 };
 
-pub const PRISM_VERSION: u32 = 5;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 6;
+mod paths;
+pub use paths::{
+    MAX_PATH_ANCHORS, PATH_GEOMETRY_VERSION, PathAnchor, PathFillRule, PathGeometry,
+    PathSourceBounds, VectorMask, apply_vector_mask_to_image, path_source_bounds,
+};
+
+pub const PRISM_VERSION: u32 = 6;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 7;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
@@ -255,6 +261,10 @@ pub enum LayerKind {
         height: u32,
         color: [u8; 4],
     },
+    Path {
+        geometry: PathGeometry,
+        color: [u8; 4],
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -271,6 +281,8 @@ pub struct Layer {
     pub mask: LayerMask,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pixel_mask: Option<PixelMask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_mask: Option<VectorMask>,
     #[serde(skip_serializing_if = "LayerStyle::is_empty")]
     pub style: LayerStyle,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -293,6 +305,7 @@ impl Default for Layer {
             adjustments: Adjustments::default(),
             mask: LayerMask::default(),
             pixel_mask: None,
+            vector_mask: None,
             style: LayerStyle::default(),
             shape_fill: None,
             stroke: ShapeStroke::default(),
@@ -439,6 +452,9 @@ impl Document {
             validate_transform(layer.transform)?;
             validate_mask(layer.mask)?;
             if let Some(mask) = &layer.pixel_mask {
+                if matches!(layer.kind, LayerKind::Path { .. }) {
+                    bail!("path layers cannot carry pixel masks; use a vector mask instead");
+                }
                 let pixels = u64::from(mask.width) * u64::from(mask.height);
                 if pixels > MAX_COLOR_SELECTION_PIXELS {
                     bail!(
@@ -466,15 +482,23 @@ impl Document {
                     );
                 }
             }
+            if let Some(mask) = &layer.vector_mask {
+                mask.validate()?;
+            }
             effects::validate_layer_style(&layer.style)?;
             validate_shape_stroke(layer.stroke)?;
             if let Some(fill) = &layer.shape_fill {
                 effects::validate_shape_fill(fill)?;
                 if !matches!(
                     layer.kind,
-                    LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+                    LayerKind::Rectangle { .. }
+                        | LayerKind::Ellipse { .. }
+                        | LayerKind::Path { .. }
                 ) {
                     bail!("only shape layers can have a shape fill");
+                }
+                if matches!(&layer.kind, LayerKind::Path { geometry, .. } if !geometry.closed()) {
+                    bail!("open path layers cannot have a shape fill");
                 }
             }
             validate_adjustments(&layer.adjustments)?;
@@ -618,3 +642,7 @@ mod effect_tests;
 #[cfg(test)]
 #[path = "selection_tests.rs"]
 mod selection_tests;
+
+#[cfg(test)]
+#[path = "path_tests.rs"]
+mod path_tests;

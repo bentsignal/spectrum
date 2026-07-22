@@ -40,7 +40,7 @@ pub fn region_source_scales(
     let text_raster = text_raster_scale(layer, document_scale);
     let shape_raster = if matches!(
         layer.kind,
-        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. }
     ) {
         constrained_shape_scale(
             layer,
@@ -86,6 +86,7 @@ pub(crate) fn supports_bounded_source(
             | LayerKind::Text { .. }
             | LayerKind::Rectangle { .. }
             | LayerKind::Ellipse { .. }
+            | LayerKind::Path { .. }
     ) && source::layer_supports_region_reads(layer, raster_sources)
         && layer.transform.scale_x.is_finite()
         && layer.transform.scale_y.is_finite()
@@ -425,7 +426,10 @@ impl SamplingGeometry {
                 (0.0, 0.0),
                 RotationSampling::None,
             ),
-            LayerKind::Raster { .. } | LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+            LayerKind::Raster { .. }
+            | LayerKind::Rectangle { .. }
+            | LayerKind::Ellipse { .. }
+            | LayerKind::Path { .. }
                 if degrees.abs() >= 0.01 =>
             {
                 let bounds = centered_rotation_bounds(scaled_width, scaled_height, degrees);
@@ -437,12 +441,30 @@ impl SamplingGeometry {
                     RotationSampling::Center { sin, cos },
                 )
             }
-            LayerKind::Raster { .. } | LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => (
+            LayerKind::Raster { .. }
+            | LayerKind::Rectangle { .. }
+            | LayerKind::Ellipse { .. }
+            | LayerKind::Path { .. } => (
                 scaled_width,
                 scaled_height,
                 (0.0, 0.0),
                 RotationSampling::None,
             ),
+        };
+        let path_source_offset = match descriptor {
+            SourceDescriptor::Path { scale, .. } => (
+                crate::paths::path_source_bounds(base_layer)
+                    .expect("path descriptor has path bounds")
+                    .origin[0]
+                    * scale[0]
+                    * scaled_layer.transform.scale_x,
+                crate::paths::path_source_bounds(base_layer)
+                    .expect("path descriptor has path bounds")
+                    .origin[1]
+                    * scale[1]
+                    * scaled_layer.transform.scale_y,
+            ),
+            _ => (0.0, 0.0),
         };
         Ok(Self {
             source_width,
@@ -451,8 +473,8 @@ impl SamplingGeometry {
             scaled_height,
             output_width,
             output_height,
-            origin_x: (scaled_layer.transform.x + offset.0).round() as i64,
-            origin_y: (scaled_layer.transform.y + offset.1).round() as i64,
+            origin_x: (scaled_layer.transform.x + path_source_offset.0 + offset.0).round() as i64,
+            origin_y: (scaled_layer.transform.y + path_source_offset.1 + offset.1).round() as i64,
             rotation,
         })
     }

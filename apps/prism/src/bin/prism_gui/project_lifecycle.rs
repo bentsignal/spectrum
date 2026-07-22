@@ -1,5 +1,22 @@
 use super::*;
 
+#[derive(Clone, Debug)]
+pub(super) struct NewDocumentDialog {
+    pub(super) name: String,
+    pub(super) width: u32,
+    pub(super) height: u32,
+}
+
+impl Default for NewDocumentDialog {
+    fn default() -> Self {
+        Self {
+            name: "Untitled artwork".into(),
+            width: 1920,
+            height: 1080,
+        }
+    }
+}
+
 const KEEP_ONLY_TAB_STATUS: &str =
     "This project is still open. Open or create another document before closing its tab.";
 

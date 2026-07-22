@@ -38,6 +38,12 @@ pub(crate) fn ensure_region_fallback_is_bounded(
             (*height as f32 * shape_scale[1]).round().max(1.0) as u32,
             4,
         ),
+        LayerKind::Path { .. } => {
+            let dimensions = crate::paths::path_source_bounds(render_layer)
+                .context("path layer is missing source bounds")?
+                .raster_dimensions(shape_scale)?;
+            (dimensions.0, dimensions.1, 4)
+        }
     };
     let (adjusted_width, adjusted_height) = spectrum_imaging::adjusted_image_dimensions(
         base_width,

@@ -28,6 +28,9 @@ use benchmark::{BenchmarkProfile, benchmark};
 #[path = "prism_cli/effects.rs"]
 mod effects;
 use effects::{GradientArgs, ShadowArgs};
+#[path = "prism_cli/paths.rs"]
+mod paths;
+use paths::{PathArgs, PathCommand, VectorMaskArgs};
 #[path = "prism_cli/schema.rs"]
 mod schema;
 use schema::schema;
@@ -152,6 +155,10 @@ enum CliCommand {
         #[arg(long, default_value_t = 0.0)]
         y: f32,
     },
+    /// Add or replace editable cubic paths.
+    Path(PathArgs),
+    /// Apply or clear one reusable closed vector mask.
+    VectorMask(VectorMaskArgs),
     EditText {
         id: u64,
         text: String,
@@ -572,6 +579,29 @@ fn run(cli: Cli) -> Result<Value> {
                     x,
                     y,
                 })?],
+                CliCommand::Path(arguments) => {
+                    vec![workspace.execute(match arguments.command {
+                        PathCommand::Add {
+                            geometry,
+                            name,
+                            color,
+                            x,
+                            y,
+                        } => Command::AddPath {
+                            name,
+                            geometry: paths::read_geometry(geometry)?,
+                            color: parse_color(&color)?,
+                            x,
+                            y,
+                        },
+                        PathCommand::Replace { id, geometry } => {
+                            paths::replace_command(id, geometry)?
+                        }
+                    })?]
+                }
+                CliCommand::VectorMask(arguments) => {
+                    vec![workspace.execute(paths::vector_mask_command(arguments)?)?]
+                }
                 CliCommand::EditText {
                     id,
                     text,

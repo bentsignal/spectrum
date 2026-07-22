@@ -53,6 +53,8 @@ mod macos_menu_spec;
 #[path = "prism_gui/model.rs"]
 mod model;
 use model::*;
+#[path = "prism_gui/pen_tool.rs"]
+mod pen_tool;
 #[path = "prism_gui/project_lifecycle.rs"]
 mod project_lifecycle;
 #[path = "prism_gui/raster_sources.rs"]
@@ -82,30 +84,13 @@ mod theme;
 #[path = "prism_gui/typography_ui.rs"]
 mod typography_ui;
 use history::HistoryViewState;
-use project_lifecycle::MoveProjectDialog;
+use project_lifecycle::{MoveProjectDialog, NewDocumentDialog};
 use raster_sources::*;
 use renderer::*;
 #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
 use spectrum_terminal::native_ghostty as native_terminal;
 use terminal::TerminalDock;
 use theme::*;
-
-#[derive(Clone, Debug)]
-struct NewDocumentDialog {
-    name: String,
-    width: u32,
-    height: u32,
-}
-
-impl Default for NewDocumentDialog {
-    fn default() -> Self {
-        Self {
-            name: "Untitled artwork".into(),
-            width: 1920,
-            height: 1080,
-        }
-    }
-}
 
 struct PrismApp {
     workspace: Workspace,
@@ -131,6 +116,7 @@ struct PrismApp {
     tool_palette: Option<chrome::PaletteState>,
     shape_palette: Option<chrome::PaletteState>,
     selection_ui: selection_ui::SelectionUiState,
+    pen: pen_tool::PenState,
     inspector_section: inspector::InspectorSection,
     composition_query: String,
     composition_search_focus: bool,
@@ -258,6 +244,7 @@ impl PrismApp {
             tool_palette: None,
             shape_palette: None,
             selection_ui: selection_ui::SelectionUiState::default(),
+            pen: pen_tool::PenState::default(),
             inspector_section: inspector::InspectorSection::default(),
             composition_query: String::new(),
             composition_search_focus: false,
@@ -499,6 +486,7 @@ impl PrismApp {
 
     fn add_workspace_tab(&mut self, workspace: Workspace) {
         self.settle_inline_text_editor();
+        self.cancel_pen();
         self.inactive_workspaces.insert(
             self.active_tab_id,
             std::mem::replace(&mut self.workspace, workspace),
@@ -523,6 +511,7 @@ impl PrismApp {
             return;
         }
         self.settle_inline_text_editor();
+        self.cancel_pen();
         let Some(workspace) = self.inactive_workspaces.remove(&id) else {
             return;
         };

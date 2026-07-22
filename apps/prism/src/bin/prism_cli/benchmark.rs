@@ -20,6 +20,8 @@ use raster_fixture::PreparedRasterFixture;
 #[path = "benchmark/temporary_font.rs"]
 mod temporary_font;
 use temporary_font::TemporaryFont;
+#[path = "benchmark/path.rs"]
+mod path;
 #[path = "benchmark/selection.rs"]
 mod selection;
 
@@ -53,6 +55,20 @@ impl BenchmarkProfile {
         match self {
             Self::Interactive => 5_000.0,
             Self::HostedCi => 15_000.0,
+        }
+    }
+
+    pub(super) fn path_raster_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 250.0,
+            Self::HostedCi => 750.0,
+        }
+    }
+
+    pub(super) fn path_edit_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 5.0,
+            Self::HostedCi => 15.0,
         }
     }
 }
@@ -138,6 +154,7 @@ fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
 pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value> {
     let selection_fill = selection::measure_selection_fill()?;
     let magic_wand = selection::measure_magic_wand_bound()?;
+    let path = path::measure()?;
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -738,6 +755,20 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: scaled_shape_p95,
             budget_ms: 16.0,
             pass: scaled_shape_p95 <= 16.0,
+        },
+        BenchmarkMetric {
+            name: "16x_256_anchor_cubic_path_raster",
+            median_ms: path.raster_median_ms,
+            p95_ms: path.raster_p95_ms,
+            budget_ms: profile.path_raster_budget_ms(),
+            pass: path.raster_p95_ms <= profile.path_raster_budget_ms(),
+        },
+        BenchmarkMetric {
+            name: "256_anchor_path_edit_preview",
+            median_ms: path.edit_median_ms,
+            p95_ms: path.edit_p95_ms,
+            budget_ms: profile.path_edit_budget_ms(),
+            pass: path.edit_p95_ms <= profile.path_edit_budget_ms(),
         },
         BenchmarkMetric {
             name: "portable_typography_effect_raster",

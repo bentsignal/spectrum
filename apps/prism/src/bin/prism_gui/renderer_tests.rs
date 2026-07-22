@@ -250,6 +250,28 @@ fn styled_shapes_require_a_textured_preview_without_rerasterizing_style_values()
     assert_ne!(original, LayerVisualKey::new(&gradient, 1.0));
     assert_eq!(solid_preview(&gradient), None);
 
+    let mut masked = layer.clone();
+    masked.vector_mask = Some(
+        prism_core::VectorMask::new(
+            prism_core::PathGeometry::new(
+                10,
+                10,
+                true,
+                prism_core::PathFillRule::EvenOdd,
+                vec![
+                    prism_core::PathAnchor::corner(0.0, 0.0),
+                    prism_core::PathAnchor::corner(10.0, 0.0),
+                    prism_core::PathAnchor::corner(0.0, 10.0),
+                ],
+            )
+            .unwrap(),
+            false,
+        )
+        .unwrap(),
+    );
+    assert_ne!(original, LayerVisualKey::new(&masked, 1.0));
+    assert_eq!(solid_preview(&masked), None);
+
     let mut styled = layer;
     styled.style.drop_shadow = Some(prism_core::DropShadow::default());
     let styled_key = LayerVisualKey::new(&styled, 1.0);

@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub const LAYER_TRANSFER_FORMAT: &str = "spectrum.prism.layer";
-pub const LAYER_TRANSFER_VERSION: u32 = 3;
+pub const LAYER_TRANSFER_VERSION: u32 = 4;
 const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 24 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
@@ -62,9 +62,19 @@ impl LayerTransfer {
             },
             _ => None,
         };
+        let version = if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. })
+        {
+            LAYER_TRANSFER_VERSION
+        } else if layer.pixel_mask.is_some() {
+            3
+        } else if !layer.style.is_empty() || layer.shape_fill.is_some() {
+            2
+        } else {
+            1
+        };
         Ok(Self {
             format: LAYER_TRANSFER_FORMAT.into(),
-            version: LAYER_TRANSFER_VERSION,
+            version,
             layer,
             font_asset,
         })
@@ -146,6 +156,12 @@ impl LayerTransfer {
         if self.version < 3 && self.layer.pixel_mask.is_some() {
             bail!("Prism layer transfer versions before 3 cannot contain pixel masks");
         }
+        if self.version < 4
+            && (self.layer.vector_mask.is_some()
+                || matches!(self.layer.kind, LayerKind::Path { .. }))
+        {
+            bail!("Prism layer transfer versions before 4 cannot contain paths or vector masks");
+        }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");
         }
@@ -188,13 +204,19 @@ fn sanitize_layer(layer: &mut Layer) -> Result<()> {
     validate_layer_style(&layer.style)?;
     validate_shape_stroke(layer.stroke)?;
     validate_pixel_mask(layer)?;
+    if let Some(mask) = &layer.vector_mask {
+        mask.validate()?;
+    }
     if let Some(fill) = &layer.shape_fill {
         validate_shape_fill(fill)?;
         if !matches!(
             layer.kind,
-            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
+            LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. }
         ) {
             bail!("only shape layers can have a shape fill");
+        }
+        if matches!(&layer.kind, LayerKind::Path { geometry, .. } if !geometry.closed()) {
+            bail!("open path layers cannot have a shape fill");
         }
     }
     layer.opacity = layer.opacity.clamp(0.0, 1.0);
@@ -251,6 +273,7 @@ fn sanitize_layer(layer: &mut Layer) -> Result<()> {
             *width = (*width).clamp(1, MAX_CANVAS_DIMENSION);
             *height = (*height).clamp(1, MAX_CANVAS_DIMENSION);
         }
+        LayerKind::Path { .. } => {}
     }
     Ok(())
 }
@@ -259,6 +282,9 @@ fn validate_pixel_mask(layer: &Layer) -> Result<()> {
     let Some(mask) = &layer.pixel_mask else {
         return Ok(());
     };
+    if matches!(layer.kind, LayerKind::Path { .. }) {
+        bail!("path layers cannot carry pixel masks; use a vector mask instead");
+    }
     let pixels = u64::from(mask.width) * u64::from(mask.height);
     if pixels > crate::MAX_COLOR_SELECTION_PIXELS {
         bail!("transferred pixel mask exceeds the bounded pixel limit");

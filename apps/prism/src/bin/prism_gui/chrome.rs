@@ -327,6 +327,9 @@ impl PrismApp {
 
     pub(super) fn choose_tool(&mut self, tool: Tool) {
         self.settle_inline_text_editor();
+        if self.tool == Tool::Pen && tool != Tool::Pen {
+            self.cancel_pen();
+        }
         if tool.activation() == ToolActivation::ChoiceDialog {
             self.shape_palette = Some(PaletteState::default());
             return;
@@ -680,6 +683,7 @@ fn palette_results(query: &str) -> Vec<PaletteItem> {
         PaletteItem::Tool(Tool::Marquee),
         PaletteItem::Tool(Tool::MagicWand),
         PaletteItem::Tool(Tool::Text),
+        PaletteItem::Tool(Tool::Pen),
         PaletteItem::Tool(Tool::Shape),
         PaletteItem::PlaceImage,
     ]

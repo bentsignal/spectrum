@@ -8,6 +8,106 @@ fn colors_accept_rgb_and_rgba() {
 }
 
 #[test]
+fn path_and_vector_mask_cli_surfaces_mutate_durable_projects_end_to_end() {
+    let project = temporary_project("path-vector-mask");
+    let open_path = project.with_extension("open-path.json");
+    let closed_path = project.with_extension("closed-path.json");
+    let open = prism_core::PathGeometry::new(
+        80,
+        60,
+        false,
+        prism_core::PathFillRule::EvenOdd,
+        vec![
+            prism_core::PathAnchor::corner(2.0, 55.0),
+            prism_core::PathAnchor {
+                point: [40.0, 3.0],
+                handle_in: [-18.0, 0.0],
+                handle_out: [18.0, 0.0],
+            },
+            prism_core::PathAnchor::corner(78.0, 55.0),
+        ],
+    )
+    .unwrap();
+    let closed = prism_core::PathGeometry::new(
+        100,
+        100,
+        true,
+        prism_core::PathFillRule::EvenOdd,
+        vec![
+            prism_core::PathAnchor::corner(50.0, 0.0),
+            prism_core::PathAnchor::corner(100.0, 100.0),
+            prism_core::PathAnchor::corner(0.0, 100.0),
+        ],
+    )
+    .unwrap();
+    std::fs::write(&open_path, serde_json::to_vec(&open).unwrap()).unwrap();
+    std::fs::write(&closed_path, serde_json::to_vec(&closed).unwrap()).unwrap();
+    let project_arg = project.to_str().unwrap();
+    let open_arg = open_path.to_str().unwrap();
+    let closed_arg = closed_path.to_str().unwrap();
+    for arguments in [
+        vec!["init", "Path CLI", "--width", "240", "--height", "180"],
+        vec![
+            "path",
+            "add",
+            open_arg,
+            "--name",
+            "CLI Curve",
+            "--color",
+            "aabbccdd",
+            "--x",
+            "12",
+            "--y",
+            "18",
+        ],
+        vec!["path", "replace", "1", closed_arg],
+        vec!["add-rectangle", "--width", "120", "--height", "60"],
+        vec!["vector-mask", "2", closed_arg, "--invert"],
+    ] {
+        let mut cli = vec!["prism", "--project", project_arg];
+        cli.extend(arguments);
+        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+    }
+    let document = Workspace::load_read_only(&project).unwrap();
+    let prism_core::LayerKind::Path { geometry, color } = &document.layer(1).unwrap().kind else {
+        panic!("path CLI did not create a path layer")
+    };
+    assert_eq!(geometry, &closed);
+    assert_eq!(*color, [0xaa, 0xbb, 0xcc, 0xdd]);
+    assert!(
+        document
+            .layer(2)
+            .unwrap()
+            .vector_mask
+            .as_ref()
+            .unwrap()
+            .invert
+    );
+
+    run(Cli::try_parse_from([
+        "prism",
+        "--project",
+        project_arg,
+        "vector-mask",
+        "2",
+        "--clear",
+    ])
+    .unwrap())
+    .unwrap();
+    assert!(
+        Workspace::load_read_only(&project)
+            .unwrap()
+            .layer(2)
+            .unwrap()
+            .vector_mask
+            .is_none()
+    );
+    for path in [project, open_path, closed_path] {
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 fn selection_cli_persists_and_fills_without_touching_existing_layers() {
     let project = temporary_project("selection");
     let project_arg = project.to_str().unwrap();
@@ -618,7 +718,7 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert!(schema["alignment"].is_object());
     assert_eq!(
         schema["command_protocol"]["supported_operation_versions"],
-        serde_json::json!([1, 2, 3, 4, 5, 6])
+        serde_json::json!([1, 2, 3, 4, 5, 6, 7])
     );
     assert_eq!(
         schema["command_protocol"]["selection_operations_version"],
@@ -632,6 +732,9 @@ fn schema_keeps_guides_and_typography_commands_together() {
         schema["command_protocol"]["color_selection_operations_version"],
         6
     );
+    assert_eq!(schema["command_protocol"]["path_operations_version"], 7);
+    assert_eq!(schema["paths"]["geometry_version"], 1);
+    assert_eq!(schema["layer_transfer"]["version"], 4);
     assert!(schema["selection"].is_object());
     assert!(schema["selection"]["crop"].is_string());
     assert!(
@@ -692,7 +795,7 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
     .unwrap();
     let copied = run(copy).unwrap();
     assert_eq!(copied["action"], "layer_copy");
-    assert_eq!(copied["version"], prism_core::LAYER_TRANSFER_VERSION);
+    assert_eq!(copied["version"], 1);
     assert!(transfer.exists());
 
     let paste = Cli::try_parse_from([
