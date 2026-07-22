@@ -249,6 +249,7 @@ fn lone_document_tab_close_is_disabled_and_annotated() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/chrome.rs"),
     )
     .expect("Prism chrome source should be readable");
-    assert!(chrome.contains(".add_enabled(close_affordance.enabled"));
+    let compact_chrome = chrome.split_whitespace().collect::<String>();
+    assert!(compact_chrome.contains(".add_enabled(close_affordance.enabled,"));
     assert!(chrome.contains("on_disabled_hover_text(close_affordance.hover_text)"));
 }

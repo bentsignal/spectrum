@@ -1,8 +1,5 @@
 use super::*;
 
-const INSPECTOR_TAB_GAP: f32 = 4.0;
-const INSPECTOR_TAB_HEIGHT: f32 = 26.0;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum InspectorSection {
     #[default]
@@ -14,7 +11,7 @@ pub(super) enum InspectorSection {
 }
 
 impl InspectorSection {
-    const ALL: [Self; 5] = [
+    pub(super) const ALL: [Self; 5] = [
         Self::Transform,
         Self::Content,
         Self::Appearance,
@@ -22,7 +19,7 @@ impl InspectorSection {
         Self::Develop,
     ];
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Transform => "Transform",
             Self::Content => "Content",
@@ -32,7 +29,7 @@ impl InspectorSection {
         }
     }
 
-    fn description(self) -> &'static str {
+    pub(super) fn description(self) -> &'static str {
         match self {
             Self::Transform => "Position, size, and angle",
             Self::Content => "Editable source properties",
@@ -41,10 +38,6 @@ impl InspectorSection {
             Self::Develop => "Light, color, and detail",
         }
     }
-}
-
-fn inspector_tab_width(available_width: f32) -> f32 {
-    ((available_width - INSPECTOR_TAB_GAP * 4.0) / InspectorSection::ALL.len() as f32).max(1.0)
 }
 
 impl PrismApp {
@@ -255,91 +248,104 @@ impl PrismApp {
     fn transform_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
         let mut transform = layer.transform;
         let source = self.layer_source_size(layer);
-        egui::Grid::new(("transform-grid", layer.id))
-            .num_columns(4)
-            .spacing(Vec2::new(6.0, 7.0))
-            .show(ui, |ui| {
-                property_label(ui, "X");
-                let response = ui.add(
-                    egui::DragValue::new(&mut transform.x)
-                        .speed(1.0)
-                        .suffix(" px"),
-                );
-                self.widget_command(
-                    &response,
-                    Command::SetTransform {
-                        id: layer.id,
-                        transform,
-                    },
-                );
-                property_label(ui, "Y");
-                let response = ui.add(
-                    egui::DragValue::new(&mut transform.y)
-                        .speed(1.0)
-                        .suffix(" px"),
-                );
-                self.widget_command(
-                    &response,
-                    Command::SetTransform {
-                        id: layer.id,
-                        transform,
-                    },
-                );
-                ui.end_row();
 
-                if let Some(source) = source {
-                    let mut width = source.x * transform.scale_x;
-                    let mut height = source.y * transform.scale_y;
-                    property_label(ui, "W");
-                    let response = ui.add(
-                        egui::DragValue::new(&mut width)
-                            .speed(1.0)
-                            .range(1.0..=100_000.0)
-                            .suffix(" px"),
-                    );
-                    transform.scale_x = width / source.x.max(1.0);
-                    self.widget_command(
-                        &response,
-                        Command::SetTransform {
-                            id: layer.id,
-                            transform,
-                        },
-                    );
-                    property_label(ui, "H");
-                    let response = ui.add(
-                        egui::DragValue::new(&mut height)
-                            .speed(1.0)
-                            .range(1.0..=100_000.0)
-                            .suffix(" px"),
-                    );
-                    transform.scale_y = height / source.y.max(1.0);
-                    self.widget_command(
-                        &response,
-                        Command::SetTransform {
-                            id: layer.id,
-                            transform,
-                        },
-                    );
-                    ui.end_row();
-                }
-
-                property_label(ui, "Angle");
-                let response = ui.add(
-                    egui::DragValue::new(&mut transform.rotation)
-                        .speed(0.25)
-                        .suffix("°"),
-                );
-                self.widget_command(
-                    &response,
-                    Command::SetRotation {
-                        id: layer.id,
-                        degrees: transform.rotation,
-                    },
-                );
-                ui.end_row();
-            });
+        inspector_group_heading(ui, "POSITION");
         ui.horizontal(|ui| {
-            if ui.small_button("Center on canvas").clicked() {
+            property_label(ui, "X");
+            let response = ui.add_sized(
+                [112.0, CONTROL_HEIGHT],
+                egui::DragValue::new(&mut transform.x)
+                    .speed(1.0)
+                    .suffix(" px"),
+            );
+            self.widget_command(
+                &response,
+                Command::SetTransform {
+                    id: layer.id,
+                    transform,
+                },
+            );
+            ui.add_space(8.0);
+            property_label(ui, "Y");
+            let response = ui.add_sized(
+                [112.0, CONTROL_HEIGHT],
+                egui::DragValue::new(&mut transform.y)
+                    .speed(1.0)
+                    .suffix(" px"),
+            );
+            self.widget_command(
+                &response,
+                Command::SetTransform {
+                    id: layer.id,
+                    transform,
+                },
+            );
+        });
+
+        if let Some(source) = source {
+            inspector_group_heading(ui, "SIZE");
+            let mut width = source.x * transform.scale_x;
+            let mut height = source.y * transform.scale_y;
+            ui.horizontal(|ui| {
+                property_label(ui, "W");
+                let response = ui.add_sized(
+                    [112.0, CONTROL_HEIGHT],
+                    egui::DragValue::new(&mut width)
+                        .speed(1.0)
+                        .range(1.0..=100_000.0)
+                        .suffix(" px"),
+                );
+                transform.scale_x = width / source.x.max(1.0);
+                self.widget_command(
+                    &response,
+                    Command::SetTransform {
+                        id: layer.id,
+                        transform,
+                    },
+                );
+                ui.add_space(8.0);
+                property_label(ui, "H");
+                let response = ui.add_sized(
+                    [112.0, CONTROL_HEIGHT],
+                    egui::DragValue::new(&mut height)
+                        .speed(1.0)
+                        .range(1.0..=100_000.0)
+                        .suffix(" px"),
+                );
+                transform.scale_y = height / source.y.max(1.0);
+                self.widget_command(
+                    &response,
+                    Command::SetTransform {
+                        id: layer.id,
+                        transform,
+                    },
+                );
+            });
+        }
+
+        inspector_group_heading(ui, "ROTATION & PLACEMENT");
+        ui.horizontal(|ui| {
+            property_label(ui, "Angle");
+            let response = ui.add_sized(
+                [112.0, CONTROL_HEIGHT],
+                egui::DragValue::new(&mut transform.rotation)
+                    .speed(0.25)
+                    .suffix("°"),
+            );
+            self.widget_command(
+                &response,
+                Command::SetRotation {
+                    id: layer.id,
+                    degrees: transform.rotation,
+                },
+            );
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add_sized([142.0, 32.0], egui::Button::new("Center on Canvas"))
+                .clicked()
+            {
                 let source = source.unwrap_or(Vec2::splat(1.0));
                 let geometry = prism_core::layer_geometry_with_size(layer, [source.x, source.y]);
                 self.execute(Command::SetTransform {
@@ -353,7 +359,10 @@ impl PrismApp {
                     },
                 });
             }
-            if ui.small_button("Reset").clicked() {
+            if ui
+                .add_sized([82.0, 32.0], egui::Button::new("Reset"))
+                .clicked()
+            {
                 self.execute(Command::SetTransform {
                     id: layer.id,
                     transform: Transform {
@@ -375,6 +384,7 @@ impl PrismApp {
                 color,
                 typography,
             } => {
+                inspector_group_heading(ui, "TEXT");
                 self.text_content(ui, layer.id, text, *font_size, *color);
                 self.typeface_controls(ui, layer.id, typography);
                 self.paragraph_controls(ui, layer.id, typography);
@@ -384,13 +394,20 @@ impl PrismApp {
                 height,
                 color,
                 corner_radius,
-            } => self.rectangle_content(ui, layer.id, *width, *height, *color, *corner_radius),
+            } => {
+                inspector_group_heading(ui, "GEOMETRY & FILL");
+                self.rectangle_content(ui, layer.id, *width, *height, *color, *corner_radius);
+            }
             LayerKind::Ellipse {
                 width,
                 height,
                 color,
-            } => self.ellipse_content(ui, layer.id, *width, *height, *color),
+            } => {
+                inspector_group_heading(ui, "GEOMETRY & FILL");
+                self.ellipse_content(ui, layer.id, *width, *height, *color);
+            }
             LayerKind::Raster { path, .. } => {
+                inspector_group_heading(ui, "SOURCE");
                 property_label(ui, "Linked image");
                 ui.label(
                     RichText::new(path.display().to_string())
@@ -403,7 +420,7 @@ impl PrismApp {
             layer.kind,
             LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
         ) {
-            ui.separator();
+            inspector_group_heading(ui, "OUTPUT");
             if ui.button("Rasterize Shape").clicked() {
                 self.rasterize_shape(layer.id);
             }
@@ -561,10 +578,7 @@ impl PrismApp {
     }
 
     fn appearance_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        if let LayerKind::Text { typography, .. } = &layer.kind {
-            self.text_effects_controls(ui, layer.id, typography);
-            ui.separator();
-        }
+        inspector_group_heading(ui, "COMPOSITING");
         let mut opacity = layer.opacity * 100.0;
         let response = ui.add(
             egui::Slider::new(&mut opacity, 0.0..=100.0)
@@ -600,12 +614,15 @@ impl PrismApp {
                 enabled: clipped,
             });
         }
+        if let LayerKind::Text { typography, .. } = &layer.kind {
+            self.text_effects_controls(ui, layer.id, typography);
+        }
         self.layer_effects_controls(ui, layer);
         if matches!(
             layer.kind,
             LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
         ) {
-            ui.separator();
+            inspector_group_heading(ui, "STROKE");
             self.shape_stroke(ui, layer);
         }
     }
@@ -815,94 +832,6 @@ impl PrismApp {
     }
 }
 
-fn inspector_section_tabs(ui: &mut egui::Ui, active: &mut InspectorSection) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = INSPECTOR_TAB_GAP;
-        let width = inspector_tab_width(ui.available_width());
-        for section in InspectorSection::ALL {
-            let selected = *active == section;
-            let response = ui.add_sized(
-                [width, INSPECTOR_TAB_HEIGHT],
-                egui::Button::new(RichText::new(section.label()).size(9.0).color(if selected {
-                    TEXT
-                } else {
-                    MUTED
-                }))
-                .fill(if selected {
-                    SELECTED_SURFACE
-                } else {
-                    Color32::TRANSPARENT
-                })
-                .stroke(Stroke::NONE),
-            );
-            if selected {
-                ui.painter().line_segment(
-                    [response.rect.left_bottom(), response.rect.right_bottom()],
-                    Stroke::new(2.0, ACCENT),
-                );
-            }
-            if response.on_hover_text(section.description()).clicked() {
-                *active = section;
-            }
-        }
-    });
-}
-
-fn layer_kind_label(kind: &LayerKind) -> &'static str {
-    match kind {
-        LayerKind::Raster { .. } => "IMAGE",
-        LayerKind::Text { .. } => "TEXT",
-        LayerKind::Rectangle { .. } => "RECTANGLE",
-        LayerKind::Ellipse { .. } => "ELLIPSE",
-    }
-}
-
-fn property_label(ui: &mut egui::Ui, label: &str) {
-    ui.label(RichText::new(label).size(10.0).color(MUTED));
-}
-
-fn section_label(ui: &mut egui::Ui, label: &str) {
-    ui.add_space(8.0);
-    ui.label(RichText::new(label).size(9.0).strong().color(MUTED));
-}
-
-fn shape_size_grid(
-    ui: &mut egui::Ui,
-    id: u64,
-    width: &mut u32,
-    height: &mut u32,
-    mut changed: impl FnMut(&egui::Response, u32, u32),
-) {
-    egui::Grid::new(("shape-size", id))
-        .num_columns(4)
-        .spacing(Vec2::new(6.0, 7.0))
-        .show(ui, |ui| {
-            property_label(ui, "W");
-            let response = ui.add(
-                egui::DragValue::new(width)
-                    .range(1..=prism_core::MAX_CANVAS_DIMENSION)
-                    .suffix(" px"),
-            );
-            changed(&response, *width, *height);
-            property_label(ui, "H");
-            let response = ui.add(
-                egui::DragValue::new(height)
-                    .range(1..=prism_core::MAX_CANVAS_DIMENSION)
-                    .suffix(" px"),
-            );
-            changed(&response, *width, *height);
-            ui.end_row();
-        });
-}
-
-fn color_row(ui: &mut egui::Ui, label: &str, color: &mut Color32) -> egui::Response {
-    ui.horizontal(|ui| {
-        property_label(ui, label);
-        ui.color_edit_button_srgba(color)
-    })
-    .inner
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,13 +843,5 @@ mod tests {
             InspectorSection::ALL.map(InspectorSection::label),
             ["Transform", "Content", "Appearance", "Mask", "Develop"]
         );
-    }
-
-    #[test]
-    fn inspector_tabs_fit_the_minimum_sidebar_on_one_row() {
-        let width = inspector_tab_width(310.0);
-        let occupied = width * InspectorSection::ALL.len() as f32 + INSPECTOR_TAB_GAP * 4.0;
-        assert!((occupied - 310.0).abs() < f32::EPSILON);
-        assert!(width >= 58.0);
     }
 }

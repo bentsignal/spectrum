@@ -397,12 +397,7 @@ fn install_main_menu(application: &NSApplication, target: &AnyObject, marker: Ma
     services_item.setSubmenu(Some(&services_menu));
     app_menu.addItem(&services_item);
     app_menu.addItem(&NSMenuItem::separatorItem(marker));
-    app_menu.addItem(&menu_item(
-        marker,
-        "Hide Prism",
-        Some(sel!(hide:)),
-        Some(key("h")),
-    ));
+    app_menu.addItem(&menu_item(marker, "Hide Prism", Some(sel!(hide:)), None));
     app_menu.addItem(&menu_item(
         marker,
         "Hide Others",

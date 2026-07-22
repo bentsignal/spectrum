@@ -4,8 +4,7 @@ use super::*;
 
 impl PrismApp {
     pub(super) fn layer_effects_controls(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        ui.separator();
-        ui.label(RichText::new("LAYER STYLE").size(10.0).color(MUTED));
+        inspector_group_heading(ui, "LAYER EFFECTS");
         let mut shadow_enabled = layer.style.drop_shadow.is_some();
         if ui.checkbox(&mut shadow_enabled, "Drop shadow").changed() {
             self.execute(Command::SetLayerStyle {

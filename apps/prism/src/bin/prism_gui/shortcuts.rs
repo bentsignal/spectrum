@@ -134,17 +134,7 @@ pub(super) fn global_shortcut_pressed(input: &egui::InputState, shortcut: Global
 }
 
 fn history_shortcut_pressed(input: &egui::InputState) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        input.modifiers.command
-            && input.modifiers.shift
-            && !input.modifiers.alt
-            && input.key_pressed(GlobalShortcut::History.key())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        global_shortcut_pressed(input, GlobalShortcut::History)
-    }
+    global_shortcut_pressed(input, GlobalShortcut::History)
 }
 
 fn terminal_shortcut_pressed(input: &egui::InputState) -> bool {
@@ -392,10 +382,6 @@ mod tests {
     fn platform_history_chord_belongs_to_the_global_history_surface() {
         let mut input = egui::RawInput::default();
         input.modifiers.command = true;
-        #[cfg(target_os = "macos")]
-        {
-            input.modifiers.shift = true;
-        }
         input.events.push(egui::Event::Key {
             key: egui::Key::H,
             physical_key: Some(egui::Key::H),

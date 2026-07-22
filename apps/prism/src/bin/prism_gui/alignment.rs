@@ -186,8 +186,7 @@ impl PrismApp {
     }
 
     pub(super) fn alignment_inspector(&mut self, ui: &mut egui::Ui, layer: &Layer) {
-        ui.add_space(8.0);
-        ui.label(RichText::new("ALIGN").size(9.0).strong().color(SUBTLE));
+        inspector_group_heading(ui, "ALIGN");
         let references = self
             .workspace
             .document

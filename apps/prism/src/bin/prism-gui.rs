@@ -37,6 +37,9 @@ mod history;
 mod inline_text;
 #[path = "prism_gui/inspector.rs"]
 mod inspector;
+#[path = "prism_gui/inspector_controls.rs"]
+mod inspector_controls;
+use inspector_controls::*;
 #[path = "prism_gui/layers.rs"]
 mod layers;
 #[cfg(target_os = "macos")]
@@ -520,11 +523,9 @@ impl PrismApp {
             .show(root, |ui| {
                 ui.spacing_mut().interact_size.y = 18.0;
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(&self.status)
-                            .size(11.0)
-                            .color(if self.status_error { DANGER } else { MUTED }),
-                    );
+                    if let Some(status) = visible_status(&self.status, self.status_error) {
+                        ui.label(RichText::new(status).size(11.0).color(DANGER));
+                    }
                     if self.raster_sources.terminal_failure().is_some()
                         && ui.small_button("Retry preview").clicked()
                     {
@@ -565,6 +566,10 @@ impl PrismApp {
                 });
             });
     }
+}
+
+fn visible_status(status: &str, status_error: bool) -> Option<&str> {
+    status_error.then_some(status)
 }
 
 impl eframe::App for PrismApp {
@@ -909,5 +914,14 @@ mod tests {
         assert_eq!(Tool::Text.activation(), ToolActivation::CanvasGesture);
         assert_eq!(Tool::Shape.activation(), ToolActivation::ChoiceDialog);
         assert_eq!(Tool::Crop.activation(), ToolActivation::CanvasGesture);
+    }
+
+    #[test]
+    fn status_bar_only_surfaces_actionable_errors() {
+        assert_eq!(visible_status("Moved layer", false), None);
+        assert_eq!(
+            visible_status("Could not move layer", true),
+            Some("Could not move layer")
+        );
     }
 }
