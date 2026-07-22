@@ -44,6 +44,8 @@ mod inspector;
 #[path = "prism_gui/inspector_controls.rs"]
 mod inspector_controls;
 use inspector_controls::*;
+#[path = "prism_gui/lasso_tool.rs"]
+mod lasso_tool;
 #[path = "prism_gui/layers.rs"]
 mod layers;
 #[cfg(target_os = "macos")]
@@ -492,6 +494,7 @@ impl PrismApp {
         self.settle_inline_text_editor();
         self.cancel_pen();
         self.cancel_brush();
+        self.cancel_lasso();
         self.inactive_workspaces.insert(
             self.active_tab_id,
             std::mem::replace(&mut self.workspace, workspace),
@@ -518,6 +521,7 @@ impl PrismApp {
         self.settle_inline_text_editor();
         self.cancel_pen();
         self.cancel_brush();
+        self.cancel_lasso();
         let Some(workspace) = self.inactive_workspaces.remove(&id) else {
             return;
         };

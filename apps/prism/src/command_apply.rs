@@ -679,6 +679,31 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
         Command::MagicWandSnapshot { .. } => {
             bail!("magic wand snapshot markers require their same-revision document snapshot")
         }
+        Command::LassoSelection {
+            points,
+            mode,
+            antialias,
+        } => {
+            let selection = crate::apply_lasso_selection(
+                document.selection.as_ref(),
+                document.width,
+                document.height,
+                &points,
+                mode,
+                antialias,
+            )?;
+            document.validate_projected_inline_mask_budget(selection.as_ref(), 0)?;
+            document.selection = selection;
+            Ok(output(
+                "lasso_selection",
+                if document.selection.is_some() {
+                    "updated pixel selection with lasso"
+                } else {
+                    "lasso cleared the pixel selection"
+                },
+                Vec::new(),
+            ))
+        }
         Command::FillSelection { color, name } => {
             let selection = document
                 .selection

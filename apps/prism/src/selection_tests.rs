@@ -20,6 +20,15 @@ fn test_actor() -> spectrum_revisions::Actor {
     }
 }
 
+fn triangle_lasso() -> LassoPath {
+    LassoPath::new(vec![
+        LassoPoint::from_canvas(2.0, 2.0).unwrap(),
+        LassoPoint::from_canvas(14.0, 2.0).unwrap(),
+        LassoPoint::from_canvas(2.0, 14.0).unwrap(),
+    ])
+    .unwrap()
+}
+
 #[test]
 fn legacy_documents_default_to_no_selection_and_migrate_to_v4() {
     let mut value = serde_json::to_value(Document::new("Legacy", 80, 60)).unwrap();
@@ -396,6 +405,170 @@ fn durable_magic_wand_is_one_v6_marker_plus_exact_v5_snapshot() {
     assert_eq!(reopened.document.selection, Some(selected));
     drop(reopened);
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_lasso_is_one_v9_revision_and_reopens_exactly() {
+    let directory = test_directory("durable-lasso");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("lasso.prism");
+    let session = spectrum_revisions::SessionId::new();
+    let document = Document::new("Durable lasso", 32, 32);
+    let before = document.clone();
+    let mut workspace = Workspace::create_durable(document, &path, test_actor(), session).unwrap();
+    let revisions_before = workspace.history().unwrap().unwrap().revisions.len();
+    let command = Command::LassoSelection {
+        points: triangle_lasso(),
+        mode: SelectionCombineMode::Replace,
+        antialias: true,
+    };
+    workspace.execute(command.clone()).unwrap();
+    let selected = workspace.document.selection.clone().unwrap();
+    assert!(selected.alpha().is_some());
+    assert_eq!(
+        workspace.history().unwrap().unwrap().revisions.len(),
+        revisions_before + 1
+    );
+    workspace.execute(command).unwrap();
+    assert_eq!(
+        workspace.history().unwrap().unwrap().revisions.len(),
+        revisions_before + 1
+    );
+    drop(workspace);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let version: u32 = connection
+        .query_row(
+            "SELECT version FROM operation_payloads WHERE instr(CAST(bytes AS TEXT), 'lasso_selection') > 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, 9);
+    drop(connection);
+
+    let mut reopened = Workspace::open_as(&path, test_actor(), session).unwrap();
+    assert_eq!(reopened.document.selection, Some(selected.clone()));
+    reopened.execute(Command::Undo).unwrap();
+    assert_eq!(reopened.document, before);
+    reopened.execute(Command::Redo).unwrap();
+    assert_eq!(reopened.document.selection, Some(selected));
+    drop(reopened);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn failed_lasso_is_atomic_for_document_and_durable_history() {
+    let directory = test_directory("failed-lasso");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("failed.prism");
+    let session = spectrum_revisions::SessionId::new();
+    let document = Document::new("Failed lasso", 32, 32);
+    let mut workspace = Workspace::create_durable(document, &path, test_actor(), session).unwrap();
+    let before = workspace.document.clone();
+    let revisions_before = workspace.history().unwrap().unwrap().revisions.len();
+    let line = LassoPath::new(vec![
+        LassoPoint::from_canvas(1.0, 1.0).unwrap(),
+        LassoPoint::from_canvas(4.0, 4.0).unwrap(),
+        LassoPoint::from_canvas(8.0, 8.0).unwrap(),
+    ])
+    .unwrap();
+    assert!(
+        workspace
+            .execute(Command::LassoSelection {
+                points: line,
+                mode: SelectionCombineMode::Replace,
+                antialias: true,
+            })
+            .is_err()
+    );
+    assert_eq!(workspace.document, before);
+    assert_eq!(
+        workspace.history().unwrap().unwrap().revisions.len(),
+        revisions_before
+    );
+    drop(workspace);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn lasso_soft_selection_interoperates_with_fill_and_frozen_brush_clip() {
+    let mut workspace = Workspace::new(Document::new("Lasso interop", 32, 32), None);
+    workspace
+        .execute(Command::LassoSelection {
+            points: triangle_lasso(),
+            mode: SelectionCombineMode::Replace,
+            antialias: true,
+        })
+        .unwrap();
+    let selection = workspace.document.selection.clone().unwrap();
+    let selection_bounds = selection.bounds();
+    let expected_alpha = selection.alpha().unwrap().to_vec();
+    workspace
+        .execute(Command::FillSelection {
+            color: [200, 20, 40, 255],
+            name: None,
+        })
+        .unwrap();
+    assert_eq!(
+        workspace.document.layers[0]
+            .pixel_mask
+            .as_ref()
+            .unwrap()
+            .alpha
+            .as_ref(),
+        expected_alpha.as_slice()
+    );
+    let stroke = BrushStroke::new(
+        BrushStyle {
+            mode: BrushMode::Paint,
+            color: [255; 4],
+            size: 6.0,
+            hardness: 1.0,
+            opacity: 1.0,
+            spacing: 0.25,
+        },
+        vec![
+            BrushSample {
+                x: 6.0,
+                y: 6.0,
+                pressure: 1.0,
+            },
+            BrushSample {
+                x: 10.0,
+                y: 10.0,
+                pressure: 1.0,
+            },
+        ],
+    )
+    .unwrap();
+    workspace
+        .execute(Command::AddPaintLayerWithStroke {
+            name: None,
+            width: 32,
+            height: 32,
+            stroke,
+            selection: PaintSelection::Current,
+        })
+        .unwrap();
+    workspace
+        .execute(Command::SetSelection { selection: None })
+        .unwrap();
+    let LayerKind::Paint { program } = &workspace.document.layers[1].kind else {
+        panic!("expected Paint layer")
+    };
+    let Some(BrushClip::Alpha {
+        x,
+        y,
+        width,
+        height,
+        alpha,
+    }) = &program.strokes[0].clip
+    else {
+        panic!("expected frozen soft lasso clip")
+    };
+    assert_eq!((*x, *y, *width, *height), selection_bounds);
+    assert_eq!(alpha.as_ref(), expected_alpha.as_slice());
 }
 
 #[test]

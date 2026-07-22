@@ -16,6 +16,11 @@ pub(super) struct SelectionUiState {
     pub(super) magic_wand_tolerance: u8,
     pub(super) magic_wand_contiguous: bool,
     pub(super) magic_wand_antialias: bool,
+    pub(super) lasso_points: Vec<Pos2>,
+    pub(super) lasso_mode: prism_core::SelectionCombineMode,
+    pub(super) lasso_gesture_mode: Option<prism_core::SelectionCombineMode>,
+    pub(super) lasso_antialias: bool,
+    pub(super) lasso_overflowed: bool,
 }
 
 impl Default for SelectionUiState {
@@ -26,6 +31,11 @@ impl Default for SelectionUiState {
             magic_wand_tolerance: 32,
             magic_wand_contiguous: true,
             magic_wand_antialias: true,
+            lasso_points: Vec::new(),
+            lasso_mode: prism_core::SelectionCombineMode::Replace,
+            lasso_gesture_mode: None,
+            lasso_antialias: true,
+            lasso_overflowed: false,
         }
     }
 }
@@ -186,6 +196,33 @@ impl PrismApp {
                 .on_hover_text("Limit selection to pixels connected to the clicked color");
             ui.checkbox(&mut self.selection_ui.magic_wand_antialias, "Anti-alias")
                 .on_hover_text("Keep a soft one-pixel boundary around the matched color");
+            ui.separator();
+        }
+        if self.tool == Tool::Lasso {
+            ui.label(RichText::new("LASSO").size(9.0).strong().color(SUBTLE));
+            egui::ComboBox::from_id_salt("lasso-combine-mode")
+                .selected_text(match self.selection_ui.lasso_mode {
+                    prism_core::SelectionCombineMode::Replace => "Replace",
+                    prism_core::SelectionCombineMode::Add => "Add",
+                    prism_core::SelectionCombineMode::Subtract => "Subtract",
+                    prism_core::SelectionCombineMode::Intersect => "Intersect",
+                })
+                .show_ui(ui, |ui| {
+                    for (mode, label) in [
+                        (prism_core::SelectionCombineMode::Replace, "Replace"),
+                        (prism_core::SelectionCombineMode::Add, "Add"),
+                        (prism_core::SelectionCombineMode::Subtract, "Subtract"),
+                        (prism_core::SelectionCombineMode::Intersect, "Intersect"),
+                    ] {
+                        ui.selectable_value(&mut self.selection_ui.lasso_mode, mode, label);
+                    }
+                });
+            ui.checkbox(&mut self.selection_ui.lasso_antialias, "Anti-alias");
+            ui.label(
+                RichText::new("Shift add · Option/Alt subtract · both intersect")
+                    .size(10.0)
+                    .color(MUTED),
+            );
             ui.separator();
         }
         ui.label(RichText::new("FILL").size(9.0).strong().color(SUBTLE));

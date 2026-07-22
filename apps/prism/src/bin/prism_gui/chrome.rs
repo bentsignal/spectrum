@@ -316,7 +316,7 @@ impl PrismApp {
                         .size(11.0)
                         .color(MUTED),
                     );
-                    if matches!(self.tool, Tool::Marquee | Tool::MagicWand)
+                    if matches!(self.tool, Tool::Marquee | Tool::Lasso | Tool::MagicWand)
                         || self.workspace.document.selection.is_some()
                     {
                         self.selection_workbench_controls(ui);
@@ -372,6 +372,9 @@ impl PrismApp {
         }
         if matches!(self.tool, Tool::Brush | Tool::Eraser) && self.tool != tool {
             self.cancel_brush();
+        }
+        if self.tool == Tool::Lasso && self.tool != tool {
+            self.cancel_lasso();
         }
         if tool.activation() == ToolActivation::ChoiceDialog {
             self.shape_palette = Some(PaletteState::default());
@@ -724,6 +727,7 @@ fn palette_results(query: &str) -> Vec<PaletteItem> {
         PaletteItem::Tool(Tool::Crop),
         PaletteItem::Tool(Tool::Mask),
         PaletteItem::Tool(Tool::Marquee),
+        PaletteItem::Tool(Tool::Lasso),
         PaletteItem::Tool(Tool::MagicWand),
         PaletteItem::Tool(Tool::Text),
         PaletteItem::Tool(Tool::Pen),

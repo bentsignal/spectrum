@@ -259,6 +259,8 @@ impl PrismApp {
                 Some(Tool::Mask)
             } else if input.key_pressed(egui::Key::M) {
                 Some(Tool::Marquee)
+            } else if input.key_pressed(egui::Key::L) {
+                Some(Tool::Lasso)
             } else if input.key_pressed(egui::Key::W) {
                 Some(Tool::MagicWand)
             } else {
@@ -332,6 +334,7 @@ impl PrismApp {
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.cancel_pen();
             self.cancel_brush();
+            self.cancel_lasso();
             if let Some(drag) = self.drag {
                 self.workspace.cancel_interaction();
                 restore_source_override_after_cancel(

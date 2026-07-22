@@ -163,6 +163,7 @@ fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
 pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value> {
     let selection_fill = selection::measure_selection_fill()?;
     let magic_wand = selection::measure_magic_wand_bound()?;
+    let lasso = selection::measure_lasso_bound()?;
     let path = path::measure()?;
     let paint = paint::measure()?;
     let mut command_samples = Vec::new();
@@ -723,6 +724,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: selection_fill.p95_ms,
             budget_ms: 5.0,
             pass: selection_fill.p95_ms <= 5.0,
+        },
+        BenchmarkMetric {
+            name: "16384_canvas_bounded_lasso_selection",
+            median_ms: lasso.elapsed_ms,
+            p95_ms: lasso.elapsed_ms,
+            budget_ms: 500.0,
+            pass: lasso.elapsed_ms <= 500.0 && lasso.mask_pixels <= 192 * 192,
         },
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
