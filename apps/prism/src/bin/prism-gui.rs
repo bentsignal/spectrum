@@ -20,6 +20,8 @@ use spectrum_imaging::AdjustmentPatch;
 mod alignment;
 #[path = "prism_gui/canvas.rs"]
 mod canvas;
+#[path = "prism_gui/canvas_drop.rs"]
+mod canvas_drop;
 use alignment::*;
 #[path = "prism_gui/chrome.rs"]
 mod chrome;
@@ -321,7 +323,47 @@ impl PrismApp {
                     );
                     self.status_error = true;
                 } else {
-                    self.status = output.message;
+                    self.status = if output.warnings.is_empty() {
+                        output.message
+                    } else {
+                        format!(
+                            "{} — Warning: {}",
+                            output.message,
+                            output.warnings.join(" ")
+                        )
+                    };
+                    self.status_error = false;
+                }
+                self.history.mark_stale();
+                true
+            }
+            Err(error) => {
+                self.status = format!("{error:#}");
+                self.status_error = true;
+                false
+            }
+        }
+    }
+
+    fn execute_batch(&mut self, commands: Vec<Command>) -> bool {
+        self.settle_inline_text_editor();
+        let invalidations = commands.iter().map(canvas_invalidation).collect::<Vec<_>>();
+        match self.workspace.execute_batch(commands) {
+            Ok(outputs) => {
+                for invalidation in invalidations {
+                    self.apply_canvas_invalidation(invalidation);
+                }
+                self.sync_active_raster_sources();
+                if let Some(error) = self.workspace.pending_publish_error() {
+                    self.status = format!(
+                        "Edit is safe in Prism recovery storage, but the project file could not update: {error}"
+                    );
+                    self.status_error = true;
+                } else {
+                    self.status = outputs
+                        .last()
+                        .map(|output| output.message.clone())
+                        .unwrap_or_else(|| "Completed edit batch".into());
                     self.status_error = false;
                 }
                 self.history.mark_stale();
@@ -920,6 +962,7 @@ mod tests {
         assert_eq!(
             canvas_invalidation(&Command::ImportFont {
                 path: PathBuf::from("face.otf"),
+                source_name: None,
             }),
             CanvasInvalidation::None
         );

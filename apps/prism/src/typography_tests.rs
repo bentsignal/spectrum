@@ -5,9 +5,10 @@ use std::{
 };
 
 use crate::{
-    Command, Document, FontAsset, FontSourceSnapshot, LayerKind, TextAlignment, TextEffects,
-    TextTypography, Workspace, analyze_all_font_usage, analyze_font_usage, font_usage,
-    render_document, render_layer_base_scaled_with_font, save_document,
+    Command, Document, FontAsset, FontEmbeddingPermission, FontSourceSnapshot, LayerKind,
+    TextAlignment, TextEffects, TextTypography, Workspace, analyze_all_font_usage,
+    analyze_font_usage, font_usage, render_document, render_layer_base_scaled_with_font,
+    save_document,
 };
 
 fn test_directory(label: &str) -> PathBuf {
@@ -75,11 +76,13 @@ fn imported_font_and_typography_round_trip_inside_durable_project() {
     workspace
         .execute(Command::ImportFont {
             path: source.clone(),
+            source_name: None,
         })
         .unwrap();
     workspace
         .execute(Command::ImportFont {
             path: source.clone(),
+            source_name: None,
         })
         .unwrap();
     assert_eq!(workspace.document.font_assets.len(), 1);
@@ -148,7 +151,10 @@ fn malformed_font_import_is_rejected_without_allocating_an_asset() {
 
     assert!(
         workspace
-            .execute(Command::ImportFont { path: source })
+            .execute(Command::ImportFont {
+                path: source,
+                source_name: None,
+            })
             .is_err()
     );
     assert!(workspace.document.font_assets.is_empty());
@@ -264,16 +270,173 @@ fn source_snapshot_accepts_static_variable_and_cff_open_type_containers() {
 }
 
 #[test]
-fn font_source_fails_closed_for_fstype_and_outline_restrictions() {
+fn font_source_accepts_license_restrictions_but_rejects_bitmap_only_embedding() {
     let directory = test_directory("embedding-restrictions");
     fs::create_dir_all(&directory).unwrap();
-    for (name, fs_type) in [("preview.ttf", 0x0004), ("bitmap-only.ttf", 0x0208)] {
-        let source = directory.join(name);
-        let mut bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
-        set_fs_type(&mut bytes, fs_type);
-        fs::write(&source, bytes).unwrap();
-        assert!(FontSourceSnapshot::read(&source).is_err());
-    }
+    let preview = directory.join("preview.ttf");
+    let mut preview_bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
+    set_fs_type(&mut preview_bytes, 0x0104);
+    fs::write(&preview, &preview_bytes).unwrap();
+    let snapshot = FontSourceSnapshot::read(&preview).unwrap();
+    assert_eq!(
+        snapshot.embedding_permission(),
+        FontEmbeddingPermission::PreviewAndPrint
+    );
+    assert!(!snapshot.subset_allowed());
+
+    let restricted = directory.join("restricted.ttf");
+    let mut restricted_bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
+    set_fs_type(&mut restricted_bytes, 0x0002);
+    fs::write(&restricted, restricted_bytes).unwrap();
+    let snapshot = FontSourceSnapshot::read(&restricted).unwrap();
+    assert_eq!(
+        snapshot.embedding_permission(),
+        FontEmbeddingPermission::Restricted
+    );
+    assert!(!snapshot.subset_allowed());
+
+    let bitmap_only = directory.join("bitmap-only.ttf");
+    let mut bitmap_only_bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
+    set_fs_type(&mut bitmap_only_bytes, 0x0208);
+    fs::write(&bitmap_only, bitmap_only_bytes).unwrap();
+    assert!(FontSourceSnapshot::read(&bitmap_only).is_err());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn preview_print_font_import_warns_and_reloads_without_losing_bytes_or_policy() {
+    assert_font_permission_round_trip(
+        "preview-print-round-trip",
+        "Preview-Print.ttf",
+        0x0104,
+        FontEmbeddingPermission::PreviewAndPrint,
+        "preview/print",
+    );
+}
+
+#[test]
+fn restricted_font_import_warns_renders_and_disables_subsetting_after_reload() {
+    assert_font_permission_round_trip(
+        "restricted-round-trip",
+        "Restricted.ttf",
+        0x0002,
+        FontEmbeddingPermission::Restricted,
+        "restricted embedding",
+    );
+}
+
+#[test]
+fn legacy_editable_font_metadata_is_hydrated_from_immutable_source_bytes() {
+    let directory = test_directory("legacy-editable-permission");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Editable.ttf");
+    let mut bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
+    set_fs_type(&mut bytes, 0x0008);
+    fs::write(&source, &bytes).unwrap();
+    let current = FontAsset::import(1, &source).unwrap();
+    assert_eq!(
+        current.embedding_permission,
+        FontEmbeddingPermission::Editable
+    );
+    let mut legacy = serde_json::to_value(&current).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("embedding_permission");
+    let mut loaded: FontAsset = serde_json::from_value(legacy).unwrap();
+    assert_eq!(
+        loaded.embedding_permission,
+        FontEmbeddingPermission::LegacyUnknown
+    );
+
+    loaded.hydrate_legacy_embedding_permission().unwrap();
+
+    assert_eq!(
+        loaded.embedding_permission,
+        FontEmbeddingPermission::Editable
+    );
+    assert_eq!(loaded.bytes().unwrap(), bytes);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+fn assert_font_permission_round_trip(
+    label: &str,
+    source_name: &str,
+    fs_type: u16,
+    expected_permission: FontEmbeddingPermission,
+    warning_fragment: &str,
+) {
+    let directory = test_directory(label);
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join(source_name);
+    let mut source_bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
+    set_fs_type(&mut source_bytes, fs_type);
+    fs::write(&source, &source_bytes).unwrap();
+    let project = directory.join("font-policy.prism");
+    let mut workspace = Workspace::create_durable(
+        Document::new("Preview print", 640, 360),
+        &project,
+        test_actor(),
+        spectrum_revisions::SessionId::new(),
+    )
+    .unwrap();
+
+    let output = workspace
+        .execute(Command::ImportFont {
+            path: source.clone(),
+            source_name: None,
+        })
+        .unwrap();
+    assert_eq!(output.warnings.len(), 1);
+    assert!(output.warnings[0].contains(warning_fragment));
+    let font_id = workspace.document.font_assets[0].id;
+    assert_eq!(
+        workspace.document.font_assets[0].embedding_permission,
+        expected_permission
+    );
+    assert_eq!(workspace.document.font_assets[0].source_name, source_name);
+    assert!(!workspace.document.font_assets[0].subset_allowed);
+    workspace
+        .execute(Command::AddText {
+            text: "Editable preview font".into(),
+            name: None,
+            font_size: 42.0,
+            color: [255; 4],
+            x: 30.0,
+            y: 40.0,
+        })
+        .unwrap();
+    let layer_id = workspace.document.selected.unwrap();
+    workspace
+        .execute(Command::SetTextTypography {
+            id: layer_id,
+            typography: TextTypography {
+                font_id: Some(font_id),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+    let subset_plan = crate::plan_font_subset(&workspace.document, font_id).unwrap();
+    assert!(!subset_plan.analysis.embedding_metadata_allows_subsetting);
+    assert!(
+        subset_plan
+            .candidate_blockers
+            .iter()
+            .any(|blocker| blocker.contains("forbids technical subsetting"))
+    );
+    assert!(render_document(&workspace.document, None).is_ok());
+    drop(workspace);
+    fs::remove_file(&source).unwrap();
+
+    let loaded = Workspace::load_read_only(&project).unwrap();
+    assert_eq!(
+        loaded.font_assets[0].embedding_permission,
+        expected_permission
+    );
+    assert_eq!(loaded.font_assets[0].source_name, source_name);
+    assert!(!loaded.font_assets[0].subset_allowed);
+    assert_eq!(loaded.font_assets[0].bytes().unwrap(), source_bytes);
+    assert!(render_document(&loaded, None).is_ok());
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -475,6 +638,7 @@ fn imported_font_id_changes_shared_preview_and_export_pixels() {
     workspace
         .execute(Command::ImportFont {
             path: source.clone(),
+            source_name: None,
         })
         .unwrap();
     let font_id = workspace.document.font_assets[0].id;
@@ -541,6 +705,7 @@ fn font_usage_analysis_is_sorted_deduplicated_and_non_mutating() {
     workspace
         .execute(Command::ImportFont {
             path: source.clone(),
+            source_name: None,
         })
         .unwrap();
     let font_id = workspace.document.font_assets[0].id;

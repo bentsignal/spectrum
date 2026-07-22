@@ -278,6 +278,7 @@ fn import_transferred_font(document: &mut Document, font: LayerTransferFont) -> 
         weight: parsed.weight,
         slant: parsed.slant,
         source_name: font.source_name,
+        embedding_permission: parsed.embedding_permission,
         subset_allowed: parsed.subset_allowed,
         content_hash: parsed.content_hash,
         path: parsed.path,

@@ -240,7 +240,10 @@ fn durable_font_subset_plan_replays_tail_text_without_writes() {
     )
     .unwrap();
     workspace
-        .execute(Command::ImportFont { path: source })
+        .execute(Command::ImportFont {
+            path: source,
+            source_name: None,
+        })
         .unwrap();
     let font_id = workspace.document.font_assets[0].id;
     workspace
@@ -327,6 +330,54 @@ fn font_source_output_proves_identity_without_mutating_the_document() {
     assert_eq!(document, before);
 
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn restricted_font_source_output_is_advisory_and_never_subset_eligible() {
+    let directory = temporary_project("restricted-font-source").with_extension("assets");
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Restricted.ttf");
+    let mut bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
+    set_os2_fs_type(&mut bytes, 0x0002);
+    std::fs::write(&source, &bytes).unwrap();
+    let mut document = Document::new("Restricted source proof", 320, 200);
+    document
+        .font_assets
+        .push(prism_core::FontAsset::import(1, &source).unwrap());
+
+    let output = typography::font_source(&document, 1).unwrap();
+
+    assert_eq!(output["embedding_permission"], "restricted");
+    assert_eq!(output["embedding_metadata_allows_subsetting"], false);
+    assert_eq!(output["local_editing_supported"], true);
+    assert_eq!(output["portable_editable_embedding_verified"], false);
+    assert_eq!(output["editable_embedding_verified"], false);
+    assert!(
+        output["embedding_advisory"]
+            .as_str()
+            .unwrap()
+            .contains("restricted embedding")
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+fn set_os2_fs_type(bytes: &mut [u8], fs_type: u16) {
+    let table_count = usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
+    for index in 0..table_count {
+        let record = 12 + index * 16;
+        if &bytes[record..record + 4] == b"OS/2" {
+            let offset = u32::from_be_bytes([
+                bytes[record + 8],
+                bytes[record + 9],
+                bytes[record + 10],
+                bytes[record + 11],
+            ]) as usize;
+            bytes[offset + 8..offset + 10].copy_from_slice(&fs_type.to_be_bytes());
+            return;
+        }
+    }
+    panic!("test font has no OS/2 table");
 }
 
 #[test]
@@ -465,6 +516,7 @@ fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
     source_workspace
         .execute(Command::ImportFont {
             path: source.clone(),
+            source_name: None,
         })
         .unwrap();
     let font_id = source_workspace.document.font_assets[0].id;
@@ -586,6 +638,9 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert!(schema["typography"]["optimization_analysis"].is_string());
     assert!(schema["typography"]["optimization_limitations"].is_string());
     assert!(schema["typography"]["embedding_metadata"].is_string());
+    let embedding_policy = schema["typography"]["embedding_metadata"].as_str().unwrap();
+    assert!(embedding_policy.contains("restricted"));
+    assert!(embedding_policy.contains("disable subsetting"));
     assert!(schema["typography"]["editable_default"].is_string());
     assert!(schema["typography"]["source_snapshot"].is_string());
     assert_eq!(

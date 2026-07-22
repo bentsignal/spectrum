@@ -129,6 +129,7 @@ pub fn load_document(path: &Path) -> Result<Document> {
         }
     }
     crate::typography::resolve_portable_fonts(&mut document.font_assets, directory);
+    crate::typography::hydrate_legacy_font_permissions(&mut document.font_assets)?;
     Ok(document)
 }
 

@@ -64,6 +64,7 @@ fn load_font_document_read_only(path: &Path) -> Result<(RevisionStore, Document)
     let snapshot_bytes = decode_snapshot(&plan.snapshot)?;
     let mut document: Document =
         serde_json::from_slice(&snapshot_bytes).context("invalid Prism snapshot")?;
+    hydrate_read_only_legacy_font_permissions(&store, &mut document)?;
     document.migrate()?;
     for step in plan.steps {
         let commands: Vec<Command> = serde_json::from_slice(&step.operations.bytes)
@@ -76,9 +77,26 @@ fn load_font_document_read_only(path: &Path) -> Result<(RevisionStore, Document)
     Ok((store, document))
 }
 
+fn hydrate_read_only_legacy_font_permissions(
+    store: &RevisionStore,
+    document: &mut Document,
+) -> Result<()> {
+    for font in &mut document.font_assets {
+        if font.embedding_permission != crate::FontEmbeddingPermission::LegacyUnknown {
+            continue;
+        }
+        let asset = font_asset(store, &font.path)?;
+        let source = font.verify_embedded_bytes(asset.bytes)?;
+        font.hydrate_legacy_from_verified(&source);
+    }
+    Ok(())
+}
+
 fn replay_command(store: &RevisionStore, document: &mut Document, command: Command) -> Result<()> {
     match command {
-        Command::ImportFont { path } => replay_font_import(store, document, &path),
+        Command::ImportFont { path, source_name } => {
+            replay_font_import(store, document, &path, source_name.as_deref())
+        }
         Command::AddRaster { path, name, x, y } => {
             let id = document.allocate_id();
             document.layers.push(Layer {
@@ -175,10 +193,17 @@ fn replay_layer_transfer(
     Ok(())
 }
 
-fn replay_font_import(store: &RevisionStore, document: &mut Document, path: &Path) -> Result<()> {
+fn replay_font_import(
+    store: &RevisionStore,
+    document: &mut Document,
+    path: &Path,
+    source_name: Option<&str>,
+) -> Result<()> {
     let asset = font_asset(store, path)?;
     let reference = AssetReference::parse(path).context("font operation has no asset identity")?;
-    let source_name = format!("{}.{}", reference.id, reference.extension);
+    let source_name = source_name
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{}.{}", reference.id, reference.extension));
     let font = FontAsset::from_embedded_bytes(
         document.next_font_id,
         source_name,
