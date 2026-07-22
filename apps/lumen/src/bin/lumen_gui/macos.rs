@@ -27,6 +27,25 @@ static OPEN_DOCUMENT_SENDER: OnceLock<Sender<PathBuf>> = OnceLock::new();
 static NATIVE_MENU_SENDER: OnceLock<Sender<NativeMenuAction>> = OnceLock::new();
 static APP_REPAINT: OnceLock<egui::Context> = OnceLock::new();
 
+fn clipboard_viewport_command(action: NativeMenuAction) -> Option<egui::ViewportCommand> {
+    match action {
+        NativeMenuAction::Cut => Some(egui::ViewportCommand::RequestCut),
+        NativeMenuAction::Copy => Some(egui::ViewportCommand::RequestCopy),
+        NativeMenuAction::Paste => Some(egui::ViewportCommand::RequestPaste),
+        _ => None,
+    }
+}
+
+fn select_all_text_event() -> egui::Event {
+    egui::Event::Key {
+        key: egui::Key::A,
+        physical_key: Some(egui::Key::A),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND | egui::Modifiers::MAC_CMD,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct NativeMenuState {
     modal_open: bool,
@@ -56,7 +75,19 @@ impl NativeMenuState {
             }
             NativeMenuAction::Undo => !self.modal_open && self.can_undo && !self.keyboard_focus,
             NativeMenuAction::Redo => !self.modal_open && self.can_redo && !self.keyboard_focus,
-            NativeMenuAction::ToggleAllShoots => !self.modal_open && self.has_photos,
+            NativeMenuAction::Cut | NativeMenuAction::Copy | NativeMenuAction::Paste => {
+                self.keyboard_focus
+            }
+            NativeMenuAction::SelectAll => {
+                self.keyboard_focus
+                    || !self.modal_open
+                        && self.has_photos
+                        && !self.all_shoots_visible
+                        && !self.history_visible
+            }
+            NativeMenuAction::ToggleAllShoots => {
+                !self.modal_open && self.has_photos && !self.history_visible
+            }
             NativeMenuAction::PreviousPhoto => {
                 !self.modal_open
                     && self.can_previous
@@ -480,6 +511,21 @@ impl LumenApp {
                         self.sync_draft();
                     }
                 }
+                action @ (NativeMenuAction::Cut
+                | NativeMenuAction::Copy
+                | NativeMenuAction::Paste) => {
+                    context.send_viewport_cmd(
+                        clipboard_viewport_command(action)
+                            .expect("matched actions always have a clipboard command"),
+                    );
+                }
+                NativeMenuAction::SelectAll => {
+                    if context.egui_wants_keyboard_input() {
+                        context.input_mut(|input| input.events.push(select_all_text_event()));
+                    } else {
+                        self.select_all_visible_photos();
+                    }
+                }
                 NativeMenuAction::ToggleAllShoots => {
                     if self.library_mode {
                         self.return_to_photo_view();
@@ -539,6 +585,19 @@ mod tests {
                 .into_iter()
                 .all(|action| !modal.allows(action))
         );
+
+        let focused_modal = NativeMenuState {
+            keyboard_focus: true,
+            ..modal
+        };
+        for action in [
+            NativeMenuAction::Cut,
+            NativeMenuAction::Copy,
+            NativeMenuAction::Paste,
+            NativeMenuAction::SelectAll,
+        ] {
+            assert!(focused_modal.allows(action));
+        }
     }
 
     #[test]
@@ -554,5 +613,45 @@ mod tests {
         );
         assert!(!state.allows(NativeMenuAction::ExportPhotos));
         assert!(!state.allows(NativeMenuAction::PreviousPhoto));
+    }
+
+    #[test]
+    fn history_blocks_all_shoots_navigation() {
+        let state = NativeMenuState {
+            has_photos: true,
+            selection_present: true,
+            history_visible: true,
+            ..Default::default()
+        };
+        assert!(!state.allows(NativeMenuAction::ToggleAllShoots));
+        assert!(state.allows(NativeMenuAction::ToggleHistory));
+    }
+
+    #[test]
+    fn native_clipboard_actions_request_matching_egui_events() {
+        assert!(matches!(
+            clipboard_viewport_command(NativeMenuAction::Cut),
+            Some(egui::ViewportCommand::RequestCut)
+        ));
+        assert!(matches!(
+            clipboard_viewport_command(NativeMenuAction::Copy),
+            Some(egui::ViewportCommand::RequestCopy)
+        ));
+        assert!(matches!(
+            clipboard_viewport_command(NativeMenuAction::Paste),
+            Some(egui::ViewportCommand::RequestPaste)
+        ));
+        assert!(clipboard_viewport_command(NativeMenuAction::Undo).is_none());
+
+        assert!(matches!(
+            select_all_text_event(),
+            egui::Event::Key {
+                key: egui::Key::A,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } if modifiers.command && modifiers.mac_cmd
+        ));
     }
 }

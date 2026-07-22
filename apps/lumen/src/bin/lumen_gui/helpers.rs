@@ -1,5 +1,13 @@
 use super::*;
 
+pub(super) const fn history_shortcut_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘H"
+    } else {
+        "Ctrl+H"
+    }
+}
+
 impl Histogram {
     pub(super) fn from_image(image: &DynamicImage) -> Self {
         let mut histogram = Self {

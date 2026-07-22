@@ -50,7 +50,7 @@ impl LumenApp {
                                 ui.close();
                                 self.move_project();
                             }
-                            if ui.button("History  ⌘H").clicked() {
+                            if ui.button("History  Ctrl+H").clicked() {
                                 ui.close();
                                 self.history_open = true;
                             }

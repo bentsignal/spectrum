@@ -8,6 +8,10 @@ pub(super) enum NativeMenuAction {
     ExportPhotos,
     Undo,
     Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
     ToggleAllShoots,
     PreviousPhoto,
     NextPhoto,
@@ -18,7 +22,7 @@ pub(super) enum NativeMenuAction {
 }
 
 impl NativeMenuAction {
-    pub(super) const ALL: [Self; 14] = [
+    pub(super) const ALL: [Self; 18] = [
         Self::NewCatalog,
         Self::OpenCatalog,
         Self::ImportPhotos,
@@ -26,6 +30,10 @@ impl NativeMenuAction {
         Self::ExportPhotos,
         Self::Undo,
         Self::Redo,
+        Self::Cut,
+        Self::Copy,
+        Self::Paste,
+        Self::SelectAll,
         Self::ToggleAllShoots,
         Self::PreviousPhoto,
         Self::NextPhoto,
@@ -110,7 +118,7 @@ const fn action_spec(
     }
 }
 
-pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 14] = [
+pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 18] = [
     action_spec(
         NativeMenuSection::File,
         "New Catalog",
@@ -159,6 +167,34 @@ pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 14] = [
         NativeMenuAction::Redo,
         Some(ActionKeyEquivalent::command_shift("z")),
         false,
+    ),
+    action_spec(
+        NativeMenuSection::Edit,
+        "Cut",
+        NativeMenuAction::Cut,
+        Some(ActionKeyEquivalent::command("x")),
+        true,
+    ),
+    action_spec(
+        NativeMenuSection::Edit,
+        "Copy",
+        NativeMenuAction::Copy,
+        Some(ActionKeyEquivalent::command("c")),
+        false,
+    ),
+    action_spec(
+        NativeMenuSection::Edit,
+        "Paste",
+        NativeMenuAction::Paste,
+        Some(ActionKeyEquivalent::command("v")),
+        false,
+    ),
+    action_spec(
+        NativeMenuSection::Edit,
+        "Select All",
+        NativeMenuAction::SelectAll,
+        Some(ActionKeyEquivalent::command("a")),
+        true,
     ),
     action_spec(
         NativeMenuSection::View,
@@ -243,12 +279,21 @@ mod tests {
             .iter()
             .find(|spec| spec.action == NativeMenuAction::Undo)
             .unwrap();
+        let select_all = ACTION_MENU_ITEMS
+            .iter()
+            .find(|spec| spec.action == NativeMenuAction::SelectAll)
+            .unwrap();
         let all_shoots = ACTION_MENU_ITEMS
             .iter()
             .find(|spec| spec.action == NativeMenuAction::ToggleAllShoots)
             .unwrap();
         assert_eq!(import.section, NativeMenuSection::File);
         assert_eq!(undo.section, NativeMenuSection::Edit);
+        assert_eq!(select_all.section, NativeMenuSection::Edit);
+        assert_eq!(
+            select_all.equivalent,
+            Some(ActionKeyEquivalent::command("a"))
+        );
         assert_eq!(all_shoots.section, NativeMenuSection::View);
     }
 
