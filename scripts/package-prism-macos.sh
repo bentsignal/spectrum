@@ -30,6 +30,7 @@ verify_chain_sources() {
   [[ "$(sha256_file "$bridge_builder")" == "$chain_bridge_builder_sha" ]]
   [[ "$(sha256_file "$tree_hasher")" == "$chain_tree_hasher_sha" ]]
   [[ "$(sha256_file "$metadata_validator")" == "$chain_metadata_validator_sha" ]]
+  [[ "$(sha256_file "$path_scrubber")" == "$chain_path_scrubber_sha" ]]
   [[ "$(sha256_file "$xcframework_validator")" == "$chain_xcframework_validator_sha" ]]
   [[ "$(sha256_file "$bridge_verifier")" == "$chain_bridge_verifier_sha" ]]
   [[ "$(sha256_file "$bounded_runner")" == "$chain_bounded_runner_sha" ]]
@@ -63,6 +64,7 @@ if [[ "$ghostty_enabled" == true ]]; then
   bridge_builder="$repo_root/scripts/build-prism-ghostty-bridge-macos.sh"
   tree_hasher="$repo_root/scripts/hash-prism-ghostty-tree.py"
   metadata_validator="$repo_root/scripts/validate-prism-ghostty-metadata.py"
+  path_scrubber="$repo_root/scripts/scrub-prism-binary-paths.py"
   xcframework_validator="$repo_root/scripts/verify-prism-ghostty-xcframework.py"
   bridge_verifier="$repo_root/scripts/verify-prism-ghostty-bridge-macos.sh"
   bounded_runner="$repo_root/scripts/run-prism-bounded.py"
@@ -88,6 +90,7 @@ if [[ "$ghostty_enabled" == true ]]; then
   chain_bridge_builder_sha="$(sha256_file "$bridge_builder")"
   chain_tree_hasher_sha="$(sha256_file "$tree_hasher")"
   chain_metadata_validator_sha="$(sha256_file "$metadata_validator")"
+  chain_path_scrubber_sha="$(sha256_file "$path_scrubber")"
   chain_xcframework_validator_sha="$(sha256_file "$xcframework_validator")"
   chain_bridge_verifier_sha="$(sha256_file "$bridge_verifier")"
   chain_bounded_runner_sha="$(sha256_file "$bounded_runner")"

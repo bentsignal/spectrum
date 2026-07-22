@@ -13,6 +13,7 @@ lock_file="$repo_root/packaging/prism/macos/ghostty-proof.lock"
 bridge_source="$repo_root/apps/prism/native/ghostty-terminal"
 tree_hasher="$repo_root/scripts/hash-prism-ghostty-tree.py"
 metadata_validator="$repo_root/scripts/validate-prism-ghostty-metadata.py"
+path_scrubber="$repo_root/scripts/scrub-prism-binary-paths.py"
 bridge_verifier="$repo_root/scripts/verify-prism-ghostty-bridge-macos.sh"
 xcframework_validator="$repo_root/scripts/verify-prism-ghostty-xcframework.py"
 bounded_runner="$repo_root/scripts/run-prism-bounded.py"
@@ -109,6 +110,8 @@ verify_reviewed_inputs_unchanged() {
     || die "Ghostty tree hasher changed during packaging"
   [[ "$(sha256_file "$metadata_validator")" == "$reviewed_metadata_validator_sha" ]] \
     || die "Ghostty metadata validator changed during packaging"
+  [[ "$(sha256_file "$path_scrubber")" == "$reviewed_path_scrubber_sha" ]] \
+    || die "Ghostty binary path scrubber changed during packaging"
   [[ "$(sha256_file "$bridge_verifier")" == "$reviewed_bridge_verifier_sha" ]] \
     || die "Ghostty bridge verifier changed during packaging"
   [[ "$(sha256_file "$xcframework_validator")" == \
@@ -152,6 +155,8 @@ verify_sealed_snapshot_unchanged() {
 [[ -f "$tree_hasher" && ! -L "$tree_hasher" ]] || die "tree hasher not found: $tree_hasher"
 [[ -f "$metadata_validator" && ! -L "$metadata_validator" ]] \
   || die "metadata validator not found: $metadata_validator"
+[[ -f "$path_scrubber" && ! -L "$path_scrubber" ]] \
+  || die "binary path scrubber not found: $path_scrubber"
 [[ -f "$bridge_verifier" && ! -L "$bridge_verifier" ]] \
   || die "bridge verifier not found: $bridge_verifier"
 [[ -f "$xcframework_validator" && ! -L "$xcframework_validator" ]] \
@@ -203,7 +208,7 @@ resources_relative="$(lock_value GHOSTTY_RESOURCES_PATH)"
 resource_sentinel="$(lock_value GHOSTTY_RESOURCE_SENTINEL)"
 expected_xcode_version="$(lock_value XCODE_VERSION)"
 expected_xcode_build="$(lock_value XCODE_BUILD)"
-expected_xcode_libtool_sha="$(lock_value XCODE_LIBTOOL_SHA256)"
+expected_llvm_libtool_sha="$(lock_value LLVM_LIBTOOL_SHA256)"
 expected_clt_sdk_tree_sha="$(lock_value CLT_MACOS_SDK_TREE_SHA256)"
 [[ "$lock_format" == "2" ]] || die "unsupported lock format: $lock_format"
 for relative_path in \
@@ -242,6 +247,7 @@ reviewed_consumer_script_sha="$(sha256_file "$repo_root/scripts/build-prism-ghos
 reviewed_proof_script_sha="$(sha256_file "$repo_root/scripts/build-prism-ghostty-macos.sh")"
 reviewed_tree_hasher_sha="$(sha256_file "$tree_hasher")"
 reviewed_metadata_validator_sha="$(sha256_file "$metadata_validator")"
+reviewed_path_scrubber_sha="$(sha256_file "$path_scrubber")"
 reviewed_bridge_verifier_sha="$(sha256_file "$bridge_verifier")"
 reviewed_xcframework_validator_sha="$(sha256_file "$xcframework_validator")"
 reviewed_bounded_runner_sha="$(sha256_file "$bounded_runner")"
@@ -308,7 +314,7 @@ python3 "$metadata_validator" attestation "$proof_attestation" \
   "GHOSTTY_SOURCE_SHA256=$ghostty_sha" \
   "XCODE_VERSION=$expected_xcode_version" \
   "XCODE_BUILD=$expected_xcode_build" \
-  "XCODE_LIBTOOL_SHA256=$expected_xcode_libtool_sha" \
+  "LLVM_LIBTOOL_SHA256=$expected_llvm_libtool_sha" \
   "CLT_MACOS_SDK_TREE_SHA256=$expected_clt_sdk_tree_sha" \
   "ZIG_VERSION=$zig_version" \
   "GHOSTTY_MACOS_TARGET=$macos_target" \
@@ -348,8 +354,8 @@ python3 "$metadata_validator" attestation "$proof_attestation" \
   || die "proof attestation Xcode version mismatch"
 [[ "$(attestation_value XCODE_BUILD)" == "$expected_xcode_build" ]] \
   || die "proof attestation Xcode build mismatch"
-[[ "$(attestation_value XCODE_LIBTOOL_SHA256)" == "$expected_xcode_libtool_sha" ]] \
-  || die "proof attestation Xcode libtool checksum mismatch"
+[[ "$(attestation_value LLVM_LIBTOOL_SHA256)" == "$expected_llvm_libtool_sha" ]] \
+  || die "proof attestation LLVM libtool checksum mismatch"
 [[ "$(attestation_value CLT_MACOS_SDK_TREE_SHA256)" == "$expected_clt_sdk_tree_sha" ]] \
   || die "proof attestation CLT macOS SDK tree checksum mismatch"
 [[ "$(attestation_value ZIG_VERSION)" == "$zig_version" ]] \
@@ -463,18 +469,29 @@ cp -- "$bridge_source/Package.swift" "$stage/package/Package.swift"
 cp -R -- "$bridge_source/Sources" "$stage/package/Sources"
 
 scratch="$stage/swift-build"
+swift_prefix_flags=(
+  -Xswiftc -debug-prefix-map
+  -Xswiftc "$repo_root=/spectrum"
+  -Xswiftc -file-prefix-map
+  -Xswiftc "$repo_root=/spectrum"
+  -Xcc "-fdebug-prefix-map=$repo_root=/spectrum"
+  -Xcc "-ffile-prefix-map=$repo_root=/spectrum"
+)
 xcrun swift build \
   --package-path "$stage/package" \
   --scratch-path "$scratch" \
-  --configuration release
+  --configuration release \
+  "${swift_prefix_flags[@]}"
 binary_directory="$(xcrun swift build \
   --package-path "$stage/package" \
   --scratch-path "$scratch" \
   --configuration release \
+  "${swift_prefix_flags[@]}" \
   --show-bin-path)"
 bridge="$binary_directory/libPrismGhosttyBridge.dylib"
 [[ -f "$bridge" ]] || die "Swift build did not produce $bridge"
 install_name_tool -id "@rpath/libPrismGhosttyBridge.dylib" "$bridge"
+python3 "$path_scrubber" "$bridge" "$repo_root" "$proof_root" "$stage"
 machine_arch="$(uname -m)"
 verify_reviewed_inputs_unchanged
 verify_sealed_snapshot_unchanged

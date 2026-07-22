@@ -88,17 +88,33 @@ verify_reviewed_inputs_unchanged() {
     || die "SDK validator changed during proof build"
   [[ "$(sha256_file "$xcrun_shim_source")" == "$reviewed_xcrun_shim_sha" ]] \
     || die "xcrun shim source changed during proof build"
-  verify_pinned_xcode_libtool
+  verify_pinned_archive_tool
   verify_pinned_sdk_and_shim
 }
 
-verify_pinned_xcode_libtool() {
+verify_pinned_archive_tool() {
+  [[ "$(brew --prefix "$homebrew_llvm_formula" 2>/dev/null || true)" == \
+    "$homebrew_llvm_prefix" ]] \
+    || die "Homebrew $homebrew_llvm_formula is not installed at the reviewed prefix"
+  [[ "$(realpath "$homebrew_llvm_prefix")" == "$homebrew_llvm_keg" ]] \
+    || die "Homebrew $homebrew_llvm_formula changed its reviewed keg"
+  [[ -f "$homebrew_llvm_receipt" && ! -L "$homebrew_llvm_receipt" ]] \
+    || die "Homebrew $homebrew_llvm_formula has no real bottle receipt"
+  [[ "$(plutil -extract poured_from_bottle raw -o - "$homebrew_llvm_receipt" 2>/dev/null || true)" == \
+    "true" ]] || die "Homebrew $homebrew_llvm_formula was not poured from a bottle"
+  [[ "$($llvm_libtool --version 2>/dev/null | awk \
+    'NR == 1 && $1 == "Homebrew" && $2 == "LLVM" && $3 == "version" { print $4; exit }')" == \
+    "$homebrew_llvm_version" ]] || die "reviewed LLVM libtool version changed"
+  [[ "$(lipo -archs "$llvm_libtool" 2>/dev/null || true)" == "$homebrew_llvm_arch" ]] \
+    || die "reviewed LLVM libtool architecture changed"
+  codesign --verify "$llvm_libtool" \
+    || die "reviewed LLVM libtool has an invalid code signature"
   python3 "$metadata_validator" tool \
-    "$canonical_xcode_developer_dir" \
-    "$xcode_libtool_relative" \
-    "$xcode_libtool_sha" \
+    "$homebrew_llvm_keg" \
+    "$homebrew_llvm_libtool_relative" \
+    "$llvm_libtool_sha" \
     "$libtool_shim" \
-    || die "pinned Xcode libtool or its private shim changed during proof build"
+    || die "pinned LLVM libtool or its private shim changed during proof build"
 }
 
 verify_pinned_sdk_and_shim() {
@@ -223,6 +239,7 @@ extract_once() {
 [[ "$(uname -s)" == "Darwin" ]] || die "GhosttyKit proof builds require macOS"
 
 require_command awk
+require_command brew
 require_command codesign
 require_command curl
 require_command ditto
@@ -326,7 +343,12 @@ clt_macos_sdk_libsystem_sha="$(lock_value CLT_MACOS_SDK_LIBSYSTEM_SHA256)"
 clt_macos_sdk_libcxx_sha="$(lock_value CLT_MACOS_SDK_LIBCXX_SHA256)"
 expected_xcode_version="$(lock_value XCODE_VERSION)"
 expected_xcode_build="$(lock_value XCODE_BUILD)"
-xcode_libtool_sha="$(lock_value XCODE_LIBTOOL_SHA256)"
+homebrew_llvm_formula="$(lock_value HOMEBREW_LLVM_FORMULA)"
+homebrew_llvm_version="$(lock_value HOMEBREW_LLVM_VERSION)"
+homebrew_llvm_arch="$(lock_value HOMEBREW_LLVM_ARCH)"
+homebrew_llvm_prefix="$(lock_value HOMEBREW_LLVM_PREFIX)"
+homebrew_llvm_libtool_relative="$(lock_value HOMEBREW_LLVM_LIBTOOL_RELATIVE)"
+llvm_libtool_sha="$(lock_value LLVM_LIBTOOL_SHA256)"
 minimum_macos="$(lock_value MINIMUM_MACOS_VERSION)"
 macos_target="$(lock_value GHOSTTY_MACOS_TARGET)"
 bridge_abi_version="$(lock_value PRISM_GHOSTTY_BRIDGE_ABI_VERSION)"
@@ -354,6 +376,12 @@ resource_sentinel="$(lock_value GHOSTTY_RESOURCE_SENTINEL)"
   || die "this proof expects Ghostty's universal macOS target"
 [[ "$bridge_abi_version" =~ ^[1-9][0-9]*$ ]] \
   || die "invalid Prism Ghostty bridge ABI version: $bridge_abi_version"
+[[ "$homebrew_llvm_formula" == "llvm@20" \
+  && "$homebrew_llvm_version" == "20.1.8" \
+  && "$homebrew_llvm_arch" == "arm64" \
+  && "$homebrew_llvm_prefix" == "/opt/homebrew/opt/llvm@20" \
+  && "$homebrew_llvm_libtool_relative" == "bin/llvm-libtool-darwin" ]] \
+  || die "unsupported LLVM archive-tool contract"
 actual_bridge_abi_version="$(awk \
   '$1 == "#define" && $2 == "PRISM_GHOSTTY_BRIDGE_ABI_VERSION" { print $3; found = 1; exit } END { if (!found) exit 1 }' \
   "$repo_root/apps/prism/native/ghostty-terminal/include/prism_ghostty_bridge.h")" \
@@ -399,17 +427,16 @@ for directory in \
 done
 xcode_developer_dir="$(cd -P -- "$xcode_developer_dir" && pwd)"
 canonical_xcode_developer_dir="$xcode_developer_dir"
-xcode_libtool_relative="Toolchains/XcodeDefault.xctoolchain/usr/bin/libtool"
-xcode_libtool="$canonical_xcode_developer_dir/$xcode_libtool_relative"
-[[ "$(DEVELOPER_DIR="$canonical_xcode_developer_dir" xcrun --sdk macosx --find libtool)" == \
-  "$xcode_libtool" ]] || die "selected Xcode does not resolve the reviewed libtool path"
 xcode_nm="$(DEVELOPER_DIR="$canonical_xcode_developer_dir" xcrun --find nm)" \
   || die "selected Xcode does not provide nm"
-libtool_arches="$(lipo -archs "$xcode_libtool" 2>/dev/null || true)"
-[[ " $libtool_arches " == *" arm64 "* && " $libtool_arches " == *" x86_64 "* ]] \
-  || die "pinned Xcode libtool must contain arm64 and x86_64"
-codesign --verify "$xcode_libtool" \
-  || die "pinned Xcode libtool has an invalid signature"
+homebrew_llvm_keg="$(realpath "$homebrew_llvm_prefix")" \
+  || die "could not resolve reviewed Homebrew LLVM prefix"
+case "$homebrew_llvm_keg" in
+  /opt/homebrew/Cellar/llvm@20/*) ;;
+  *) die "Homebrew LLVM resolves outside its reviewed Cellar" ;;
+esac
+homebrew_llvm_receipt="$homebrew_llvm_keg/INSTALL_RECEIPT.json"
+llvm_libtool="$homebrew_llvm_keg/$homebrew_llvm_libtool_relative"
 tool_shims_root="$storage_root/tool-shims"
 if [[ -e "$tool_shims_root" || -L "$tool_shims_root" ]]; then
   safe_remove_tree "$tool_shims_root"
@@ -418,10 +445,10 @@ ensure_storage_directory "$tool_shims_root"
 libtool_shim_dir="$tool_shims_root/xcode"
 ensure_storage_directory "$libtool_shim_dir"
 libtool_shim="$libtool_shim_dir/libtool"
-ln -s -- "$xcode_libtool" "$libtool_shim"
+ln -s -- "$llvm_libtool" "$libtool_shim"
 xcrun_shim="$libtool_shim_dir/xcrun"
 install -m 0555 "$xcrun_shim_source" "$xcrun_shim"
-verify_pinned_xcode_libtool
+verify_pinned_archive_tool
 verify_pinned_sdk_and_shim
 proof_attestation="$storage_root/$proof_attestation_relative"
 rm -f -- "$proof_attestation"
@@ -458,7 +485,7 @@ fi
 ensure_storage_directory "$ghostty_prefix"
 (
   cd "$ghostty_source"
-  verify_pinned_xcode_libtool
+  verify_pinned_archive_tool
   verify_pinned_sdk_and_shim
   run_bounded 3600 env \
     PATH="$libtool_shim_dir:$PATH" \
@@ -471,7 +498,7 @@ ensure_storage_directory "$ghostty_prefix"
     -Demit-xcframework=true \
     -Demit-macos-app=false
 )
-verify_pinned_xcode_libtool
+verify_pinned_archive_tool
 verify_pinned_sdk_and_shim
 
 xcframework="$ghostty_source/$xcframework_relative"
@@ -584,7 +611,7 @@ GHOSTTY_VERSION=$ghostty_version
 GHOSTTY_SOURCE_SHA256=$ghostty_sha
 XCODE_VERSION=$xcode_version
 XCODE_BUILD=$xcode_build
-XCODE_LIBTOOL_SHA256=$xcode_libtool_sha
+LLVM_LIBTOOL_SHA256=$llvm_libtool_sha
 CLT_MACOS_SDK_TREE_SHA256=$clt_macos_sdk_tree_sha
 ZIG_VERSION=$actual_zig_version
 GHOSTTY_MACOS_TARGET=$macos_target
@@ -613,7 +640,7 @@ python3 "$metadata_validator" attestation "$attestation_staging" \
   "GHOSTTY_SOURCE_SHA256=$ghostty_sha" \
   "XCODE_VERSION=$xcode_version" \
   "XCODE_BUILD=$xcode_build" \
-  "XCODE_LIBTOOL_SHA256=$xcode_libtool_sha" \
+  "LLVM_LIBTOOL_SHA256=$llvm_libtool_sha" \
   "CLT_MACOS_SDK_TREE_SHA256=$clt_macos_sdk_tree_sha" \
   "ZIG_VERSION=$actual_zig_version" \
   "GHOSTTY_MACOS_TARGET=$macos_target" \
@@ -630,7 +657,7 @@ echo "  annotated tag object: $ghostty_tag_object"
 echo "  peeled source commit: $ghostty_revision"
 echo "  verified release archive: $ghostty_sha"
 echo "Xcode: $xcode_version ($xcode_build) from $xcode_developer_dir"
-echo "  libtool: $xcode_libtool_sha at $xcode_libtool"
+echo "  LLVM libtool: $homebrew_llvm_version ($llvm_libtool_sha) at $llvm_libtool"
 echo "Zig: $zig_version ($zig_arch toolchain on $machine_arch host)"
 echo "  pinned macOS SDK: $clt_macos_sdk_name at $clt_macos_sdk_root"
 echo "Run manually when ready: open '$bundle'"

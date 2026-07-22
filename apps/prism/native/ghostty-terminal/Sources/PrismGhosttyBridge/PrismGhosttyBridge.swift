@@ -4,7 +4,7 @@ import GhosttyKit
 
 let prismGhosttyBridgeABIVersion: UInt32 = 1
 
-typealias PrismGhosttyEventCallback = @convention(c) (
+public typealias PrismGhosttyEventCallback = @convention(c) (
   UnsafeMutableRawPointer?, UInt64, UInt32, UnsafePointer<CChar>?, Int, Bool
 ) -> Void
 

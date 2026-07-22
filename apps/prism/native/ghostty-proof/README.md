@@ -88,7 +88,7 @@ the official Zig toolchain, and clears Ghostty's exact
 install prefix before building. This prevents a prior build's modified toolchain,
 generated XCFramework, or resources from satisfying the current build's output
 checks. The script uses Ghostty's required checksum-pinned Zig toolchain and
-the checksum-pinned archive tool from Xcode 26.5 and sealed CLT macOS 15.2 SDK,
+the checksum-pinned Homebrew LLVM 20 archive tool and sealed CLT macOS 15.2 SDK,
 limits the Ghostty build to two jobs, stages a
 SwiftPM build against the generated XCFramework, copies Ghostty's resources
 and license into the proof app, and applies and verifies an ad-hoc local

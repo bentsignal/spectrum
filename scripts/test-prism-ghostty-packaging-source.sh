@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 metadata_validator="$repo_root/scripts/validate-prism-ghostty-metadata.py"
+path_scrubber="$repo_root/scripts/scrub-prism-binary-paths.py"
 tree_hasher="$repo_root/scripts/hash-prism-ghostty-tree.py"
 bridge_verifier="$repo_root/scripts/verify-prism-ghostty-bridge-macos.sh"
 xcframework_validator="$repo_root/scripts/verify-prism-ghostty-xcframework.py"
@@ -11,6 +12,7 @@ sdk_tree_hasher="$repo_root/scripts/hash-prism-sdk-tree.py"
 sdk_validator="$repo_root/scripts/verify-prism-ghostty-sdk.py"
 xcrun_shim="$repo_root/scripts/prism-ghostty-xcrun-shim.sh"
 package_script="$repo_root/scripts/package-prism-macos.sh"
+bridge_source="$repo_root/apps/prism/native/ghostty-terminal/Sources/PrismGhosttyBridge/PrismGhosttyBridge.swift"
 fixture="$(mktemp -d "$repo_root/target/ghostty-source-tests.XXXXXX")"
 
 cleanup() {
@@ -75,6 +77,15 @@ printf 'LOCK_FORMAT=2=extra\n' >"$fixture/malformed-lock"
 expect_failure "not one KEY=VALUE assignment" \
   python3 "$metadata_validator" lock "$fixture/malformed-lock"
 
+path_fixture="$fixture/path-binary"
+printf 'first=%s second=%s\n' "$repo_root" "$fixture" >"$path_fixture"
+chmod 0755 "$path_fixture"
+python3 "$path_scrubber" "$path_fixture" "$repo_root" "$fixture"
+! grep -aF -- "$repo_root" "$path_fixture" >/dev/null
+! grep -aF -- "$fixture" "$path_fixture" >/dev/null
+[[ "$(stat -f %Lp "$path_fixture")" == "755" ]]
+expect_failure "absolute path" python3 "$path_scrubber" "$path_fixture" relative
+
 zero_sha="0000000000000000000000000000000000000000000000000000000000000000"
 cat >"$fixture/attestation" <<EOF
 ATTESTATION_FORMAT=1
@@ -92,7 +103,7 @@ GHOSTTY_VERSION=1.3.1
 GHOSTTY_SOURCE_SHA256=$zero_sha
 XCODE_VERSION=26.5
 XCODE_BUILD=17F42
-XCODE_LIBTOOL_SHA256=$zero_sha
+LLVM_LIBTOOL_SHA256=$zero_sha
 CLT_MACOS_SDK_TREE_SHA256=$zero_sha
 ZIG_VERSION=0.15.2
 GHOSTTY_MACOS_TARGET=macos-arm64_x86_64
@@ -545,23 +556,27 @@ rmdir "$fixture/forged-proof" "$private_package_root"
 
 python3 - "$repo_root/scripts/build-prism-ghostty-macos.sh" \
   "$repo_root/scripts/build-prism-ghostty-bridge-macos.sh" \
-  "$repo_root/scripts/package-prism-macos.sh" <<'PY'
+  "$repo_root/scripts/package-prism-macos.sh" \
+  "$bridge_source" <<'PY'
 import sys
 from pathlib import Path
 
 proof = Path(sys.argv[1]).read_text()
 consumer = Path(sys.argv[2]).read_text()
 package = Path(sys.argv[3]).read_text()
+bridge_source = Path(sys.argv[4]).read_text()
 zig = proof.index('zig_source="$toolchains_dir/zig-$zig_arch-macos-$zig_version"')
 remove = proof.index('safe_remove_tree "$zig_source"', zig)
 extract = proof.index('extract_once "$zig_archive"', remove)
 assert zig < remove < extract
 assert 'mktemp "$destination.part.XXXXXX"' in proof
 assert 'canonical_storage_root' in proof and 'realpath "$target"' in proof
-assert proof.count("verify_pinned_xcode_libtool") >= 5
+assert proof.count("verify_pinned_archive_tool") >= 5
 assert 'run_bounded 120 "${zig_command[@]}" version' in proof
 assert 'run_bounded 3600 env' in proof
 assert 'PATH="$libtool_shim_dir:$PATH"' in proof
+assert 'HOMEBREW_LLVM_LIBTOOL_RELATIVE' in proof
+assert 'LLVM_LIBTOOL_SHA256' in proof
 assert '"${zig_command[@]}" build -j2' in proof
 assert 'zig_url="$(lock_value ZIG_ARM64_URL)"' in proof
 assert '/usr/bin/arch -x86_64' not in proof
@@ -569,15 +584,20 @@ assert proof.count("verify_pinned_sdk_and_shim") >= 5
 assert 'python3 "$metadata_validator" symbols' in proof
 assert '2>/dev/null' not in proof[proof.index('for architecture in arm64 x86_64; do'):]
 assert 'python3 "$metadata_validator" symbols' in consumer
+assert 'python3 "$path_scrubber" "$bridge"' in consumer
 assert consumer.count("verify_snapshot_hashes") >= 2
 assert consumer.count("verify_sealed_snapshot_unchanged") >= 4
 assert 'ln -s -- "$xcframework"' not in consumer
 assert 'scratch="$stage/swift-build"' in consumer
+assert '"$repo_root=/spectrum"' in consumer
+assert '"-ffile-prefix-map=$repo_root=/spectrum"' in consumer
 assert 'bash "$proof_builder" --storage-root "$proof_root"' in package
+assert 'chain_path_scrubber_sha' in package
 assert 'mktemp -d "$repo_root/target/prism-ghostty-package.XXXXXX"' in package
 assert '"$proof_root" == "$private_root/proof"' in consumer
 assert 'bridge packaging rejects externally prepared proof roots' in consumer
 assert 'verified-proof-root' not in package
+assert 'public typealias PrismGhosttyEventCallback = @convention(c)' in bridge_source
 PY
 
 echo "Prism Ghostty packaging source checks passed"

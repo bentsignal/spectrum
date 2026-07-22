@@ -20,8 +20,12 @@ GHOSTTY_SOURCE_SHA256=3349d25600ffbda281197a18314f7d18791969cffe9474f0ff16a45a9e
 
 # Ghostty 1.3.x is guaranteed by upstream to build with exactly Zig 0.15.2.
 # These URLs and checksums come from Zig's official download index. Packaging
-# accepts only these checksum-pinned official toolchains; no mutable
-# machine-installed Zig or LLVM participates in the trusted build path.
+# accepts only these checksum-pinned official Zig toolchains. Ghostty's Zig
+# archives contain Mach-O members that Apple libtool silently drops because
+# they are not 8-byte aligned, so the archive merge is performed by the pinned
+# Homebrew LLVM Darwin libtool below. The script verifies its canonical keg,
+# poured-bottle receipt, version, architecture, code signature, and checksum
+# before and after every consequential build stage.
 ZIG_VERSION=0.15.2
 ZIG_ARM64_URL=https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz
 ZIG_ARM64_SHA256=3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b
@@ -61,4 +65,9 @@ GHOSTTY_PROOF_ATTESTATION=ghostty-proof.attestation
 # per-build hashes remain diagnostic metadata rather than a trust root.
 XCODE_VERSION=26.5
 XCODE_BUILD=17F42
-XCODE_LIBTOOL_SHA256=52218d029307e685782c10ece1ae52f3c3b2381de9f53b7e0a63ad7e486965bb
+HOMEBREW_LLVM_FORMULA=llvm@20
+HOMEBREW_LLVM_VERSION=20.1.8
+HOMEBREW_LLVM_ARCH=arm64
+HOMEBREW_LLVM_PREFIX=/opt/homebrew/opt/llvm@20
+HOMEBREW_LLVM_LIBTOOL_RELATIVE=bin/llvm-libtool-darwin
+LLVM_LIBTOOL_SHA256=a12f5281b40b0b3bb8d9432a309c05d5c9ee22ea3641a9e06b2d55b84ce30e76
