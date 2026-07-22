@@ -69,7 +69,10 @@ impl LumenApp {
                             .color(theme.text),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Photo  ⌘H").clicked() {
+                        if ui
+                            .button(format!("Photo  {}", history_shortcut_label()))
+                            .clicked()
+                        {
                             close = true;
                         }
                     });

@@ -515,37 +515,34 @@ impl LumenApp {
                 self.error = false;
             }
         }
+        #[cfg(not(target_os = "macos"))]
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::H)) {
             self.toggle_history();
         }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::A))
             && !context.egui_wants_keyboard_input()
         {
-            self.selected_ids = self.visible_photo_ids().into_iter().collect();
-            self.selection_anchor = self.workspace.project.selected.and_then(|id| {
-                self.workspace
-                    .project
-                    .photos
-                    .iter()
-                    .position(|photo| photo.id == id)
-            });
+            self.select_all_visible_photos();
         }
-        let history = context.input(|input| {
-            if input.modifiers.command && input.key_pressed(egui::Key::Z) {
-                Some(input.modifiers.shift)
-            } else {
-                None
-            }
-        });
-        if let Some(forward) = history {
-            let command = if forward {
-                Command::Redo
-            } else {
-                Command::Undo
-            };
-            if self.execute(command) {
-                self.draft_id = None;
-                self.sync_draft();
+        #[cfg(not(target_os = "macos"))]
+        {
+            let history = context.input(|input| {
+                if input.modifiers.command && input.key_pressed(egui::Key::Z) {
+                    Some(input.modifiers.shift)
+                } else {
+                    None
+                }
+            });
+            if let Some(forward) = history {
+                let command = if forward {
+                    Command::Redo
+                } else {
+                    Command::Undo
+                };
+                if self.execute(command) {
+                    self.draft_id = None;
+                    self.sync_draft();
+                }
             }
         }
         let direction = context.input(|input| {
@@ -590,6 +587,17 @@ impl LumenApp {
                 self.remove_confirmation = true;
             }
         }
+    }
+
+    pub(super) fn select_all_visible_photos(&mut self) {
+        self.selected_ids = self.visible_photo_ids().into_iter().collect();
+        self.selection_anchor = self.workspace.project.selected.and_then(|id| {
+            self.workspace
+                .project
+                .photos
+                .iter()
+                .position(|photo| photo.id == id)
+        });
     }
 
     pub(super) fn select_relative(&mut self, direction: i32) {

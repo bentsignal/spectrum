@@ -32,7 +32,7 @@ fn lumen_source_files_stay_within_the_maintainability_budget() {
 }
 
 #[test]
-fn revision_graph_and_macos_shortcut_use_the_shared_spectrum_surface() {
+fn revision_graph_and_macos_menu_use_the_shared_spectrum_surface() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let history = fs::read_to_string(manifest.join("src/bin/lumen_gui/history.rs"))
         .expect("history source should be readable");
@@ -41,7 +41,55 @@ fn revision_graph_and_macos_shortcut_use_the_shared_spectrum_surface() {
     assert!(history.contains("spectrum_history_ui"));
     assert!(!history.contains("fn tree_layout("));
     assert!(app.contains("spectrum_history_ui::reserve_history_shortcut()"));
-    assert!(app.contains("macos::install_open_document_handler"));
+    assert!(app.contains("macos::run(initial_catalog)"));
+}
+
+#[test]
+fn native_macos_menu_owns_catalog_photo_and_edit_navigation() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let macos = fs::read_to_string(manifest.join("src/bin/lumen_gui/macos.rs"))
+        .expect("macOS integration source should be readable");
+    let spec = fs::read_to_string(manifest.join("src/bin/lumen_gui/macos_menu_spec.rs"))
+        .expect("macOS menu specification should be readable");
+    let toolbar = fs::read_to_string(manifest.join("src/bin/lumen_gui/toolbar.rs"))
+        .expect("toolbar source should be readable");
+
+    let disable_default = macos
+        .find("event_loop_builder.with_default_menu(false)")
+        .expect("Lumen must own the native macOS menu");
+    let build = macos
+        .find("event_loop_builder.build()")
+        .expect("the explicit event loop must be retained");
+    let install = macos
+        .find("install_app_integration(open_document_sender, native_menu_sender)")
+        .expect("menu integration must be installed before app creation");
+    assert!(disable_default < build && build < install);
+    for action in [
+        "ImportPhotos",
+        "ExportPhotos",
+        "ToggleAllShoots",
+        "PreviousPhoto",
+        "NextPhoto",
+        "Undo",
+        "Redo",
+    ] {
+        assert!(spec.contains(action));
+    }
+    assert!(toolbar.contains("#[cfg(not(target_os = \"macos\"))]"));
+}
+
+#[test]
+fn routine_status_and_pick_glyph_chatter_stay_out_of_lumen_ui() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dialogs = fs::read_to_string(manifest.join("src/bin/lumen_gui/dialogs.rs")).unwrap();
+    let toolbar = fs::read_to_string(manifest.join("src/bin/lumen_gui/toolbar.rs")).unwrap();
+    let library = fs::read_to_string(manifest.join("src/bin/lumen_gui/library.rs")).unwrap();
+    assert!(dialogs.contains("if self.error"));
+    assert!(!toolbar.contains("selectable_label(true, \"+\")"));
+    assert!(!toolbar.contains("selectable_label(true, \"x\")"));
+    assert!(!library.contains("RichText::new(\"+\")"));
+    assert!(!library.contains("RichText::new(\"x\")"));
+    assert!(library.contains("Back to Photos"));
 }
 
 #[test]

@@ -1,5 +1,13 @@
 use super::*;
 
+pub(super) const fn history_shortcut_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘H"
+    } else {
+        "Ctrl+H"
+    }
+}
+
 impl Histogram {
     pub(super) fn from_image(image: &DynamicImage) -> Self {
         let mut histogram = Self {
@@ -651,6 +659,7 @@ pub(super) fn shorten(value: &str, max_chars: usize) -> String {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(super) fn catalog_label(path: &Path) -> String {
     let name = path
         .file_stem()

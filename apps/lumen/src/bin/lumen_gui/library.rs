@@ -1,6 +1,32 @@
 use super::*;
 
 impl LumenApp {
+    pub(super) fn return_to_photo_view(&mut self) {
+        if self.active_batch.is_none() {
+            self.active_batch = self
+                .workspace
+                .project
+                .selected_photo()
+                .and_then(|photo| photo.batch_id);
+        }
+        if self.workspace.project.selected.is_none() {
+            let first = self
+                .workspace
+                .project
+                .photos
+                .iter()
+                .find(|photo| {
+                    self.active_batch
+                        .is_none_or(|batch_id| photo.batch_id == Some(batch_id))
+                })
+                .map(|photo| photo.id);
+            if let Some(id) = first {
+                self.select(id);
+            }
+        }
+        self.library_mode = false;
+    }
+
     pub(super) fn open_batch(&mut self, batch_id: u64) {
         let first = self
             .workspace
@@ -52,6 +78,11 @@ impl LumenApp {
             .frame(egui::Frame::new().fill(CANVAS).inner_margin(24))
             .show(root, |ui| {
                 ui.horizontal(|ui| {
+                    if !self.workspace.project.photos.is_empty()
+                        && ui.button(self.photo_view_return_label()).clicked()
+                    {
+                        self.return_to_photo_view();
+                    }
                     ui.vertical(|ui| {
                         ui.label(
                             RichText::new(&self.workspace.project.name)
@@ -68,6 +99,7 @@ impl LumenApp {
                             .color(Color32::GRAY),
                         );
                     });
+                    #[cfg(not(target_os = "macos"))]
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Import a Shoot").clicked() {
                             self.import_dialog();
@@ -202,64 +234,64 @@ impl LumenApp {
                                                             for (photo_id, photo_name, pick) in
                                                                 photos
                                                             {
-                                                                ui.vertical_centered(|ui| {
-                                                                    if let Some(texture) = self
-                                                                        .thumbnails
-                                                                        .get(photo_id)
-                                                                    {
-                                                                        let size = fit_size(
-                                                                            texture.size_vec2(),
-                                                                            Vec2::new(180.0, 112.0),
-                                                                        );
-                                                                        if ui
-                                                                            .add(
-                                                                                egui::Image::new(
-                                                                                    texture,
-                                                                                )
-                                                                                .fit_to_exact_size(
-                                                                                    size,
-                                                                                )
-                                                                                .sense(
-                                                                                    Sense::click(),
-                                                                                ),
-                                                                            )
-                                                                            .on_hover_text(
-                                                                                "Open this shoot",
-                                                                            )
-                                                                            .clicked()
-                                                                        {
-                                                                            open_batch =
-                                                                                Some(*batch_id);
-                                                                        }
-                                                                    }
-                                                                    ui.label(
-                                                                        RichText::new(shorten(
-                                                                            photo_name, 24,
-                                                                        ))
-                                                                        .size(10.0),
-                                                                    );
-                                                                    match pick {
+                                                                egui::Frame::new()
+                                                                    .fill(match pick {
                                                                         PickState::Keep => {
-                                                                            ui.label(
-                                                                                RichText::new("+")
-                                                                                    .strong()
-                                                                                    .color(ACCENT),
-                                                                            );
+                                                                            Color32::from_rgb(
+                                                                                31, 48, 43,
+                                                                            )
                                                                         }
                                                                         PickState::Reject => {
-                                                                            ui.label(
-                                                                            RichText::new("x")
-                                                                                .color(
-                                                                                Color32::from_rgb(
-                                                                                    225, 112, 120,
-                                                                                ),
-                                                                            ),
-                                                                        );
+                                                                            Color32::from_rgb(
+                                                                                45, 31, 34,
+                                                                            )
                                                                         }
-                                                                        PickState::Unmarked => {}
-                                                                    }
-                                                                    ui.add_space(8.0);
-                                                                });
+                                                                        PickState::Unmarked => {
+                                                                            Color32::TRANSPARENT
+                                                                        }
+                                                                    })
+                                                                    .corner_radius(5.0)
+                                                                    .inner_margin(4)
+                                                                    .show(ui, |ui| {
+                                                                        ui.vertical_centered(|ui| {
+                                                                            if let Some(texture) =
+                                                                                self.thumbnails
+                                                                                    .get(photo_id)
+                                                                            {
+                                                                                let size = fit_size(
+                                                                                    texture
+                                                                                        .size_vec2(),
+                                                                                    Vec2::new(
+                                                                                        172.0,
+                                                                                        112.0,
+                                                                                    ),
+                                                                                );
+                                                                                if ui
+                                                                                    .add(
+                                                                                        egui::Image::new(texture)
+                                                                                            .fit_to_exact_size(size)
+                                                                                            .sense(Sense::click()),
+                                                                                    )
+                                                                                    .on_hover_text(
+                                                                                        "Open this shoot",
+                                                                                    )
+                                                                                    .clicked()
+                                                                                {
+                                                                                    open_batch = Some(*batch_id);
+                                                                                }
+                                                                            }
+                                                                            ui.label(
+                                                                                RichText::new(
+                                                                                    shorten(
+                                                                                        photo_name,
+                                                                                        24,
+                                                                                    ),
+                                                                                )
+                                                                                .size(10.0),
+                                                                            );
+                                                                        });
+                                                                    });
+                                                                ui.add_space(8.0);
                                                             }
                                                         });
                                                 });
@@ -277,5 +309,14 @@ impl LumenApp {
                     self.rename_batch = Some(batch);
                 }
             });
+    }
+
+    fn photo_view_return_label(&self) -> String {
+        self.active_batch
+            .and_then(|id| self.workspace.project.batch(id).ok())
+            .map_or_else(
+                || "← Back to Photos".into(),
+                |batch| format!("← Back to {}", batch.name),
+            )
     }
 }

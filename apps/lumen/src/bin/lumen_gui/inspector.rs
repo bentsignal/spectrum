@@ -634,7 +634,10 @@ impl LumenApp {
             ui.horizontal(|ui| {
                 ui.heading("Develop");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("History  ⌘H").clicked() {
+                    if ui
+                        .button(format!("History  {}", history_shortcut_label()))
+                        .clicked()
+                    {
                         self.toggle_history();
                     }
                 });
