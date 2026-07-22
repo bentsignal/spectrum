@@ -13,8 +13,8 @@ use crate::{
 };
 
 pub const LAYER_TRANSFER_FORMAT: &str = "spectrum.prism.layer";
-pub const LAYER_TRANSFER_VERSION: u32 = 2;
-const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 4 * 1024 * 1024;
+pub const LAYER_TRANSFER_VERSION: u32 = 3;
+const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 24 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
 ///
@@ -82,7 +82,7 @@ impl LayerTransfer {
 
     pub fn from_json(value: &str) -> Result<Self> {
         if value.len() > MAX_LAYER_TRANSFER_JSON_BYTES {
-            bail!("Prism layer transfer exceeds the 4 MiB metadata limit");
+            bail!("Prism layer transfer exceeds the 24 MiB metadata limit");
         }
         let transfer: Self =
             serde_json::from_str(value).context("invalid Prism layer transfer JSON")?;
@@ -143,9 +143,13 @@ impl LayerTransfer {
         if self.version == 1 && (!self.layer.style.is_empty() || self.layer.shape_fill.is_some()) {
             bail!("Prism layer transfer version 1 cannot contain layer styles or shape fills");
         }
+        if self.version < 3 && self.layer.pixel_mask.is_some() {
+            bail!("Prism layer transfer versions before 3 cannot contain pixel masks");
+        }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");
         }
+        validate_pixel_mask(&self.layer)?;
         match &self.layer.kind {
             LayerKind::Text { typography, .. } => {
                 if typography.font_id.is_some() {
@@ -183,6 +187,7 @@ fn sanitize_layer(layer: &mut Layer) -> Result<()> {
     validate_mask(layer.mask)?;
     validate_layer_style(&layer.style)?;
     validate_shape_stroke(layer.stroke)?;
+    validate_pixel_mask(layer)?;
     if let Some(fill) = &layer.shape_fill {
         validate_shape_fill(fill)?;
         if !matches!(
@@ -246,6 +251,30 @@ fn sanitize_layer(layer: &mut Layer) -> Result<()> {
             *width = (*width).clamp(1, MAX_CANVAS_DIMENSION);
             *height = (*height).clamp(1, MAX_CANVAS_DIMENSION);
         }
+    }
+    Ok(())
+}
+
+fn validate_pixel_mask(layer: &Layer) -> Result<()> {
+    let Some(mask) = &layer.pixel_mask else {
+        return Ok(());
+    };
+    let pixels = u64::from(mask.width) * u64::from(mask.height);
+    if pixels > crate::MAX_COLOR_SELECTION_PIXELS {
+        bail!("transferred pixel mask exceeds the bounded pixel limit");
+    }
+    let expected =
+        usize::try_from(pixels).context("pixel mask dimensions exceed platform limits")?;
+    if mask.width == 0 || mask.height == 0 || mask.alpha.len() != expected {
+        bail!("transferred layer has an invalid pixel mask");
+    }
+    if !mask.has_valid_identity() {
+        bail!("transferred pixel mask identity does not match its alpha");
+    }
+    let dimensions =
+        crate::shape_dimensions(layer).context("only shape layers can carry a pixel mask")?;
+    if dimensions != (mask.width, mask.height) {
+        bail!("transferred pixel mask dimensions do not match its shape");
     }
     Ok(())
 }

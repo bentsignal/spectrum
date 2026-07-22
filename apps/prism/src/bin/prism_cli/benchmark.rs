@@ -48,6 +48,13 @@ impl BenchmarkProfile {
             Self::HostedCi => 1_250.0,
         }
     }
+
+    pub(super) fn magic_wand_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 5_000.0,
+            Self::HostedCi => 15_000.0,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -130,6 +137,7 @@ fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
 
 pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value> {
     let selection_fill = selection::measure_selection_fill()?;
+    let magic_wand = selection::measure_magic_wand_bound()?;
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -673,6 +681,15 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let (cached_spot_median, cached_spot_p95) = sample_summary(&mut cached_spot_samples);
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = [
+        BenchmarkMetric {
+            name: "4096_square_contiguous_magic_wand",
+            median_ms: magic_wand.elapsed_ms,
+            p95_ms: magic_wand.elapsed_ms,
+            budget_ms: profile.magic_wand_budget_ms(),
+            pass: magic_wand.elapsed_ms <= profile.magic_wand_budget_ms()
+                && magic_wand.major_plane_bytes <= 112 * 1024 * 1024
+                && magic_wand.logical_peak_bytes <= 120 * 1024 * 1024,
+        },
         BenchmarkMetric {
             name: "nondestructive_selection_fill_command",
             median_ms: selection_fill.median_ms,

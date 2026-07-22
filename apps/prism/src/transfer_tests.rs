@@ -8,8 +8,8 @@ use image::{Rgba, RgbaImage};
 
 use crate::{
     BlendMode, Command, Document, DropShadow, DurableProject, GradientStop, Layer, LayerKind,
-    LayerMask, LayerStyle, LayerTransfer, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment,
-    TextEffects, TextTypography, Transform, Workspace,
+    LayerMask, LayerStyle, LayerTransfer, PixelMask, ShapeFill, ShapeGradient, ShapeStroke,
+    TextAlignment, TextEffects, TextTypography, Transform, Workspace, render_document,
 };
 
 fn test_directory(label: &str) -> PathBuf {
@@ -158,6 +158,80 @@ fn transfer_rejects_foreign_ids_versions_and_invalid_values_atomically() {
             .is_err()
     );
     assert_eq!(workspace.document, before);
+}
+
+#[test]
+fn version_three_pixel_mask_transfer_round_trips_pixels_and_rejects_tampering() {
+    let mut source = Document::new("Masked source", 16, 12);
+    source.background = [0; 4];
+    source.layers.push(Layer {
+        id: 7,
+        name: "Masked shape".into(),
+        transform: Transform {
+            x: 3.0,
+            y: 2.0,
+            ..Default::default()
+        },
+        kind: LayerKind::Rectangle {
+            width: 3,
+            height: 2,
+            color: [20, 80, 220, 255],
+            corner_radius: 0.0,
+        },
+        pixel_mask: Some(PixelMask::new(3, 2, vec![255, 0, 128, 0, 255, 64])),
+        ..Default::default()
+    });
+    source.selected = Some(7);
+    let expected = render_document(&source, None).unwrap().to_rgba8();
+
+    let transfer = LayerTransfer::from_selected(&source).unwrap();
+    assert_eq!(transfer.version, 3);
+    let decoded = LayerTransfer::from_json(&transfer.to_json().unwrap()).unwrap();
+    assert_eq!(decoded, transfer);
+    let mut destination = Workspace::new(Document::new("Destination", 16, 12), None);
+    destination.document.background = [0; 4];
+    destination
+        .execute(Command::InsertLayer {
+            transfer: Box::new(decoded),
+            index: None,
+        })
+        .unwrap();
+    assert_eq!(
+        render_document(&destination.document, None)
+            .unwrap()
+            .to_rgba8(),
+        expected
+    );
+
+    let mut forged = transfer;
+    forged.layer.pixel_mask.as_mut().unwrap().content_hash[0] ^= 0xff;
+    let encoded = serde_json::to_string(&forged).unwrap();
+    assert!(LayerTransfer::from_json(&encoded).is_err());
+}
+
+#[test]
+fn unmasked_transfer_envelopes_remain_legacy_readable() {
+    let source = Document {
+        layers: vec![Layer {
+            id: 1,
+            kind: LayerKind::Rectangle {
+                width: 3,
+                height: 2,
+                color: [255; 4],
+                corner_radius: 0.0,
+            },
+            ..Default::default()
+        }],
+        ..Document::new("Legacy transfer", 8, 8)
+    };
+    let mut transfer = LayerTransfer::from_document(&source, 1).unwrap();
+    transfer.version = 1;
+    assert!(LayerTransfer::from_json(&transfer.to_json().unwrap()).is_ok());
+    transfer.version = 2;
+    transfer.layer.style = LayerStyle {
+        drop_shadow: Some(DropShadow::default()),
+    };
+    assert!(LayerTransfer::from_json(&transfer.to_json().unwrap()).is_ok());
 }
 
 #[test]

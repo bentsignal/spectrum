@@ -154,6 +154,9 @@ impl<'a> ShapeSampler<'a> {
     /// Keeping this property on the sampler lets every compositor consumer
     /// avoid redundant procedural sampling without duplicating shape rules.
     pub(crate) fn uniform_pixel(&self) -> Option<Rgba<u8>> {
+        if self.layer.pixel_mask.is_some() {
+            return None;
+        }
         match self.layer.kind {
             LayerKind::Rectangle {
                 color,
@@ -169,7 +172,7 @@ impl<'a> ShapeSampler<'a> {
     }
 
     pub(crate) fn pixel(&self, x: u32, y: u32) -> Rgba<u8> {
-        let color = match self.layer.kind {
+        let mut color = match self.layer.kind {
             LayerKind::Rectangle {
                 width,
                 height,
@@ -254,11 +257,12 @@ impl<'a> ShapeSampler<'a> {
             }
             _ => unreachable!("ShapeSampler validates the layer kind"),
         };
+        color[3] = multiply_alpha(color[3], self.pixel_mask_alpha(x, y));
         Rgba(color)
     }
 
     pub(crate) fn alpha(&self, x: u32, y: u32) -> u8 {
-        match self.layer.kind {
+        let alpha = match self.layer.kind {
             LayerKind::Rectangle {
                 width,
                 height,
@@ -266,7 +270,7 @@ impl<'a> ShapeSampler<'a> {
                 corner_radius,
             } => {
                 if corner_radius <= 0.0 && !self.layer.stroke.enabled {
-                    return shape_fill_alpha(
+                    shape_fill_alpha(
                         self.layer,
                         color[3],
                         (x as f32 + 0.5) / self.scale[0],
@@ -274,35 +278,36 @@ impl<'a> ShapeSampler<'a> {
                         width,
                         height,
                         self.fill_direction,
-                    );
-                }
-                sample_shape_alpha(x, y, self.scale, |x, y| {
-                    if !rounded_rect_contains(x, y, width, height, corner_radius, 0.0) {
-                        return None;
-                    }
-                    let stroke_pixel = self.layer.stroke.enabled
-                        && !rounded_rect_contains(
-                            x,
-                            y,
-                            width,
-                            height,
-                            corner_radius,
-                            self.layer.stroke.width.min(width.min(height) as f32 * 0.5),
-                        );
-                    Some(if stroke_pixel {
-                        self.layer.stroke.color[3]
-                    } else {
-                        shape_fill_alpha(
-                            self.layer,
-                            color[3],
-                            x,
-                            y,
-                            width,
-                            height,
-                            self.fill_direction,
-                        )
+                    )
+                } else {
+                    sample_shape_alpha(x, y, self.scale, |x, y| {
+                        if !rounded_rect_contains(x, y, width, height, corner_radius, 0.0) {
+                            return None;
+                        }
+                        let stroke_pixel = self.layer.stroke.enabled
+                            && !rounded_rect_contains(
+                                x,
+                                y,
+                                width,
+                                height,
+                                corner_radius,
+                                self.layer.stroke.width.min(width.min(height) as f32 * 0.5),
+                            );
+                        Some(if stroke_pixel {
+                            self.layer.stroke.color[3]
+                        } else {
+                            shape_fill_alpha(
+                                self.layer,
+                                color[3],
+                                x,
+                                y,
+                                width,
+                                height,
+                                self.fill_direction,
+                            )
+                        })
                     })
-                })
+                }
             }
             LayerKind::Ellipse {
                 width,
@@ -341,8 +346,26 @@ impl<'a> ShapeSampler<'a> {
                 })
             }
             _ => unreachable!("ShapeSampler validates the layer kind"),
-        }
+        };
+        multiply_alpha(alpha, self.pixel_mask_alpha(x, y))
     }
+
+    fn pixel_mask_alpha(&self, x: u32, y: u32) -> u8 {
+        let Some(mask) = &self.layer.pixel_mask else {
+            return 255;
+        };
+        let source_x = ((x as f32 + 0.5) / self.scale[0])
+            .floor()
+            .clamp(0.0, mask.width.saturating_sub(1) as f32) as u32;
+        let source_y = ((y as f32 + 0.5) / self.scale[1])
+            .floor()
+            .clamp(0.0, mask.height.saturating_sub(1) as f32) as u32;
+        mask.alpha[(u64::from(source_y) * u64::from(mask.width) + u64::from(source_x)) as usize]
+    }
+}
+
+fn multiply_alpha(left: u8, right: u8) -> u8 {
+    ((u16::from(left) * u16::from(right) + 127) / 255) as u8
 }
 
 fn shape_fill_color(

@@ -1,0 +1,154 @@
+use super::*;
+
+pub(super) struct PreparedSnapshot {
+    pub(super) payload: Payload,
+    pub(super) assets: Vec<Asset>,
+}
+
+impl PreparedSnapshot {
+    pub(super) fn legacy(document: &Document) -> Result<Self> {
+        Self::prepare(document, false)
+    }
+
+    pub(super) fn compressed(document: &Document) -> Result<Self> {
+        Self::prepare(document, true)
+    }
+
+    fn prepare(document: &Document, compressed: bool) -> Result<Self> {
+        let mut portable = document.clone();
+        let mut assets = Vec::new();
+        for layer in &mut portable.layers {
+            if let LayerKind::Raster {
+                path,
+                original_path,
+            } = &mut layer.kind
+            {
+                let prepared = prepare_asset(path)?;
+                *path = prepared.reference.path();
+                *original_path = None;
+                assets.push(prepared.asset);
+            }
+        }
+        for font in &mut portable.font_assets {
+            let prepared = prepare_verified_font_asset(font)?;
+            font.path = prepared.reference.path();
+            font.original_path = None;
+            assets.push(prepared.asset);
+        }
+        let color_selection_schema = document
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.alpha().is_some())
+            || document
+                .layers
+                .iter()
+                .any(|layer| layer.pixel_mask.is_some());
+        let selection_schema =
+            document.version >= SELECTION_SNAPSHOT_VERSION || document.selection.is_some();
+        let effects_schema = document.version >= LAYER_EFFECTS_SNAPSHOT_VERSION
+            || document
+                .layers
+                .iter()
+                .any(|layer| !layer.style.is_empty() || layer.shape_fill.is_some());
+        let snapshot_version = if color_selection_schema {
+            COLOR_SELECTION_SNAPSHOT_VERSION
+        } else if selection_schema {
+            SELECTION_SNAPSHOT_VERSION
+        } else if effects_schema {
+            LAYER_EFFECTS_SNAPSHOT_VERSION
+        } else if compressed {
+            COMPRESSED_SNAPSHOT_VERSION
+        } else {
+            LEGACY_SNAPSHOT_VERSION
+        };
+        portable.version = snapshot_version;
+        let serialized = serde_json::to_vec(&portable)?;
+        let encoding = Encoding::new(SNAPSHOT_FAMILY, snapshot_version);
+        let payload = if compressed {
+            Payload::new(
+                encoding.requiring(DEFLATE_CAPABILITY),
+                deflate(&serialized)?,
+            )
+        } else {
+            Payload::new(encoding, serialized)
+        };
+        Ok(Self { payload, assets })
+    }
+}
+
+fn deflate(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(bytes)?;
+    Ok(encoder.finish()?)
+}
+
+const MAX_SNAPSHOT_JSON_BYTES: usize = 128 * 1024 * 1024;
+
+fn bounded_snapshot_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
+    if bytes.len() > MAX_SNAPSHOT_JSON_BYTES {
+        bail!("Prism snapshot exceeds the 128 MiB decoded JSON limit");
+    }
+    Ok(bytes.to_vec())
+}
+
+fn inflate_snapshot(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut decoded = Vec::new();
+    ZlibDecoder::new(bytes)
+        .take((MAX_SNAPSHOT_JSON_BYTES + 1) as u64)
+        .read_to_end(&mut decoded)?;
+    if decoded.len() > MAX_SNAPSHOT_JSON_BYTES {
+        bail!("Prism snapshot exceeds the 128 MiB decoded JSON limit");
+    }
+    Ok(decoded)
+}
+
+pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
+    let version = payload.encoding.version;
+    let plain = payload.encoding.required_capabilities.is_empty();
+    let deflated = payload.encoding.required_capabilities == [DEFLATE_CAPABILITY];
+    match (version, plain, deflated) {
+        (LEGACY_SNAPSHOT_VERSION, true, false) => bounded_snapshot_bytes(&payload.bytes),
+        (COMPRESSED_SNAPSHOT_VERSION, false, true) => inflate_snapshot(&payload.bytes),
+        (
+            LAYER_EFFECTS_SNAPSHOT_VERSION
+            | SELECTION_SNAPSHOT_VERSION
+            | COLOR_SELECTION_SNAPSHOT_VERSION,
+            true,
+            false,
+        ) => bounded_snapshot_bytes(&payload.bytes),
+        (
+            LAYER_EFFECTS_SNAPSHOT_VERSION
+            | SELECTION_SNAPSHOT_VERSION
+            | COLOR_SELECTION_SNAPSHOT_VERSION,
+            false,
+            true,
+        ) => inflate_snapshot(&payload.bytes),
+        _ => bail!("unsupported Prism snapshot encoding"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_codec_accepts_only_the_advertised_version_capability_matrix() {
+        let legacy_deflate = Payload::new(
+            Encoding::new(SNAPSHOT_FAMILY, LEGACY_SNAPSHOT_VERSION).requiring(DEFLATE_CAPABILITY),
+            Vec::new(),
+        );
+        assert!(decode_snapshot(&legacy_deflate).is_err());
+
+        let compressed_plain = Payload::new(
+            Encoding::new(SNAPSHOT_FAMILY, COMPRESSED_SNAPSHOT_VERSION),
+            Vec::new(),
+        );
+        assert!(decode_snapshot(&compressed_plain).is_err());
+
+        let unknown_capability = Payload::new(
+            Encoding::new(SNAPSHOT_FAMILY, COLOR_SELECTION_SNAPSHOT_VERSION).requiring("unknown"),
+            Vec::new(),
+        );
+        assert!(decode_snapshot(&unknown_capability).is_err());
+    }
+}

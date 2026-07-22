@@ -114,6 +114,23 @@ pub enum Command {
     SetSelection {
         selection: Option<Selection>,
     },
+    MagicWandSelection {
+        x: u32,
+        y: u32,
+        tolerance: u8,
+        contiguous: bool,
+        antialias: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_selection: Option<Box<Selection>>,
+    },
+    /// Durable marker whose exact result is carried by a required same-revision snapshot.
+    MagicWandSnapshot {
+        x: u32,
+        y: u32,
+        tolerance: u8,
+        contiguous: bool,
+        antialias: bool,
+    },
     FillSelection {
         color: [u8; 4],
         name: Option<String>,

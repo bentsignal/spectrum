@@ -10,6 +10,7 @@ pub(super) enum Tool {
     Shape,
     Mask,
     Marquee,
+    MagicWand,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,13 +20,14 @@ pub(super) enum ToolActivation {
 }
 
 impl Tool {
-    pub(super) const ALL: [(Self, &'static str, &'static str); 6] = [
+    pub(super) const ALL: [(Self, &'static str, &'static str); 7] = [
         (Self::Move, "V", "Select / move"),
         (Self::Crop, "C", "Crop canvas"),
         (Self::Text, "T", "Text"),
         (Self::Shape, "S", "Shape"),
-        (Self::Mask, "M", "Layer mask"),
-        (Self::Marquee, "W", "Rectangular marquee"),
+        (Self::Mask, "K", "Layer mask"),
+        (Self::Marquee, "M", "Rectangular marquee"),
+        (Self::MagicWand, "W", "Magic wand"),
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -37,6 +39,7 @@ impl Tool {
             Self::Shape => "Shape",
             Self::Mask => "Draw mask",
             Self::Marquee => "Rectangular marquee",
+            Self::MagicWand => "Magic wand",
         }
     }
 
@@ -59,6 +62,7 @@ impl Tool {
             Self::Shape => "Choose a rectangle, ellipse, or another shape to draw.",
             Self::Mask => "Draw the visible region of the focused element.",
             Self::Marquee => "Drag a persistent document-pixel selection, then clear or fill it.",
+            Self::MagicWand => "Click a color to select a connected or canvas-wide range.",
         }
     }
 

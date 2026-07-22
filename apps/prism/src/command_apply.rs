@@ -26,6 +26,7 @@ fn crop_canvas(
     let selection = match selection_after_crop {
         SelectionAfterCrop::Intersect => document
             .selection
+            .clone()
             .and_then(|selection| selection.cropped(x, y, width, height)),
         SelectionAfterCrop::Clear => None,
     };
@@ -52,6 +53,7 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             document.background = background;
             document.selection = document
                 .selection
+                .take()
                 .and_then(|selection| selection.clipped(document.width, document.height));
             alignment::clamp_guides(document);
             Ok(output("set_canvas", "updated canvas", Vec::new()))
@@ -68,6 +70,7 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
         Command::CropToSelection => {
             let selection = document
                 .selection
+                .clone()
                 .context("create a rectangular selection before cropping")?
                 .validated(document.width, document.height)?;
             let (x, y, width, height) = selection.bounds();
@@ -311,6 +314,15 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             corner_radius,
         } => {
             require_finite("corner radius", corner_radius)?;
+            let width = width.clamp(1, MAX_CANVAS_DIMENSION);
+            let height = height.clamp(1, MAX_CANVAS_DIMENSION);
+            if let Some(mask) = &document.layer(id)?.pixel_mask
+                && (mask.width, mask.height) != (width, height)
+            {
+                bail!(
+                    "resize pixel-masked layer {id} with its transform instead of changing shape dimensions"
+                );
+            }
             let layer = document.layer_mut(id)?;
             let LayerKind::Rectangle {
                 width: layer_width,
@@ -321,8 +333,8 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             else {
                 bail!("layer {id} is not a rectangle layer");
             };
-            *layer_width = width.clamp(1, MAX_CANVAS_DIMENSION);
-            *layer_height = height.clamp(1, MAX_CANVAS_DIMENSION);
+            *layer_width = width;
+            *layer_height = height;
             *layer_color = color;
             *layer_radius = corner_radius.max(0.0);
             Ok(output(
@@ -337,6 +349,15 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             height,
             color,
         } => {
+            let width = width.clamp(1, MAX_CANVAS_DIMENSION);
+            let height = height.clamp(1, MAX_CANVAS_DIMENSION);
+            if let Some(mask) = &document.layer(id)?.pixel_mask
+                && (mask.width, mask.height) != (width, height)
+            {
+                bail!(
+                    "resize pixel-masked layer {id} with its transform instead of changing shape dimensions"
+                );
+            }
             let layer = document.layer_mut(id)?;
             let LayerKind::Ellipse {
                 width: layer_width,
@@ -346,8 +367,8 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             else {
                 bail!("layer {id} is not an ellipse layer");
             };
-            *layer_width = width.clamp(1, MAX_CANVAS_DIMENSION);
-            *layer_height = height.clamp(1, MAX_CANVAS_DIMENSION);
+            *layer_width = width;
+            *layer_height = height;
             *layer_color = color;
             Ok(output("update_ellipse", "updated ellipse layer", vec![id]))
         }
@@ -365,6 +386,10 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
         }
         Command::DuplicateLayer { id } => {
             let mut layer = document.layer(id)?.clone();
+            document.validate_projected_inline_mask_budget(
+                document.selection.as_ref(),
+                layer.pixel_mask.as_ref().map_or(0, |mask| mask.alpha.len()),
+            )?;
             let new_id = document.allocate_id();
             layer.id = new_id;
             layer.name = format!("{} copy", layer.name);
@@ -377,10 +402,20 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
                 .unwrap_or(document.layers.len());
             document.layers.insert(index + 1, layer);
             document.selected = Some(new_id);
+            document.validate_inline_mask_budget()?;
             Ok(output("duplicate_layer", "duplicated layer", vec![new_id]))
         }
         Command::InsertLayer { transfer, index } => {
+            document.validate_projected_inline_mask_budget(
+                document.selection.as_ref(),
+                transfer
+                    .layer
+                    .pixel_mask
+                    .as_ref()
+                    .map_or(0, |mask| mask.alpha.len()),
+            )?;
             let id = (*transfer).insert_into(document, index)?;
+            document.validate_inline_mask_budget()?;
             Ok(output(
                 "insert_layer",
                 "inserted transferred layer",
@@ -407,25 +442,60 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             ))
         }
         Command::SetSelection { selection } => {
-            document.selection = selection
+            let selection = selection
                 .map(|selection| selection.validated(document.width, document.height))
                 .transpose()?;
+            document.validate_projected_inline_mask_budget(selection.as_ref(), 0)?;
+            document.selection = selection;
             Ok(output(
                 "set_selection",
                 if document.selection.is_some() {
-                    "updated rectangular selection"
+                    "updated pixel selection"
                 } else {
                     "cleared selection"
                 },
                 Vec::new(),
             ))
         }
+        Command::MagicWandSelection {
+            x,
+            y,
+            tolerance,
+            contiguous,
+            antialias,
+            resolved_selection,
+        } => {
+            let selection = match resolved_selection {
+                Some(selection) => selection.validated(document.width, document.height)?,
+                None => {
+                    crate::magic_wand_selection(document, x, y, tolerance, contiguous, antialias)?
+                }
+            };
+            document.validate_projected_inline_mask_budget(Some(&selection), 0)?;
+            document.selection = Some(selection);
+            Ok(output(
+                "magic_wand_selection",
+                "selected pixels by color",
+                Vec::new(),
+            ))
+        }
+        Command::MagicWandSnapshot { .. } => {
+            bail!("magic wand snapshot markers require their same-revision document snapshot")
+        }
         Command::FillSelection { color, name } => {
             let selection = document
                 .selection
+                .clone()
                 .context("create a rectangular selection before filling")?
                 .validated(document.width, document.height)?;
             let (x, y, width, height) = selection.bounds();
+            let pixel_mask = selection
+                .shared_alpha()
+                .map(|alpha| PixelMask::new(width, height, alpha));
+            document.validate_projected_inline_mask_budget(
+                document.selection.as_ref(),
+                pixel_mask.as_ref().map_or(0, |mask| mask.alpha.len()),
+            )?;
             let id = document.allocate_id();
             document.layers.push(Layer {
                 id,
@@ -441,9 +511,11 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
                     color,
                     corner_radius: 0.0,
                 },
+                pixel_mask,
                 ..Default::default()
             });
             document.selected = Some(id);
+            document.validate_inline_mask_budget()?;
             Ok(output(
                 "fill_selection",
                 "created nondestructive fill layer",
@@ -619,6 +691,7 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             layer.transform.scale_y /= scale;
             layer.stroke = ShapeStroke::default();
             layer.shape_fill = None;
+            layer.pixel_mask = None;
             Ok(output(
                 "rasterize_shape",
                 "rasterized shape layer",

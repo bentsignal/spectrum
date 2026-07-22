@@ -29,7 +29,8 @@ pub(super) fn schema() -> Value {
             "operations_family": "spectrum.prism.commands",
             "supported_operation_versions": (1..=prism_core::PRISM_COMMAND_OPERATIONS_VERSION).collect::<Vec<_>>(),
             "selection_operations_version": 4,
-            "crop_to_selection_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "crop_to_selection_operations_version": 5,
+            "color_selection_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "gui_interactions": {
@@ -56,10 +57,11 @@ pub(super) fn schema() -> Value {
         },
         "selection": {
             "rectangle": "selection rectangle <x> <y> <width> <height> uses integer document pixels and clips at canvas edges",
+            "magic_wand": "selection magic-wand <x> <y> [--tolerance <0..255>] [--noncontiguous] [--no-antialias] samples the exact CPU composite; tolerance is deterministic max-channel distance over premultiplied RGBA (hidden RGB at alpha 0 is ignored, alpha differences remain visible), and anti-aliasing adds one soft boundary pixel",
             "clear": "selection clear removes the persistent marquee",
             "crop": "selection crop atomically crops the canvas to the current marquee and clears the selection in one revision",
-            "fill": "selection fill [--color <RRGGBBAA>] [--name <label>] creates one new editable solid rectangle layer without changing source pixels",
-            "history": "each completed marquee, clear, fill, or crop is one command and one durable revision"
+            "fill": "selection fill [--color <RRGGBBAA>] [--name <label>] creates one new editable solid layer honoring rectangular or soft color-selection alpha without changing source pixels",
+            "history": "each completed marquee, magic wand click, clear, fill, or crop is one command and one durable revision"
         },
         "typography": {
             "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot and transactionally embeds those exact bytes as a content-addressed project asset; installable/editable metadata is accepted, preview/print and restricted metadata are accepted for local editable text with clear advisories, and malformed, bitmap-only, unparseable, oversized, or unsafe sources fail closed; Windows final-handle proof rejects junction and 8.3 aliases unless the normalized handle path exactly matches",
@@ -77,11 +79,11 @@ pub(super) fn schema() -> Value {
         },
         "layer_transfer": {
             "format": "spectrum.prism.layer",
-            "version": 2,
+            "version": prism_core::LAYER_TRANSFER_VERSION,
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
-            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision",
+            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks with verified content identity",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
         "color": "RRGGBB or RRGGBBAA",
@@ -105,6 +107,7 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "align_layer", "id": 1, "alignment": "horizontal_center", "reference": {"kind": "canvas"}}),
         json!({"command": "set_snapping", "enabled": true}),
         json!({"command": "set_selection", "selection": {"type": "rectangle", "x": 120, "y": 80, "width": 640, "height": 360}}),
+        json!({"command": "magic_wand_selection", "x": 120, "y": 80, "tolerance": 32, "contiguous": true, "antialias": true}),
         json!({"command": "fill_selection", "color": [93,216,199,255], "name": "Selection fill"}),
         json!({"command": "crop_to_selection"}),
         json!({"command": "add_guide", "orientation": "vertical", "position": 960.0}),

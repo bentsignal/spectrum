@@ -85,8 +85,9 @@ impl PrismApp {
                     && self
                         .drag
                         .is_some_and(|drag| drag.action == DragAction::Draw);
-                if !replacing_marquee && let Some(selection) = self.workspace.document.selection {
-                    paint_selection_overlay(ui, geometry, selection);
+                let selection_overlay = self.ensure_selection_overlay(ui.ctx());
+                if !replacing_marquee && let Some(selection) = &self.workspace.document.selection {
+                    paint_selection_overlay(ui, geometry, selection, selection_overlay);
                 }
                 if self.tool != Tool::Marquee
                     && let Some(layer) = self.selected_layer()
@@ -143,7 +144,8 @@ impl PrismApp {
             self.pan += response.drag_delta();
             return;
         }
-        if matches!(self.tool, Tool::Rotate | Tool::Marquee) && response.hovered() {
+        if matches!(self.tool, Tool::Rotate | Tool::Marquee | Tool::MagicWand) && response.hovered()
+        {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
         let pointer = response.interact_pointer_pos();
@@ -421,7 +423,7 @@ impl PrismApp {
                         drag.start_canvas,
                         drag.current_canvas,
                     ) {
-                        paint_selection_drag(ui, geometry, selection);
+                        paint_selection_drag(ui, geometry, &selection);
                     }
                 }
                 (Tool::Shape, chrome::ShapeKind::Rectangle) | (Tool::Crop, _) | (Tool::Mask, _) => {
@@ -645,6 +647,18 @@ impl PrismApp {
             Tool::Marquee => {
                 self.execute(Command::SetSelection { selection: None });
             }
+            Tool::MagicWand => {
+                let x = position.x.floor().max(0.0) as u32;
+                let y = position.y.floor().max(0.0) as u32;
+                self.execute(Command::MagicWandSelection {
+                    x,
+                    y,
+                    tolerance: self.selection_ui.magic_wand_tolerance,
+                    contiguous: self.selection_ui.magic_wand_contiguous,
+                    antialias: self.selection_ui.magic_wand_antialias,
+                    resolved_selection: None,
+                });
+            }
             _ => {}
         }
     }
@@ -676,7 +690,9 @@ fn canvas_interaction_position(
     geometry: CanvasGeometry,
     screen_position: Pos2,
 ) -> Option<Pos2> {
-    if matches!(tool, Tool::Text | Tool::Marquee) && !geometry.canvas.contains(screen_position) {
+    if matches!(tool, Tool::Text | Tool::Marquee | Tool::MagicWand)
+        && !geometry.canvas.contains(screen_position)
+    {
         return None;
     }
     Some(geometry.screen_to_canvas(screen_position))

@@ -414,7 +414,10 @@ fn durable_styled_layer_insert_uses_the_version_three_envelope() {
     let Command::InsertLayer { transfer, .. } = &commands[0] else {
         panic!("durable command should remain a layer insert");
     };
-    assert_eq!(transfer.version, LAYER_TRANSFER_VERSION);
+    assert_eq!(
+        transfer.version, 2,
+        "unmasked styled transfers remain readable by the v2 transfer schema"
+    );
     drop(connection);
 
     let reopened = Workspace::load_read_only(&project).unwrap();

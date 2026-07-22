@@ -201,7 +201,10 @@ fn oversized_raster_is_rejected_before_allocation_staging_or_history() {
         })
         .unwrap_err();
 
-    assert!(format!("{error:#}").contains("512 MiB"));
+    assert!(
+        format!("{error:#}").contains("512 MiB"),
+        "unexpected oversized-raster error: {error:#}"
+    );
     assert!(workspace.document.layers.is_empty());
     assert_eq!(count_rows(&project, "assets"), assets_before);
     assert_eq!(
@@ -254,7 +257,10 @@ fn oversized_asset_batch_is_rejected_atomically_before_reads_or_staging() {
         ])
         .unwrap_err();
 
-    assert!(format!("{error:#}").contains("512 MiB across all assets"));
+    assert!(
+        format!("{error:#}").contains("512 MiB across all assets"),
+        "unexpected oversized-batch error: {error:#}"
+    );
     assert!(workspace.document.layers.is_empty());
     assert_eq!(count_rows(&project, "assets"), assets_before);
     assert_eq!(
