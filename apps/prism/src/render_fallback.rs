@@ -44,6 +44,7 @@ pub(crate) fn ensure_region_fallback_is_bounded(
                 .raster_dimensions(shape_scale)?;
             (dimensions.0, dimensions.1, 4)
         }
+        LayerKind::Paint { program } => (program.width, program.height, 4),
     };
     let (adjusted_width, adjusted_height) = spectrum_imaging::adjusted_image_dimensions(
         base_width,

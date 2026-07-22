@@ -251,6 +251,10 @@ impl PrismApp {
                 Some(Tool::Shape)
             } else if input.key_pressed(egui::Key::P) {
                 Some(Tool::Pen)
+            } else if input.key_pressed(egui::Key::B) {
+                Some(Tool::Brush)
+            } else if input.key_pressed(egui::Key::E) {
+                Some(Tool::Eraser)
             } else if input.key_pressed(egui::Key::K) {
                 Some(Tool::Mask)
             } else if input.key_pressed(egui::Key::M) {
@@ -327,6 +331,7 @@ impl PrismApp {
         }
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.cancel_pen();
+            self.cancel_brush();
             if let Some(drag) = self.drag {
                 self.workspace.cancel_interaction();
                 restore_source_override_after_cancel(

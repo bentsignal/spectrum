@@ -65,7 +65,8 @@ pub(super) fn layer_supports_region_reads(
         LayerKind::Text { .. }
         | LayerKind::Rectangle { .. }
         | LayerKind::Ellipse { .. }
-        | LayerKind::Path { .. } => true,
+        | LayerKind::Path { .. }
+        | LayerKind::Paint { .. } => true,
     }
 }
 
@@ -100,6 +101,12 @@ pub(super) enum SourceDescriptor<'a> {
     Path {
         layer: &'a Layer,
         scale: [f32; 2],
+        dimensions: (u32, u32),
+        adjustments: &'a spectrum_imaging::Adjustments,
+        vector_mask: Option<&'a VectorMask>,
+    },
+    Paint {
+        layer: &'a Layer,
         dimensions: (u32, u32),
         adjustments: &'a spectrum_imaging::Adjustments,
         vector_mask: Option<&'a VectorMask>,
@@ -171,6 +178,12 @@ impl<'a> SourceDescriptor<'a> {
                     vector_mask: render_layer.vector_mask.as_ref(),
                 })
             }
+            LayerKind::Paint { program } => Ok(Self::Paint {
+                layer: render_layer,
+                dimensions: (program.width, program.height),
+                adjustments: &render_layer.adjustments,
+                vector_mask: render_layer.vector_mask.as_ref(),
+            }),
         }
     }
 
@@ -222,19 +235,26 @@ impl<'a> SourceDescriptor<'a> {
 
         let base_dimensions = self.base_dimensions();
         let adjusted_staging_limit = adjusted_staging_pixel_limit(self.adjustments());
-        let (mut image, adjusted_staging_pixels) =
-            spectrum_imaging::render_image_region_at_source_resolution_bounded(
-                base_dimensions.0,
-                base_dimensions.1,
-                self.adjustments().clone(),
-                adjusted_region.into(),
-                adjusted_staging_limit,
-                |requested| {
-                    self.stage_base(requested.into(), stats)
-                        .map_err(SourceReadError)
-                },
-            )
-            .map_err(anyhow::Error::new)?;
+        let rendered = spectrum_imaging::render_image_region_at_source_resolution_bounded(
+            base_dimensions.0,
+            base_dimensions.1,
+            self.adjustments().clone(),
+            adjusted_region.into(),
+            adjusted_staging_limit,
+            |requested| {
+                self.stage_base(requested.into(), stats)
+                    .map_err(SourceReadError)
+            },
+        );
+        let (mut image, adjusted_staging_pixels) = match rendered {
+            Ok(rendered) => rendered,
+            Err(spectrum_imaging::RegionRenderError::ExceedsStagingPixelLimit) => {
+                return Err(anyhow::Error::new(
+                    crate::render_region::SourceStagingBudgetExceeded,
+                ));
+            }
+            Err(error) => return Err(anyhow::Error::new(error)),
+        };
         let dimensions = self.dimensions()?;
         crate::paths::apply_vector_mask_to_image(
             &mut image,
@@ -261,7 +281,8 @@ impl<'a> SourceDescriptor<'a> {
             Self::RasterPath { dimensions, .. }
             | Self::RasterProvider { dimensions, .. }
             | Self::Text { dimensions, .. }
-            | Self::Path { dimensions, .. } => *dimensions,
+            | Self::Path { dimensions, .. }
+            | Self::Paint { dimensions, .. } => *dimensions,
             Self::Shape { sampler, .. } => sampler.dimensions(),
         }
     }
@@ -272,7 +293,8 @@ impl<'a> SourceDescriptor<'a> {
             | Self::RasterProvider { adjustments, .. }
             | Self::Text { adjustments, .. }
             | Self::Shape { adjustments, .. }
-            | Self::Path { adjustments, .. } => adjustments,
+            | Self::Path { adjustments, .. }
+            | Self::Paint { adjustments, .. } => adjustments,
         }
     }
 
@@ -282,14 +304,17 @@ impl<'a> SourceDescriptor<'a> {
             | Self::RasterProvider { vector_mask, .. }
             | Self::Text { vector_mask, .. }
             | Self::Shape { vector_mask, .. }
-            | Self::Path { vector_mask, .. } => *vector_mask,
+            | Self::Path { vector_mask, .. }
+            | Self::Paint { vector_mask, .. } => *vector_mask,
         }
     }
 
     fn stage_base(&self, region: SourceRegion, stats: &mut RegionRenderStats) -> Result<RgbaImage> {
         let pixels = region.pixel_count();
         if pixels > MAX_SOURCE_STAGING_PIXELS {
-            bail!("adjusted layer requires more than the bounded base-source staging budget");
+            return Err(anyhow::Error::new(
+                crate::render_region::SourceStagingBudgetExceeded,
+            ));
         }
         stats.source_staging_pixels = stats.source_staging_pixels.saturating_add(pixels);
         stats.source_staging_bytes = stats
@@ -344,6 +369,19 @@ impl<'a> SourceDescriptor<'a> {
                 region.width,
                 region.height,
             ),
+            Self::Paint { layer, .. } => {
+                let LayerKind::Paint { program } = &layer.kind else {
+                    unreachable!("Paint source descriptor changed kind")
+                };
+                crate::paint::render_paint_region(
+                    program,
+                    layer.pixel_mask.as_ref(),
+                    region.x,
+                    region.y,
+                    region.width,
+                    region.height,
+                )
+            }
         }
     }
 }

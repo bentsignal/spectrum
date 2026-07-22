@@ -12,7 +12,7 @@ use spectrum_imaging::Adjustments;
 use std::sync::Arc;
 
 mod commands;
-pub use commands::{Command, CommandOutput};
+pub use commands::{Command, CommandOutput, PaintSelection};
 
 mod effects;
 mod effects_render;
@@ -47,6 +47,7 @@ pub use font_subset_plan::{
 mod transfer;
 pub use transfer::{
     LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont,
+    PATH_LAYER_TRANSFER_VERSION,
 };
 
 mod validation;
@@ -73,8 +74,17 @@ pub use paths::{
     PathSourceBounds, VectorMask, apply_vector_mask_to_image, path_source_bounds,
 };
 
-pub const PRISM_VERSION: u32 = 6;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 7;
+mod paint;
+mod paint_selection;
+pub use paint::{
+    BRUSH_PROGRAM_VERSION, BrushClip, BrushMode, BrushProgram, BrushSample, BrushStroke,
+    BrushStyle, MAX_BRUSH_CLIP_BYTES_PER_PROGRAM, MAX_BRUSH_DABS_PER_PROGRAM,
+    MAX_BRUSH_DABS_PER_STROKE, MAX_BRUSH_SAMPLES_PER_DOCUMENT, MAX_BRUSH_SAMPLES_PER_STROKE,
+    MAX_BRUSH_STROKES_PER_LAYER, MAX_PAINT_REGION_PIXELS,
+};
+
+pub const PRISM_VERSION: u32 = 7;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 8;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
@@ -265,6 +275,9 @@ pub enum LayerKind {
         geometry: PathGeometry,
         color: [u8; 4],
     },
+    Paint {
+        program: BrushProgram,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -421,8 +434,16 @@ impl Document {
         let layer_bytes = self
             .layers
             .iter()
-            .filter_map(|layer| layer.pixel_mask.as_ref())
-            .try_fold(0_usize, |total, mask| total.checked_add(mask.alpha.len()))
+            .try_fold(0_usize, |total, layer| {
+                total
+                    .checked_add(layer.pixel_mask.as_ref().map_or(0, |mask| mask.alpha.len()))
+                    .and_then(|total| {
+                        total.checked_add(match &layer.kind {
+                            LayerKind::Paint { program } => program.clip_bytes(),
+                            _ => 0,
+                        })
+                    })
+            })
             .context("document inline pixel-mask byte count overflows")?;
         let inline_mask_bytes = selection_bytes
             .checked_add(layer_bytes)
@@ -430,6 +451,49 @@ impl Document {
             .context("document inline pixel-mask byte count overflows")?;
         if inline_mask_bytes > MAX_INLINE_PIXEL_MASK_BYTES {
             bail!("document inline pixel masks exceed the 64 MiB aggregate limit");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_projected_paint_budget(
+        &self,
+        replacing: Option<&BrushProgram>,
+        adding: &BrushProgram,
+    ) -> Result<()> {
+        let (samples, dabs) =
+            self.layers
+                .iter()
+                .try_fold((0usize, 0usize), |(samples, dabs), layer| {
+                    match &layer.kind {
+                        LayerKind::Paint { program } => Ok::<(usize, usize), anyhow::Error>((
+                            samples
+                                .checked_add(program.sample_count())
+                                .context("document Paint sample count overflows")?,
+                            dabs.checked_add(program.dab_count()?)
+                                .context("document Paint dab count overflows")?,
+                        )),
+                        _ => Ok((samples, dabs)),
+                    }
+                })?;
+        let removed_samples = replacing.map_or(0, BrushProgram::sample_count);
+        let removed_dabs = replacing
+            .map(BrushProgram::dab_count)
+            .transpose()?
+            .unwrap_or(0);
+        let adding_dabs = adding.dab_count()?;
+        let projected_samples = samples
+            .checked_sub(removed_samples)
+            .and_then(|value| value.checked_add(adding.sample_count()))
+            .context("document Paint sample count overflows")?;
+        let projected_dabs = dabs
+            .checked_sub(removed_dabs)
+            .and_then(|value| value.checked_add(adding_dabs))
+            .context("document Paint dab count overflows")?;
+        if projected_samples > MAX_BRUSH_SAMPLES_PER_DOCUMENT {
+            bail!("document exceeds the aggregate Paint sample limit");
+        }
+        if projected_dabs > MAX_BRUSH_DABS_PER_PROGRAM {
+            bail!("document exceeds the aggregate Paint dab limit");
         }
         Ok(())
     }
@@ -473,8 +537,11 @@ impl Document {
                         layer.id
                     );
                 }
-                let dimensions =
-                    shape_dimensions(layer).context("only shape layers can carry a pixel mask")?;
+                let dimensions = match &layer.kind {
+                    LayerKind::Paint { program } => (program.width, program.height),
+                    _ => shape_dimensions(layer)
+                        .context("only shape and Paint layers can carry a pixel mask")?,
+                };
                 if dimensions != (mask.width, mask.height) {
                     bail!(
                         "layer {} pixel mask dimensions do not match its shape",
@@ -518,6 +585,33 @@ impl Document {
                     typography.font_id = None;
                 }
             }
+            if let LayerKind::Paint { program } = &layer.kind {
+                program.validate()?;
+            }
+        }
+        let paint_samples = self
+            .layers
+            .iter()
+            .try_fold(0_usize, |total, layer| {
+                total.checked_add(match &layer.kind {
+                    LayerKind::Paint { program } => program.sample_count(),
+                    _ => 0,
+                })
+            })
+            .context("document Paint sample count overflows")?;
+        if paint_samples > MAX_BRUSH_SAMPLES_PER_DOCUMENT {
+            bail!("document exceeds the aggregate Paint sample limit");
+        }
+        let paint_dabs = self.layers.iter().try_fold(0_usize, |total, layer| {
+            total
+                .checked_add(match &layer.kind {
+                    LayerKind::Paint { program } => program.dab_count()?,
+                    _ => 0,
+                })
+                .context("document Paint dab count overflows")
+        })?;
+        if paint_dabs > MAX_BRUSH_DABS_PER_PROGRAM {
+            bail!("document exceeds the aggregate Paint dab limit");
         }
         self.selection = self
             .selection
@@ -583,6 +677,33 @@ pub use text_render::{
     measure_text_with_typography,
 };
 
+/// Applies one Paint gesture to a detached document clone without history or revision I/O.
+/// GUI drafts use this exact command path before committing the same command once on release.
+pub fn preview_paint_command(document: &Document, command: Command) -> Result<Document> {
+    if !matches!(
+        command,
+        Command::AddBrushStroke { .. } | Command::AddPaintLayerWithStroke { .. }
+    ) {
+        bail!("Paint preview accepts only completed Paint gesture commands");
+    }
+    let mut preview = document.clone();
+    apply_command(&mut preview, command)?;
+    Ok(preview)
+}
+
+/// Whether raw Paint coordinates still map directly through the layer's outer transform.
+/// Geometric image adjustments require an adjusted-to-source inverse that v1 painting does not
+/// yet expose, so interactive and command-driven strokes fail closed instead of landing silently
+/// in the wrong source pixels.
+pub fn paint_layer_allows_direct_strokes(layer: &Layer) -> bool {
+    let adjustments = &layer.adjustments;
+    adjustments.rotation.rem_euclid(360) == 0
+        && !adjustments.flip_horizontal
+        && !adjustments.flip_vertical
+        && adjustments.straighten.abs() <= 0.01
+        && adjustments.crop.is_none()
+}
+
 #[cfg(test)]
 #[path = "core_tests.rs"]
 mod tests;
@@ -646,3 +767,10 @@ mod selection_tests;
 #[cfg(test)]
 #[path = "path_tests.rs"]
 mod path_tests;
+
+#[cfg(test)]
+#[path = "paint_limits_tests.rs"]
+mod paint_limits_tests;
+#[cfg(test)]
+#[path = "paint_tests.rs"]
+mod paint_tests;

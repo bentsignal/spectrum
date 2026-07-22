@@ -4,10 +4,18 @@ use serde::{Deserialize, Serialize};
 use spectrum_imaging::AdjustmentPatch;
 
 use crate::{
-    Alignment, AlignmentReference, BlendMode, GuideOrientation, LayerMask, LayerStyle,
+    Alignment, AlignmentReference, BlendMode, BrushStroke, GuideOrientation, LayerMask, LayerStyle,
     LayerTransfer, PathGeometry, Selection, ShapeFill, ShapeStroke, TextTypography, Transform,
     VectorMask,
 };
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum PaintSelection {
+    Current,
+    None,
+    Snapshot { selection: Box<Selection> },
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CommandOutput {
@@ -77,6 +85,23 @@ pub enum Command {
         color: [u8; 4],
         x: f32,
         y: f32,
+    },
+    AddPaintLayer {
+        name: Option<String>,
+        width: u32,
+        height: u32,
+    },
+    AddPaintLayerWithStroke {
+        name: Option<String>,
+        width: u32,
+        height: u32,
+        stroke: BrushStroke,
+        selection: PaintSelection,
+    },
+    AddBrushStroke {
+        id: u64,
+        stroke: BrushStroke,
+        selection: PaintSelection,
     },
     UpdateText {
         id: u64,

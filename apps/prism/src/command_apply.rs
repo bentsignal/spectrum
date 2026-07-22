@@ -273,6 +273,132 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             document.selected = Some(id);
             Ok(output("add_path", "added path layer", vec![id]))
         }
+        Command::AddPaintLayer {
+            name,
+            width,
+            height,
+        } => {
+            let program = BrushProgram::new(width, height)?;
+            document.validate_projected_paint_budget(None, &program)?;
+            let id = document.allocate_id();
+            document.layers.push(Layer {
+                id,
+                name: name.unwrap_or_else(|| "Paint".into()),
+                kind: LayerKind::Paint { program },
+                ..Default::default()
+            });
+            document.selected = Some(id);
+            Ok(output("add_paint_layer", "added Paint layer", vec![id]))
+        }
+        Command::AddPaintLayerWithStroke {
+            name,
+            width,
+            height,
+            stroke,
+            selection,
+        } => {
+            let program = BrushProgram::new(width, height)?;
+            let validated_snapshot = match &selection {
+                PaintSelection::Snapshot { selection } => Some(
+                    selection
+                        .as_ref()
+                        .clone()
+                        .validated(document.width, document.height)?,
+                ),
+                _ => None,
+            };
+            let selection = match &selection {
+                PaintSelection::Current => document.selection.as_ref(),
+                PaintSelection::None => None,
+                PaintSelection::Snapshot { .. } => validated_snapshot.as_ref(),
+            };
+            let stroke = stroke.validated_for_viewport(width, height)?;
+            let clip = crate::paint_selection::capture_selection_clip(
+                selection,
+                &stroke,
+                (width, height),
+                Transform::default(),
+            )?;
+            let stroke = stroke.with_clip(clip, (width, height))?;
+            document.validate_projected_inline_mask_budget(
+                document.selection.as_ref(),
+                stroke.clip.as_ref().map_or(0, BrushClip::byte_len),
+            )?;
+            let program = program.append(stroke)?;
+            document.validate_projected_paint_budget(None, &program)?;
+            let id = document.allocate_id();
+            document.layers.push(Layer {
+                id,
+                name: name.unwrap_or_else(|| "Paint".into()),
+                kind: LayerKind::Paint { program },
+                ..Default::default()
+            });
+            document.selected = Some(id);
+            document.validate_inline_mask_budget()?;
+            Ok(output(
+                "add_paint_layer_with_stroke",
+                "created Paint layer and painted one stroke",
+                vec![id],
+            ))
+        }
+        Command::AddBrushStroke {
+            id,
+            stroke,
+            selection,
+        } => {
+            let (program, transform, locked, direct_coordinates) = {
+                let layer = document.layer(id)?;
+                let LayerKind::Paint { program } = &layer.kind else {
+                    bail!("layer {id} is not a Paint layer");
+                };
+                (
+                    program.clone(),
+                    layer.transform,
+                    layer.locked,
+                    crate::paint_layer_allows_direct_strokes(layer),
+                )
+            };
+            if locked {
+                bail!("layer {id} is locked");
+            }
+            if !direct_coordinates {
+                bail!(
+                    "Paint layer {id} has geometric adjustments; reset them before Brush/Eraser strokes and reapply them afterward"
+                );
+            }
+            let validated_snapshot = match &selection {
+                PaintSelection::Snapshot { selection } => Some(
+                    selection
+                        .as_ref()
+                        .clone()
+                        .validated(document.width, document.height)?,
+                ),
+                _ => None,
+            };
+            let selection = match &selection {
+                PaintSelection::Current => document.selection.as_ref(),
+                PaintSelection::None => None,
+                PaintSelection::Snapshot { .. } => validated_snapshot.as_ref(),
+            };
+            let stroke = stroke.validated_for_viewport(program.width, program.height)?;
+            let clip = crate::paint_selection::capture_selection_clip(
+                selection,
+                &stroke,
+                (program.width, program.height),
+                transform,
+            )?;
+            let stroke = stroke.with_clip(clip, (program.width, program.height))?;
+            let additional_clip_bytes = stroke.clip.as_ref().map_or(0, BrushClip::byte_len);
+            document.validate_projected_inline_mask_budget(
+                document.selection.as_ref(),
+                additional_clip_bytes,
+            )?;
+            let appended = program.append(stroke)?;
+            document.validate_projected_paint_budget(Some(&program), &appended)?;
+            document.layer_mut(id)?.kind = LayerKind::Paint { program: appended };
+            document.validate_inline_mask_budget()?;
+            Ok(output("add_brush_stroke", "painted one stroke", vec![id]))
+        }
         Command::UpdateText {
             id,
             text,
@@ -436,9 +562,21 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
         }
         Command::DuplicateLayer { id } => {
             let mut layer = document.layer(id)?.clone();
+            let paint_clip_bytes = match &layer.kind {
+                LayerKind::Paint { program } => {
+                    document.validate_projected_paint_budget(None, program)?;
+                    program.clip_bytes()
+                }
+                _ => 0,
+            };
             document.validate_projected_inline_mask_budget(
                 document.selection.as_ref(),
-                layer.pixel_mask.as_ref().map_or(0, |mask| mask.alpha.len()),
+                layer
+                    .pixel_mask
+                    .as_ref()
+                    .map_or(0, |mask| mask.alpha.len())
+                    .checked_add(paint_clip_bytes)
+                    .context("duplicated layer inline mask bytes overflowed")?,
             )?;
             let new_id = document.allocate_id();
             layer.id = new_id;
@@ -456,13 +594,22 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             Ok(output("duplicate_layer", "duplicated layer", vec![new_id]))
         }
         Command::InsertLayer { transfer, index } => {
+            let paint_clip_bytes = match &transfer.layer.kind {
+                LayerKind::Paint { program } => {
+                    document.validate_projected_paint_budget(None, program)?;
+                    program.clip_bytes()
+                }
+                _ => 0,
+            };
             document.validate_projected_inline_mask_budget(
                 document.selection.as_ref(),
                 transfer
                     .layer
                     .pixel_mask
                     .as_ref()
-                    .map_or(0, |mask| mask.alpha.len()),
+                    .map_or(0, |mask| mask.alpha.len())
+                    .checked_add(paint_clip_bytes)
+                    .context("transferred layer inline mask bytes overflowed")?,
             )?;
             let id = (*transfer).insert_into(document, index)?;
             document.validate_inline_mask_budget()?;

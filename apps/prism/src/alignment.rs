@@ -279,5 +279,8 @@ fn layer_source_bounds(
                 .context("path layer is missing source bounds")?;
             Ok((bounds.origin, bounds.size))
         }
+        LayerKind::Paint { program } => {
+            Ok(([0.0, 0.0], [program.width as f32, program.height as f32]))
+        }
     }
 }

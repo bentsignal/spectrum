@@ -162,6 +162,7 @@ impl PrismApp {
         };
 
         self.settle_inline_text_editor();
+        self.cancel_brush();
         let dirty = if id == self.active_tab_id {
             self.workspace.is_dirty()
         } else {
@@ -289,6 +290,7 @@ impl PrismApp {
                 match create_managed_workspace(Document::default()) {
                     Ok(workspace) => {
                         self.settle_inline_text_editor();
+                        self.cancel_brush();
                         self.workspace = workspace;
                         self.sync_active_raster_sources();
                     }
@@ -326,6 +328,7 @@ impl PrismApp {
         match open_local_workspace(path) {
             Ok(workspace) => {
                 self.settle_inline_text_editor();
+                self.cancel_brush();
                 self.workspace = workspace;
                 self.sync_active_raster_sources();
                 self.status = format!("Opened {}", path.display());

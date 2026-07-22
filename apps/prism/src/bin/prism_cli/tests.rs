@@ -712,13 +712,15 @@ fn schema_keeps_guides_and_typography_commands_together() {
         "import_font",
         "set_text_typography",
         "insert_layer",
+        "add_paint_layer_with_stroke",
+        "add_brush_stroke",
     ] {
         assert!(examples.iter().any(|example| example["command"] == command));
     }
     assert!(schema["alignment"].is_object());
     assert_eq!(
         schema["command_protocol"]["supported_operation_versions"],
-        serde_json::json!([1, 2, 3, 4, 5, 6, 7])
+        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8])
     );
     assert_eq!(
         schema["command_protocol"]["selection_operations_version"],
@@ -734,7 +736,9 @@ fn schema_keeps_guides_and_typography_commands_together() {
     );
     assert_eq!(schema["command_protocol"]["path_operations_version"], 7);
     assert_eq!(schema["paths"]["geometry_version"], 1);
-    assert_eq!(schema["layer_transfer"]["version"], 4);
+    assert_eq!(schema["layer_transfer"]["version"], 5);
+    assert!(schema["gui_interactions"]["brush"].is_string());
+    assert!(schema["gui_interactions"]["eraser"].is_string());
     assert!(schema["selection"].is_object());
     assert!(schema["selection"]["crop"].is_string());
     assert!(

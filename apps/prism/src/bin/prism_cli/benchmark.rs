@@ -20,6 +20,8 @@ use raster_fixture::PreparedRasterFixture;
 #[path = "benchmark/temporary_font.rs"]
 mod temporary_font;
 use temporary_font::TemporaryFont;
+#[path = "benchmark/paint.rs"]
+mod paint;
 #[path = "benchmark/path.rs"]
 mod path;
 #[path = "benchmark/selection.rs"]
@@ -69,6 +71,13 @@ impl BenchmarkProfile {
         match self {
             Self::Interactive => 5.0,
             Self::HostedCi => 15.0,
+        }
+    }
+
+    pub(super) fn paint_viewport_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 500.0,
+            Self::HostedCi => 1_500.0,
         }
     }
 }
@@ -155,6 +164,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let selection_fill = selection::measure_selection_fill()?;
     let magic_wand = selection::measure_magic_wand_bound()?;
     let path = path::measure()?;
+    let paint = paint::measure()?;
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -771,6 +781,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: path.edit_p95_ms <= profile.path_edit_budget_ms(),
         },
         BenchmarkMetric {
+            name: "16k_max_sample_sparse_paint_viewport",
+            median_ms: paint.median_ms,
+            p95_ms: paint.p95_ms,
+            budget_ms: profile.paint_viewport_budget_ms(),
+            pass: paint.p95_ms <= profile.paint_viewport_budget_ms(),
+        },
+        BenchmarkMetric {
             name: "portable_typography_effect_raster",
             median_ms: typography_median,
             p95_ms: typography_p95,
@@ -851,7 +868,8 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         "output": [rendered.as_ref().unwrap().width(), rendered.as_ref().unwrap().height()],
         "setup": {
             "cached_raster_cold_prepare_ms": cached_raster_cold_prepare.as_secs_f64() * 1_000.0,
-            "cached_raster_samples": "warm file-backed provider reads"
+            "cached_raster_samples": "warm file-backed provider reads",
+            "paint_max_source_staging_pixels": paint.max_source_staging_pixels
         },
         "metrics": metrics
     }))

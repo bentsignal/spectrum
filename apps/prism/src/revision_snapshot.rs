@@ -46,6 +46,10 @@ impl PreparedSnapshot {
         let path_schema = document.layers.iter().any(|layer| {
             layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. })
         });
+        let paint_schema = document
+            .layers
+            .iter()
+            .any(|layer| matches!(layer.kind, LayerKind::Paint { .. }));
         let selection_schema =
             document.version >= SELECTION_SNAPSHOT_VERSION || document.selection.is_some();
         let effects_schema = document.version >= LAYER_EFFECTS_SNAPSHOT_VERSION
@@ -53,7 +57,9 @@ impl PreparedSnapshot {
                 .layers
                 .iter()
                 .any(|layer| !layer.style.is_empty() || layer.shape_fill.is_some());
-        let snapshot_version = if path_schema {
+        let snapshot_version = if paint_schema {
+            PAINT_SNAPSHOT_VERSION
+        } else if path_schema {
             PATH_SNAPSHOT_VERSION
         } else if color_selection_schema {
             COLOR_SELECTION_SNAPSHOT_VERSION
@@ -118,7 +124,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             LAYER_EFFECTS_SNAPSHOT_VERSION
             | SELECTION_SNAPSHOT_VERSION
             | COLOR_SELECTION_SNAPSHOT_VERSION
-            | PATH_SNAPSHOT_VERSION,
+            | PATH_SNAPSHOT_VERSION
+            | PAINT_SNAPSHOT_VERSION,
             true,
             false,
         ) => bounded_snapshot_bytes(&payload.bytes),
@@ -126,7 +133,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             LAYER_EFFECTS_SNAPSHOT_VERSION
             | SELECTION_SNAPSHOT_VERSION
             | COLOR_SELECTION_SNAPSHOT_VERSION
-            | PATH_SNAPSHOT_VERSION,
+            | PATH_SNAPSHOT_VERSION
+            | PAINT_SNAPSHOT_VERSION,
             false,
             true,
         ) => inflate_snapshot(&payload.bytes),
@@ -185,5 +193,65 @@ mod tests {
             decoded.layers[0].kind,
             LayerKind::Rectangle { .. }
         ));
+    }
+
+    #[test]
+    fn v6_snapshot_remains_readable_with_default_empty_paint_fields() {
+        let mut document = Document::new("V6 compatibility", 32, 24);
+        document.version = PATH_SNAPSHOT_VERSION;
+        document.layers.push(crate::Layer {
+            id: 1,
+            kind: LayerKind::Rectangle {
+                width: 8,
+                height: 6,
+                color: [10, 20, 30, 255],
+                corner_radius: 0.0,
+            },
+            ..crate::Layer::default()
+        });
+        let payload = Payload::new(
+            Encoding::new(SNAPSHOT_FAMILY, PATH_SNAPSHOT_VERSION),
+            serde_json::to_vec(&document).unwrap(),
+        );
+        let decoded: Document =
+            serde_json::from_slice(&decode_snapshot(&payload).unwrap()).unwrap();
+        assert_eq!(decoded.version, PATH_SNAPSHOT_VERSION);
+        assert!(matches!(
+            decoded.layers[0].kind,
+            LayerKind::Rectangle { .. }
+        ));
+    }
+
+    #[test]
+    fn paint_snapshot_uses_v7_and_round_trips_exactly() {
+        let stroke = crate::BrushStroke::new(
+            crate::BrushStyle::default(),
+            vec![crate::BrushSample {
+                x: 4.5,
+                y: 5.5,
+                pressure: 0.8,
+            }],
+        )
+        .unwrap();
+        let program = crate::BrushProgram::new(32, 24)
+            .unwrap()
+            .append(stroke)
+            .unwrap();
+        let mut document = Document::new("V7 Paint", 32, 24);
+        document.layers.push(crate::Layer {
+            id: 1,
+            kind: LayerKind::Paint { program },
+            ..crate::Layer::default()
+        });
+        let prepared = PreparedSnapshot::compressed(&document).unwrap();
+        assert_eq!(prepared.payload.encoding.version, PAINT_SNAPSHOT_VERSION);
+        assert_eq!(
+            prepared.payload.encoding.required_capabilities,
+            [DEFLATE_CAPABILITY]
+        );
+        let decoded: Document =
+            serde_json::from_slice(&decode_snapshot(&prepared.payload).unwrap()).unwrap();
+        assert_eq!(decoded.version, PAINT_SNAPSHOT_VERSION);
+        assert_eq!(decoded.layers, document.layers);
     }
 }
