@@ -382,6 +382,10 @@ impl Workspace {
     }
 
     fn execute_durable_batch(&mut self, commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
+        self.durable
+            .as_ref()
+            .context("durable Prism project disappeared")?
+            .preflight_edit(&commands)?;
         let commands = resolve_durable_commands(&self.document, commands)?;
         let prepared = self
             .durable

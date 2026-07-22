@@ -249,17 +249,15 @@ fn color_mask_overlay_image(width: u32, height: u32, alpha: &[u8]) -> Option<ima
             // remains visible in the bounded overview texture. Nearest GPU sampling
             // avoids interpolating coverage across a known-zero cell.
             let source_left = u64::from(x) * u64::from(width) / u64::from(output_width);
-            let source_right = ((u64::from(x + 1) * u64::from(width) + u64::from(output_width)
-                - 1)
-                / u64::from(output_width))
-            .max(source_left + 1)
-            .min(u64::from(width));
+            let source_right = (u64::from(x + 1) * u64::from(width))
+                .div_ceil(u64::from(output_width))
+                .max(source_left + 1)
+                .min(u64::from(width));
             let source_top = u64::from(y) * u64::from(height) / u64::from(output_height);
-            let source_bottom = ((u64::from(y + 1) * u64::from(height) + u64::from(output_height)
-                - 1)
-                / u64::from(output_height))
-            .max(source_top + 1)
-            .min(u64::from(height));
+            let source_bottom = (u64::from(y + 1) * u64::from(height))
+                .div_ceil(u64::from(output_height))
+                .max(source_top + 1)
+                .min(u64::from(height));
             let mut selection_alpha = 0;
             for source_y in source_top..source_bottom {
                 for source_x in source_left..source_right {

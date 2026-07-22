@@ -208,7 +208,7 @@ impl PreparedEdit {
 const MAX_PREPARED_ASSET_BATCH_COUNT: usize = 128;
 const MAX_PREPARED_ASSET_BATCH_BYTES: u64 = MAX_EMBEDDED_RASTER_BYTES as u64;
 
-fn preflight_asset_batch(commands: &[Command]) -> Result<()> {
+pub(super) fn preflight_asset_batch(commands: &[Command]) -> Result<()> {
     let mut sources = Vec::new();
     for command in commands {
         match command {

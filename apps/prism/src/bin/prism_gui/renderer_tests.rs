@@ -287,8 +287,10 @@ fn styled_shapes_require_a_textured_preview_without_rerasterizing_style_values()
 
 #[test]
 fn pixel_mask_visual_keys_use_stable_digest_identity() {
-    let mut layer = Layer::default();
-    layer.pixel_mask = Some(prism_core::PixelMask::new(100, 100, vec![255; 10_000]));
+    let layer = Layer {
+        pixel_mask: Some(prism_core::PixelMask::new(100, 100, vec![255; 10_000])),
+        ..Default::default()
+    };
     let original = LayerVisualKey::new(&layer, 1.0);
     let cloned_layer = layer.clone();
     assert_eq!(original, LayerVisualKey::new(&cloned_layer, 1.0));

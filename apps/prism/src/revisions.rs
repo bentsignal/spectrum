@@ -305,6 +305,10 @@ impl DurableProject {
         PreparedEdit::new(self, commands)
     }
 
+    pub(crate) fn preflight_edit(&self, commands: &[Command]) -> Result<()> {
+        durable_edit::preflight_asset_batch(commands)
+    }
+
     pub(crate) fn commit_prepared(
         &mut self,
         prepared: PreparedEdit,

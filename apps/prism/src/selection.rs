@@ -430,7 +430,7 @@ mod alpha_bytes {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer};
 
-    const MAX_ENCODED_BYTES: usize = ((super::MAX_COLOR_SELECTION_PIXELS as usize + 2) / 3) * 4;
+    const MAX_ENCODED_BYTES: usize = (super::MAX_COLOR_SELECTION_PIXELS as usize).div_ceil(3) * 4;
 
     pub fn serialize<S: Serializer>(
         bytes: &std::sync::Arc<[u8]>,
