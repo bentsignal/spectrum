@@ -98,6 +98,9 @@ impl LumenApp {
             adjustments: self.draft.clone(),
         }) {
             self.thumbnails.remove(&id);
+            self.invalidate_selected();
+            self.preview = None;
+            self.preview_id = None;
         }
     }
 

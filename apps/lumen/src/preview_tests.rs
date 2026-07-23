@@ -1,5 +1,32 @@
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::CropRect;
+use image::{GenericImageView, Rgba, RgbaImage};
+use std::{
+    fs,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+};
+
+static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
+
+struct TestDirectory(std::path::PathBuf);
+
+impl TestDirectory {
+    fn new(label: &str) -> Self {
+        let unique = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "lumen-preview-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 
 fn identity(id: u64, epoch: u64, photo_id: u64) -> PreviewRequestIdentity {
     PreviewRequestIdentity {
@@ -38,6 +65,176 @@ fn immediate_worker() -> PreviewWorker {
     PreviewWorker::with_preparer(Arc::new(|photo, adjustments| {
         Ok(prepared(photo.id, adjustments))
     }))
+}
+
+#[test]
+fn prepared_preview_applies_the_limit_after_geometry_and_publishes_matching_histogram() {
+    let directory = TestDirectory::new("post-geometry");
+    let path = directory.0.join("source.png");
+    RgbaImage::from_fn(60, 40, |x, y| {
+        Rgba([(x * 3) as u8, (y * 5) as u8, (x + y) as u8, 255])
+    })
+    .save(&path)
+    .unwrap();
+    let photo = Photo::new(1, path, "source.png".into(), 60, 40);
+    let adjustments = Adjustments {
+        crop: Some(CropRect {
+            x: 0.4,
+            y: 0.0,
+            width: 0.2,
+            height: 1.0,
+        }),
+        ..Default::default()
+    };
+
+    let prepared = prepare_preview_at_size(&photo, adjustments.clone(), 18, 10).unwrap();
+    let expected = crate::engine::render_settled_preview(&photo, adjustments, 18).unwrap();
+
+    assert_eq!(prepared.source.dimensions(), (18, 12));
+    assert_eq!(prepared.fast_source.dimensions(), (10, 7));
+    assert_eq!(prepared.rendered.dimensions(), (5, 18));
+    assert_eq!(prepared.rendered.to_rgba8(), expected.to_rgba8());
+    assert_eq!(
+        prepared.histogram,
+        PreviewHistogram::from_image(&prepared.rendered)
+    );
+}
+
+#[test]
+fn raw_prefetch_is_rejected_and_selected_raw_development_has_one_active_lane() {
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (started_sender, started_receiver) = mpsc::channel();
+    let worker_active = Arc::clone(&active);
+    let worker_maximum = Arc::clone(&maximum);
+    let worker_gate = Arc::clone(&gate);
+    let worker = PreviewWorker::with_preparer(Arc::new(move |photo, adjustments| {
+        let active_now = worker_active.fetch_add(1, Ordering::SeqCst) + 1;
+        worker_maximum.fetch_max(active_now, Ordering::SeqCst);
+        started_sender.send(photo.id).unwrap();
+        let (gate, released) = &*worker_gate;
+        let mut release = gate.lock().unwrap();
+        while !*release {
+            release = released.wait(release).unwrap();
+        }
+        worker_active.fetch_sub(1, Ordering::SeqCst);
+        Ok(prepared(photo.id, adjustments))
+    }));
+    let mut first = photo(1);
+    first.path = "1.arw".into();
+    first.format = "arw".into();
+    let mut second = photo(2);
+    second.path = "2.arw".into();
+    second.format = "arw".into();
+
+    assert!(
+        worker
+            .request_prefetch(0, first.clone(), Adjustments::default())
+            .accepted
+            .is_none(),
+        "RAW must never enter the speculative authoritative prefetch lane"
+    );
+    assert!(
+        started_receiver
+            .recv_timeout(Duration::from_millis(50))
+            .is_err()
+    );
+
+    assert!(
+        worker
+            .request_selected(1, 0, first, Adjustments::default())
+            .accepted
+            .is_some()
+    );
+    assert_eq!(
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap(),
+        1
+    );
+    assert!(
+        worker
+            .request_selected(2, 0, second, Adjustments::default())
+            .accepted
+            .is_some()
+    );
+
+    let (gate, released) = &*gate;
+    *gate.lock().unwrap() = true;
+    released.notify_all();
+    assert!(worker.recv_timeout(Duration::from_secs(1)).is_ok());
+    assert_eq!(
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap(),
+        2
+    );
+    assert!(worker.recv_timeout(Duration::from_secs(1)).is_ok());
+    assert_eq!(maximum.load(Ordering::SeqCst), 1);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+#[ignore = "manual release-mode probe requiring LUMEN_RAW_PREVIEW_SAMPLE"]
+fn selected_raw_worker_memory_and_histogram_probe() {
+    let path = std::env::var_os("LUMEN_RAW_PREVIEW_SAMPLE")
+        .map(std::path::PathBuf::from)
+        .expect("set LUMEN_RAW_PREVIEW_SAMPLE to an immutable 6000x4000 Sony ARW");
+    let original_metadata = fs::metadata(&path).unwrap();
+    let photo = Photo::new(
+        1,
+        path.clone(),
+        path.file_name().unwrap().to_string_lossy().into_owned(),
+        6_000,
+        4_000,
+    );
+    let worker = PreviewWorker::new();
+    let mut pipeline = PreviewPipeline::default();
+    let adjustments = Adjustments::default();
+    let generation = pipeline.select(photo.id, adjustments.clone());
+    pipeline.track_enqueue(worker.request_selected(
+        generation,
+        pipeline.epoch(),
+        photo,
+        adjustments,
+    ));
+
+    let completion = worker.recv_timeout(Duration::from_secs(10)).unwrap();
+    let PreviewCompletionDisposition::Publish(prepared) =
+        pipeline.complete(completion, Instant::now())
+    else {
+        panic!("selected RAW should publish atomically");
+    };
+    assert_eq!(prepared.rendered.dimensions(), (1_800, 1_200));
+    assert_eq!(prepared.source.dimensions(), (1_800, 1_200));
+    assert_eq!(prepared.fast_source.dimensions(), (960, 640));
+    let source_bytes = prepared.source.as_bytes().len();
+    let fast_source_bytes = prepared.fast_source.as_bytes().len();
+    let rendered_bytes = prepared.rendered.as_bytes().len();
+    let retained_pixel_bytes = source_bytes + fast_source_bytes + rendered_bytes;
+    assert!(source_bytes <= 1_800 * 1_200 * 4);
+    assert!(fast_source_bytes <= 960 * 640 * 4);
+    assert!(rendered_bytes <= 1_800 * 1_200 * 4);
+    assert!(retained_pixel_bytes <= 1_800 * 1_200 * 8 + 960 * 640 * 4);
+    assert!(
+        prepared.histogram.luma.iter().sum::<u32>() > 0,
+        "published RAW preview must include a populated histogram"
+    );
+    assert!(
+        pipeline.cache.is_empty(),
+        "the selected RAW publication must move directly to the GUI, not retain a cache copy"
+    );
+    eprintln!(
+        "selected RAW retained buffers: source={source_bytes} bytes, fast={fast_source_bytes} bytes, rendered={rendered_bytes} bytes, total={retained_pixel_bytes} bytes"
+    );
+
+    let final_metadata = fs::metadata(path).unwrap();
+    assert_eq!(final_metadata.len(), original_metadata.len());
+    assert_eq!(
+        final_metadata.modified().unwrap(),
+        original_metadata.modified().unwrap()
+    );
 }
 
 #[test]

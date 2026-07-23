@@ -80,13 +80,17 @@ explicit budget.
 Import preparation is parallel and reads RAW dimensions and EXIF metadata without
 demosaicing the full sensor image. Camera-embedded RAW previews are explicitly
 non-authoritative and are used only for display-only thumbnail surfaces in the
-catalog library and filmstrip. Settled previews and every export develop the RAW
-sensor data; a lossless export with the same adjustments and long-edge limit is
-an exact raster oracle before texture upload or encoding. While a pointer drag is
-active, the GUI may render a 960px transient working preview, but it must replace
-that approximation with the authoritative 1800px result after interaction. Pixel
-rows are processed in parallel, and identity color, HSL, and curve stages are
-skipped.
+catalog library and filmstrip; if an embedded proxy is unavailable, Lumen omits
+that thumbnail instead of starting an authoritative fallback development.
+Settled previews and every export develop the RAW sensor data; a lossless export
+with the same adjustments and long-edge limit is an exact raster oracle before
+texture upload or encoding. While a pointer drag is active, the GUI may render a
+960px transient working preview, but it must replace that approximation with the
+authoritative 1800px result after interaction.
+Authoritative RAW work runs only in the selected-preview lane: adjacent RAWs are
+not speculatively developed, so the independent raster-prefetch lane cannot
+multiply the modeled RAW working set. Pixel rows are processed in parallel, and
+identity color, HSL, and curve stages are skipped.
 
 A full-resolution export viewed through a separately downsampling application is
 outside the exact same-size oracle: resolution-dependent detail and spot radii,

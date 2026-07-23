@@ -60,10 +60,14 @@ impl PhotoDecoder for FilePhotoDecoder {
         } else {
             rawler::analyze::extract_preview_pixels(&photo.path, &params)
         };
-        match embedded {
-            Ok(preview) => Ok(orient_embedded_preview(preview, photo)),
-            Err(_) => self.authoritative(photo, AuthoritativeDecodePurpose::SettledPreview),
-        }
+        embedded
+            .map(|preview| orient_embedded_preview(preview, photo))
+            .with_context(|| {
+                format!(
+                    "could not decode embedded RAW display proxy {}",
+                    photo.path.display()
+                )
+            })
     }
 }
 
@@ -88,24 +92,50 @@ pub fn render_settled_preview(
     adjustments: Adjustments,
     max_size: u32,
 ) -> Result<DynamicImage> {
-    render_settled_preview_with_decoder(photo, adjustments, max_size, &FilePhotoDecoder)
+    render_settled_preview_with_source_with_decoder(photo, adjustments, max_size, &FilePhotoDecoder)
+        .map(|(_, rendered)| rendered)
 }
 
+/// Produce the transient source and settled raster from one authoritative decode.
+///
+/// The source is resized before adjustments and exists only for responsive
+/// in-progress edits. The settled raster applies its size limit after geometry
+/// and is the image that may be published with its histogram.
+pub fn render_settled_preview_with_source(
+    photo: &Photo,
+    adjustments: Adjustments,
+    max_size: u32,
+) -> Result<(DynamicImage, DynamicImage)> {
+    render_settled_preview_with_source_with_decoder(photo, adjustments, max_size, &FilePhotoDecoder)
+}
+
+#[cfg(test)]
 fn render_settled_preview_with_decoder(
     photo: &Photo,
     adjustments: Adjustments,
     max_size: u32,
     decoder: &impl PhotoDecoder,
 ) -> Result<DynamicImage> {
-    render_with_decoder(
-        photo,
+    render_settled_preview_with_source_with_decoder(photo, adjustments, max_size, decoder)
+        .map(|(_, rendered)| rendered)
+}
+
+fn render_settled_preview_with_source_with_decoder(
+    photo: &Photo,
+    adjustments: Adjustments,
+    max_size: u32,
+    decoder: &impl PhotoDecoder,
+) -> Result<(DynamicImage, DynamicImage)> {
+    let decoded = decoder.authoritative(photo, AuthoritativeDecodePurpose::SettledPreview)?;
+    let source = resized_copy_to_limit(&decoded, max_size);
+    let rendered = render_image(
+        decoded,
         adjustments,
         RenderOptions {
             max_size: Some(max_size),
         },
-        decoder,
-        AuthoritativeDecodePurpose::SettledPreview,
-    )
+    );
+    Ok((source, rendered))
 }
 
 fn render_photo_with_decoder(
@@ -192,6 +222,14 @@ fn resize_to_limit(mut decoded: DynamicImage, max_size: Option<u32>) -> DynamicI
         decoded = decoded.resize(max_size, max_size, FilterType::Triangle);
     }
     decoded
+}
+
+fn resized_copy_to_limit(decoded: &DynamicImage, max_size: u32) -> DynamicImage {
+    if max_size > 0 && (decoded.width() > max_size || decoded.height() > max_size) {
+        decoded.resize(max_size, max_size, FilterType::Triangle)
+    } else {
+        decoded.clone()
+    }
 }
 
 /// Render already-decoded working pixels through the shared adjustment path.

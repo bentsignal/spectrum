@@ -11,10 +11,7 @@ use std::{
 
 use image::{DynamicImage, imageops::FilterType};
 
-use crate::{
-    Adjustments, Photo,
-    engine::{RenderOptions, decode_photo, render_image},
-};
+use crate::{Adjustments, Photo, engine::render_settled_preview_with_source};
 
 pub const PREVIEW_MAX_SIZE: u32 = 1800;
 const FAST_PREVIEW_MAX_SIZE: u32 = 960;
@@ -287,6 +284,9 @@ impl PreviewWorker {
         photo: Photo,
         adjustments: Adjustments,
     ) -> PreviewEnqueue {
+        if photo.is_raw() {
+            return PreviewEnqueue::default();
+        }
         let identity = self.identity(epoch, photo.id, adjustments, PreviewRequestKind::Prefetch);
         self.enqueue(&self.prefetch_lane, identity, photo, true)
     }
@@ -638,25 +638,22 @@ impl PreviewPipeline {
 }
 
 pub fn prepare_preview(photo: &Photo, adjustments: Adjustments) -> anyhow::Result<PreparedPreview> {
-    // This must remain the authoritative decode path. When #70 is rebased,
-    // thumbnails retain decode_photo_proxy while settled selected previews
-    // continue through decode_photo for export parity.
-    let source = decode_photo(photo, Some(PREVIEW_MAX_SIZE))?;
-    let fast_source =
-        if source.width() > FAST_PREVIEW_MAX_SIZE || source.height() > FAST_PREVIEW_MAX_SIZE {
-            source.resize(
-                FAST_PREVIEW_MAX_SIZE,
-                FAST_PREVIEW_MAX_SIZE,
-                FilterType::Triangle,
-            )
-        } else {
-            source.clone()
-        };
-    let rendered = render_image(
-        source.clone(),
-        adjustments.clone(),
-        RenderOptions::default(),
-    );
+    prepare_preview_at_size(photo, adjustments, PREVIEW_MAX_SIZE, FAST_PREVIEW_MAX_SIZE)
+}
+
+fn prepare_preview_at_size(
+    photo: &Photo,
+    adjustments: Adjustments,
+    max_size: u32,
+    fast_max_size: u32,
+) -> anyhow::Result<PreparedPreview> {
+    let (source, rendered) =
+        render_settled_preview_with_source(photo, adjustments.clone(), max_size)?;
+    let fast_source = if source.width() > fast_max_size || source.height() > fast_max_size {
+        source.resize(fast_max_size, fast_max_size, FilterType::Triangle)
+    } else {
+        source.clone()
+    };
     let histogram = PreviewHistogram::from_image(&rendered);
     Ok(PreparedPreview {
         photo_id: photo.id,
