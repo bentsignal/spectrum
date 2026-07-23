@@ -127,7 +127,16 @@ impl LiveRevisionStore {
 
     pub fn open(canonical_path: &Path, cache_root: &Path) -> RevisionResult<Self> {
         let canonical_path = absolute_path(canonical_path)?;
-        let canonical = {
+        let canonical = if !sidecar_path(&canonical_path, "-wal").exists()
+            && !sidecar_path(&canonical_path, "-shm").exists()
+        {
+            RevisionStore::inspect(&canonical_path).ok()
+        } else {
+            None
+        };
+        let canonical = if let Some(canonical) = canonical {
+            canonical
+        } else {
             #[cfg(target_os = "linux")]
             let _canonical_lock = lock_directory(
                 canonical_path
@@ -136,19 +145,7 @@ impl LiveRevisionStore {
                     .unwrap_or_else(|| Path::new(".")),
             )?;
             #[cfg(target_os = "linux")]
-            let permission_restore = {
-                use std::os::unix::fs::PermissionsExt;
-
-                let descriptor = open_nofollow(&canonical_path, false)?;
-                let identity = validated_identity(&descriptor, false)?;
-                let permissions = descriptor.metadata()?.permissions();
-                if permissions.mode() & 0o200 == 0 {
-                    descriptor
-                        .set_permissions(fs::Permissions::from_mode(permissions.mode() | 0o200))?;
-                    descriptor.sync_all()?;
-                }
-                Some((descriptor, identity, permissions))
-            };
+            let permission_restore = CanonicalPermissionGuard::make_writable(&canonical_path)?;
             let prepared = (|| {
                 recover_legacy_sidecars(&canonical_path)?;
                 // Container migrations happen against the portable file first. Incremented
@@ -159,11 +156,7 @@ impl LiveRevisionStore {
                 RevisionStore::inspect(&canonical_path)
             })();
             #[cfg(target_os = "linux")]
-            if let Some((descriptor, identity, permissions)) = permission_restore {
-                descriptor.set_permissions(permissions)?;
-                descriptor.sync_all()?;
-                validate_named_identity(&canonical_path, identity, false)?;
-            }
+            permission_restore.restore()?;
             prepared?
         };
         create_private_dir_all(cache_root)?;
@@ -486,6 +479,58 @@ fn publish_checkpoint(
 struct FileIdentity {
     device: u64,
     inode: u64,
+}
+
+#[cfg(target_os = "linux")]
+struct CanonicalPermissionGuard {
+    descriptor: File,
+    path: PathBuf,
+    identity: FileIdentity,
+    permissions: fs::Permissions,
+    restored: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl CanonicalPermissionGuard {
+    fn make_writable(path: &Path) -> RevisionResult<Self> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let descriptor = open_nofollow(path, false)?;
+        let identity = validated_identity(&descriptor, false)?;
+        let permissions = descriptor.metadata()?.permissions();
+        if permissions.mode() & 0o200 == 0 {
+            descriptor.set_permissions(fs::Permissions::from_mode(permissions.mode() | 0o200))?;
+            descriptor.sync_all()?;
+        }
+        Ok(Self {
+            descriptor,
+            path: path.to_owned(),
+            identity,
+            permissions,
+            restored: false,
+        })
+    }
+
+    fn restore(mut self) -> RevisionResult<()> {
+        self.restore_inner()?;
+        self.restored = true;
+        Ok(())
+    }
+
+    fn restore_inner(&self) -> RevisionResult<()> {
+        self.descriptor.set_permissions(self.permissions.clone())?;
+        self.descriptor.sync_all()?;
+        validate_named_identity(&self.path, self.identity, false)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for CanonicalPermissionGuard {
+    fn drop(&mut self) {
+        if !self.restored {
+            let _ = self.restore_inner();
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

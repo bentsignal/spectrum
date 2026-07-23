@@ -3,7 +3,7 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom},
-    os::unix::fs::{FileExt, MetadataExt, symlink},
+    os::unix::fs::{FileExt, MetadataExt, PermissionsExt, symlink},
 };
 
 use super::*;
@@ -87,6 +87,25 @@ fn descriptor_validation_rejects_symlinks_hardlinks_and_replacements() {
     let symlink_path = directory.path().join("symlink");
     symlink(&mirror, &symlink_path).unwrap();
     assert!(open_nofollow(&symlink_path, false).is_err());
+}
+
+#[test]
+fn canonical_permission_guard_restores_mode_on_error_and_panic() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("canonical");
+    fs::write(&canonical, b"canonical").unwrap();
+    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o400)).unwrap();
+
+    {
+        let _guard = CanonicalPermissionGuard::make_writable(&canonical).unwrap();
+    }
+    assert_eq!(canonical.metadata().unwrap().mode() & 0o777, 0o400);
+
+    let _ = std::panic::catch_unwind(|| {
+        let _guard = CanonicalPermissionGuard::make_writable(&canonical).unwrap();
+        panic!("injected preparation panic");
+    });
+    assert_eq!(canonical.metadata().unwrap().mode() & 0o777, 0o400);
 }
 
 #[test]
