@@ -17,6 +17,25 @@ use super::{
 
 const RENAME_EXCHANGE: libc::c_uint = 2;
 
+#[cfg(test)]
+fn maybe_inject_canonical_hardlink(destination: &Path) -> RevisionResult<()> {
+    let alias = super::PUBLISH_HARDLINK_ALIAS.with(|alias| alias.borrow_mut().take());
+    if let Some(alias) = alias {
+        fs::hard_link(destination, alias)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn maybe_inject_canonical_hardlink(_destination: &Path) -> RevisionResult<()> {
+    Ok(())
+}
+
+pub(super) enum ExchangeOutcome {
+    CanonicalLinked,
+    Exchanged { old_slot_private: bool },
+}
+
 pub(super) struct PrivateDirectory {
     descriptor: File,
 }
@@ -168,7 +187,7 @@ impl PrivateDirectory {
         source_identity: FileIdentity,
         destination: &Path,
         destination_identity: FileIdentity,
-    ) -> RevisionResult<()> {
+    ) -> RevisionResult<ExchangeOutcome> {
         self.validate(source_name, source_identity, true)?;
         let parent = destination
             .parent()
@@ -198,7 +217,12 @@ impl PrivateDirectory {
                 "canonical project changed immediately before exchange".into(),
             ));
         }
+        use std::os::unix::fs::MetadataExt as _;
+        if canonical.metadata()?.nlink() != 1 {
+            return Ok(ExchangeOutcome::CanonicalLinked);
+        }
         self.validate(source_name, source_identity, true)?;
+        maybe_inject_canonical_hardlink(destination)?;
         let source_name = CString::new(source_name)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
         let exchanged = unsafe {
@@ -222,13 +246,20 @@ impl PrivateDirectory {
                 "canonical project does not contain the exchanged candidate".into(),
             ));
         }
-        self.validate(
+        let old_slot = self.open_file(
             source_name
                 .to_str()
                 .map_err(|_| RevisionError::Invalid("file name is not UTF-8".into()))?,
-            destination_identity,
             false,
-        )
+        )?;
+        if validated_identity(&old_slot, false)? != destination_identity {
+            return Err(RevisionError::Invalid(
+                "private slot does not contain the exchanged canonical".into(),
+            ));
+        }
+        Ok(ExchangeOutcome::Exchanged {
+            old_slot_private: old_slot.metadata()?.nlink() == 1,
+        })
     }
 
     pub(super) fn exchange_supported(&self) -> RevisionResult<bool> {
@@ -380,6 +411,8 @@ pub(super) fn recover_exchange(
     let canonical_identity = validated_identity(&canonical, false)?;
     let slot = directory.open_file(super::PUBLISH_MIRROR_FILE, false)?;
     let slot_identity = validated_identity(&slot, false)?;
+    use std::os::unix::fs::MetadataExt as _;
+    let slot_private = slot.metadata()?.nlink() == 1;
     let canonical_inspection = RevisionStore::inspect(destination)?;
     validate_named_identity(destination, canonical_identity, false)?;
     let slot_path = cache_directory.join(super::PUBLISH_MIRROR_FILE);
@@ -392,10 +425,15 @@ pub(super) fn recover_exchange(
         && slot_inspection.generation == intent.generation
         && slot_inspection.state_id == intent.state_id
     {
-        slot.set_permissions(fs::Permissions::from_mode(0o600))?;
-        slot.sync_all()?;
-        directory.validate(super::PUBLISH_MIRROR_FILE, intent.canonical_identity, true)?;
-        write_ready_marker(directory, intent.generation, intent.state_id)?;
+        if slot_private {
+            directory.validate(super::PUBLISH_MIRROR_FILE, intent.canonical_identity, true)?;
+            slot.set_permissions(fs::Permissions::from_mode(0o600))?;
+            slot.sync_all()?;
+            write_ready_marker(directory, intent.generation, intent.state_id)?;
+        } else {
+            remove_private_file(directory, super::PUBLISH_MIRROR_FILE)?;
+            remove_private_file(directory, super::PUBLISH_MIRROR_READY_FILE)?;
+        }
     } else if canonical_identity == intent.canonical_identity
         && slot_identity == intent.candidate_identity
         && canonical_inspection.generation == intent.generation
@@ -403,6 +441,7 @@ pub(super) fn recover_exchange(
         && slot_inspection.generation == intent.target_generation
         && slot_inspection.state_id == intent.target_state_id
     {
+        validated_identity(&slot, true)?;
         slot.set_permissions(fs::Permissions::from_mode(0o600))?;
         slot.sync_all()?;
         directory.validate(super::PUBLISH_MIRROR_FILE, intent.candidate_identity, true)?;

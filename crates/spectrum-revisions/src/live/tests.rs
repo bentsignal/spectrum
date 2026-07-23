@@ -268,6 +268,133 @@ fn bulk_growth_catches_up_the_alternate_slot_before_the_next_small_edit() {
 }
 
 #[test]
+fn preexisting_canonical_hardlink_uses_full_copy_without_mutating_the_alias() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let alias = directory.path().join("external-alias.lumen");
+    let cache = directory.path().join("cache");
+    let (mut live, _) = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        NewProject {
+            application_id: "spectrum.hardlink-fallback-test".into(),
+            application_version: "1.0.0".into(),
+            actor: Actor {
+                id: "hardlink-fallback-test".into(),
+                display_name: "Hardlink fallback test".into(),
+                kind: ActorKind::System,
+            },
+            session_id: SessionId::new(),
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![Payload::new(
+                crate::Encoding::new("test.snapshot", 1),
+                b"root".to_vec(),
+            )],
+            assets: Vec::new(),
+        },
+    )
+    .unwrap();
+    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o640)).unwrap();
+    fs::hard_link(&canonical, &alias).unwrap();
+    let alias_bytes = fs::read(&alias).unwrap();
+    let alias_mode = alias.metadata().unwrap().permissions().mode();
+
+    live.mutate(|store| store.put_asset("application/x-linked-fallback", b"published"))
+        .unwrap();
+    assert_eq!(
+        live.last_publish_stats().strategy,
+        PublishStrategy::FullCopy
+    );
+    assert!(!live.last_publish_stats().incremental);
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
+    assert_eq!(canonical.metadata().unwrap().nlink(), 1);
+
+    drop(live);
+    let mut reopened = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    reopened
+        .mutate(|store| store.put_asset("application/x-after-fallback", b"next edit"))
+        .unwrap();
+    assert_eq!(
+        reopened.last_publish_stats().strategy,
+        PublishStrategy::PageDiffExchange
+    );
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
+}
+
+#[test]
+fn hardlink_created_at_exchange_is_discarded_from_private_recovery_without_alias_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let alias = directory.path().join("exchange-race-alias.lumen");
+    let cache = directory.path().join("cache");
+    let (mut live, info) = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        NewProject {
+            application_id: "spectrum.hardlink-race-test".into(),
+            application_version: "1.0.0".into(),
+            actor: Actor {
+                id: "hardlink-race-test".into(),
+                display_name: "Hardlink race test".into(),
+                kind: ActorKind::System,
+            },
+            session_id: SessionId::new(),
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![Payload::new(
+                crate::Encoding::new("test.snapshot", 1),
+                vec![0x44; 128 * 1024],
+            )],
+            assets: Vec::new(),
+        },
+    )
+    .unwrap();
+    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o640)).unwrap();
+    let alias_bytes = fs::read(&canonical).unwrap();
+    let alias_mode = canonical.metadata().unwrap().permissions().mode();
+    let base_generation = live.store().generation().unwrap();
+    let project_cache = cache.join(info.project_id.to_string());
+
+    PUBLISH_HARDLINK_ALIAS.with(|hook| hook.replace(Some(alias.clone())));
+    PUBLISH_FAULT.set(Some(PublishFault::Exchanged));
+    assert!(
+        live.mutate(|store| store.put_asset("application/x-raced", b"committed"))
+            .is_err()
+    );
+    PUBLISH_FAULT.set(None);
+    PUBLISH_HARDLINK_ALIAS.with(|hook| hook.replace(None));
+
+    assert!(RevisionStore::inspect(&canonical).unwrap().generation > base_generation);
+    assert_ne!(fs::read(&canonical).unwrap(), alias_bytes);
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
+    assert_eq!(alias.metadata().unwrap().nlink(), 2);
+    assert!(project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    drop(live);
+
+    let mut recovered = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    assert!(!project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    assert!(!project_cache.join(PUBLISH_MIRROR_FILE).exists());
+    assert_eq!(alias.metadata().unwrap().nlink(), 1);
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
+    recovered
+        .mutate(|store| store.put_asset("application/x-after-race", b"next edit"))
+        .unwrap();
+    assert_eq!(
+        recovered.last_publish_stats().strategy,
+        PublishStrategy::FullCopy
+    );
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
+}
+
+#[test]
 fn private_lock_probe_child() {
     let Ok(cache) = std::env::var("SPECTRUM_PRIVATE_LOCK_CACHE") else {
         return;

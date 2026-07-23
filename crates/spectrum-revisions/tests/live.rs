@@ -1,11 +1,11 @@
 use std::{ffi::OsString, fs, path::Path};
 
-#[cfg(target_os = "linux")]
-use spectrum_revisions::Asset;
 use spectrum_revisions::{
     Actor, ActorKind, AppendRevision, Encoding, LiveRevisionStore, NewProject, Payload, RevisionId,
     SessionId, TrackId,
 };
+#[cfg(target_os = "linux")]
+use spectrum_revisions::{Asset, PublishStrategy};
 
 struct Fixture {
     directory: tempfile::TempDir,
@@ -454,6 +454,37 @@ fn small_edits_do_not_rewrite_large_immutable_assets() {
             .filter_map(Result::ok)
             .all(|entry| !entry.file_name().to_string_lossy().contains("publish"))
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linked_canonical_falls_back_without_changing_the_external_alias() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let mut fixture = Fixture::new();
+    let alias = fixture.directory.path().join("external-alias.prism");
+    fs::set_permissions(&fixture.canonical, fs::Permissions::from_mode(0o640)).unwrap();
+    fs::hard_link(&fixture.canonical, &alias).unwrap();
+    let alias_bytes = fs::read(&alias).unwrap();
+    let alias_mode = alias.metadata().unwrap().mode();
+
+    let first = fixture.append(fixture.human_session, fixture.root, "Linked fallback");
+    assert_eq!(
+        fixture.live.last_publish_stats().strategy,
+        PublishStrategy::FullCopy
+    );
+    assert!(!fixture.live.last_publish_stats().incremental);
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().mode(), alias_mode);
+    assert_eq!(fixture.canonical.metadata().unwrap().nlink(), 1);
+
+    fixture.append(fixture.human_session, first, "After linked fallback");
+    assert_eq!(
+        fixture.live.last_publish_stats().strategy,
+        PublishStrategy::PageDiffExchange
+    );
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().mode(), alias_mode);
 }
 
 #[cfg(target_os = "linux")]

@@ -65,6 +65,7 @@ enum CrashMode {
 thread_local! {
     static PUBLISH_FAULT: Cell<Option<PublishFault>> = const { Cell::new(None) };
     static PUBLISH_CRASH_MODE: Cell<Option<CrashMode>> = const { Cell::new(None) };
+    static PUBLISH_HARDLINK_ALIAS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -714,8 +715,18 @@ fn incremental_publish(
     };
     let directory = PrivateDirectory::open(cache_directory)?;
     recover_exchange(&directory, destination, cache_directory)?;
-    remove_private_file(&directory, LEGACY_PUBLISH_BACKUP_FILE)?;
     use std::os::unix::fs::MetadataExt as _;
+    if base
+        .canonical
+        .as_ref()
+        .expect("incremental publication requires a canonical descriptor")
+        .metadata()?
+        .nlink()
+        != 1
+    {
+        return Ok((None, false));
+    }
+    remove_private_file(&directory, LEGACY_PUBLISH_BACKUP_FILE)?;
     if destination.metadata()?.dev() != directory.device()? {
         return Ok((None, false));
     }
@@ -750,24 +761,37 @@ fn incremental_publish(
     directory.validate(PUBLISH_MIRROR_FILE, mirror_identity, true)?;
     validate_named_identity(destination, canonical_identity, false)?;
     maybe_publish_fault(PublishFault::PreExchangeValidated)?;
-    directory.exchange(
+    let old_slot_private = match directory.exchange(
         PUBLISH_MIRROR_FILE,
         mirror_identity,
         destination,
         canonical_identity,
-    )?;
+    )? {
+        linux_io::ExchangeOutcome::CanonicalLinked => {
+            remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
+            return Ok((None, false));
+        }
+        linux_io::ExchangeOutcome::Exchanged { old_slot_private } => old_slot_private,
+    };
     maybe_publish_fault(PublishFault::Exchanged)?;
 
-    // The descriptor opened on the canonical inode before the exchange now refers to the
-    // inactive private slot. Making that descriptor writable cannot chmod the new canonical.
+    if !old_slot_private {
+        remove_private_file(&directory, PUBLISH_MIRROR_FILE)?;
+        remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
+        remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
+        directory.sync()?;
+        stats.incremental = true;
+        stats.strategy = PublishStrategy::PageDiffExchange;
+        return Ok((Some(stats), false));
+    }
+
+    directory.validate(PUBLISH_MIRROR_FILE, canonical_identity, true)?;
     let old_canonical = base
         .canonical
         .as_ref()
         .expect("incremental publication requires a canonical descriptor");
-    #[cfg(unix)]
     old_canonical.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     old_canonical.sync_all()?;
-    directory.validate(PUBLISH_MIRROR_FILE, canonical_identity, true)?;
     maybe_publish_fault(PublishFault::SlotWritable)?;
     write_ready_marker(&directory, base.generation, base.state_id)?;
     maybe_publish_fault(PublishFault::MarkerCreated)?;
@@ -775,10 +799,6 @@ fn incremental_publish(
     directory.sync()?;
     maybe_publish_fault(PublishFault::IntentRemoved)?;
 
-    // A bulk append can leave the alternate slot predating a newly embedded immutable asset.
-    // Catch that slot up after the exchange is fully committed so the next small edit does not
-    // write the same large tail again. Ordinary edits keep alternating against the
-    // two-generation-old slot.
     if stats.changed_bytes >= BULK_CHANGE_CATCH_UP_BYTES
         && stats.changed_bytes.saturating_mul(4) >= stats.scanned_bytes
     {
