@@ -495,11 +495,7 @@ impl LumenApp {
                 ));
                 self.original_preview_id = Some(id);
             }
-            let rendered = render_image(
-                source.clone(),
-                preview_adjustments.clone(),
-                RenderOptions::default(),
-            );
+            let rendered = render_preview_source(source.clone(), preview_adjustments.clone());
             self.histogram = Some(Histogram::from_image(&rendered));
             if !use_fast || self.preview_layout_size.is_none() {
                 self.preview_layout_size =
@@ -592,15 +588,8 @@ impl LumenApp {
         let Ok(photo) = self.workspace.project.photo(id) else {
             return;
         };
-        // Keep #70's decode_photo_proxy path here when rebasing: thumbnails
-        // are display-only, while selected previews stay authoritative in
-        // PreviewWorker through decode_photo.
-        if let Ok(rendered) = render_photo(
-            photo,
-            RenderOptions {
-                max_size: Some(240),
-            },
-        ) {
+        if let Ok(source) = decode_photo_proxy(photo, 240) {
+            let rendered = render_preview_source(source, photo.adjustments.clone());
             self.thumbnails.insert(
                 id,
                 load_texture(context, format!("thumbnail-{id}"), rendered),
