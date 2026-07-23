@@ -58,6 +58,7 @@ fn mirror_diff_counts_growth_shrink_partial_tail_and_sparse_blocks_exactly() {
     sparse_source
         .write_all_at(b"sparse-change", 32 * 1024 * 1024 + 17)
         .unwrap();
+    mirror_file.set_len(0).unwrap();
     mirror_file.set_len(sparse_len).unwrap();
     mirror_file.seek(SeekFrom::Start(0)).unwrap();
     let sparse = update_mirror(&source, &mut mirror_file).unwrap();
