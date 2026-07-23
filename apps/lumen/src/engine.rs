@@ -159,9 +159,9 @@ fn decode_photo_with_decoder(
 }
 
 /// Decode a display-only proxy for places where responsiveness matters more than
-/// export fidelity, such as the filmstrip. RAW proxies may use the camera's
-/// embedded rendering and must never be used as a settled develop preview or an
-/// export source.
+/// export fidelity, such as catalog-library and filmstrip thumbnails. RAW
+/// proxies may use the camera's embedded rendering and must never be used as a
+/// settled develop preview or an export source.
 pub fn decode_photo_proxy(photo: &Photo, max_size: u32) -> Result<DynamicImage> {
     decode_photo_proxy_with_decoder(photo, max_size, &FilePhotoDecoder)
 }
@@ -270,7 +270,12 @@ fn intermediate_to_dynamic_u8(intermediate: Intermediate) -> Option<DynamicImage
 }
 
 fn raw_float_to_u8(value: f32) -> u8 {
-    ((value.clamp(0.0, 1.0) * u16::MAX as f32) as u16 / 257) as u8
+    let value = (value.clamp(0.0, 1.0) * u16::MAX as f32) as u16;
+    raw_u16_to_u8(value)
+}
+
+fn raw_u16_to_u8(value: u16) -> u8 {
+    ((u32::from(value) + 128) / 257) as u8
 }
 
 fn orient_embedded_preview(image: DynamicImage, photo: &Photo) -> DynamicImage {
@@ -635,6 +640,22 @@ mod tests {
                 .contains("25000000-pixel authoritative development limit")
         );
         assert_eq!(MAX_AUTHORITATIVE_RAW_WORKING_BYTES, 1_200_000_000);
+    }
+
+    #[test]
+    fn raw_u8_quantization_preserves_legacy_rounding_boundaries() {
+        assert_eq!(raw_u16_to_u8(0), 0);
+        assert_eq!(raw_u16_to_u8(1), 0);
+        assert_eq!(raw_u16_to_u8(128), 0);
+        assert_eq!(raw_u16_to_u8(129), 1);
+        assert_eq!(raw_u16_to_u8(257), 1);
+        assert_eq!(raw_u16_to_u8(32_767), 127);
+        assert_eq!(raw_u16_to_u8(32_768), 128);
+        assert_eq!(raw_u16_to_u8(u16::MAX), u8::MAX);
+
+        assert_eq!(raw_float_to_u8(0.0), 0);
+        assert_eq!(raw_float_to_u8(32_768.0 / u16::MAX as f32), 128);
+        assert_eq!(raw_float_to_u8(1.0), u8::MAX);
     }
 
     #[test]

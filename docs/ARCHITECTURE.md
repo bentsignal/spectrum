@@ -79,13 +79,14 @@ explicit budget.
 
 Import preparation is parallel and reads RAW dimensions and EXIF metadata without
 demosaicing the full sensor image. Camera-embedded RAW previews are explicitly
-non-authoritative and are used only for small filmstrip thumbnail proxies.
-Settled previews and every export develop the RAW sensor data; a lossless export
-with the same adjustments and long-edge limit is an exact raster oracle before
-texture upload or encoding. While a pointer drag is active, the GUI may render a
-960px transient working preview, but it must replace that approximation with the
-authoritative 1800px result after interaction. Pixel rows are processed in
-parallel, and identity color, HSL, and curve stages are skipped.
+non-authoritative and are used only for display-only thumbnail surfaces in the
+catalog library and filmstrip. Settled previews and every export develop the RAW
+sensor data; a lossless export with the same adjustments and long-edge limit is
+an exact raster oracle before texture upload or encoding. While a pointer drag is
+active, the GUI may render a 960px transient working preview, but it must replace
+that approximation with the authoritative 1800px result after interaction. Pixel
+rows are processed in parallel, and identity color, HSL, and curve stages are
+skipped.
 
 A full-resolution export viewed through a separately downsampling application is
 outside the exact same-size oracle: resolution-dependent detail and spot radii,
