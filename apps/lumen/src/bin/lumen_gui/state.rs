@@ -58,7 +58,8 @@ impl LumenApp {
 
     pub(super) fn invalidate_selected(&mut self) {
         if let Some(id) = self.workspace.project.selected {
-            self.preview_pipeline.select(id, self.draft.clone());
+            self.preview_pipeline
+                .select_at_size(id, self.draft.clone(), self.preview_max_size);
         } else {
             self.preview_pipeline.clear();
         }
@@ -99,8 +100,6 @@ impl LumenApp {
         }) {
             self.thumbnails.remove(&id);
             self.invalidate_selected();
-            self.preview = None;
-            self.preview_id = None;
         }
     }
 
@@ -256,6 +255,9 @@ impl LumenApp {
         self.preview_source = None;
         self.preview_fast_source = None;
         self.preview_id = None;
+        self.preview_max_size = lumen_core::preview::PREVIEW_MAX_SIZE;
+        self.preview_rendered_max_size = 0;
+        self.adjustment_interacting = false;
         self.preview_layout_size = None;
         self.original_preview = None;
         self.original_preview_id = None;
@@ -408,16 +410,51 @@ impl LumenApp {
         adjustments
     }
 
+    pub(super) fn update_preview_resolution(
+        &mut self,
+        available_points: Vec2,
+        pixels_per_point: f32,
+    ) {
+        let Some(photo) = self.workspace.project.selected_photo() else {
+            return;
+        };
+        let requested = settled_preview_size(
+            available_points,
+            pixels_per_point,
+            self.zoom,
+            photo.is_raw(),
+        );
+        let requested = settled_preview_size_with_hysteresis(self.preview_max_size, requested);
+        if requested != self.preview_max_size {
+            self.preview_max_size = requested;
+            if let Some(id) = self.workspace.project.selected {
+                self.preview_pipeline.select_at_size(
+                    id,
+                    self.preview_adjustments(),
+                    self.preview_max_size,
+                );
+            }
+        }
+    }
+
+    /// Keep interaction frames responsive without ever confusing them for
+    /// export-authoritative settled pixels.
+    ///
+    /// Develop drags render at most one 960-pixel transient frame every 33 ms
+    /// and retain the settled histogram. Geometry drags retain the last settled
+    /// frame. After release, only `PreviewWorker` may publish the new frame and
+    /// its matching histogram through the post-geometry export renderer.
     pub(super) fn ensure_preview(&mut self, context: &egui::Context) {
         let Some(id) = self.workspace.project.selected else {
             self.preview = None;
             return;
         };
         let preview_adjustments = self.preview_adjustments();
-        let interacting = context.input(|input| input.pointer.primary_down());
+        let interacting = self.adjustment_interacting;
         if self.preview.is_some()
             && self.preview_id == Some(id)
             && self.preview_adjustments == preview_adjustments
+            && self.preview_rendered_max_size == self.preview_max_size
             && !(self.preview_fast && !interacting)
         {
             return;
@@ -425,89 +462,73 @@ impl LumenApp {
         let Some(photo) = self.workspace.project.selected_photo().cloned() else {
             return;
         };
-        if self.preview_id != Some(id) {
-            if let Some(preview) = self.preview_pipeline.take_cached(id, &preview_adjustments) {
-                self.apply_prepared_preview(context, preview);
-                self.prefetch_adjacent_previews();
+        let geometry_changed = self.preview_id == Some(id)
+            && !same_preview_geometry(&self.preview_adjustments, &preview_adjustments);
+        if interacting && self.preview_id == Some(id) {
+            if geometry_changed {
+                self.preview_fast = true;
+                context.request_repaint_after(Duration::from_millis(16));
                 return;
             }
-            match self.preview_pipeline.request_decision(
-                &self.preview_worker,
-                Instant::now(),
-                id,
-                &preview_adjustments,
-            ) {
-                PreviewRequestDecision::Request => {
-                    let enqueue = self.preview_worker.request_selected(
-                        self.preview_pipeline.generation(),
-                        self.preview_pipeline.epoch(),
-                        photo,
-                        preview_adjustments,
-                    );
-                    self.preview_pipeline.track_enqueue(enqueue);
-                    context.request_repaint_after(Duration::from_millis(8));
+            let now = Instant::now();
+            if now < self.next_live_preview_at {
+                context.request_repaint_after(self.next_live_preview_at - now);
+                return;
+            }
+            if let Some((_, source)) = self.preview_fast_source.as_ref() {
+                let rendered = render_preview_source(source.clone(), preview_adjustments.clone());
+                if self.preview_layout_size.is_none() {
+                    self.preview_layout_size =
+                        Some(Vec2::new(rendered.width() as f32, rendered.height() as f32));
                 }
-                PreviewRequestDecision::Promoted
-                | PreviewRequestDecision::ReusedActivePrefetch
-                | PreviewRequestDecision::Pending => {
-                    context.request_repaint_after(Duration::from_millis(8));
-                }
-                PreviewRequestDecision::Backoff(delay) => {
-                    context.request_repaint_after(delay);
-                }
+                self.preview = Some(load_texture(context, format!("preview-{id}"), rendered));
+                self.preview_id = Some(id);
+                self.preview_fast = true;
+                self.preview_adjustments = preview_adjustments;
+                self.next_live_preview_at = now + Duration::from_millis(33);
+                context.request_repaint_after(Duration::from_millis(33));
             }
             return;
         }
-        if self
-            .preview_source
-            .as_ref()
-            .map(|(source_id, _)| *source_id)
-            != Some(id)
-        {
-            match decode_photo(&photo, Some(1800)) {
-                Ok(source) => {
-                    let fast = if source.width() > 960 || source.height() > 960 {
-                        source.resize(960, 960, FilterType::Triangle)
-                    } else {
-                        source.clone()
-                    };
-                    self.preview_fast_source = Some((id, fast));
-                    self.preview_source = Some((id, source));
-                }
-                Err(error) => {
-                    self.status = format!("preview failed: {error:#}");
-                    self.error = true;
-                    return;
-                }
-            }
+
+        if self.preview_id == Some(id) {
+            self.preview_fast = true;
         }
-        let geometry_changed = self.preview_id == Some(id)
-            && !same_preview_geometry(&self.preview_adjustments, &preview_adjustments);
-        let use_fast = interacting && self.preview_id == Some(id) && !geometry_changed;
-        let source = if use_fast {
-            self.preview_fast_source.as_ref()
-        } else {
-            self.preview_source.as_ref()
-        };
-        if let Some((_, source)) = source {
-            if self.original_preview_id != Some(id) {
-                self.original_preview = Some(load_texture(
-                    context,
-                    format!("original-{id}"),
-                    source.clone(),
-                ));
-                self.original_preview_id = Some(id);
+        if let Some(preview) = self.preview_pipeline.take_cached_at_size(
+            id,
+            &preview_adjustments,
+            self.preview_max_size,
+        ) {
+            self.apply_prepared_preview(context, preview);
+            self.prefetch_adjacent_previews();
+            return;
+        }
+        match self.preview_pipeline.request_decision_at_size(
+            &self.preview_worker,
+            Instant::now(),
+            id,
+            &preview_adjustments,
+            self.preview_max_size,
+        ) {
+            PreviewRequestDecision::Request => {
+                let enqueue = self.preview_worker.request_selected_at_size(
+                    self.preview_pipeline.generation(),
+                    self.preview_pipeline.epoch(),
+                    photo,
+                    preview_adjustments,
+                    self.preview_max_size,
+                );
+                self.preview_pipeline.track_enqueue(enqueue);
+                context.request_repaint_after(Duration::from_millis(8));
             }
-            let rendered = render_preview_source(source.clone(), preview_adjustments.clone());
-            self.histogram = Some(Histogram::from_image(&rendered));
-            if !use_fast || self.preview_layout_size.is_none() {
-                self.preview_layout_size =
-                    Some(Vec2::new(rendered.width() as f32, rendered.height() as f32));
+            PreviewRequestDecision::Promoted
+            | PreviewRequestDecision::ReusedActivePrefetch
+            | PreviewRequestDecision::Pending => {
+                context.request_repaint_after(Duration::from_millis(8));
             }
-            self.preview = Some(load_texture(context, format!("preview-{id}"), rendered));
-            self.preview_id = Some(id);
-            self.preview_fast = use_fast;
-            self.preview_adjustments = preview_adjustments;
+            PreviewRequestDecision::Backoff(delay) => {
+                context.request_repaint_after(delay);
+            }
         }
     }
 
@@ -531,6 +552,7 @@ impl LumenApp {
         let PreparedPreview {
             photo_id,
             adjustments,
+            max_size,
             source,
             fast_source,
             rendered,
@@ -547,6 +569,8 @@ impl LumenApp {
         self.preview = Some(preview);
         self.preview_id = Some(photo_id);
         self.preview_fast = false;
+        self.preview_max_size = max_size;
+        self.preview_rendered_max_size = max_size;
         self.preview_adjustments = adjustments;
         self.histogram = Some(histogram);
         context.request_repaint();
