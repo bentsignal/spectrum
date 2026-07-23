@@ -23,16 +23,23 @@ impl LumenApp {
                         egui::FontId::proportional(15.0),
                         ACCENT,
                     );
-                    let (divider_rect, _) =
-                        ui.allocate_exact_size(Vec2::new(1.0, 28.0), Sense::hover());
-                    ui.painter().line_segment(
-                        [
-                            divider_rect.center() - Vec2::new(0.0, 9.0),
-                            divider_rect.center() + Vec2::new(0.0, 9.0),
-                        ],
-                        Stroke::new(1.0, Color32::from_gray(58)),
-                    );
                     ui.add_space(2.0);
+                    let switch = view_switch_presentation(
+                        self.library_mode,
+                        !self.workspace.project.photos.is_empty(),
+                    );
+                    if ui
+                        .add_enabled(switch.enabled, egui::Button::new(switch.label))
+                        .on_hover_text(switch.hover)
+                        .clicked()
+                    {
+                        if self.library_mode {
+                            self.show_editor();
+                        } else {
+                            self.show_catalog();
+                        }
+                    }
+                    ui.separator();
                     if self.terminal.visible() {
                         ui.label(RichText::new("TERMINAL").strong().color(ACCENT));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -67,7 +74,7 @@ impl LumenApp {
                             self.import_dialog();
                         }
                         ui.menu_button("Catalog", |ui| {
-                            if ui.button("New Catalog").clicked() {
+                            if ui.button("New Shoot").clicked() {
                                 ui.close();
                                 self.new_catalog();
                             }
@@ -75,7 +82,7 @@ impl LumenApp {
                                 ui.close();
                                 self.open_catalog();
                             }
-                            if ui.button("Move Catalog...").clicked() {
+                            if ui.button("Move Catalog...  Ctrl+Shift+M").clicked() {
                                 ui.close();
                                 self.move_project();
                             }
@@ -111,8 +118,6 @@ impl LumenApp {
                         });
                     }
                     if self.library_mode {
-                        ui.separator();
-                        ui.label(RichText::new("ALL SHOOTS").strong().color(ACCENT));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(current_catalog_name(&self.workspace))
@@ -123,10 +128,6 @@ impl LumenApp {
                     }
                     #[cfg(not(target_os = "macos"))]
                     {
-                        if ui.button("All Shoots").clicked() {
-                            self.library_mode = true;
-                        }
-                        ui.separator();
                         let (can_back, can_forward) =
                             (self.workspace.can_undo(), self.workspace.can_redo());
                         if ui
@@ -385,6 +386,33 @@ impl LumenApp {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ViewSwitchPresentation {
+    label: &'static str,
+    hover: &'static str,
+    enabled: bool,
+}
+
+fn view_switch_presentation(catalog_visible: bool, has_photos: bool) -> ViewSwitchPresentation {
+    if catalog_visible {
+        ViewSwitchPresentation {
+            label: "Editor",
+            hover: if has_photos {
+                "Switch to Editor"
+            } else {
+                "Import photos to open the Editor"
+            },
+            enabled: has_photos,
+        }
+    } else {
+        ViewSwitchPresentation {
+            label: "Catalog",
+            hover: "Switch to Catalog",
+            enabled: true,
+        }
+    }
+}
+
 fn toggled_pick(current: PickState, requested: PickState) -> PickState {
     if current == requested {
         PickState::Unmarked
@@ -396,6 +424,27 @@ fn toggled_pick(current: PickState, requested: PickState) -> PickState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_switch_uses_contextual_catalog_and_editor_copy() {
+        assert_eq!(
+            view_switch_presentation(false, true),
+            ViewSwitchPresentation {
+                label: "Catalog",
+                hover: "Switch to Catalog",
+                enabled: true,
+            }
+        );
+        assert_eq!(
+            view_switch_presentation(true, true),
+            ViewSwitchPresentation {
+                label: "Editor",
+                hover: "Switch to Editor",
+                enabled: true,
+            }
+        );
+        assert!(!view_switch_presentation(true, false).enabled);
+    }
 
     #[test]
     fn keep_and_reject_controls_toggle_without_redundant_glyph_buttons() {

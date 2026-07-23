@@ -1,6 +1,18 @@
 use super::*;
 
 impl LumenApp {
+    pub(super) fn show_catalog(&mut self) {
+        self.history_open = false;
+        self.hide_terminal();
+        self.library_mode = true;
+    }
+
+    pub(super) fn show_editor(&mut self) {
+        self.history_open = false;
+        self.hide_terminal();
+        self.return_to_photo_view();
+    }
+
     pub(super) fn return_to_photo_view(&mut self) {
         if self.active_batch.is_none() {
             self.active_batch = self
@@ -27,18 +39,12 @@ impl LumenApp {
         self.library_mode = false;
     }
 
-    pub(super) fn open_batch(&mut self, batch_id: u64) {
-        let first = self
-            .workspace
-            .project
-            .photos
-            .iter()
-            .find(|photo| photo.batch_id == Some(batch_id))
-            .map(|photo| photo.id);
+    pub(super) fn open_batch(&mut self, batch_id: u64, requested_photo: Option<u64>) {
+        let selected = editor_photo_for_batch(&self.workspace.project, batch_id, requested_photo);
         self.active_batch = Some(batch_id);
         self.library_mode = false;
         self.film_filter = FilmFilter::All;
-        if let Some(id) = first {
+        if let Some(id) = selected {
             self.select(id);
         }
     }
@@ -78,11 +84,6 @@ impl LumenApp {
             .frame(egui::Frame::new().fill(CANVAS).inner_margin(24))
             .show(root, |ui| {
                 ui.horizontal(|ui| {
-                    if !self.workspace.project.photos.is_empty()
-                        && ui.button(self.photo_view_return_label()).clicked()
-                    {
-                        self.return_to_photo_view();
-                    }
                     ui.vertical(|ui| {
                         ui.label(
                             RichText::new(&self.workspace.project.name)
@@ -99,12 +100,32 @@ impl LumenApp {
                             .color(Color32::GRAY),
                         );
                     });
-                    #[cfg(not(target_os = "macos"))]
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Import a Shoot").clicked() {
-                            self.import_dialog();
-                        }
-                    });
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(ui.available_width(), 44.0),
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .button("Import Photos")
+                                .on_hover_text(format!(
+                                    "Import photos as a new shoot  {}",
+                                    import_photos_shortcut_label()
+                                ))
+                                .clicked()
+                            {
+                                self.import_dialog();
+                            }
+                            if ui
+                                .button("New Shoot")
+                                .on_hover_text(format!(
+                                    "Create a new shoot catalog  {}",
+                                    new_shoot_shortcut_label()
+                                ))
+                                .clicked()
+                            {
+                                self.new_catalog();
+                            }
+                        },
+                    );
                 });
                 ui.add_space(12.0);
 
@@ -189,7 +210,7 @@ impl LumenApp {
                                                         .on_hover_text("Open this shoot")
                                                         .clicked()
                                                     {
-                                                        open_batch = Some(*batch_id);
+                                                        open_batch = Some((*batch_id, None));
                                                     }
                                                     ui.horizontal(|ui| {
                                                         ui.label(
@@ -273,11 +294,14 @@ impl LumenApp {
                                                                                             .sense(Sense::click()),
                                                                                     )
                                                                                     .on_hover_text(
-                                                                                        "Open this shoot",
+                                                                                        "Open this photo in Editor",
                                                                                     )
                                                                                     .clicked()
                                                                                 {
-                                                                                    open_batch = Some(*batch_id);
+                                                                                    open_batch = Some((
+                                                                                        *batch_id,
+                                                                                        Some(*photo_id),
+                                                                                    ));
                                                                                 }
                                                                             }
                                                                             ui.label(
@@ -302,21 +326,134 @@ impl LumenApp {
                             }
                         });
                     });
-                if let Some(batch_id) = open_batch {
-                    self.open_batch(batch_id);
+                if let Some((batch_id, photo_id)) = open_batch {
+                    self.open_batch(batch_id, photo_id);
                 }
                 if let Some(batch) = rename_batch {
                     self.rename_batch = Some(batch);
                 }
             });
     }
+}
 
-    fn photo_view_return_label(&self) -> String {
-        self.active_batch
-            .and_then(|id| self.workspace.project.batch(id).ok())
-            .map_or_else(
-                || "← Back to Photos".into(),
-                |batch| format!("← Back to {}", batch.name),
-            )
+fn new_shoot_shortcut_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘N"
+    } else {
+        "Ctrl+N"
+    }
+}
+
+fn import_photos_shortcut_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘I"
+    } else {
+        "Ctrl+I"
+    }
+}
+
+fn editor_photo_for_batch(
+    project: &Project,
+    batch_id: u64,
+    requested_photo: Option<u64>,
+) -> Option<u64> {
+    let belongs_to_batch = |id| {
+        project
+            .photo(id)
+            .is_ok_and(|photo| photo.batch_id == Some(batch_id))
+    };
+    requested_photo
+        .filter(|id| belongs_to_batch(*id))
+        .or_else(|| project.selected.filter(|id| belongs_to_batch(*id)))
+        .or_else(|| {
+            project
+                .photos
+                .iter()
+                .find(|photo| photo.batch_id == Some(batch_id))
+                .map(|photo| photo.id)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project_with_two_shoots() -> Project {
+        serde_json::from_value(serde_json::json!({
+            "name": "Navigation",
+            "photos": [
+                {
+                    "id": 10,
+                    "name": "first.jpg",
+                    "path": "/tmp/first.jpg",
+                    "width": 10,
+                    "height": 10,
+                    "batch_id": 1
+                },
+                {
+                    "id": 11,
+                    "name": "clicked.jpg",
+                    "path": "/tmp/clicked.jpg",
+                    "width": 10,
+                    "height": 10,
+                    "batch_id": 1
+                },
+                {
+                    "id": 20,
+                    "name": "other.jpg",
+                    "path": "/tmp/other.jpg",
+                    "width": 10,
+                    "height": 10,
+                    "batch_id": 2
+                }
+            ],
+            "selected": 11,
+            "batches": [
+                {
+                    "id": 1,
+                    "name": "Shoot One",
+                    "imported_date": "2026-07-23"
+                },
+                {
+                    "id": 2,
+                    "name": "Shoot Two",
+                    "imported_date": "2026-07-23"
+                }
+            ]
+        }))
+        .expect("navigation fixture should deserialize")
+    }
+
+    #[test]
+    fn thumbnail_navigation_prefers_the_exact_clicked_photo() {
+        let project = project_with_two_shoots();
+        assert_eq!(editor_photo_for_batch(&project, 1, Some(10)), Some(10));
+    }
+
+    #[test]
+    fn shoot_navigation_preserves_last_photo_then_falls_back_to_first() {
+        let mut project = project_with_two_shoots();
+        assert_eq!(editor_photo_for_batch(&project, 1, None), Some(11));
+
+        project.selected = Some(20);
+        assert_eq!(editor_photo_for_batch(&project, 1, None), Some(10));
+    }
+
+    #[test]
+    fn invalid_thumbnail_target_cannot_escape_the_requested_shoot() {
+        let mut project = project_with_two_shoots();
+        project.selected = Some(20);
+        assert_eq!(editor_photo_for_batch(&project, 1, Some(20)), Some(10));
+    }
+
+    #[test]
+    fn primary_catalog_action_shortcuts_match_the_host_platform() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(new_shoot_shortcut_label(), "⌘N");
+            assert_eq!(import_photos_shortcut_label(), "⌘I");
+        } else {
+            assert_eq!(new_shoot_shortcut_label(), "Ctrl+N");
+            assert_eq!(import_photos_shortcut_label(), "Ctrl+I");
+        }
     }
 }

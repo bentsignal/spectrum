@@ -26,6 +26,8 @@ mod paint;
 mod path;
 #[path = "benchmark/selection.rs"]
 mod selection;
+#[path = "benchmark/text_preview_frame.rs"]
+mod text_preview_frame;
 
 #[derive(Clone, Copy, Default, ValueEnum)]
 pub(super) enum BenchmarkProfile {
@@ -166,6 +168,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let lasso = selection::measure_lasso_bound()?;
     let path = path::measure()?;
     let paint = paint::measure()?;
+    let text_preview_frame = text_preview_frame::measure()?;
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -752,6 +755,27 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: text_interaction_p95,
             budget_ms: 1.0,
             pass: text_interaction_p95 <= 1.0,
+        },
+        BenchmarkMetric {
+            name: "gui_long_text_cold_face_cached_preview_frame",
+            median_ms: text_preview_frame.scheduling_median_ms,
+            p95_ms: text_preview_frame.scheduling_p95_ms,
+            budget_ms: 0.05,
+            pass: text_preview_frame.scheduling_p95_ms <= 0.05,
+        },
+        BenchmarkMetric {
+            name: "cold_imported_font_identity",
+            median_ms: text_preview_frame.cold_import_ms,
+            p95_ms: text_preview_frame.cold_import_ms,
+            budget_ms: 50.0,
+            pass: text_preview_frame.cold_import_ms <= 50.0,
+        },
+        BenchmarkMetric {
+            name: "cold_imported_text_edit_geometry",
+            median_ms: text_preview_frame.cold_edit_median_ms,
+            p95_ms: text_preview_frame.cold_edit_p95_ms,
+            budget_ms: 100.0,
+            pass: text_preview_frame.cold_edit_p95_ms <= 100.0,
         },
         BenchmarkMetric {
             name: "24_layer_command_batch",
