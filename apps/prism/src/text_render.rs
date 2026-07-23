@@ -11,11 +11,11 @@ const MAX_EFFECT_RADIUS: i32 = 2_048;
 const MAX_EFFECT_OFFSET: i32 = 8_192;
 const MAX_GLYPH_PIXELS: u64 = 4_096 * 4_096;
 
-#[path = "text_render/font_cache.rs"]
-mod font_cache;
-use font_cache::cached_font;
+#[path = "text_render/font_loader.rs"]
+mod font_loader;
 #[cfg(test)]
-pub(crate) use font_cache::font_outline_scale;
+pub(crate) use font_loader::font_outline_scale;
+use font_loader::load_font;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGeometry {
@@ -66,7 +66,7 @@ pub fn measure_text_geometry_with_typography(
     typography: &TextTypography,
     font_asset: Option<&FontAsset>,
 ) -> Result<TextGeometry> {
-    let font = cached_font(font_asset, font_size)?;
+    let font = load_font(font_asset, font_size)?;
     Ok(layout_text(&font, text, font_size, typography)?.geometry())
 }
 
@@ -77,7 +77,7 @@ pub(crate) fn render_text(
     typography: &TextTypography,
     font_asset: Option<&FontAsset>,
 ) -> Result<RgbaImage> {
-    let font = cached_font(font_asset, font_size)?;
+    let font = load_font(font_asset, font_size)?;
     let layout = layout_text(&font, text, font_size, typography)?;
     validate_effect_surface(&layout, typography)?;
     render_layout_region(
@@ -103,7 +103,7 @@ pub(crate) fn render_text_region(
     font_asset: Option<&FontAsset>,
     region: RenderRegion,
 ) -> Result<RgbaImage> {
-    let font = cached_font(font_asset, font_size)?;
+    let font = load_font(font_asset, font_size)?;
     let layout = layout_text(&font, text, font_size, typography)?;
     render_layout_region(&font, &layout, font_size, color, typography, region)
 }
@@ -700,13 +700,13 @@ mod tests {
     }
 
     #[test]
-    fn parsed_imported_fonts_are_reused_by_content_hash() {
+    fn imported_fonts_are_loaded_ephemerally_from_verified_bytes() {
         let path = temporary_font("cache");
         let asset = FontAsset::import(7, &path).unwrap();
-        let first = cached_font(Some(&asset), 72.0).unwrap();
-        let second = cached_font(Some(&asset), 72.0).unwrap();
+        let first = load_font(Some(&asset), 72.0).unwrap();
+        let second = load_font(Some(&asset), 72.0).unwrap();
         let _ = std::fs::remove_file(path);
-        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(first.file_hash(), second.file_hash());
     }
 
     #[test]
@@ -808,7 +808,7 @@ mod tests {
 
     fn assert_large_curve_matches_oracle(font_asset: Option<&FontAsset>, bytes: &[u8]) {
         let font_size = 768.0;
-        let actual_font = cached_font(font_asset, font_size).unwrap();
+        let actual_font = load_font(font_asset, font_size).unwrap();
         let (_, actual) = actual_font.rasterize('S', font_size);
         let oracle_font = Font::from_bytes(
             bytes,

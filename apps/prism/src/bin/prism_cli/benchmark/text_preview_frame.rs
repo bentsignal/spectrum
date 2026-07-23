@@ -9,13 +9,35 @@ use prism_core::{
 use super::{TemporaryFont, sample_summary};
 
 pub(super) struct Measurement {
-    pub(super) median_ms: f64,
-    pub(super) p95_ms: f64,
+    pub(super) scheduling_median_ms: f64,
+    pub(super) scheduling_p95_ms: f64,
+    pub(super) cold_import_ms: f64,
+    pub(super) cold_edit_median_ms: f64,
+    pub(super) cold_edit_p95_ms: f64,
 }
 
 pub(super) fn measure() -> Result<Measurement> {
     let fixture = TemporaryFont::new()?;
+    let import_started = Instant::now();
     let font = FontAsset::import(911, &fixture.path)?;
+    let cold_import_ms = import_started.elapsed().as_secs_f64() * 1_000.0;
+    let cold_edit_text = "Cold imported text edit ".repeat(128);
+    let cold_edit_typography = TextTypography {
+        font_id: Some(font.id),
+        ..TextTypography::default()
+    };
+    let mut cold_edit_samples = Vec::with_capacity(9);
+    for _ in 0..9 {
+        let started = Instant::now();
+        black_box(measure_text_geometry_with_typography(
+            &cold_edit_text,
+            96.0,
+            &cold_edit_typography,
+            Some(&font),
+        )?);
+        cold_edit_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
+    let (cold_edit_median_ms, cold_edit_p95_ms) = sample_summary(&mut cold_edit_samples);
     let mut document = Document::new("GUI scheduling benchmark", 1_600, 1_200);
     let layer = Layer {
         id: 912,
@@ -82,6 +104,12 @@ pub(super) fn measure() -> Result<Measurement> {
         samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
     black_box(document);
-    let (median_ms, p95_ms) = sample_summary(&mut samples);
-    Ok(Measurement { median_ms, p95_ms })
+    let (scheduling_median_ms, scheduling_p95_ms) = sample_summary(&mut samples);
+    Ok(Measurement {
+        scheduling_median_ms,
+        scheduling_p95_ms,
+        cold_import_ms,
+        cold_edit_median_ms,
+        cold_edit_p95_ms,
+    })
 }
