@@ -23,6 +23,8 @@ use cache_fs::{
     RetainedPlane, open_trusted_cache_file, read_bounded, read_exact_at, remove_cache_entry,
     retain_plane, sync_directory, trusted_cache_directory, trusted_cache_directory_if_present,
 };
+#[cfg(test)]
+pub(crate) use maintenance::spawn_cache_test_child;
 use maintenance::{CacheMaintenanceLease, EntryReadLease};
 use prepare::prepare_exact_rgba8_plane;
 

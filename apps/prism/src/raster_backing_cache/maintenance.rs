@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::sync::{OnceLock, RwLock, RwLockReadGuard};
 use std::{
     fs::{self, File},
     io::{Seek, SeekFrom, Write},
@@ -20,6 +22,33 @@ use super::{
     LEGACY_CACHE_SCHEMA_VERSION, MANIFEST_FILE, MAX_MANIFEST_BYTES, MAX_READY_BYTES, PLANE_FILE,
     PREPARE_LOCK, READY_FILE, is_eviction_tombstone_name, is_lower_sha256, sha256_bytes,
 };
+
+#[cfg(test)]
+// Tests that fork the current test binary must take this barrier for writing
+// before Command::spawn. Every maintenance lease holds a read guard from
+// before its flock acquisition through File drop, so fork cannot duplicate a
+// live flock descriptor from any sibling test thread. Lock order is always
+// barrier -> cache flock; child-spawn code takes only the barrier.
+static CACHE_TEST_FORK_BARRIER: OnceLock<RwLock<()>> = OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn spawn_cache_test_child(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    let _fork_guard = CACHE_TEST_FORK_BARRIER
+        .get_or_init(|| RwLock::new(()))
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    command.spawn()
+}
+
+#[cfg(test)]
+fn cache_test_maintenance_guard() -> RwLockReadGuard<'static, ()> {
+    CACHE_TEST_FORK_BARRIER
+        .get_or_init(|| RwLock::new(()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 static EVICTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static ACCESS_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -51,6 +80,8 @@ pub(super) struct CacheMaintenanceLease {
     root: PathBuf,
     version_root: PathBuf,
     _file: File,
+    #[cfg(test)]
+    _fork_guard: RwLockReadGuard<'static, ()>,
     limits: DerivedBackingLimits,
 }
 
@@ -60,6 +91,11 @@ impl CacheMaintenanceLease {
         version_root: &Path,
         limits: DerivedBackingLimits,
     ) -> Result<Option<Self>> {
+        // Keep this before every file open/flock. The matching guard is stored
+        // after `_file`, so declaration-order field drop closes the flock
+        // before it lets a cache-test child fork.
+        #[cfg(test)]
+        let fork_guard = cache_test_maintenance_guard();
         trusted_cache_directory(root)?;
         let path = root.join(PREPARE_LOCK);
         let file = open_or_create_trusted_lock_file(&path)?;
@@ -68,6 +104,8 @@ impl CacheMaintenanceLease {
                 root: root.to_owned(),
                 version_root: version_root.to_owned(),
                 _file: file,
+                #[cfg(test)]
+                _fork_guard: fork_guard,
                 limits,
             })),
             Err(error) if error.kind() == fs2::lock_contended_error().kind() => Ok(None),
