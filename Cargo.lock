@@ -2080,6 +2080,7 @@ dependencies = [
  "rawler",
  "rayon",
  "rfd",
+ "same-file",
  "serde",
  "serde_json",
  "spectrum-history-ui",

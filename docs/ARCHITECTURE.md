@@ -53,31 +53,44 @@ requirement.
 
 ## Rendering
 
-Preview and export use the same `render_photo` function. Previews set a long-edge
-limit; exports default to source resolution. The current pipeline performs, in
-order:
+Settled preview and export use the same authoritative renderer.
+`render_settled_preview` supplies a long-edge limit while `render_photo` defaults
+to source resolution. Both develop immutable RAW pixels and apply the size limit
+after geometry. The current pipeline performs, in order:
 
 1. Sony ARW demosaic, white balance, camera calibration, and sRGB conversion
-2. optional long-edge downsample (never upscale)
-3. rotation, flips, filled straighten, and normalized crop
+2. rotation, flips, filled straighten, and normalized crop
+3. optional post-geometry long-edge downsample (never upscale)
 4. optional chroma-preserving noise reduction
 5. temperature, tint, exposure, and tonal shaping
 6. contrast, texture, clarity, and dehaze
 7. eight-band HSL mixing, global saturation/vibrance, and three-way color grading
 8. master and per-channel point curves, vignette, sharpening, and repair-brush dabs
 
-RAW development starts in a 16-bit intermediate; the interactive adjustment
-pipeline currently operates on 8-bit RGBA after sRGB conversion. A future
-high-bit-depth working buffer can keep the command and catalog APIs stable.
+RAW development uses rawler's floating-point intermediate, then converts directly
+to the 8-bit sRGB working raster consumed by the adjustment pipeline. Avoiding
+rawler's additional flattened floating-point and 16-bit conversion buffers keeps
+the authoritative path bounded to a conservative modeled 48 bytes per sensor
+pixel. Lumen enforces a 25,000,000-pixel RAW limit before and after decode for
+settled previews, yielding a 1,200,000,000-byte development working budget
+without limiting explicit full-resolution exports. A future high-bit-depth
+working buffer can keep the command and catalog APIs stable while replacing that
+explicit budget.
 
 Import preparation is parallel and reads RAW dimensions and EXIF metadata without
-demosaicing the full sensor image. Interactive RAW previews prefer the camera's
-embedded preview, then cache the decoded 1800px source instead of developing a RAW
-again for every control movement. Full-resolution exports still develop the RAW
-sensor data. While a pointer drag is active, the GUI renders
-a 960px working preview and resolves the full cached preview on release. Pixel rows
-are processed in parallel, and identity color, HSL, and curve stages are skipped.
-This keeps the export path deterministic while avoiding work during interaction.
+demosaicing the full sensor image. Camera-embedded RAW previews are explicitly
+non-authoritative and are used only for small filmstrip thumbnail proxies.
+Settled previews and every export develop the RAW sensor data; a lossless export
+with the same adjustments and long-edge limit is an exact raster oracle before
+texture upload or encoding. While a pointer drag is active, the GUI may render a
+960px transient working preview, but it must replace that approximation with the
+authoritative 1800px result after interaction. Pixel rows are processed in
+parallel, and identity color, HSL, and curve stages are skipped.
+
+A full-resolution export viewed through a separately downsampling application is
+outside the exact same-size oracle: resolution-dependent detail and spot radii,
+viewer interpolation, JPEG loss, and OS/GPU color management can all introduce
+display differences.
 
 The repeatable release benchmark for this path is:
 
