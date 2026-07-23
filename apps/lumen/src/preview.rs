@@ -24,6 +24,9 @@ const FAILURE_RETRY_BASE: Duration = Duration::from_millis(250);
 const FAILURE_RETRY_MAX: Duration = Duration::from_secs(30);
 
 type PreviewPreparer =
+    dyn Fn(&Photo, Adjustments, u32) -> Result<PreparedPreview, String> + Send + Sync + 'static;
+#[cfg(test)]
+type LegacyPreviewPreparer =
     dyn Fn(&Photo, Adjustments) -> Result<PreparedPreview, String> + Send + Sync + 'static;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,12 +41,16 @@ pub struct PreviewRequestIdentity {
     pub epoch: u64,
     pub photo_id: u64,
     pub adjustments: Adjustments,
+    pub max_size: u32,
     pub kind: PreviewRequestKind,
 }
 
 impl PreviewRequestIdentity {
-    fn matches(&self, epoch: u64, photo_id: u64, adjustments: &Adjustments) -> bool {
-        self.epoch == epoch && self.photo_id == photo_id && self.adjustments == *adjustments
+    fn matches(&self, epoch: u64, photo_id: u64, adjustments: &Adjustments, max_size: u32) -> bool {
+        self.epoch == epoch
+            && self.photo_id == photo_id
+            && self.adjustments == *adjustments
+            && self.max_size == max_size
     }
 }
 
@@ -57,6 +64,7 @@ pub struct PreviewEnqueue {
 pub struct PreparedPreview {
     pub photo_id: u64,
     pub adjustments: Adjustments,
+    pub max_size: u32,
     pub source: DynamicImage,
     pub fast_source: DynamicImage,
     pub rendered: DynamicImage,
@@ -98,19 +106,42 @@ pub struct PreviewCompletion {
     pub result: Result<PreparedPreview, String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PreviewSelection {
     generation: u64,
     epoch: u64,
     photo_id: Option<u64>,
     adjustments: Adjustments,
+    max_size: u32,
+}
+
+impl Default for PreviewSelection {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            epoch: 0,
+            photo_id: None,
+            adjustments: Adjustments::default(),
+            max_size: PREVIEW_MAX_SIZE,
+        }
+    }
 }
 
 impl PreviewSelection {
     pub fn select(&mut self, photo_id: u64, adjustments: Adjustments) -> u64 {
+        self.select_at_size(photo_id, adjustments, PREVIEW_MAX_SIZE)
+    }
+
+    pub fn select_at_size(
+        &mut self,
+        photo_id: u64,
+        adjustments: Adjustments,
+        max_size: u32,
+    ) -> u64 {
         self.generation = self.generation.wrapping_add(1);
         self.photo_id = Some(photo_id);
         self.adjustments = adjustments;
+        self.max_size = max_size.max(1);
         self.generation
     }
 
@@ -122,6 +153,7 @@ impl PreviewSelection {
         self.generation = self.generation.wrapping_add(1);
         self.photo_id = None;
         self.adjustments = Adjustments::default();
+        self.max_size = PREVIEW_MAX_SIZE;
     }
 
     pub fn epoch(&self) -> u64 {
@@ -137,6 +169,7 @@ impl PreviewSelection {
         if self.epoch != identity.epoch
             || self.photo_id != Some(identity.photo_id)
             || self.adjustments != identity.adjustments
+            || self.max_size != identity.max_size
         {
             return false;
         }
@@ -191,12 +224,20 @@ impl PreviewLane {
         let identity = &job.identity;
         if self.shutdown
             || self.active.as_ref().is_some_and(|active| {
-                active.matches(identity.epoch, identity.photo_id, &identity.adjustments)
+                active.matches(
+                    identity.epoch,
+                    identity.photo_id,
+                    &identity.adjustments,
+                    identity.max_size,
+                )
             })
             || self.pending.iter().any(|pending| {
-                pending
-                    .identity
-                    .matches(identity.epoch, identity.photo_id, &identity.adjustments)
+                pending.identity.matches(
+                    identity.epoch,
+                    identity.photo_id,
+                    &identity.adjustments,
+                    identity.max_size,
+                )
             })
         {
             return PreviewEnqueue::default();
@@ -227,12 +268,20 @@ pub struct PreviewWorker {
 
 impl PreviewWorker {
     pub fn new() -> Self {
-        Self::with_preparer(Arc::new(|photo, adjustments| {
-            prepare_preview(photo, adjustments).map_err(|error| format!("{error:#}"))
+        Self::with_sized_preparer(Arc::new(|photo, adjustments, max_size| {
+            prepare_preview_at_size(photo, adjustments, max_size, FAST_PREVIEW_MAX_SIZE)
+                .map_err(|error| format!("{error:#}"))
         }))
     }
 
-    fn with_preparer(preparer: Arc<PreviewPreparer>) -> Self {
+    #[cfg(test)]
+    fn with_preparer(preparer: Arc<LegacyPreviewPreparer>) -> Self {
+        Self::with_sized_preparer(Arc::new(move |photo, adjustments, _| {
+            preparer(photo, adjustments)
+        }))
+    }
+
+    fn with_sized_preparer(preparer: Arc<PreviewPreparer>) -> Self {
         let selected_lane = Arc::new((
             Mutex::new(PreviewLane::new(SELECTED_QUEUE_CAPACITY)),
             Condvar::new(),
@@ -269,10 +318,22 @@ impl PreviewWorker {
         photo: Photo,
         adjustments: Adjustments,
     ) -> PreviewEnqueue {
+        self.request_selected_at_size(generation, epoch, photo, adjustments, PREVIEW_MAX_SIZE)
+    }
+
+    pub fn request_selected_at_size(
+        &self,
+        generation: u64,
+        epoch: u64,
+        photo: Photo,
+        adjustments: Adjustments,
+        max_size: u32,
+    ) -> PreviewEnqueue {
         let identity = self.identity(
             epoch,
             photo.id,
             adjustments,
+            max_size,
             PreviewRequestKind::Selected { generation },
         );
         self.enqueue(&self.selected_lane, identity, photo, false)
@@ -287,7 +348,13 @@ impl PreviewWorker {
         if photo.is_raw() {
             return PreviewEnqueue::default();
         }
-        let identity = self.identity(epoch, photo.id, adjustments, PreviewRequestKind::Prefetch);
+        let identity = self.identity(
+            epoch,
+            photo.id,
+            adjustments,
+            PREVIEW_MAX_SIZE,
+            PreviewRequestKind::Prefetch,
+        );
         self.enqueue(&self.prefetch_lane, identity, photo, true)
     }
 
@@ -363,6 +430,7 @@ impl PreviewWorker {
         epoch: u64,
         photo_id: u64,
         adjustments: Adjustments,
+        max_size: u32,
         kind: PreviewRequestKind,
     ) -> PreviewRequestIdentity {
         PreviewRequestIdentity {
@@ -370,6 +438,7 @@ impl PreviewWorker {
             epoch,
             photo_id,
             adjustments,
+            max_size: max_size.max(1),
             kind,
         }
     }
@@ -418,6 +487,7 @@ struct PreviewFailure {
     epoch: u64,
     photo_id: u64,
     adjustments: Adjustments,
+    max_size: u32,
     attempts: u32,
     retry_at: Instant,
 }
@@ -455,6 +525,16 @@ pub struct PreviewPipeline {
 impl PreviewPipeline {
     pub fn select(&mut self, photo_id: u64, adjustments: Adjustments) -> u64 {
         self.selection.select(photo_id, adjustments)
+    }
+
+    pub fn select_at_size(
+        &mut self,
+        photo_id: u64,
+        adjustments: Adjustments,
+        max_size: u32,
+    ) -> u64 {
+        self.selection
+            .select_at_size(photo_id, adjustments, max_size)
     }
 
     pub fn clear(&mut self) {
@@ -495,11 +575,22 @@ impl PreviewPipeline {
         photo_id: u64,
         adjustments: &Adjustments,
     ) -> PreviewRequestDecision {
+        self.request_decision_at_size(worker, now, photo_id, adjustments, PREVIEW_MAX_SIZE)
+    }
+
+    pub fn request_decision_at_size(
+        &mut self,
+        worker: &PreviewWorker,
+        now: Instant,
+        photo_id: u64,
+        adjustments: &Adjustments,
+        max_size: u32,
+    ) -> PreviewRequestDecision {
         let epoch = self.epoch();
         if let Some(request) = self
             .outstanding
             .iter()
-            .find(|request| request.matches(epoch, photo_id, adjustments))
+            .find(|request| request.matches(epoch, photo_id, adjustments, max_size))
             .cloned()
         {
             return match request.kind {
@@ -520,6 +611,7 @@ impl PreviewPipeline {
             failure.epoch == epoch
                 && failure.photo_id == photo_id
                 && failure.adjustments == *adjustments
+                && failure.max_size == max_size
         }) && now < failure.retry_at
         {
             return PreviewRequestDecision::Backoff(
@@ -533,11 +625,12 @@ impl PreviewPipeline {
         let epoch = self.epoch();
         self.outstanding
             .iter()
-            .any(|request| request.matches(epoch, photo_id, adjustments))
+            .any(|request| request.matches(epoch, photo_id, adjustments, PREVIEW_MAX_SIZE))
             || self.cache.iter().any(|(cached_epoch, preview)| {
                 *cached_epoch == epoch
                     && preview.photo_id == photo_id
                     && preview.adjustments == *adjustments
+                    && preview.max_size == PREVIEW_MAX_SIZE
             })
     }
 
@@ -550,11 +643,21 @@ impl PreviewPipeline {
         photo_id: u64,
         adjustments: &Adjustments,
     ) -> Option<PreparedPreview> {
+        self.take_cached_at_size(photo_id, adjustments, PREVIEW_MAX_SIZE)
+    }
+
+    pub fn take_cached_at_size(
+        &mut self,
+        photo_id: u64,
+        adjustments: &Adjustments,
+        max_size: u32,
+    ) -> Option<PreparedPreview> {
         let epoch = self.epoch();
         let index = self.cache.iter().position(|(cached_epoch, preview)| {
             *cached_epoch == epoch
                 && preview.photo_id == photo_id
                 && preview.adjustments == *adjustments
+                && preview.max_size == max_size
         })?;
         self.cache.remove(index).map(|(_, preview)| preview)
     }
@@ -597,6 +700,7 @@ impl PreviewPipeline {
             *cached_epoch != epoch
                 || cached.photo_id != preview.photo_id
                 || cached.adjustments != preview.adjustments
+                || cached.max_size != preview.max_size
         });
         self.cache.push_front((epoch, preview));
         self.cache.truncate(PREVIEW_CACHE_CAPACITY);
@@ -607,6 +711,7 @@ impl PreviewPipeline {
             failure.epoch != identity.epoch
                 || failure.photo_id != identity.photo_id
                 || failure.adjustments != identity.adjustments
+                || failure.max_size != identity.max_size
         });
     }
 
@@ -618,6 +723,7 @@ impl PreviewPipeline {
                 failure.epoch == identity.epoch
                     && failure.photo_id == identity.photo_id
                     && failure.adjustments == identity.adjustments
+                    && failure.max_size == identity.max_size
             })
             .map_or(0, |failure| failure.attempts);
         self.clear_failure(identity);
@@ -628,6 +734,7 @@ impl PreviewPipeline {
             epoch: identity.epoch,
             photo_id: identity.photo_id,
             adjustments: identity.adjustments.clone(),
+            max_size: identity.max_size,
             attempts,
             retry_at: now + delay,
         });
@@ -658,6 +765,7 @@ fn prepare_preview_at_size(
     Ok(PreparedPreview {
         photo_id: photo.id,
         adjustments,
+        max_size,
         source,
         fast_source,
         rendered,
@@ -701,7 +809,11 @@ fn preview_lane(
         let Some(job) = job else {
             continue;
         };
-        let result = preparer(&job.photo, job.identity.adjustments.clone());
+        let result = preparer(
+            &job.photo,
+            job.identity.adjustments.clone(),
+            job.identity.max_size,
+        );
         let shutdown = {
             let (lane, _) = &*lane;
             let mut lane = lane.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

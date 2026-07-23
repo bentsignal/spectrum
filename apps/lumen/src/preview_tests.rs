@@ -34,6 +34,7 @@ fn identity(id: u64, epoch: u64, photo_id: u64) -> PreviewRequestIdentity {
         epoch,
         photo_id,
         adjustments: Adjustments::default(),
+        max_size: PREVIEW_MAX_SIZE,
         kind: PreviewRequestKind::Prefetch,
     }
 }
@@ -47,6 +48,7 @@ fn prepared(id: u64, adjustments: Adjustments) -> PreparedPreview {
     PreparedPreview {
         photo_id: id,
         adjustments,
+        max_size: PREVIEW_MAX_SIZE,
         source: rendered.clone(),
         fast_source: rendered.clone(),
         histogram: PreviewHistogram::from_image(&rendered),
@@ -97,6 +99,68 @@ fn prepared_preview_applies_the_limit_after_geometry_and_publishes_matching_hist
     assert_eq!(
         prepared.histogram,
         PreviewHistogram::from_image(&prepared.rendered)
+    );
+}
+
+#[test]
+fn selected_worker_propagates_dynamic_resolution_into_identity_and_publication() {
+    let worker = PreviewWorker::with_sized_preparer(Arc::new(|photo, adjustments, max_size| {
+        let mut preview = prepared(photo.id, adjustments);
+        preview.max_size = max_size;
+        Ok(preview)
+    }));
+    let mut pipeline = PreviewPipeline::default();
+    let adjustments = Adjustments::default();
+    let generation = pipeline.select_at_size(7, adjustments.clone(), 3_072);
+    pipeline.track_enqueue(worker.request_selected_at_size(
+        generation,
+        pipeline.epoch(),
+        photo(7),
+        adjustments,
+        3_072,
+    ));
+
+    let completion = worker.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(completion.identity.max_size, 3_072);
+    let PreviewCompletionDisposition::Publish(preview) =
+        pipeline.complete(completion, Instant::now())
+    else {
+        panic!("matching dynamic-resolution selection should publish");
+    };
+    assert_eq!(preview.max_size, 3_072);
+}
+
+#[test]
+fn preview_cache_never_substitutes_a_lower_resolution_tier() {
+    let mut pipeline = PreviewPipeline::default();
+    pipeline.select_at_size(99, Adjustments::default(), 3_072);
+    let mut request = identity(1, pipeline.epoch(), 7);
+    request.max_size = 3_072;
+    track(&mut pipeline, request.clone());
+    let mut preview = prepared(7, Adjustments::default());
+    preview.max_size = 3_072;
+    assert!(matches!(
+        pipeline.complete(
+            PreviewCompletion {
+                identity: request,
+                result: Ok(preview),
+            },
+            Instant::now(),
+        ),
+        PreviewCompletionDisposition::Cached
+    ));
+
+    assert!(
+        pipeline
+            .take_cached_at_size(7, &Adjustments::default(), PREVIEW_MAX_SIZE)
+            .is_none()
+    );
+    assert_eq!(
+        pipeline
+            .take_cached_at_size(7, &Adjustments::default(), 3_072)
+            .unwrap()
+            .max_size,
+        3_072
     );
 }
 

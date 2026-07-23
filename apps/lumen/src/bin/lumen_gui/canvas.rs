@@ -3,11 +3,10 @@ use super::*;
 impl LumenApp {
     pub(super) fn canvas(&mut self, root: &mut egui::Ui) {
         let context = root.ctx().clone();
-        self.ensure_preview(&context);
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(CANVAS).inner_margin(16))
             .show(root, |ui| {
-                if let Some(texture) = self.preview.clone() {
+                if self.preview.is_some() {
                     let available = ui.available_size();
                     let (rect, response) =
                         ui.allocate_exact_size(available, Sense::click_and_drag());
@@ -20,6 +19,11 @@ impl LumenApp {
                             self.zoom = (self.zoom * (scroll * 0.0018).exp()).clamp(0.25, 8.0);
                         }
                     }
+                    self.update_preview_resolution(available, context.pixels_per_point());
+                    self.ensure_preview(&context);
+                    let Some(texture) = self.preview.clone() else {
+                        return;
+                    };
                     if self.compare_mode == CompareMode::SideBySide
                         && let Some(original) = self.original_preview.clone()
                     {
@@ -50,6 +54,12 @@ impl LumenApp {
                         paint_texture(ui, after_rect, &texture, after_image);
                         compare_label(ui, before_rect, "ORIGINAL");
                         compare_label(ui, after_rect, "EDITED");
+                        paint_preview_quality(
+                            ui,
+                            rect,
+                            self.preview_fast,
+                            self.adjustment_interacting,
+                        );
                         return;
                     }
                     let base = preview_fit_size(
@@ -108,6 +118,7 @@ impl LumenApp {
                             Color32::from_gray(150),
                         );
                     }
+                    paint_preview_quality(ui, rect, self.preview_fast, self.adjustment_interacting);
                 } else {
                     let available = ui.available_rect_before_wrap();
                     ui.allocate_rect(available, Sense::hover());
@@ -148,4 +159,28 @@ impl LumenApp {
                 }
             });
     }
+}
+
+fn paint_preview_quality(ui: &egui::Ui, canvas: Rect, degraded: bool, interacting: bool) {
+    if !degraded {
+        return;
+    }
+    let label = if interacting {
+        "Interactive preview · Full quality on release"
+    } else {
+        "Refining full quality…"
+    };
+    let badge = Rect::from_min_size(
+        canvas.right_top() + Vec2::new(-250.0, 10.0),
+        Vec2::new(240.0, 26.0),
+    );
+    ui.painter()
+        .rect_filled(badge, 6.0, Color32::from_black_alpha(205));
+    ui.painter().text(
+        badge.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(10.5),
+        Color32::from_gray(205),
+    );
 }

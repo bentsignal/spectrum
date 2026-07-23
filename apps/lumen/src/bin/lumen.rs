@@ -402,6 +402,13 @@ impl BenchmarkProfile {
         }
     }
 
+    fn live_preview_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 33.0,
+            Self::HostedCi => 85.0,
+        }
+    }
+
     fn command_budget_ms(self) -> f64 {
         match self {
             // A durable command atomically republishes a portable project that

@@ -136,6 +136,22 @@ pub(super) fn benchmark(
             ));
             preview_samples.push(started.elapsed());
         }
+        let live_preview = DynamicImage::ImageRgb8(deterministic_rgb(960, 640));
+        std::hint::black_box(render_image(
+            live_preview.clone(),
+            preview_adjustments.clone(),
+            RenderOptions::default(),
+        ));
+        let mut live_preview_samples = Vec::with_capacity(12);
+        for _ in 0..12 {
+            let started = Instant::now();
+            std::hint::black_box(render_image(
+                live_preview.clone(),
+                preview_adjustments.clone(),
+                RenderOptions::default(),
+            ));
+            live_preview_samples.push(started.elapsed());
+        }
 
         let export_path = directory.join("24mp-export.jpg");
         let started = Instant::now();
@@ -201,6 +217,13 @@ pub(super) fn benchmark(
             16.7,
             profile.preview_budget_ms(),
         );
+        let live_preview_metric = latency_metric(
+            "adjustment_live_preview",
+            "960x640 bounded interaction frame; GUI dispatch is throttled to 33 ms",
+            &live_preview_samples,
+            16.7,
+            profile.live_preview_budget_ms(),
+        );
         let export_ms = duration_ms(export_duration);
         let export_pass = export_ms <= 5000.0;
         let export = json!({
@@ -240,6 +263,7 @@ pub(super) fn benchmark(
         }).transpose()?;
         let passed = command["pass"].as_bool() == Some(true)
             && preview_metric["pass"].as_bool() == Some(true)
+            && live_preview_metric["pass"].as_bool() == Some(true)
             && jpeg_import["pass"].as_bool() == Some(true)
             && navigation_metrics
                 .iter()
@@ -248,7 +272,13 @@ pub(super) fn benchmark(
                 .as_ref()
                 .is_none_or(|metric| metric["pass"].as_bool() == Some(true))
             && export_pass;
-        let mut metrics = vec![command, preview_metric, jpeg_import, export];
+        let mut metrics = vec![
+            command,
+            live_preview_metric,
+            preview_metric,
+            jpeg_import,
+            export,
+        ];
         metrics.extend(navigation_metrics);
         if let Some(metric) = raw_import_metric {
             metrics.push(metric);

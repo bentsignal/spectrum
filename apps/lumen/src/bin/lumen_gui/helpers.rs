@@ -220,29 +220,64 @@ pub(super) fn slider(
     range: std::ops::RangeInclusive<f32>,
     changed: &mut bool,
     commit: &mut bool,
-) {
+) -> (Rect, Rect) {
+    const LABEL_WIDTH: f32 = 78.0;
+    const VALUE_WIDTH: f32 = 52.0;
+    const RESET_WIDTH: f32 = 24.0;
     ui.horizontal(|ui| {
         ui.add_sized(
-            [78.0, 18.0],
+            [LABEL_WIDTH, 18.0],
             egui::Label::new(RichText::new(label).size(10.5)),
         );
-        let response = ui.add(
-            egui::Slider::new(value, range)
-                .show_value(true)
+        let slider_width =
+            (ui.available_width() - VALUE_WIDTH - RESET_WIDTH - ui.spacing().item_spacing.x * 2.0)
+                .max(48.0);
+        let slider_response = ui.add_sized(
+            [slider_width, 18.0],
+            egui::Slider::new(value, range.clone())
+                .show_value(false)
                 .smart_aim(false),
         );
-        *changed |= response.changed();
-        *commit |= response.drag_stopped() || (response.changed() && !response.dragged());
-        if ui
-            .add_enabled(value.abs() > f32::EPSILON, egui::Button::new("0").small())
-            .on_hover_text(format!("Reset {label}"))
-            .clicked()
-        {
+        let value_response = ui.add_sized(
+            [VALUE_WIDTH, 18.0],
+            egui::DragValue::new(value)
+                .range(range)
+                .speed(0.1)
+                .fixed_decimals(1)
+                .update_while_editing(false),
+        );
+        let row_changed = slider_response.changed() || value_response.changed();
+        let row_dragged = slider_response.dragged() || value_response.dragged();
+        let row_stopped = slider_response.drag_stopped() || value_response.drag_stopped();
+        if row_dragged {
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new("lumen-adjustment-interacting"), true);
+            });
+        }
+        *changed |= row_changed;
+        *commit |= row_stopped || (row_changed && !row_dragged);
+
+        let enabled = value.abs() > f32::EPSILON;
+        let accessible_label = format!("Reset {label} to 0");
+        let reset = ui
+            .add_enabled(
+                enabled,
+                egui::Button::new(RichText::new("↺").size(13.0))
+                    .small()
+                    .min_size(Vec2::new(RESET_WIDTH, 18.0)),
+            )
+            .on_hover_text(&accessible_label);
+        reset.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &accessible_label)
+        });
+        if enabled && reset.clicked() {
             *value = 0.0;
             *changed = true;
             *commit = true;
         }
-    });
+        (value_response.rect, reset.rect)
+    })
+    .inner
 }
 
 pub(super) fn crop_screen_rect(image: Rect, crop: CropRect) -> Rect {
@@ -532,6 +567,9 @@ pub(super) fn tone_curve_editor(
     if response.dragged()
         && let Some(position) = response.interact_pointer_pos()
     {
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(egui::Id::new("lumen-adjustment-interacting"), true);
+        });
         let pointer = CurvePoint {
             x: ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0),
             y: ((rect.bottom() - position.y) / rect.height()).clamp(0.0, 1.0),
@@ -567,8 +605,12 @@ pub(super) fn load_texture(
     context.load_texture(
         name,
         egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
-        TextureOptions::LINEAR,
+        settled_texture_options(),
     )
+}
+
+pub(super) const fn settled_texture_options() -> TextureOptions {
+    TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear))
 }
 
 pub(super) fn fit_size(image: Vec2, available: Vec2) -> Vec2 {
@@ -577,6 +619,38 @@ pub(super) fn fit_size(image: Vec2, available: Vec2) -> Vec2 {
 
 pub(super) fn preview_fit_size(layout: Option<Vec2>, raster: Vec2, available: Vec2) -> Vec2 {
     fit_size(layout.unwrap_or(raster), available)
+}
+
+/// Choose a settled raster tier from the actual physical display footprint.
+///
+/// Raster originals may step up for a Retina viewport or zoom. RAW development
+/// stays at the established 1800-pixel memory ceiling: it is authoritative but
+/// intentionally bounded until the renderer can request authoritative regions.
+pub(super) fn settled_preview_size(
+    available_points: Vec2,
+    pixels_per_point: f32,
+    zoom: f32,
+    is_raw: bool,
+) -> u32 {
+    const RASTER_MAX_SIZE: u32 = 4096;
+    const TIER: u32 = 256;
+    if is_raw {
+        return lumen_core::preview::PREVIEW_MAX_SIZE;
+    }
+    let display_long_edge = available_points.x.max(available_points.y).max(1.0)
+        * pixels_per_point.max(1.0)
+        * zoom.max(1.0);
+    let requested = display_long_edge.ceil() as u32;
+    let tiered = requested.div_ceil(TIER).saturating_mul(TIER);
+    tiered.clamp(lumen_core::preview::PREVIEW_MAX_SIZE, RASTER_MAX_SIZE)
+}
+
+pub(super) fn settled_preview_size_with_hysteresis(current: u32, requested: u32) -> u32 {
+    if requested > current || requested.saturating_mul(2) < current {
+        requested
+    } else {
+        current
+    }
 }
 
 pub(super) fn shoot_date_label(start: Option<&str>, end: Option<&str>, imported: &str) -> String {

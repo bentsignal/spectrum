@@ -2,6 +2,10 @@ use super::*;
 
 impl LumenApp {
     pub(super) fn inspector(&mut self, root: &mut egui::Ui) {
+        let context = root.ctx().clone();
+        context.data_mut(|data| {
+            data.insert_temp(egui::Id::new("lumen-adjustment-interacting"), false);
+        });
         egui::Panel::right("inspector")
             .resizable(true)
             .default_size(330.0)
@@ -452,7 +456,6 @@ impl LumenApp {
                             });
                         if changed {
                             self.draft = draft.sanitized();
-                            self.preview = None;
                         }
                         if commit {
                             self.finish_edit(id);
@@ -491,6 +494,10 @@ impl LumenApp {
                         self.presets_ui(ui, id);
                     });
             });
+        self.adjustment_interacting = context.data(|data| {
+            data.get_temp::<bool>(egui::Id::new("lumen-adjustment-interacting"))
+                .unwrap_or(false)
+        });
     }
 
     pub(super) fn histogram_ui(&self, ui: &mut egui::Ui) {
