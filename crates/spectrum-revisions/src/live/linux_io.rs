@@ -1,20 +1,520 @@
 use std::{
     ffi::CString,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+        unix::{ffi::OsStrExt, fs::PermissionsExt},
     },
     path::{Path, PathBuf},
 };
 
 use super::{
-    FileIdentity, RevisionError, RevisionResult, SessionId, StorageStateId, sync_parent,
-    temporary_path, validate_named_identity, validated_identity,
+    FileIdentity, PublishStats, PublishStrategy, RevisionError, RevisionResult, RevisionStore,
+    SessionId, StorageStateId, sync_parent, temporary_path, validate_named_identity,
+    validated_identity,
 };
 
-const FICLONE_IOCTL: libc::c_ulong = 0x4004_9409;
+const RENAME_EXCHANGE: libc::c_uint = 2;
+
+pub(super) struct PrivateDirectory {
+    descriptor: File,
+}
+
+impl PrivateDirectory {
+    pub(super) fn open(path: &Path) -> RevisionResult<Self> {
+        let path = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory contains NUL"))?;
+        let descriptor = unsafe {
+            libc::open(
+                path.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if descriptor < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let descriptor = unsafe { File::from_raw_fd(descriptor) };
+        let metadata = descriptor.metadata()?;
+        use std::os::unix::fs::MetadataExt as _;
+        if !metadata.file_type().is_dir()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+        {
+            return Err(RevisionError::Invalid(
+                "live cache directory must be owned by this user and inaccessible to group/other"
+                    .into(),
+            ));
+        }
+        Ok(Self { descriptor })
+    }
+
+    pub(super) fn open_file(&self, name: &str, write: bool) -> io::Result<File> {
+        let name = CString::new(name)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+        let mut flags = libc::O_CLOEXEC | libc::O_NOFOLLOW;
+        flags |= if write { libc::O_RDWR } else { libc::O_RDONLY };
+        let descriptor = unsafe { libc::openat(self.descriptor.as_raw_fd(), name.as_ptr(), flags) };
+        if descriptor < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { File::from_raw_fd(descriptor) })
+        }
+    }
+
+    pub(super) fn create_file(&self, name: &str) -> io::Result<File> {
+        let name = CString::new(name)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+        let descriptor = unsafe {
+            libc::openat(
+                self.descriptor.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                0o600,
+            )
+        };
+        if descriptor < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { File::from_raw_fd(descriptor) })
+        }
+    }
+
+    pub(super) fn validate(
+        &self,
+        name: &str,
+        expected: FileIdentity,
+        private: bool,
+    ) -> RevisionResult<()> {
+        let actual = self.open_file(name, false)?;
+        if validated_identity(&actual, private)? != expected {
+            return Err(RevisionError::Invalid(
+                "private publication slot changed before exchange".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn remove(&self, name: &str) -> io::Result<()> {
+        let name = CString::new(name)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+        let removed = unsafe { libc::unlinkat(self.descriptor.as_raw_fd(), name.as_ptr(), 0) };
+        if removed == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    pub(super) fn sync(&self) -> RevisionResult<()> {
+        self.descriptor.sync_all()?;
+        Ok(())
+    }
+
+    pub(super) fn write_marker(&self, name: &str, bytes: &[u8]) -> RevisionResult<()> {
+        let temporary = format!(".{name}-{}.tmp", SessionId::new());
+        let result = (|| -> RevisionResult<()> {
+            let mut marker = self.create_file(&temporary)?;
+            marker.write_all(bytes)?;
+            marker.sync_all()?;
+            let identity = validated_identity(&marker, true)?;
+            self.validate(&temporary, identity, true)?;
+            self.rename(&temporary, name)?;
+            self.sync()
+        })();
+        if result.is_err() {
+            let _ = self.remove(&temporary);
+            let _ = self.sync();
+        }
+        result
+    }
+
+    pub(super) fn read_marker(&self, name: &str) -> RevisionResult<Vec<u8>> {
+        let mut marker = self.open_file(name, false)?;
+        validated_identity(&marker, true)?;
+        if marker.metadata()?.len() > 1024 {
+            return Err(RevisionError::Corrupt(
+                "publication marker exceeds its bounded format".into(),
+            ));
+        }
+        let mut bytes = Vec::new();
+        marker.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    pub(super) fn rename(&self, source: &str, destination: &str) -> RevisionResult<()> {
+        let source = CString::new(source)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+        let destination = CString::new(destination)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+        let renamed = unsafe {
+            libc::renameat(
+                self.descriptor.as_raw_fd(),
+                source.as_ptr(),
+                self.descriptor.as_raw_fd(),
+                destination.as_ptr(),
+            )
+        };
+        if renamed == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error().into())
+        }
+    }
+
+    pub(super) fn exchange(
+        &self,
+        source_name: &str,
+        source_identity: FileIdentity,
+        destination: &Path,
+        destination_identity: FileIdentity,
+    ) -> RevisionResult<()> {
+        self.validate(source_name, source_identity, true)?;
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let parent = CString::new(parent.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory contains NUL"))?;
+        let parent_descriptor = unsafe {
+            libc::open(
+                parent.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if parent_descriptor < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let parent_descriptor = unsafe { File::from_raw_fd(parent_descriptor) };
+        let destination_name = destination
+            .file_name()
+            .ok_or_else(|| RevisionError::Invalid("canonical project has no file name".into()))?;
+        let destination_name = CString::new(destination_name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+        let canonical =
+            super::openat_nofollow(&parent_descriptor, destination_name.as_c_str(), false)?;
+        if validated_identity(&canonical, false)? != destination_identity {
+            return Err(RevisionError::Invalid(
+                "canonical project changed immediately before exchange".into(),
+            ));
+        }
+        self.validate(source_name, source_identity, true)?;
+        let source_name = CString::new(source_name)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+        let exchanged = unsafe {
+            libc::renameat2(
+                self.descriptor.as_raw_fd(),
+                source_name.as_ptr(),
+                parent_descriptor.as_raw_fd(),
+                destination_name.as_ptr(),
+                RENAME_EXCHANGE,
+            )
+        };
+        if exchanged != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        parent_descriptor.sync_all()?;
+        self.sync()?;
+        let published =
+            super::openat_nofollow(&parent_descriptor, destination_name.as_c_str(), false)?;
+        if validated_identity(&published, false)? != source_identity {
+            return Err(RevisionError::Invalid(
+                "canonical project does not contain the exchanged candidate".into(),
+            ));
+        }
+        self.validate(
+            source_name
+                .to_str()
+                .map_err(|_| RevisionError::Invalid("file name is not UTF-8".into()))?,
+            destination_identity,
+            false,
+        )
+    }
+
+    pub(super) fn exchange_supported(&self) -> RevisionResult<bool> {
+        let first_name = format!(".exchange-probe-a-{}", SessionId::new());
+        let second_name = format!(".exchange-probe-b-{}", SessionId::new());
+        let first = self.create_file(&first_name)?;
+        let second = match self.create_file(&second_name) {
+            Ok(second) => second,
+            Err(error) => {
+                let _ = self.remove(&first_name);
+                return Err(error.into());
+            }
+        };
+        first.sync_all()?;
+        second.sync_all()?;
+        let first_name_c = CString::new(first_name.as_str()).unwrap();
+        let second_name_c = CString::new(second_name.as_str()).unwrap();
+        let result = unsafe {
+            libc::renameat2(
+                self.descriptor.as_raw_fd(),
+                first_name_c.as_ptr(),
+                self.descriptor.as_raw_fd(),
+                second_name_c.as_ptr(),
+                RENAME_EXCHANGE,
+            )
+        };
+        let error = io::Error::last_os_error();
+        let _ = self.remove(&first_name);
+        let _ = self.remove(&second_name);
+        self.sync()?;
+        if result == 0 {
+            Ok(true)
+        } else if error.raw_os_error().is_some_and(|code| {
+            code == libc::ENOSYS || code == libc::EINVAL || code == libc::EOPNOTSUPP
+        }) {
+            Ok(false)
+        } else {
+            Err(error.into())
+        }
+    }
+
+    pub(super) fn device(&self) -> RevisionResult<u64> {
+        use std::os::unix::fs::MetadataExt as _;
+        Ok(self.descriptor.metadata()?.dev())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ExchangeIntent {
+    pub(super) canonical_identity: FileIdentity,
+    pub(super) candidate_identity: FileIdentity,
+    pub(super) generation: u64,
+    pub(super) state_id: Option<StorageStateId>,
+    pub(super) target_generation: u64,
+    pub(super) target_state_id: Option<StorageStateId>,
+}
+
+impl ExchangeIntent {
+    const MAGIC: [u8; 8] = *b"SPXCHG01";
+    const ENCODED_LEN: usize = 8 + 6 * 8 + 2 * (1 + 16);
+
+    pub(super) fn encode(self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(Self::ENCODED_LEN);
+        bytes.extend(Self::MAGIC);
+        for value in [
+            self.canonical_identity.device,
+            self.canonical_identity.inode,
+            self.candidate_identity.device,
+            self.candidate_identity.inode,
+            self.generation,
+            self.target_generation,
+        ] {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.push(u8::from(self.state_id.is_some()));
+        bytes.extend(self.state_id.unwrap_or([0; 16]));
+        bytes.push(u8::from(self.target_state_id.is_some()));
+        bytes.extend(self.target_state_id.unwrap_or([0; 16]));
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> RevisionResult<Self> {
+        if bytes.len() != Self::ENCODED_LEN || bytes[..8] != Self::MAGIC {
+            return Err(RevisionError::Corrupt(
+                "invalid publication exchange intent".into(),
+            ));
+        }
+        let mut offset = 8;
+        let mut next_u64 = || {
+            let value = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            offset += 8;
+            value
+        };
+        let canonical_identity = FileIdentity {
+            device: next_u64(),
+            inode: next_u64(),
+        };
+        let candidate_identity = FileIdentity {
+            device: next_u64(),
+            inode: next_u64(),
+        };
+        let generation = next_u64();
+        let target_generation = next_u64();
+        let present = bytes[offset];
+        offset += 1;
+        let state_id = match present {
+            0 => None,
+            1 => Some(bytes[offset..offset + 16].try_into().unwrap()),
+            _ => {
+                return Err(RevisionError::Corrupt(
+                    "invalid publication exchange state marker".into(),
+                ));
+            }
+        };
+        offset += 16;
+        let target_present = bytes[offset];
+        offset += 1;
+        let target_state_id = match target_present {
+            0 => None,
+            1 => Some(bytes[offset..offset + 16].try_into().unwrap()),
+            _ => {
+                return Err(RevisionError::Corrupt(
+                    "invalid publication target state marker".into(),
+                ));
+            }
+        };
+        Ok(Self {
+            canonical_identity,
+            candidate_identity,
+            generation,
+            state_id,
+            target_generation,
+            target_state_id,
+        })
+    }
+}
+
+pub(super) fn recover_exchange(
+    directory: &PrivateDirectory,
+    destination: &Path,
+    cache_directory: &Path,
+) -> RevisionResult<()> {
+    let intent = match directory.read_marker(super::PUBLISH_EXCHANGE_INTENT_FILE) {
+        Ok(bytes) => ExchangeIntent::decode(&bytes)?,
+        Err(RevisionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let canonical = super::open_nofollow(destination, false)?;
+    let canonical_identity = validated_identity(&canonical, false)?;
+    let slot = directory.open_file(super::PUBLISH_MIRROR_FILE, false)?;
+    let slot_identity = validated_identity(&slot, false)?;
+    let canonical_inspection = RevisionStore::inspect(destination)?;
+    validate_named_identity(destination, canonical_identity, false)?;
+    let slot_path = cache_directory.join(super::PUBLISH_MIRROR_FILE);
+    let slot_inspection = RevisionStore::inspect(&slot_path)?;
+    directory.validate(super::PUBLISH_MIRROR_FILE, slot_identity, false)?;
+    if canonical_identity == intent.candidate_identity
+        && slot_identity == intent.canonical_identity
+        && canonical_inspection.generation == intent.target_generation
+        && canonical_inspection.state_id == intent.target_state_id
+        && slot_inspection.generation == intent.generation
+        && slot_inspection.state_id == intent.state_id
+    {
+        slot.set_permissions(fs::Permissions::from_mode(0o600))?;
+        slot.sync_all()?;
+        directory.validate(super::PUBLISH_MIRROR_FILE, intent.canonical_identity, true)?;
+        write_ready_marker(directory, intent.generation, intent.state_id)?;
+    } else if canonical_identity == intent.canonical_identity
+        && slot_identity == intent.candidate_identity
+        && canonical_inspection.generation == intent.generation
+        && canonical_inspection.state_id == intent.state_id
+        && slot_inspection.generation == intent.target_generation
+        && slot_inspection.state_id == intent.target_state_id
+    {
+        slot.set_permissions(fs::Permissions::from_mode(0o600))?;
+        slot.sync_all()?;
+        directory.validate(super::PUBLISH_MIRROR_FILE, intent.candidate_identity, true)?;
+        remove_private_file(directory, super::PUBLISH_MIRROR_READY_FILE)?;
+    } else {
+        return Err(RevisionError::Invalid(
+            "publication exchange residuals do not match either atomic state".into(),
+        ));
+    }
+    remove_private_file(directory, super::PUBLISH_EXCHANGE_INTENT_FILE)?;
+    directory.sync()
+}
+
+pub(super) fn remove_private_file(directory: &PrivateDirectory, name: &str) -> RevisionResult<()> {
+    match directory.remove(name) {
+        Ok(()) => directory.sync(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(super) fn apply_checkpoint_delta(source: &Path, mirror: &File) -> RevisionResult<PublishStats> {
+    use std::os::unix::fs::FileExt as _;
+
+    let source = super::open_nofollow(source, false)?;
+    validated_identity(&source, false)?;
+    let source_len = source.metadata()?.len();
+    let mirror_len = mirror.metadata()?.len();
+    let mut source_chunk = vec![0; super::WRITE_BLOCK_BYTES];
+    let mut mirror_chunk = vec![0; super::WRITE_BLOCK_BYTES];
+    let mut offset = 0_u64;
+    let mut changed_bytes = mirror_len.saturating_sub(source_len);
+    let mut written_bytes = 0_u64;
+    while offset < source_len {
+        let chunk_len = usize::try_from((source_len - offset).min(super::WRITE_BLOCK_BYTES as u64))
+            .expect("bounded comparison chunk");
+        source.read_exact_at(&mut source_chunk[..chunk_len], offset)?;
+        mirror_chunk[..chunk_len].fill(0);
+        let overlap_len =
+            usize::try_from((mirror_len.saturating_sub(offset)).min(chunk_len as u64))
+                .expect("bounded comparison chunk");
+        if overlap_len > 0 {
+            mirror.read_exact_at(&mut mirror_chunk[..overlap_len], offset)?;
+        }
+        let overlap_changed = source_chunk[..overlap_len] != mirror_chunk[..overlap_len];
+        let new_tail_len = chunk_len - overlap_len;
+        if overlap_changed {
+            changed_bytes += overlap_len as u64;
+        }
+        changed_bytes += new_tail_len as u64;
+        if overlap_changed || new_tail_len > 0 {
+            mirror.write_all_at(&source_chunk[..chunk_len], offset)?;
+            written_bytes += chunk_len as u64;
+        }
+        offset += chunk_len as u64;
+    }
+    if source_len != mirror_len {
+        mirror.set_len(source_len)?;
+    }
+    Ok(PublishStats {
+        incremental: true,
+        reflink_unavailable: false,
+        strategy: PublishStrategy::PageDiffExchange,
+        scanned_bytes: source_len.max(mirror_len),
+        changed_bytes,
+        written_bytes,
+    })
+}
+
+pub(super) fn seed_incremental_mirror(
+    destination: &Path,
+    cache_directory: &Path,
+    generation: u64,
+    state_id: Option<StorageStateId>,
+) {
+    let Ok(directory) = PrivateDirectory::open(cache_directory) else {
+        return;
+    };
+    use std::os::unix::fs::MetadataExt as _;
+    let same_device = match (destination.metadata(), directory.device()) {
+        (Ok(metadata), Ok(device)) => metadata.dev() == device,
+        _ => false,
+    };
+    if !same_device {
+        return;
+    }
+    let _ = remove_private_file(&directory, super::PUBLISH_MIRROR_READY_FILE);
+    let _ = remove_private_file(&directory, super::PUBLISH_EXCHANGE_INTENT_FILE);
+    let temporary = format!(".published-mirror-{}.tmp", SessionId::new());
+    let seeded = (|| -> RevisionResult<()> {
+        let mut candidate = directory.create_file(&temporary)?;
+        let mut source = super::open_nofollow(destination, false)?;
+        io::copy(&mut source, &mut candidate)?;
+        candidate.set_permissions(fs::Permissions::from_mode(0o600))?;
+        candidate.sync_all()?;
+        let identity = validated_identity(&candidate, true)?;
+        directory.validate(&temporary, identity, true)?;
+        remove_private_file(&directory, super::PUBLISH_MIRROR_FILE)?;
+        directory.rename(&temporary, super::PUBLISH_MIRROR_FILE)?;
+        directory.sync()?;
+        super::maybe_seed_fault()?;
+        write_ready_marker(&directory, generation, state_id)?;
+        directory.sync()?;
+        Ok(())
+    })();
+    if seeded.is_err() {
+        let _ = directory.remove(&temporary);
+        let _ = directory.remove(super::PUBLISH_MIRROR_FILE);
+        let _ = directory.remove(super::PUBLISH_MIRROR_READY_FILE);
+        let _ = directory.sync();
+    }
+}
 
 pub(super) struct StagedFile {
     _descriptor: File,
@@ -64,17 +564,6 @@ pub(super) fn open_unnamed(directory: &Path) -> std::io::Result<File> {
     }
 }
 
-pub(super) fn clone_unnamed(source: &Path, directory: &Path) -> std::io::Result<File> {
-    let source = super::open_nofollow(source, false)?;
-    let candidate = open_unnamed(directory)?;
-    let cloned = unsafe { libc::ioctl(candidate.as_raw_fd(), FICLONE_IOCTL, source.as_raw_fd()) };
-    if cloned == 0 {
-        Ok(candidate)
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
 pub(super) fn stage_unnamed(descriptor: File, destination: &Path) -> RevisionResult<StagedFile> {
     let path = temporary_path(destination);
     let temporary = CString::new(path.as_os_str().as_bytes())
@@ -121,46 +610,24 @@ fn marker_bytes(generation: u64, state_id: Option<StorageStateId>) -> Vec<u8> {
     marker.into_bytes()
 }
 
+#[cfg(test)]
 pub(super) fn ready_marker_matches(
-    path: &Path,
+    directory: &PrivateDirectory,
     generation: u64,
     state_id: Option<StorageStateId>,
 ) -> bool {
-    let Ok(mut marker) = super::open_nofollow(path, false) else {
-        return false;
-    };
-    if validated_identity(&marker, true).is_err() {
-        return false;
-    }
-    let mut bytes = Vec::new();
-    marker.read_to_end(&mut bytes).is_ok() && bytes == marker_bytes(generation, state_id)
+    directory
+        .read_marker(super::PUBLISH_MIRROR_READY_FILE)
+        .is_ok_and(|bytes| bytes == marker_bytes(generation, state_id))
 }
 
 pub(super) fn write_ready_marker(
-    path: &Path,
+    directory: &PrivateDirectory,
     generation: u64,
     state_id: Option<StorageStateId>,
 ) -> RevisionResult<()> {
-    let temporary =
-        path.with_file_name(format!(".published-mirror-ready-{}.tmp", SessionId::new()));
-    let result = (|| -> RevisionResult<()> {
-        let mut marker = OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .open(&temporary)?;
-        marker.write_all(&marker_bytes(generation, state_id))?;
-        marker.sync_all()?;
-        let identity = validated_identity(&marker, true)?;
-        validate_named_identity(&temporary, identity, true)?;
-        fs::rename(&temporary, path)?;
-        sync_parent(path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-        let _ = sync_parent(&temporary);
-    }
-    result
+    directory.write_marker(
+        super::PUBLISH_MIRROR_READY_FILE,
+        &marker_bytes(generation, state_id),
+    )
 }

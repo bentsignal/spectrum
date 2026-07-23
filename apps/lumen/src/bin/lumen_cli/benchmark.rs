@@ -70,8 +70,10 @@ pub(super) fn benchmark(
         let mut execute_samples = Vec::with_capacity(COMMAND_SAMPLES);
         let mut publication_bytes = Vec::with_capacity(COMMAND_SAMPLES);
         let mut publication_changed_bytes = Vec::with_capacity(COMMAND_SAMPLES);
+        let mut publication_strategies = Vec::with_capacity(COMMAND_SAMPLES);
         let mut incremental_publications = 0_usize;
         let mut reflink_unavailable_samples = 0_usize;
+        let mut full_copy_publications = 0_usize;
         for iteration in 0..COMMAND_SAMPLES {
             let started = Instant::now();
             let open_started = Instant::now();
@@ -92,8 +94,10 @@ pub(super) fn benchmark(
             if let Some(stats) = invocation.last_publish_stats() {
                 incremental_publications += usize::from(stats.incremental);
                 reflink_unavailable_samples += usize::from(stats.reflink_unavailable);
+                full_copy_publications += usize::from(stats.strategy.as_str() == "full-copy");
                 publication_bytes.push(stats.written_bytes);
                 publication_changed_bytes.push(stats.changed_bytes);
+                publication_strategies.push(stats.strategy.as_str());
             }
             command_samples.push(started.elapsed());
             workspace = invocation;
@@ -169,9 +173,11 @@ pub(super) fn benchmark(
         command["publication"] = json!({
             "incremental_samples": incremental_publications,
             "required_incremental_samples": COMMAND_SAMPLES,
+            "strategy_samples": publication_strategies,
+            "full_copy_samples": full_copy_publications,
             "reflink_unavailable_samples": reflink_unavailable_samples,
-            "failure_hint": if reflink_unavailable_samples > 0 {
-                "Linux O_TMPFILE/FICLONE/linkat is unavailable on the hosted filesystem; full-copy fallback preserved correctness"
+            "failure_hint": if full_copy_publications > 0 {
+                "Linux page-diff exchange is unavailable; full-copy fallback preserved correctness"
             } else {
                 "none"
             },

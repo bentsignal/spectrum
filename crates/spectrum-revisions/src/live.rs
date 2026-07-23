@@ -6,7 +6,7 @@ use std::{
 
 use fs2::FileExt;
 #[cfg(target_os = "linux")]
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
 
 use crate::{
     NewProject, ProjectInfo, RevisionError, RevisionResult, RevisionStore, SessionId,
@@ -18,9 +18,12 @@ mod linux_io;
 #[cfg(test)]
 mod tests;
 #[cfg(target_os = "linux")]
-use linux_io::{clone_unnamed, open_unnamed, publish_unnamed, stage_unnamed};
+use linux_io::write_ready_marker;
 #[cfg(target_os = "linux")]
-use linux_io::{ready_marker_matches, write_ready_marker};
+use linux_io::{
+    ExchangeIntent, PrivateDirectory, apply_checkpoint_delta, open_unnamed, publish_unnamed,
+    recover_exchange, remove_private_file, seed_incremental_mirror,
+};
 
 const STORE_FILE: &str = "live.sqlite";
 const LOCK_FILE: &str = "publish.lock";
@@ -29,22 +32,22 @@ const PUBLISH_MIRROR_FILE: &str = "published-mirror.sqlite";
 #[cfg(target_os = "linux")]
 const PUBLISH_MIRROR_READY_FILE: &str = "published-mirror.ready";
 #[cfg(target_os = "linux")]
-const PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
+const PUBLISH_EXCHANGE_INTENT_FILE: &str = "published-exchange.intent";
 #[cfg(target_os = "linux")]
-const COMPARE_CHUNK_BYTES: usize = 64 * 1024;
+const LEGACY_PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
 #[cfg(target_os = "linux")]
 const WRITE_BLOCK_BYTES: usize = 4 * 1024;
 
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PublishFault {
-    BackupLinked,
-    MarkerRemoved,
-    MirrorSynced,
-    CanonicalRenamed,
-    BackupRenamed,
-    MirrorResynced,
+    CandidateSynced,
+    IntentCreated,
+    PreExchangeValidated,
+    Exchanged,
+    SlotWritable,
     MarkerCreated,
+    IntentRemoved,
     SeedMirrorCreated,
 }
 
@@ -63,9 +66,28 @@ thread_local! {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PublishStrategy {
+    #[default]
+    None,
+    FullCopy,
+    PageDiffExchange,
+}
+
+impl PublishStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::FullCopy => "full-copy",
+            Self::PageDiffExchange => "page-diff-exchange",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PublishStats {
     pub incremental: bool,
     pub reflink_unavailable: bool,
+    pub strategy: PublishStrategy,
     pub scanned_bytes: u64,
     /// Bytes whose contents differ from the previous checkpoint.
     pub changed_bytes: u64,
@@ -182,6 +204,9 @@ impl LiveRevisionStore {
         create_private_dir_all(&project_directory)?;
         let working_path = project_directory.join(STORE_FILE);
         let lock_path = project_directory.join(LOCK_FILE);
+        #[cfg(target_os = "linux")]
+        let lock = lock_private(&lock_path)?;
+        #[cfg(not(target_os = "linux"))]
         let lock = lock(&lock_path)?;
         if working_path.exists() {
             let working_store = RevisionStore::open(&working_path)?;
@@ -225,6 +250,25 @@ impl LiveRevisionStore {
             pending_publish_error: RefCell::new(None),
             last_publish_stats: Cell::new(PublishStats::default()),
         };
+        #[cfg(target_os = "linux")]
+        {
+            let _cache_lock = lock_private(&live.lock_path)?;
+            let _canonical_lock = lock_directory(
+                live.canonical_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new(".")),
+            )?;
+            let cache_directory = live
+                .lock_path
+                .parent()
+                .expect("publish lock always has a cache directory");
+            recover_exchange(
+                &PrivateDirectory::open(cache_directory)?,
+                &live.canonical_path,
+                cache_directory,
+            )?;
+        }
         if live.store.generation()? > canonical.generation {
             live.publish()?;
         }
@@ -240,7 +284,7 @@ impl LiveRevisionStore {
         mutation: impl FnOnce(&mut RevisionStore) -> RevisionResult<T>,
     ) -> RevisionResult<T> {
         #[cfg(target_os = "linux")]
-        let _cache_lock = lock(&self.lock_path)?;
+        let _cache_lock = lock_private(&self.lock_path)?;
         let result = mutation(&mut self.store)?;
         #[cfg(target_os = "linux")]
         let published = self.publish_current_locked();
@@ -255,7 +299,7 @@ impl LiveRevisionStore {
 
     pub fn publish(&self) -> RevisionResult<()> {
         #[cfg(target_os = "linux")]
-        let _cache_lock = lock(&self.lock_path)?;
+        let _cache_lock = lock_private(&self.lock_path)?;
         self.store.checkpoint()?;
         #[cfg(target_os = "linux")]
         let published = self.publish_current_locked();
@@ -405,6 +449,7 @@ fn remove_sidecars(path: &Path) -> RevisionResult<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn lock(path: &Path) -> RevisionResult<File> {
     let file = OpenOptions::new()
         .create(true)
@@ -417,8 +462,34 @@ fn lock(path: &Path) -> RevisionResult<File> {
 }
 
 #[cfg(target_os = "linux")]
+fn lock_private(path: &Path) -> RevisionResult<File> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| RevisionError::Invalid("publish lock has no private directory".into()))?;
+    let directory = PrivateDirectory::open(parent)?;
+    let lock = match directory.create_file(LOCK_FILE) {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            directory.open_file(LOCK_FILE, true)?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let identity = validated_identity(&lock, true)?;
+    lock.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    directory.validate(LOCK_FILE, identity, true)?;
+    lock.lock_exclusive()?;
+    directory.validate(LOCK_FILE, identity, true)?;
+    Ok(lock)
+}
+
+#[cfg(target_os = "linux")]
 fn lock_directory(path: &Path) -> RevisionResult<File> {
-    let directory = File::open(path)?;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)?;
     directory.lock_exclusive()?;
     Ok(directory)
 }
@@ -526,6 +597,7 @@ fn publish_checkpoint(
         Ok(PublishStats {
             incremental: false,
             reflink_unavailable,
+            strategy: PublishStrategy::FullCopy,
             scanned_bytes: written_bytes,
             changed_bytes: written_bytes,
             written_bytes,
@@ -540,6 +612,7 @@ fn publish_checkpoint(
     Ok(PublishStats {
         incremental: false,
         reflink_unavailable: false,
+        strategy: PublishStrategy::FullCopy,
         scanned_bytes: written_bytes,
         changed_bytes: written_bytes,
         written_bytes,
@@ -565,7 +638,7 @@ struct PublishBase {
 #[cfg(target_os = "linux")]
 fn validate_publish_base(
     destination: &Path,
-    cache_directory: &Path,
+    _cache_directory: &Path,
     expected_generation: u64,
     expected_state_id: Option<StorageStateId>,
     source_generation: u64,
@@ -602,16 +675,11 @@ fn validate_publish_base(
             "canonical project changed while it was inspected".into(),
         ));
     }
-    let marker_matches = ready_marker_matches(
-        &cache_directory.join(PUBLISH_MIRROR_READY_FILE),
-        inspection.generation,
-        inspection.state_id,
-    );
     let expected_matches =
         inspection.generation == expected_generation && inspection.state_id == expected_state_id;
     let already_published =
         inspection.generation == source_generation && inspection.state_id == source_state_id;
-    if !expected_matches && !marker_matches && !already_published {
+    if !expected_matches && !already_published {
         return Err(RevisionError::Invalid(format!(
             "project publication conflict: expected generation {expected_generation}, found {}",
             inspection.generation
@@ -635,8 +703,6 @@ fn incremental_publish(
     source_generation: u64,
     source_state_id: Option<StorageStateId>,
 ) -> RevisionResult<(Option<PublishStats>, bool)> {
-    let mirror = cache_directory.join(PUBLISH_MIRROR_FILE);
-    let ready = cache_directory.join(PUBLISH_MIRROR_READY_FILE);
     let (Some(_), Some(canonical_identity), Some(canonical_permissions)) = (
         base.canonical.as_ref(),
         base.identity,
@@ -644,10 +710,17 @@ fn incremental_publish(
     ) else {
         return Ok((None, false));
     };
-    if !ready_marker_matches(&ready, base.generation, base.state_id) {
+    let directory = PrivateDirectory::open(cache_directory)?;
+    recover_exchange(&directory, destination, cache_directory)?;
+    remove_private_file(&directory, LEGACY_PUBLISH_BACKUP_FILE)?;
+    use std::os::unix::fs::MetadataExt as _;
+    if destination.metadata()?.dev() != directory.device()? {
         return Ok((None, false));
     }
-    let mut mirror_file = match open_nofollow(&mirror, false) {
+    if !directory.exchange_supported()? {
+        return Ok((None, false));
+    }
+    let mirror_file = match directory.open_file(PUBLISH_MIRROR_FILE, true) {
         Ok(file) => file,
         Err(_) => return Ok((None, false)),
     };
@@ -655,64 +728,54 @@ fn incremental_publish(
     if mirror_identity == canonical_identity {
         return Ok((None, false));
     }
+    remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
+    let mut stats = apply_checkpoint_delta(source, &mirror_file)?;
+    mirror_file.set_permissions(canonical_permissions)?;
+    mirror_file.sync_all()?;
+    directory.validate(PUBLISH_MIRROR_FILE, mirror_identity, true)?;
+    maybe_publish_fault(PublishFault::CandidateSynced)?;
 
-    let canonical_candidate = match clone_unnamed(source, cache_directory) {
-        Ok(candidate) => candidate,
-        Err(_) => return Ok((None, true)),
+    let intent = ExchangeIntent {
+        canonical_identity,
+        candidate_identity: mirror_identity,
+        generation: base.generation,
+        state_id: base.state_id,
+        target_generation: source_generation,
+        target_state_id: source_state_id,
     };
-    let mirror_candidate = match clone_unnamed(source, cache_directory) {
-        Ok(candidate) => candidate,
-        Err(_) => return Ok((None, true)),
-    };
-    let stats = compare_checkpoint(source, &mut mirror_file)?;
-    canonical_candidate.set_permissions(canonical_permissions.clone())?;
-    canonical_candidate.sync_all()?;
-    mirror_candidate.set_permissions(canonical_permissions)?;
-    mirror_candidate.sync_all()?;
-    let canonical_candidate = match stage_unnamed(canonical_candidate, destination) {
-        Ok(candidate) => candidate,
-        Err(_) => return Ok((None, true)),
-    };
-    let mirror_candidate = match stage_unnamed(mirror_candidate, &mirror) {
-        Ok(candidate) => candidate,
-        Err(_) => return Ok((None, true)),
-    };
-    maybe_publish_fault(PublishFault::MirrorSynced)?;
-    // The old named mirror is never writable. If it gained a link or was replaced while the
-    // completed unnamed candidates were prepared, fail before any user-visible publication.
-    validate_named_identity(&mirror, mirror_identity, true)?;
+    directory.write_marker(PUBLISH_EXCHANGE_INTENT_FILE, &intent.encode())?;
+    maybe_publish_fault(PublishFault::IntentCreated)?;
+    directory.validate(PUBLISH_MIRROR_FILE, mirror_identity, true)?;
+    validate_named_identity(destination, canonical_identity, false)?;
+    maybe_publish_fault(PublishFault::PreExchangeValidated)?;
+    directory.exchange(
+        PUBLISH_MIRROR_FILE,
+        mirror_identity,
+        destination,
+        canonical_identity,
+    )?;
+    maybe_publish_fault(PublishFault::Exchanged)?;
 
-    let backup = cache_directory.join(PUBLISH_BACKUP_FILE);
-    let _ = fs::remove_file(&backup);
-    sync_directory(cache_directory)?;
-    if fs::hard_link(destination, &backup).is_err() {
-        return Ok((None, false));
-    }
-    sync_directory(cache_directory)?;
-    maybe_publish_fault(PublishFault::BackupLinked)?;
-    // The backup link preserves the old checkpoint while the distinct mirror is updated.
-    // Renaming the completed mirror over the canonical path is the only point at which the
-    // user-visible project changes. The backup then becomes the next private mirror.
-    fs::remove_file(&ready)?;
-    sync_directory(cache_directory)?;
-    maybe_publish_fault(PublishFault::MarkerRemoved)?;
+    // The descriptor opened on the canonical inode before the exchange now refers to the
+    // inactive private slot. Making that descriptor writable cannot chmod the new canonical.
+    let old_canonical = base
+        .canonical
+        .as_ref()
+        .expect("incremental publication requires a canonical descriptor");
+    #[cfg(unix)]
+    old_canonical.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    old_canonical.sync_all()?;
+    directory.validate(PUBLISH_MIRROR_FILE, canonical_identity, true)?;
+    maybe_publish_fault(PublishFault::SlotWritable)?;
+    write_ready_marker(&directory, base.generation, base.state_id)?;
+    maybe_publish_fault(PublishFault::MarkerCreated)?;
+    remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
+    directory.sync()?;
+    maybe_publish_fault(PublishFault::IntentRemoved)?;
 
-    let result = (|| -> RevisionResult<PublishStats> {
-        validate_named_identity(&mirror, mirror_identity, true)?;
-        validate_named_identity(destination, canonical_identity, false)?;
-        canonical_candidate.publish(destination)?;
-        maybe_publish_fault(PublishFault::CanonicalRenamed)?;
-        mirror_candidate.publish(&mirror)?;
-        maybe_publish_fault(PublishFault::BackupRenamed)?;
-        fs::remove_file(&backup)?;
-        sync_directory(cache_directory)?;
-        maybe_publish_fault(PublishFault::MirrorResynced)?;
-        write_ready_marker(&ready, source_generation, source_state_id)?;
-        sync_directory(cache_directory)?;
-        maybe_publish_fault(PublishFault::MarkerCreated)?;
-        Ok(stats)
-    })();
-    result.map(|stats| (Some(stats), false))
+    stats.incremental = true;
+    stats.strategy = PublishStrategy::PageDiffExchange;
+    Ok((Some(stats), false))
 }
 
 #[cfg(target_os = "linux")]
@@ -725,6 +788,20 @@ fn open_nofollow(path: &Path, write: bool) -> std::io::Result<File> {
         .write(write)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
     options.open(path)
+}
+
+#[cfg(target_os = "linux")]
+fn openat_nofollow(directory: &File, name: &std::ffi::CStr, write: bool) -> std::io::Result<File> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+    let mut flags = libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    flags |= if write { libc::O_RDWR } else { libc::O_RDONLY };
+    let descriptor = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+    if descriptor < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(unsafe { File::from_raw_fd(descriptor) })
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -763,107 +840,6 @@ fn validate_named_identity(
         ));
     }
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn compare_checkpoint(source: &Path, mirror: &mut File) -> RevisionResult<PublishStats> {
-    let mut source = open_nofollow(source, false)?;
-    validated_identity(&source, false)?;
-    let source_len = source.metadata()?.len();
-    let mirror_len = mirror.metadata()?.len();
-    source.seek(SeekFrom::Start(0))?;
-    mirror.seek(SeekFrom::Start(0))?;
-
-    let mut source_chunk = vec![0; COMPARE_CHUNK_BYTES];
-    let mut mirror_chunk = vec![0; COMPARE_CHUNK_BYTES];
-    let mut offset = 0_u64;
-    let mut written_bytes = 0_u64;
-    while offset < source_len {
-        let chunk_len = usize::try_from((source_len - offset).min(COMPARE_CHUNK_BYTES as u64))
-            .expect("bounded comparison chunk");
-        source.read_exact(&mut source_chunk[..chunk_len])?;
-        mirror_chunk[..chunk_len].fill(0);
-        let mirror_chunk_len =
-            usize::try_from((mirror_len.saturating_sub(offset)).min(chunk_len as u64))
-                .expect("bounded comparison chunk");
-        if mirror_chunk_len > 0 {
-            mirror.read_exact(&mut mirror_chunk[..mirror_chunk_len])?;
-        }
-        if source_chunk[..chunk_len] != mirror_chunk[..chunk_len] {
-            for block_start in (0..chunk_len).step_by(WRITE_BLOCK_BYTES) {
-                let block_end = (block_start + WRITE_BLOCK_BYTES).min(chunk_len);
-                if source_chunk[block_start..block_end] == mirror_chunk[block_start..block_end] {
-                    continue;
-                }
-                let absolute_start = offset + block_start as u64;
-                let absolute_end = offset + block_end as u64;
-                let write_start = if absolute_start < mirror_len && mirror_len < absolute_end {
-                    let old_prefix_end =
-                        block_start + usize::try_from(mirror_len - absolute_start).unwrap();
-                    if source_chunk[block_start..old_prefix_end]
-                        == mirror_chunk[block_start..old_prefix_end]
-                    {
-                        old_prefix_end
-                    } else {
-                        block_start
-                    }
-                } else {
-                    block_start
-                };
-                written_bytes += (block_end - write_start) as u64;
-            }
-        }
-        offset += chunk_len as u64;
-    }
-    Ok(PublishStats {
-        incremental: true,
-        reflink_unavailable: false,
-        scanned_bytes: source_len,
-        changed_bytes: written_bytes,
-        written_bytes: 0,
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn seed_incremental_mirror(
-    destination: &Path,
-    cache_directory: &Path,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) {
-    let mirror = cache_directory.join(PUBLISH_MIRROR_FILE);
-    let ready = cache_directory.join(PUBLISH_MIRROR_READY_FILE);
-    let probe = cache_directory.join(PUBLISH_BACKUP_FILE);
-    let _ = fs::remove_file(&ready);
-    let _ = fs::remove_file(&probe);
-    let _ = sync_directory(cache_directory);
-    if fs::hard_link(destination, &probe).is_err() {
-        return;
-    }
-    let _ = fs::remove_file(&probe);
-    let seeded = (|| -> RevisionResult<()> {
-        let candidate = match clone_unnamed(destination, cache_directory) {
-            Ok(candidate) => candidate,
-            Err(_) => {
-                let mut candidate = open_unnamed(cache_directory)?;
-                let mut source = open_nofollow(destination, false)?;
-                io::copy(&mut source, &mut candidate)?;
-                candidate
-            }
-        };
-        candidate.set_permissions(destination.metadata()?.permissions())?;
-        candidate.sync_all()?;
-        publish_unnamed(candidate, &mirror)?;
-        maybe_seed_fault()?;
-        write_ready_marker(&ready, generation, state_id)?;
-        sync_directory(cache_directory)?;
-        Ok(())
-    })();
-    if seeded.is_err() {
-        let _ = fs::remove_file(&mirror);
-        let _ = fs::remove_file(&ready);
-        let _ = sync_directory(cache_directory);
-    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

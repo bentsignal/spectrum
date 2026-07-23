@@ -391,7 +391,11 @@ fn small_edits_do_not_rewrite_large_immutable_assets() {
         })
         .unwrap()
         .id;
-    assert!(!live.last_publish_stats().incremental);
+    assert!(live.last_publish_stats().incremental);
+    assert_eq!(
+        live.last_publish_stats().strategy,
+        spectrum_revisions::PublishStrategy::PageDiffExchange
+    );
     assert!(ready.is_file());
     let mut parent = live
         .mutate(|store| {
