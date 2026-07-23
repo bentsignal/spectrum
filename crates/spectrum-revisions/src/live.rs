@@ -37,6 +37,8 @@ const PUBLISH_EXCHANGE_INTENT_FILE: &str = "published-exchange.intent";
 const LEGACY_PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
 #[cfg(target_os = "linux")]
 const WRITE_BLOCK_BYTES: usize = 4 * 1024;
+#[cfg(target_os = "linux")]
+const BULK_CHANGE_CATCH_UP_BYTES: u64 = 1024 * 1024;
 
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -772,6 +774,24 @@ fn incremental_publish(
     remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
     directory.sync()?;
     maybe_publish_fault(PublishFault::IntentRemoved)?;
+
+    // A bulk append can leave the alternate slot predating a newly embedded immutable asset.
+    // Catch that slot up after the exchange is fully committed so the next small edit does not
+    // write the same large tail again. Ordinary edits keep alternating against the
+    // two-generation-old slot.
+    if stats.changed_bytes >= BULK_CHANGE_CATCH_UP_BYTES
+        && stats.changed_bytes.saturating_mul(4) >= stats.scanned_bytes
+    {
+        let caught_up_slot = directory.open_file(PUBLISH_MIRROR_FILE, true)?;
+        let caught_up_identity = validated_identity(&caught_up_slot, true)?;
+        let catch_up = apply_checkpoint_delta(source, &caught_up_slot)?;
+        caught_up_slot.sync_all()?;
+        directory.validate(PUBLISH_MIRROR_FILE, caught_up_identity, true)?;
+        write_ready_marker(&directory, source_generation, source_state_id)?;
+        stats.scanned_bytes = stats.scanned_bytes.saturating_add(catch_up.scanned_bytes);
+        stats.changed_bytes = stats.changed_bytes.saturating_add(catch_up.changed_bytes);
+        stats.written_bytes = stats.written_bytes.saturating_add(catch_up.written_bytes);
+    }
 
     stats.incremental = true;
     stats.strategy = PublishStrategy::PageDiffExchange;

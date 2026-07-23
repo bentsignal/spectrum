@@ -218,6 +218,56 @@ fn alternating_slot_two_generations_behind_publishes_only_dirty_blocks() {
 }
 
 #[test]
+fn bulk_growth_catches_up_the_alternate_slot_before_the_next_small_edit() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    let (mut live, info) = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        NewProject {
+            application_id: "spectrum.bulk-catch-up-test".into(),
+            application_version: "1.0.0".into(),
+            actor: Actor {
+                id: "bulk-catch-up-test".into(),
+                display_name: "Bulk catch-up test".into(),
+                kind: ActorKind::System,
+            },
+            session_id: SessionId::new(),
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![Payload::new(
+                crate::Encoding::new("test.snapshot", 1),
+                b"root".to_vec(),
+            )],
+            assets: Vec::new(),
+        },
+    )
+    .unwrap();
+    let project_cache = cache.join(info.project_id.to_string());
+    let mirror = project_cache.join(PUBLISH_MIRROR_FILE);
+
+    live.mutate(|store| store.put_asset("application/x-bulk", &vec![0x5a; 2 * 1024 * 1024]))
+        .unwrap();
+    let canonical_after_bulk = RevisionStore::inspect(&canonical).unwrap();
+    let slot_after_bulk = RevisionStore::inspect(&mirror).unwrap();
+    assert_eq!(slot_after_bulk.generation, canonical_after_bulk.generation);
+    assert_eq!(slot_after_bulk.state_id, canonical_after_bulk.state_id);
+
+    live.mutate(|store| store.put_asset("application/x-small", b"small"))
+        .unwrap();
+    let small = live.last_publish_stats();
+    assert_eq!(small.strategy, PublishStrategy::PageDiffExchange);
+    assert!(small.incremental);
+    assert!(
+        small.written_bytes <= 64 * 1024,
+        "small edit after bulk growth wrote {} bytes",
+        small.written_bytes
+    );
+}
+
+#[test]
 fn private_lock_probe_child() {
     let Ok(cache) = std::env::var("SPECTRUM_PRIVATE_LOCK_CACHE") else {
         return;
