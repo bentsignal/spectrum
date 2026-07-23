@@ -91,10 +91,11 @@ pub use lasso::{
 };
 
 pub const PRISM_VERSION: u32 = 7;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 9;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 10;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_DOCUMENT_NAME_CHARS: usize = 128;
 
 mod blend;
 pub use blend::{BlendMode, blend_rgb};
@@ -713,6 +714,8 @@ pub fn paint_layer_allows_direct_strokes(layer: &Layer) -> bool {
         && adjustments.crop.is_none()
 }
 
+#[cfg(test)]
+mod document_lifecycle_tests;
 #[cfg(test)]
 #[path = "core_tests.rs"]
 mod tests;

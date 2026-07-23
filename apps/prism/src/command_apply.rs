@@ -43,6 +43,20 @@ fn crop_canvas(
 
 pub(super) fn apply_command(document: &mut Document, command: Command) -> Result<CommandOutput> {
     match command {
+        Command::RenameDocument { name } => {
+            let name = name.trim();
+            if name.is_empty() {
+                bail!("document name cannot be empty");
+            }
+            if name.chars().count() > MAX_DOCUMENT_NAME_CHARS {
+                bail!("document name cannot exceed {MAX_DOCUMENT_NAME_CHARS} characters");
+            }
+            if name.chars().any(char::is_control) {
+                bail!("document name cannot contain control characters");
+            }
+            document.name = name.into();
+            Ok(output("rename_document", "renamed document", Vec::new()))
+        }
         Command::SetCanvas {
             width,
             height,

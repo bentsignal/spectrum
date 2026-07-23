@@ -21,6 +21,7 @@ pub(super) const COLOR_SELECTION_OPERATIONS_VERSION: u32 = 6;
 pub(super) const PATH_OPERATIONS_VERSION: u32 = 7;
 pub(super) const PAINT_OPERATIONS_VERSION: u32 = 8;
 pub(super) const LASSO_OPERATIONS_VERSION: u32 = 9;
+pub(super) const DOCUMENT_LIFECYCLE_OPERATIONS_VERSION: u32 = 10;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -59,12 +60,19 @@ impl Compatibility for PrismCompatibility {
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=LASSO_OPERATIONS_VERSION).contains(&encoding.version)
+            && (LEGACY_OPERATIONS_VERSION..=DOCUMENT_LIFECYCLE_OPERATIONS_VERSION)
+                .contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands
+        .iter()
+        .any(|command| matches!(command, Command::RenameDocument { .. }))
+    {
+        return DOCUMENT_LIFECYCLE_OPERATIONS_VERSION;
+    }
     if commands
         .iter()
         .any(|command| matches!(command, Command::LassoSelection { .. }))
@@ -181,6 +189,21 @@ mod tests {
     };
 
     #[test]
+    fn document_rename_requires_the_lifecycle_operation_envelope() {
+        let commands = [Command::RenameDocument {
+            name: "Campaign".into(),
+        }];
+        assert_eq!(
+            operations_version(&commands),
+            DOCUMENT_LIFECYCLE_OPERATIONS_VERSION
+        );
+        assert!(validate_operations_version(&commands, LASSO_OPERATIONS_VERSION).is_err());
+        assert!(
+            validate_operations_version(&commands, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION).is_ok()
+        );
+    }
+
+    #[test]
     fn effect_commands_cannot_use_a_legacy_operation_envelope() {
         let commands = [Command::SetLayerStyle {
             id: 7,
@@ -290,13 +313,13 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_advertises_operation_versions_one_through_nine() {
-        for version in LEGACY_OPERATIONS_VERSION..=LASSO_OPERATIONS_VERSION {
+    fn compatibility_advertises_operation_versions_one_through_ten() {
+        for version in LEGACY_OPERATIONS_VERSION..=DOCUMENT_LIFECYCLE_OPERATIONS_VERSION {
             assert!(
                 PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
-        for version in [0, LASSO_OPERATIONS_VERSION + 1] {
+        for version in [0, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION + 1] {
             assert!(
                 !PrismCompatibility
                     .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))

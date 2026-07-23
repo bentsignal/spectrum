@@ -1,3 +1,6 @@
+use super::dialogs::{
+    ModalAction, RENAME_DOCUMENT_ID, modal_action, modal_text_input, reset_modal_text_input,
+};
 use super::*;
 
 #[derive(Clone, Debug)]
@@ -152,6 +155,10 @@ fn safe_project_stem(name: &str) -> String {
 }
 
 impl PrismApp {
+    pub(super) fn close_active_tab(&mut self) {
+        self.close_tab(self.active_tab_id);
+    }
+
     pub(super) fn close_tab(&mut self, id: u64) {
         // Decide before settling inline text: refusing a close must not commit or cancel any live
         // project interaction.
@@ -211,6 +218,66 @@ impl PrismApp {
         self.alignment_reference = None;
         self.status = format!("Closed {closed_name}");
         self.status_error = false;
+    }
+
+    pub(super) fn begin_rename_document(&mut self) {
+        self.settle_inline_text_editor();
+        self.rename_document = Some(self.workspace.document.name.clone());
+    }
+
+    pub(super) fn rename_document_dialog(&mut self, context: &egui::Context) {
+        let Some(mut name) = self.rename_document.take() else {
+            return;
+        };
+        let mut keep_open = true;
+        let mut rename = false;
+        egui::Window::new("Rename document")
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(Vec2::new(480.0, 178.0))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(context, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Changes the title shown in Prism. The .prism filename and location stay unchanged; use Move Project to relocate the file.",
+                    )
+                    .color(MUTED),
+                );
+                ui.add_space(8.0);
+                modal_text_input(ui, &mut name, RENAME_DOCUMENT_ID, false);
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if primary_button(ui, "Rename").clicked() {
+                        rename = true;
+                        keep_open = false;
+                    }
+                    if quiet_button(ui, "Cancel").clicked() {
+                        keep_open = false;
+                    }
+                });
+                match modal_action(ui) {
+                    ModalAction::Confirm => {
+                        rename = true;
+                        keep_open = false;
+                    }
+                    ModalAction::Cancel => keep_open = false,
+                    ModalAction::None => {}
+                }
+            });
+
+        if rename {
+            if self.execute(Command::RenameDocument { name: name.clone() }) {
+                reset_modal_text_input(context, RENAME_DOCUMENT_ID);
+            } else {
+                keep_open = true;
+            }
+        }
+        if keep_open {
+            self.rename_document = Some(name);
+        } else {
+            reset_modal_text_input(context, RENAME_DOCUMENT_ID);
+        }
     }
 
     pub(super) fn open_project_dialog(&mut self) {

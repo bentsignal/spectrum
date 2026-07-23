@@ -81,6 +81,9 @@ impl NativeMenuState {
                         && (action == NativeMenuAction::Paste || self.selection_present)
             }
             NativeMenuAction::NewDocument | NativeMenuAction::OpenDocument => !self.modal_open,
+            NativeMenuAction::CloseDocument | NativeMenuAction::RenameDocument => {
+                !self.modal_open && self.workspace_ready
+            }
             NativeMenuAction::MoveProject => {
                 !self.modal_open && self.workspace_ready && self.can_move_project
             }
@@ -520,6 +523,8 @@ impl PrismApp {
                     self.new_dialog = Some(NewDocumentDialog::default());
                 }
                 NativeMenuAction::OpenDocument => self.open_project_dialog(),
+                NativeMenuAction::CloseDocument => self.close_active_tab(),
+                NativeMenuAction::RenameDocument => self.begin_rename_document(),
                 NativeMenuAction::MoveProject => self.begin_move_project(),
                 NativeMenuAction::Export => self.export(),
                 NativeMenuAction::Undo => {

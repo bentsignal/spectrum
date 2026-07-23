@@ -7,6 +7,7 @@ pub(super) struct ShortcutLabels {
     pub(super) undo: &'static str,
     pub(super) redo: &'static str,
     pub(super) new_document: &'static str,
+    pub(super) close_document: &'static str,
     pub(super) commit_text: &'static str,
 }
 
@@ -19,6 +20,7 @@ impl ShortcutLabels {
                 undo: "⌘Z",
                 redo: "⇧⌘Z",
                 new_document: "⌘N",
+                close_document: "⌘W",
                 commit_text: "⌘↵",
             }
         } else {
@@ -28,6 +30,7 @@ impl ShortcutLabels {
                 undo: "Ctrl+Z",
                 redo: "Ctrl+Shift+Z",
                 new_document: "Ctrl+N",
+                close_document: "Ctrl+W",
                 commit_text: "Ctrl+Enter",
             }
         }
@@ -190,6 +193,11 @@ fn terminal_shortcut_pressed(input: &egui::InputState) -> bool {
     }
 }
 
+fn close_document_shortcut_pressed(input: &egui::InputState) -> bool {
+    shortcut_domain(input.modifiers) == Some(ShortcutDomain::Global)
+        && input.key_pressed(egui::Key::W)
+}
+
 fn rotation_arm_allowed(interaction_active: bool, has_editable_selection: bool) -> bool {
     !interaction_active && has_editable_selection
 }
@@ -217,6 +225,14 @@ impl PrismApp {
             terminal_pressed,
         ) {
             self.toggle_terminal();
+            return;
+        }
+        if route_application_shortcut(
+            application_shortcut_owner,
+            self.workspace_initialized && !self.has_modal_surface(),
+            context.input(close_document_shortcut_pressed),
+        ) {
+            self.close_active_tab();
             return;
         }
         if self.terminal.visible() {
@@ -393,6 +409,7 @@ mod tests {
         assert_eq!(macos.terminal, "⌘J");
         assert_eq!(macos.redo, "⇧⌘Z");
         assert_eq!(macos.new_document, "⌘N");
+        assert_eq!(macos.close_document, "⌘W");
 
         let portable = ShortcutLabels::for_platform(false);
         assert_eq!(portable.history, "Ctrl+H");
@@ -400,6 +417,7 @@ mod tests {
         assert_eq!(portable.undo, "Ctrl+Z");
         assert_eq!(portable.redo, "Ctrl+Shift+Z");
         assert_eq!(portable.new_document, "Ctrl+N");
+        assert_eq!(portable.close_document, "Ctrl+W");
         assert_eq!(portable.commit_text, "Ctrl+Enter");
     }
 
@@ -532,6 +550,23 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn close_document_uses_the_global_command_or_control_w_domain() {
+        let mut input = egui::RawInput::default();
+        input.modifiers.command = true;
+        input.events.push(egui::Event::Key {
+            key: egui::Key::W,
+            physical_key: Some(egui::Key::W),
+            pressed: true,
+            repeat: false,
+            modifiers: input.modifiers,
+        });
+        let context = egui::Context::default();
+        context.begin_pass(input);
+        assert!(context.input(close_document_shortcut_pressed));
+        let _ = context.end_pass();
     }
 
     #[test]

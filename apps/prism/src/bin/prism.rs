@@ -73,6 +73,10 @@ enum CliCommand {
     },
     /// Inspect the complete layered document.
     List,
+    /// Rename document metadata without changing the .prism file path.
+    RenameDocument {
+        name: String,
+    },
     /// Add an immutable image source as a raster layer.
     AddImage {
         path: PathBuf,
@@ -518,6 +522,9 @@ fn run(cli: Cli) -> Result<Value> {
                 None => Workspace::open_as(&cli.project, cli_actor(), SessionId::new())?,
             };
             let outputs = match command {
+                CliCommand::RenameDocument { name } => {
+                    vec![workspace.execute(Command::RenameDocument { name })?]
+                }
                 CliCommand::FontImport { path } => {
                     vec![workspace.execute(Command::ImportFont {
                         path,
