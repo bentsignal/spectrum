@@ -128,3 +128,36 @@ fn lumen_branding_is_wired_to_runtime_and_native_packages() {
     assert!(linux.contains("com.bentsignal.Lumen.png"));
     assert!(windows.contains("Lumen.png"));
 }
+
+#[test]
+fn develop_rows_keep_fixed_numeric_and_accessible_reset_controls() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let helpers = fs::read_to_string(manifest.join("src/bin/lumen_gui/helpers.rs")).unwrap();
+
+    assert!(helpers.contains("const VALUE_WIDTH: f32 = 52.0"));
+    assert!(helpers.contains(".fixed_decimals(1)"));
+    assert!(helpers.contains("RichText::new(\"↺\")"));
+    assert!(helpers.contains("Reset {label} to 0"));
+    assert!(helpers.contains("WidgetInfo::labeled"));
+    assert!(!helpers.contains("Button::new(\"0\")"));
+}
+
+#[test]
+fn live_frames_cannot_bypass_the_authoritative_settled_worker() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let state = fs::read_to_string(manifest.join("src/bin/lumen_gui/state.rs")).unwrap();
+    let start = state
+        .find("pub(super) fn ensure_preview")
+        .expect("preview quality contract should be explicit");
+    let end = state[start..]
+        .find("pub(super) fn receive_prepared_previews")
+        .map(|offset| start + offset)
+        .unwrap();
+    let ensure = &state[start..end];
+
+    assert!(ensure.contains("Duration::from_millis(33)"));
+    assert!(ensure.contains("request_selected_at_size"));
+    assert!(ensure.contains("render_preview_source"));
+    assert!(!ensure.contains("self.histogram ="));
+    assert!(!ensure.contains("decode_photo("));
+}

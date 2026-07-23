@@ -10,11 +10,11 @@ use std::{
 use eframe::egui::{
     self, Color32, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Vec2,
 };
-use image::{DynamicImage, imageops::FilterType};
+use image::DynamicImage;
 use lumen_core::{
     Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo, PickState,
     Project, SpotRemoval, ToneCurve, Workspace,
-    engine::{decode_photo, decode_photo_proxy, render_preview_source},
+    engine::{decode_photo_proxy, render_preview_source},
     preview::{
         PreparedPreview, PreviewCompletionDisposition, PreviewHistogram, PreviewPipeline,
         PreviewRequestDecision, PreviewWorker,
@@ -160,6 +160,10 @@ struct LumenApp {
     preview_fast_source: Option<(u64, DynamicImage)>,
     preview_id: Option<u64>,
     preview_fast: bool,
+    preview_max_size: u32,
+    preview_rendered_max_size: u32,
+    adjustment_interacting: bool,
+    next_live_preview_at: Instant,
     preview_adjustments: Adjustments,
     preview_layout_size: Option<Vec2>,
     original_preview: Option<TextureHandle>,
@@ -279,6 +283,10 @@ impl LumenApp {
             preview_fast_source: None,
             preview_id: None,
             preview_fast: false,
+            preview_max_size: lumen_core::preview::PREVIEW_MAX_SIZE,
+            preview_rendered_max_size: 0,
+            adjustment_interacting: false,
+            next_live_preview_at: Instant::now(),
             preview_adjustments: Adjustments::default(),
             preview_layout_size: None,
             original_preview: None,
@@ -477,5 +485,62 @@ mod tests {
             height: 0.7,
         });
         assert!(!same_preview_geometry(&original, &cropped));
+    }
+
+    #[test]
+    fn settled_preview_resolution_tracks_retina_zoom_in_bounded_tiers() {
+        let viewport = Vec2::new(1_000.0, 700.0);
+        assert_eq!(settled_preview_size(viewport, 2.0, 1.0, false), 2_048);
+        assert_eq!(settled_preview_size(viewport, 2.0, 1.5, false), 3_072);
+        assert_eq!(settled_preview_size(viewport, 2.0, 8.0, false), 4_096);
+        assert_eq!(
+            settled_preview_size(viewport, 2.0, 1.5, true),
+            lumen_core::preview::PREVIEW_MAX_SIZE,
+            "RAW preview buffers must retain the established 1800-pixel ceiling"
+        );
+        assert_eq!(settled_preview_size_with_hysteresis(3_072, 2_048), 3_072);
+        assert_eq!(settled_preview_size_with_hysteresis(4_096, 1_800), 1_800);
+    }
+
+    #[test]
+    fn settled_photo_textures_use_linear_mipmap_filtering() {
+        let options = settled_texture_options();
+        assert_eq!(options.magnification, egui::TextureFilter::Linear);
+        assert_eq!(options.minification, egui::TextureFilter::Linear);
+        assert_eq!(options.mipmap_mode, Some(egui::TextureFilter::Linear));
+    }
+
+    #[test]
+    fn adjustment_numeric_and_reset_columns_do_not_move_with_value_format() {
+        let mut columns = Vec::new();
+        egui::__run_test_ui(|ui| {
+            ui.set_width(320.0);
+            for mut value in [-100.0_f32, -1.5, 0.0, 9.5, 100.0] {
+                let mut changed = false;
+                let mut commit = false;
+                let geometry = ui
+                    .push_id(value.to_bits(), |ui| {
+                        slider(
+                            ui,
+                            "Contrast",
+                            &mut value,
+                            -100.0..=100.0,
+                            &mut changed,
+                            &mut commit,
+                        )
+                    })
+                    .inner;
+                columns.push(geometry);
+            }
+        });
+        let first = columns[0];
+        assert!(columns.iter().all(|(value, reset)| {
+            value.left() == first.0.left()
+                && value.width() == first.0.width()
+                && reset.left() == first.1.left()
+                && reset.width() == first.1.width()
+        }));
+        assert_eq!(first.0.width(), 52.0);
+        assert!(first.1.width() >= 24.0);
     }
 }
