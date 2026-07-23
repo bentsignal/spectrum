@@ -14,7 +14,7 @@ use image::{DynamicImage, imageops::FilterType};
 use lumen_core::{
     Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo, PickState,
     Project, SpotRemoval, ToneCurve, Workspace,
-    engine::{RenderOptions, decode_photo, render_image, render_photo},
+    engine::{decode_photo, decode_photo_proxy, render_preview_source},
     preview::{
         PreparedPreview, PreviewCompletionDisposition, PreviewHistogram, PreviewPipeline,
         PreviewRequestDecision, PreviewWorker,
