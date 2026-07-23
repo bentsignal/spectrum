@@ -435,6 +435,10 @@ impl BenchmarkProfile {
             Self::HostedCi => 300.0,
         }
     }
+
+    fn requires_incremental_publication(self) -> bool {
+        matches!(self, Self::HostedCi)
+    }
 }
 
 impl From<CliExportFormat> for ExportFormat {

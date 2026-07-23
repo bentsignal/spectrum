@@ -10,6 +10,9 @@ pub(super) fn benchmark(
     const PREVIEW_HEIGHT: u32 = 1200;
     const EXPORT_WIDTH: u32 = 6000;
     const EXPORT_HEIGHT: u32 = 4000;
+    const COMMAND_SAMPLES: usize = 12;
+    const MAX_INCREMENTAL_P95_BYTES: u64 = 512 * 1024;
+    const MAX_INCREMENTAL_PROJECT_PERCENT: u64 = 5;
     let directory = std::env::temp_dir().join(format!("lumen-benchmark-{}", std::process::id()));
     if directory.exists() {
         fs::remove_dir_all(&directory)?;
@@ -62,12 +65,12 @@ pub(super) fn benchmark(
         let mut workspace =
             Workspace::create_durable(project, &catalog_path, actor.clone(), session)?;
 
-        let mut command_samples = Vec::with_capacity(12);
-        let mut open_samples = Vec::with_capacity(12);
-        let mut execute_samples = Vec::with_capacity(12);
-        let mut publication_bytes = Vec::with_capacity(12);
+        let mut command_samples = Vec::with_capacity(COMMAND_SAMPLES);
+        let mut open_samples = Vec::with_capacity(COMMAND_SAMPLES);
+        let mut execute_samples = Vec::with_capacity(COMMAND_SAMPLES);
+        let mut publication_bytes = Vec::with_capacity(COMMAND_SAMPLES);
         let mut incremental_publications = 0_usize;
-        for iteration in 0..12 {
+        for iteration in 0..COMMAND_SAMPLES {
             let started = Instant::now();
             let open_started = Instant::now();
             let mut invocation = Workspace::open_as(&catalog_path, actor.clone(), session)?;
@@ -149,13 +152,29 @@ pub(super) fn benchmark(
             "core_command_and_publication": latency_distribution(&execute_samples),
         });
         publication_bytes.sort_unstable();
+        let project_bytes = fs::metadata(&catalog_path)?.len();
+        let p95_written_bytes = percentile_u64(&publication_bytes, 0.95);
+        let publication_required = profile.requires_incremental_publication();
+        let publication_pass = !publication_required
+            || (incremental_publications == COMMAND_SAMPLES
+                && publication_bytes.len() == COMMAND_SAMPLES
+                && p95_written_bytes <= MAX_INCREMENTAL_P95_BYTES
+                && p95_written_bytes.saturating_mul(100)
+                    <= project_bytes.saturating_mul(MAX_INCREMENTAL_PROJECT_PERCENT));
         command["publication"] = json!({
             "incremental_samples": incremental_publications,
+            "required_incremental_samples": COMMAND_SAMPLES,
             "samples": publication_bytes.len(),
             "median_written_bytes": percentile_u64(&publication_bytes, 0.5),
-            "p95_written_bytes": percentile_u64(&publication_bytes, 0.95),
-            "embedded_project_bytes": fs::metadata(&catalog_path)?.len(),
+            "p95_written_bytes": p95_written_bytes,
+            "written_bytes_samples": publication_bytes,
+            "absolute_budget_bytes": MAX_INCREMENTAL_P95_BYTES,
+            "project_percent_budget": MAX_INCREMENTAL_PROJECT_PERCENT,
+            "embedded_project_bytes": project_bytes,
+            "required": publication_required,
+            "pass": publication_pass,
         });
+        command["pass"] = json!(command["pass"].as_bool() == Some(true) && publication_pass);
         let preview_metric = latency_metric(
             "tone_curve_preview",
             "1800x1200 developed preview frame",

@@ -279,7 +279,7 @@ fn failed_publish_keeps_the_committed_edit_recoverable() {
 #[cfg(target_os = "linux")]
 #[test]
 fn small_edits_do_not_rewrite_large_immutable_assets() {
-    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     let directory = tempfile::tempdir().unwrap();
     let canonical = directory.path().join("large-project.lumen");
@@ -393,22 +393,45 @@ fn small_edits_do_not_rewrite_large_immutable_assets() {
         .id;
     assert!(!live.last_publish_stats().incremental);
     assert!(ready.is_file());
-    live.mutate(|store| {
-        store.append(AppendRevision {
-            track_id: info.default_track_id,
-            session_id: session,
-            expected_parent: after_interruption,
-            application_version: "1.0.0".into(),
-            label: Some("Incremental after recovery".into()),
-            command_count: 1,
-            operation_payloads: vec![payload("test.operations", b"incremental-again")],
-            snapshots: Vec::new(),
-            assets: Vec::new(),
+    let mut parent = live
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: info.default_track_id,
+                session_id: session,
+                expected_parent: after_interruption,
+                application_version: "1.0.0".into(),
+                label: Some("Incremental after recovery".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"incremental-again")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
         })
-    })
-    .unwrap();
+        .unwrap()
+        .id;
 
     assert!(live.last_publish_stats().incremental);
+    for mode in [0o444, 0o400] {
+        fs::set_permissions(&canonical, fs::Permissions::from_mode(mode)).unwrap();
+        parent = live
+            .mutate(|store| {
+                store.append(AppendRevision {
+                    track_id: info.default_track_id,
+                    session_id: session,
+                    expected_parent: parent,
+                    application_version: "1.0.0".into(),
+                    label: Some(format!("Preserve mode {mode:o}")),
+                    command_count: 1,
+                    operation_payloads: vec![payload("test.operations", b"mode")],
+                    snapshots: Vec::new(),
+                    assets: Vec::new(),
+                })
+            })
+            .unwrap()
+            .id;
+        assert_eq!(canonical.metadata().unwrap().mode() & 0o777, mode);
+        assert!(live.last_publish_stats().incremental);
+    }
     assert_eq!(
         live.store().asset(original_id).unwrap().unwrap().len(),
         8 * 1024 * 1024
@@ -427,6 +450,135 @@ fn small_edits_do_not_rewrite_large_immutable_assets() {
             .filter_map(Result::ok)
             .all(|entry| !entry.file_name().to_string_lossy().contains("publish"))
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn distinct_cache_publishers_detect_same_generation_peer_conflicts() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("conflict.lumen");
+    let session = SessionId::new();
+    let (mut first, info) = LiveRevisionStore::create(
+        &canonical,
+        &directory.path().join("cache-a"),
+        NewProject {
+            application_id: "spectrum.test".into(),
+            application_version: "1.0.0".into(),
+            actor: actor("person:1", ActorKind::Human),
+            session_id: session,
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![payload("test.snapshot", b"root")],
+            assets: Vec::new(),
+        },
+    )
+    .unwrap();
+    let mut second =
+        LiveRevisionStore::open(&canonical, &directory.path().join("cache-b")).unwrap();
+
+    let first_revision = first
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: info.default_track_id,
+                session_id: session,
+                expected_parent: info.root_revision,
+                application_version: "1.0.0".into(),
+                label: Some("First peer".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"first")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
+        })
+        .unwrap()
+        .id;
+    let second_revision = second
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: info.default_track_id,
+                session_id: session,
+                expected_parent: info.root_revision,
+                application_version: "1.0.0".into(),
+                label: Some("Second peer".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"second")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
+        })
+        .unwrap()
+        .id;
+    assert!(second.pending_publish_error().is_some());
+    assert!(second.store().revision(second_revision).unwrap().is_some());
+    drop(first);
+    drop(second);
+
+    let verified =
+        LiveRevisionStore::open(&canonical, &directory.path().join("verified-cache")).unwrap();
+    assert!(verified.store().revision(first_revision).unwrap().is_some());
+    assert!(
+        verified
+            .store()
+            .revision(second_revision)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cross_filesystem_cache_uses_the_full_copy_fallback() {
+    use std::os::unix::fs::MetadataExt;
+
+    let shared_memory = Path::new("/dev/shm");
+    if !shared_memory.is_dir() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir_in(shared_memory).unwrap();
+    if directory.path().metadata().unwrap().dev() == cache.path().metadata().unwrap().dev() {
+        return;
+    }
+    let canonical = directory.path().join("cross-filesystem.lumen");
+    let session = SessionId::new();
+    let (mut live, info) = LiveRevisionStore::create(
+        &canonical,
+        cache.path(),
+        NewProject {
+            application_id: "spectrum.test".into(),
+            application_version: "1.0.0".into(),
+            actor: actor("person:1", ActorKind::Human),
+            session_id: session,
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![payload("test.snapshot", b"root")],
+            assets: Vec::new(),
+        },
+    )
+    .unwrap();
+    let revision = live
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: info.default_track_id,
+                session_id: session,
+                expected_parent: info.root_revision,
+                application_version: "1.0.0".into(),
+                label: Some("Fallback".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"fallback")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
+        })
+        .unwrap()
+        .id;
+    assert!(!live.last_publish_stats().incremental);
+    drop(live);
+    let verified =
+        LiveRevisionStore::open(&canonical, &directory.path().join("verified-cache")).unwrap();
+    assert!(verified.store().revision(revision).unwrap().is_some());
 }
 
 #[cfg(not(target_os = "linux"))]

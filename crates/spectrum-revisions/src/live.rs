@@ -10,8 +10,11 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::{
     NewProject, ProjectInfo, RevisionError, RevisionResult, RevisionStore, SessionId,
-    storage_io::sidecar_path,
+    metadata::StorageStateId, storage_io::sidecar_path,
 };
+
+#[cfg(test)]
+mod tests;
 
 const STORE_FILE: &str = "live.sqlite";
 const LOCK_FILE: &str = "publish.lock";
@@ -25,6 +28,24 @@ const PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
 const COMPARE_CHUNK_BYTES: usize = 64 * 1024;
 #[cfg(target_os = "linux")]
 const WRITE_BLOCK_BYTES: usize = 4 * 1024;
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublishFault {
+    BackupLinked,
+    MarkerRemoved,
+    MirrorSynced,
+    CanonicalRenamed,
+    BackupRenamed,
+    MirrorResynced,
+    MarkerCreated,
+    SeedMirrorCreated,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    static PUBLISH_FAULT: Cell<Option<PublishFault>> = const { Cell::new(None) };
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PublishStats {
@@ -43,6 +64,7 @@ pub struct LiveRevisionStore {
     working_path: PathBuf,
     lock_path: PathBuf,
     published_generation: Cell<u64>,
+    published_state_id: Cell<Option<StorageStateId>>,
     temps_cleaned: Cell<bool>,
     pending_publish_error: RefCell<Option<String>>,
     last_publish_stats: Cell<PublishStats>,
@@ -94,6 +116,7 @@ impl LiveRevisionStore {
             working_path,
             lock_path: project_directory.join(LOCK_FILE),
             published_generation: Cell::new(0),
+            published_state_id: Cell::new(None),
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
             last_publish_stats: Cell::new(PublishStats::default()),
@@ -154,6 +177,7 @@ impl LiveRevisionStore {
             working_path,
             lock_path,
             published_generation: Cell::new(canonical.generation),
+            published_state_id: Cell::new(canonical.state_id),
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
             last_publish_stats: Cell::new(PublishStats::default()),
@@ -172,8 +196,14 @@ impl LiveRevisionStore {
         &mut self,
         mutation: impl FnOnce(&mut RevisionStore) -> RevisionResult<T>,
     ) -> RevisionResult<T> {
+        #[cfg(target_os = "linux")]
+        let _cache_lock = lock(&self.lock_path)?;
         let result = mutation(&mut self.store)?;
-        match self.publish_current() {
+        #[cfg(target_os = "linux")]
+        let published = self.publish_current_locked();
+        #[cfg(not(target_os = "linux"))]
+        let published = self.publish_current();
+        match published {
             Ok(()) => self.pending_publish_error.replace(None),
             Err(error) => self.pending_publish_error.replace(Some(error.to_string())),
         };
@@ -181,8 +211,14 @@ impl LiveRevisionStore {
     }
 
     pub fn publish(&self) -> RevisionResult<()> {
+        #[cfg(target_os = "linux")]
+        let _cache_lock = lock(&self.lock_path)?;
         self.store.checkpoint()?;
-        match self.publish_current() {
+        #[cfg(target_os = "linux")]
+        let published = self.publish_current_locked();
+        #[cfg(not(target_os = "linux"))]
+        let published = self.publish_current();
+        match published {
             Ok(()) => {
                 self.pending_publish_error.replace(None);
                 Ok(())
@@ -194,8 +230,20 @@ impl LiveRevisionStore {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn publish_current(&self) -> RevisionResult<()> {
         let _lock = lock(&self.lock_path)?;
+        self.publish_current_locked()
+    }
+
+    fn publish_current_locked(&self) -> RevisionResult<()> {
+        #[cfg(target_os = "linux")]
+        let _canonical_lock = lock_directory(
+            self.canonical_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new(".")),
+        )?;
         if !self.temps_cleaned.get() {
             cleanup_publish_temps(&self.canonical_path)?;
             self.temps_cleaned.set(true);
@@ -211,9 +259,13 @@ impl LiveRevisionStore {
             self.lock_path
                 .parent()
                 .expect("publish lock always has a cache directory"),
+            self.published_generation.get(),
+            self.published_state_id.get(),
         )?;
         self.last_publish_stats.set(stats);
         self.published_generation.set(working_generation);
+        self.published_state_id
+            .set(RevisionStore::inspect(&self.working_path)?.state_id);
         Ok(())
     }
 
@@ -297,6 +349,13 @@ fn lock(path: &Path) -> RevisionResult<File> {
     Ok(file)
 }
 
+#[cfg(target_os = "linux")]
+fn lock_directory(path: &Path) -> RevisionResult<File> {
+    let directory = File::open(path)?;
+    directory.lock_exclusive()?;
+    Ok(directory)
+}
+
 fn replace_with_copy(source: &Path, destination: &Path) -> RevisionResult<()> {
     let temporary = temporary_path(destination);
     if let Err(error) = copy_or_clone(source, &temporary).and_then(|_| {
@@ -338,16 +397,51 @@ fn publish_checkpoint(
     source: &Path,
     destination: &Path,
     _cache_directory: &Path,
+    _expected_generation: u64,
+    _expected_state_id: Option<StorageStateId>,
 ) -> RevisionResult<PublishStats> {
     #[cfg(target_os = "linux")]
-    if let Some(stats) = incremental_publish(source, destination, _cache_directory)? {
-        return Ok(stats);
+    {
+        let source_inspection = RevisionStore::inspect(source)?;
+        let base = validate_publish_base(
+            destination,
+            _cache_directory,
+            _expected_generation,
+            _expected_state_id,
+            source_inspection.generation,
+            source_inspection.state_id,
+        )?;
+        if let Some(stats) = incremental_publish(
+            source,
+            destination,
+            _cache_directory,
+            &base,
+            source_inspection.generation,
+            source_inspection.state_id,
+        )? {
+            return Ok(stats);
+        }
+        atomic_publish(source, destination)?;
+        sync_parent(destination)?;
+        let written_bytes = source.metadata()?.len();
+        seed_incremental_mirror(
+            destination,
+            _cache_directory,
+            source_inspection.generation,
+            source_inspection.state_id,
+        );
+        return Ok(PublishStats {
+            incremental: false,
+            scanned_bytes: written_bytes,
+            written_bytes,
+        });
     }
 
+    #[cfg(not(target_os = "linux"))]
     atomic_publish(source, destination)?;
+    #[cfg(not(target_os = "linux"))]
     let written_bytes = source.metadata()?.len();
-    #[cfg(target_os = "linux")]
-    seed_incremental_mirror(destination, _cache_directory);
+    #[cfg(not(target_os = "linux"))]
     Ok(PublishStats {
         incremental: false,
         scanned_bytes: written_bytes,
@@ -356,74 +450,254 @@ fn publish_checkpoint(
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(target_os = "linux")]
+struct PublishBase {
+    canonical: Option<File>,
+    identity: Option<FileIdentity>,
+    permissions: Option<fs::Permissions>,
+    generation: u64,
+    state_id: Option<StorageStateId>,
+}
+
+#[cfg(target_os = "linux")]
+fn validate_publish_base(
+    destination: &Path,
+    cache_directory: &Path,
+    expected_generation: u64,
+    expected_state_id: Option<StorageStateId>,
+    source_generation: u64,
+    source_state_id: Option<StorageStateId>,
+) -> RevisionResult<PublishBase> {
+    let canonical = match open_nofollow(destination, false) {
+        Ok(file) => file,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && expected_generation == 0
+                && expected_state_id.is_none() =>
+        {
+            return Ok(PublishBase {
+                canonical: None,
+                identity: None,
+                permissions: None,
+                generation: 0,
+                state_id: None,
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = canonical.metadata()?;
+    if !metadata.file_type().is_file() {
+        return Err(RevisionError::Invalid(
+            "canonical project is not a regular file".into(),
+        ));
+    }
+    let identity = file_identity(&metadata);
+    let inspection = RevisionStore::inspect(destination)?;
+    let revalidated = open_nofollow(destination, false)?;
+    if validated_identity(&revalidated, false)? != identity {
+        return Err(RevisionError::Invalid(
+            "canonical project changed while it was inspected".into(),
+        ));
+    }
+    let marker_matches = ready_marker_matches(
+        &cache_directory.join(PUBLISH_MIRROR_READY_FILE),
+        inspection.generation,
+        inspection.state_id,
+    );
+    let expected_matches =
+        inspection.generation == expected_generation && inspection.state_id == expected_state_id;
+    let already_published =
+        inspection.generation == source_generation && inspection.state_id == source_state_id;
+    if !expected_matches && !marker_matches && !already_published {
+        return Err(RevisionError::Invalid(format!(
+            "project publication conflict: expected generation {expected_generation}, found {}",
+            inspection.generation
+        )));
+    }
+    Ok(PublishBase {
+        canonical: Some(canonical),
+        identity: Some(identity),
+        permissions: Some(metadata.permissions()),
+        generation: inspection.generation,
+        state_id: inspection.state_id,
+    })
+}
+
+#[cfg(target_os = "linux")]
 fn incremental_publish(
     source: &Path,
     destination: &Path,
     cache_directory: &Path,
+    base: &PublishBase,
+    source_generation: u64,
+    source_state_id: Option<StorageStateId>,
 ) -> RevisionResult<Option<PublishStats>> {
     let mirror = cache_directory.join(PUBLISH_MIRROR_FILE);
     let ready = cache_directory.join(PUBLISH_MIRROR_READY_FILE);
-    if !destination.is_file()
-        || !is_private_file(&mirror)
-        || !is_regular_file(&ready)
-        || same_file(destination, &mirror)?
-    {
+    let (Some(_), Some(canonical_identity), Some(canonical_permissions)) = (
+        base.canonical.as_ref(),
+        base.identity,
+        base.permissions.clone(),
+    ) else {
+        return Ok(None);
+    };
+    if !ready_marker_matches(&ready, base.generation, base.state_id) {
+        return Ok(None);
+    }
+    let mut mirror_file = match open_private_writable(&mirror) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+    let mirror_identity = validated_identity(&mirror_file, true)?;
+    if mirror_identity == canonical_identity {
         return Ok(None);
     }
 
     let backup = cache_directory.join(PUBLISH_BACKUP_FILE);
     let _ = fs::remove_file(&backup);
+    sync_directory(cache_directory)?;
     if fs::hard_link(destination, &backup).is_err() {
         return Ok(None);
     }
+    sync_directory(cache_directory)?;
+    maybe_publish_fault(PublishFault::BackupLinked)?;
     // The backup link preserves the old checkpoint while the distinct mirror is updated.
     // Renaming the completed mirror over the canonical path is the only point at which the
     // user-visible project changes. The backup then becomes the next private mirror.
     fs::remove_file(&ready)?;
+    sync_directory(cache_directory)?;
+    maybe_publish_fault(PublishFault::MarkerRemoved)?;
 
     let result = (|| -> RevisionResult<PublishStats> {
-        fs::set_permissions(&mirror, destination.metadata()?.permissions())?;
-        let stats = update_mirror(source, &mirror)?;
+        let mut stats = update_mirror(source, &mut mirror_file)?;
+        mirror_file.set_permissions(canonical_permissions.clone())?;
+        mirror_file.sync_all()?;
+        maybe_publish_fault(PublishFault::MirrorSynced)?;
+        validate_named_identity(&mirror, mirror_identity, true)?;
+        validate_named_identity(destination, canonical_identity, false)?;
         fs::rename(&mirror, destination)?;
+        sync_parent(destination)?;
+        maybe_publish_fault(PublishFault::CanonicalRenamed)?;
+        if validated_identity(&open_nofollow(destination, false)?, false)? != mirror_identity {
+            return Err(RevisionError::Invalid(
+                "published project does not match the completed mirror".into(),
+            ));
+        }
         fs::rename(&backup, &mirror)?;
-        write_ready_marker(&ready)?;
+        sync_directory(cache_directory)?;
+        maybe_publish_fault(PublishFault::BackupRenamed)?;
+
+        let mut next_mirror = open_private_writable(&mirror)?;
+        let next_identity = validated_identity(&next_mirror, true)?;
+        if next_identity == mirror_identity {
+            return Err(RevisionError::Invalid(
+                "next mirror aliases the visible project".into(),
+            ));
+        }
+        let synchronized = update_mirror(source, &mut next_mirror)?;
+        next_mirror.set_permissions(canonical_permissions)?;
+        next_mirror.sync_all()?;
+        maybe_publish_fault(PublishFault::MirrorResynced)?;
+        stats.scanned_bytes = stats
+            .scanned_bytes
+            .saturating_add(synchronized.scanned_bytes);
+        stats.written_bytes = stats
+            .written_bytes
+            .saturating_add(synchronized.written_bytes);
+        write_ready_marker(&ready, source_generation, source_state_id)?;
+        sync_directory(cache_directory)?;
+        maybe_publish_fault(PublishFault::MarkerCreated)?;
         Ok(stats)
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&backup);
-    }
     result.map(Some)
 }
 
 #[cfg(target_os = "linux")]
-fn is_private_file(path: &Path) -> bool {
+fn open_nofollow(path: &Path, write: bool) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(write)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    options.open(path)
+}
+
+#[cfg(target_os = "linux")]
+fn open_private_writable(path: &Path) -> RevisionResult<File> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Ok(file) = open_nofollow(path, true) {
+        validated_identity(&file, true)?;
+        return Ok(file);
+    }
+    let read_only = open_nofollow(path, false)?;
+    let identity = validated_identity(&read_only, true)?;
+    let mode = read_only.metadata()?.permissions().mode();
+    read_only.set_permissions(fs::Permissions::from_mode(mode | 0o200))?;
+    read_only.sync_all()?;
+    let writable = open_nofollow(path, true)?;
+    if validated_identity(&writable, true)? != identity {
+        return Err(RevisionError::Invalid(
+            "mirror changed while it was made writable".into(),
+        ));
+    }
+    Ok(writable)
+}
+
+#[cfg(target_os = "linux")]
+fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
     use std::os::unix::fs::MetadataExt;
 
-    path.symlink_metadata()
-        .is_ok_and(|metadata| metadata.file_type().is_file() && metadata.nlink() == 1)
+    FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn is_regular_file(path: &Path) -> bool {
-    path.symlink_metadata()
-        .is_ok_and(|metadata| metadata.file_type().is_file())
-}
-
-#[cfg(target_os = "linux")]
-fn same_file(left: &Path, right: &Path) -> RevisionResult<bool> {
+fn validated_identity(file: &File, private: bool) -> RevisionResult<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
 
-    let left = left.metadata()?;
-    let right = right.metadata()?;
-    Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || (private && metadata.nlink() != 1) {
+        return Err(RevisionError::Invalid(
+            "publication file is not a private regular inode".into(),
+        ));
+    }
+    Ok(file_identity(&metadata))
 }
 
 #[cfg(target_os = "linux")]
-fn update_mirror(source: &Path, mirror: &Path) -> RevisionResult<PublishStats> {
-    let mut source = File::open(source)?;
+fn validate_named_identity(
+    path: &Path,
+    expected: FileIdentity,
+    private: bool,
+) -> RevisionResult<()> {
+    let actual = open_nofollow(path, false)?;
+    if validated_identity(&actual, private)? != expected {
+        return Err(RevisionError::Invalid(
+            "publication path changed before its atomic rename".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn update_mirror(source: &Path, mirror: &mut File) -> RevisionResult<PublishStats> {
+    let mut source = open_nofollow(source, false)?;
+    validated_identity(&source, false)?;
     let source_len = source.metadata()?.len();
-    let mut mirror = OpenOptions::new().read(true).write(true).open(mirror)?;
     mirror.set_len(source_len)?;
+    source.seek(SeekFrom::Start(0))?;
+    mirror.seek(SeekFrom::Start(0))?;
 
     let mut source_chunk = vec![0; COMPARE_CHUNK_BYTES];
     let mut mirror_chunk = vec![0; COMPARE_CHUNK_BYTES];
@@ -457,19 +731,31 @@ fn update_mirror(source: &Path, mirror: &Path) -> RevisionResult<PublishStats> {
 }
 
 #[cfg(target_os = "linux")]
-fn seed_incremental_mirror(destination: &Path, cache_directory: &Path) {
+fn seed_incremental_mirror(
+    destination: &Path,
+    cache_directory: &Path,
+    generation: u64,
+    state_id: Option<StorageStateId>,
+) {
     let mirror = cache_directory.join(PUBLISH_MIRROR_FILE);
     let ready = cache_directory.join(PUBLISH_MIRROR_READY_FILE);
     let probe = cache_directory.join(PUBLISH_BACKUP_FILE);
+    let _ = fs::remove_file(&ready);
     let _ = fs::remove_file(&probe);
+    let _ = sync_directory(cache_directory);
     if fs::hard_link(destination, &probe).is_err() {
         return;
     }
     let _ = fs::remove_file(&probe);
     let _ = fs::remove_file(&mirror);
     if copy_or_clone(destination, &mirror)
-        .and_then(|_| File::open(&mirror)?.sync_all())
-        .and_then(|_| write_ready_marker(&ready).map_err(std::io::Error::other))
+        .and_then(|_| open_nofollow(&mirror, false)?.sync_all())
+        .and_then(|_| maybe_seed_fault().map_err(std::io::Error::other))
+        .and_then(|_| sync_directory(cache_directory).map_err(std::io::Error::other))
+        .and_then(|_| {
+            write_ready_marker(&ready, generation, state_id).map_err(std::io::Error::other)
+        })
+        .and_then(|_| sync_directory(cache_directory).map_err(std::io::Error::other))
         .is_err()
     {
         let _ = fs::remove_file(&mirror);
@@ -477,9 +763,81 @@ fn seed_incremental_mirror(destination: &Path, cache_directory: &Path) {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+fn maybe_publish_fault(point: PublishFault) -> RevisionResult<()> {
+    if PUBLISH_FAULT.get() == Some(point) {
+        return Err(RevisionError::Invalid(format!(
+            "injected publication fault at {point:?}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn maybe_publish_fault(_point: PublishFault) -> RevisionResult<()> {
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn maybe_seed_fault() -> RevisionResult<()> {
+    maybe_publish_fault(PublishFault::SeedMirrorCreated)
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn maybe_seed_fault() -> RevisionResult<()> {
+    maybe_publish_fault(PublishFault::SeedMirrorCreated)
+}
+
 #[cfg(target_os = "linux")]
-fn write_ready_marker(path: &Path) -> RevisionResult<()> {
-    fs::write(path, b"ready")?;
+fn marker_bytes(generation: u64, state_id: Option<StorageStateId>) -> Vec<u8> {
+    let mut marker = generation.to_string();
+    marker.push(':');
+    match state_id {
+        Some(state_id) => {
+            for byte in state_id {
+                use std::fmt::Write as _;
+                write!(&mut marker, "{byte:02x}").expect("writing to a string cannot fail");
+            }
+        }
+        None => marker.push('-'),
+    }
+    marker.into_bytes()
+}
+
+#[cfg(target_os = "linux")]
+fn ready_marker_matches(path: &Path, generation: u64, state_id: Option<StorageStateId>) -> bool {
+    let Ok(mut marker) = open_nofollow(path, false) else {
+        return false;
+    };
+    if validated_identity(&marker, true).is_err() {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    marker.read_to_end(&mut bytes).is_ok() && bytes == marker_bytes(generation, state_id)
+}
+
+#[cfg(target_os = "linux")]
+fn write_ready_marker(
+    path: &Path,
+    generation: u64,
+    state_id: Option<StorageStateId>,
+) -> RevisionResult<()> {
+    fs::write(path, marker_bytes(generation, state_id))?;
+    open_nofollow(path, false)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn sync_parent(path: &Path) -> RevisionResult<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    sync_directory(parent)
+}
+
+#[cfg(target_os = "linux")]
+fn sync_directory(path: &Path) -> RevisionResult<()> {
     File::open(path)?.sync_all()?;
     Ok(())
 }
