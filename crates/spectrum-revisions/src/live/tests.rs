@@ -15,7 +15,7 @@ use crate::{Actor, ActorKind, Asset, Payload};
 
 fn bytes_file(path: &Path, bytes: &[u8]) -> File {
     fs::write(path, bytes).unwrap();
-    open_nofollow(path, false).unwrap()
+    open_nofollow(path, true).unwrap()
 }
 
 fn private_directory(path: &Path) -> PrivateDirectory {
@@ -41,7 +41,7 @@ fn mirror_delta_counts_growth_removed_tail_and_written_blocks_exactly() {
     fs::write(&mirror, &baseline).unwrap();
     baseline.extend([0x33; 123]);
     fs::write(&source, &baseline).unwrap();
-    mirror_file = open_nofollow(&mirror, false).unwrap();
+    mirror_file = open_nofollow(&mirror, true).unwrap();
     let grown = apply_checkpoint_delta(&source, &mirror_file).unwrap();
     assert_eq!(grown.changed_bytes, 123);
 
@@ -49,7 +49,7 @@ fn mirror_delta_counts_growth_removed_tail_and_written_blocks_exactly() {
     let grown_len = baseline.len();
     baseline.truncate(WRITE_BLOCK_BYTES + 3);
     fs::write(&source, &baseline).unwrap();
-    mirror_file = open_nofollow(&mirror, false).unwrap();
+    mirror_file = open_nofollow(&mirror, true).unwrap();
     let shrunk = apply_checkpoint_delta(&source, &mirror_file).unwrap();
     assert_eq!(
         shrunk.changed_bytes,
@@ -60,7 +60,7 @@ fn mirror_delta_counts_growth_removed_tail_and_written_blocks_exactly() {
     fs::write(&mirror, &baseline).unwrap();
     baseline[WRITE_BLOCK_BYTES] = 0x44;
     fs::write(&source, &baseline).unwrap();
-    mirror_file = open_nofollow(&mirror, false).unwrap();
+    mirror_file = open_nofollow(&mirror, true).unwrap();
     let partial = apply_checkpoint_delta(&source, &mirror_file).unwrap();
     assert_eq!(partial.changed_bytes, 3);
 
@@ -84,7 +84,7 @@ fn mirror_delta_counts_growth_removed_tail_and_written_blocks_exactly() {
         .open(&mirror)
         .unwrap();
     sparse_mirror.set_len(sparse_len).unwrap();
-    mirror_file = open_nofollow(&mirror, false).unwrap();
+    mirror_file = open_nofollow(&mirror, true).unwrap();
     let sparse = apply_checkpoint_delta(&source, &mirror_file).unwrap();
     assert_eq!(sparse.changed_bytes, WRITE_BLOCK_BYTES as u64);
     assert_eq!(sparse.written_bytes, WRITE_BLOCK_BYTES as u64);
