@@ -127,13 +127,45 @@ impl LiveRevisionStore {
 
     pub fn open(canonical_path: &Path, cache_root: &Path) -> RevisionResult<Self> {
         let canonical_path = absolute_path(canonical_path)?;
-        recover_legacy_sidecars(&canonical_path)?;
-        // Container migrations happen against the portable file first. Incremented storage
-        // generation then invalidates any older live cache before it can diverge.
-        let canonical_store = RevisionStore::open(&canonical_path)?;
-        canonical_store.checkpoint()?;
-        drop(canonical_store);
-        let canonical = RevisionStore::inspect(&canonical_path)?;
+        let canonical = {
+            #[cfg(target_os = "linux")]
+            let _canonical_lock = lock_directory(
+                canonical_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new(".")),
+            )?;
+            #[cfg(target_os = "linux")]
+            let permission_restore = {
+                use std::os::unix::fs::PermissionsExt;
+
+                let descriptor = open_nofollow(&canonical_path, false)?;
+                let identity = validated_identity(&descriptor, false)?;
+                let permissions = descriptor.metadata()?.permissions();
+                if permissions.mode() & 0o200 == 0 {
+                    descriptor
+                        .set_permissions(fs::Permissions::from_mode(permissions.mode() | 0o200))?;
+                    descriptor.sync_all()?;
+                }
+                Some((descriptor, identity, permissions))
+            };
+            let prepared = (|| {
+                recover_legacy_sidecars(&canonical_path)?;
+                // Container migrations happen against the portable file first. Incremented
+                // storage generation then invalidates an older live cache before it can diverge.
+                let canonical_store = RevisionStore::open(&canonical_path)?;
+                canonical_store.checkpoint()?;
+                drop(canonical_store);
+                RevisionStore::inspect(&canonical_path)
+            })();
+            #[cfg(target_os = "linux")]
+            if let Some((descriptor, identity, permissions)) = permission_restore {
+                descriptor.set_permissions(permissions)?;
+                descriptor.sync_all()?;
+                validate_named_identity(&canonical_path, identity, false)?;
+            }
+            prepared?
+        };
         create_private_dir_all(cache_root)?;
         let project_directory = cache_root.join(canonical.info.project_id.to_string());
         create_private_dir_all(&project_directory)?;
