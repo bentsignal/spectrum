@@ -695,6 +695,7 @@ fn update_mirror(source: &Path, mirror: &mut File) -> RevisionResult<PublishStat
     let mut source = open_nofollow(source, false)?;
     validated_identity(&source, false)?;
     let source_len = source.metadata()?.len();
+    let mirror_len = mirror.metadata()?.len();
     mirror.set_len(source_len)?;
     source.seek(SeekFrom::Start(0))?;
     mirror.seek(SeekFrom::Start(0))?;
@@ -714,9 +715,24 @@ fn update_mirror(source: &Path, mirror: &mut File) -> RevisionResult<PublishStat
                 if source_chunk[block_start..block_end] == mirror_chunk[block_start..block_end] {
                     continue;
                 }
-                mirror.seek(SeekFrom::Start(offset + block_start as u64))?;
-                mirror.write_all(&source_chunk[block_start..block_end])?;
-                written_bytes += (block_end - block_start) as u64;
+                let absolute_start = offset + block_start as u64;
+                let absolute_end = offset + block_end as u64;
+                let write_start = if absolute_start < mirror_len && mirror_len < absolute_end {
+                    let old_prefix_end =
+                        block_start + usize::try_from(mirror_len - absolute_start).unwrap();
+                    if source_chunk[block_start..old_prefix_end]
+                        == mirror_chunk[block_start..old_prefix_end]
+                    {
+                        old_prefix_end
+                    } else {
+                        block_start
+                    }
+                } else {
+                    block_start
+                };
+                mirror.seek(SeekFrom::Start(offset + write_start as u64))?;
+                mirror.write_all(&source_chunk[write_start..block_end])?;
+                written_bytes += (block_end - write_start) as u64;
             }
             mirror.seek(SeekFrom::Start(offset + chunk_len as u64))?;
         }
