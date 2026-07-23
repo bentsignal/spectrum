@@ -13,7 +13,8 @@ use lumen_core::{
     PickState, Project, SpotRemoval, ToneCurve, ToneCurves, Workspace,
     engine::{RenderOptions, render_image},
     preview::{
-        PreviewCompletion, PreviewRequest, PreviewSelection, PreviewWorker, prepare_preview,
+        PreparedPreview, PreviewCompletionDisposition, PreviewPipeline, PreviewRequestDecision,
+        PreviewWorker,
     },
 };
 use serde::Serialize;

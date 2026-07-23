@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::mpsc::Receiver,
     time::{Duration, Instant},
@@ -15,7 +15,10 @@ use lumen_core::{
     Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo, PickState,
     Project, SpotRemoval, ToneCurve, Workspace,
     engine::{RenderOptions, decode_photo, render_image, render_photo},
-    preview::{PreparedPreview, PreviewHistogram, PreviewSelection, PreviewWorker},
+    preview::{
+        PreparedPreview, PreviewCompletionDisposition, PreviewHistogram, PreviewPipeline,
+        PreviewRequestDecision, PreviewWorker,
+    },
     project::is_supported_image,
 };
 
@@ -163,10 +166,7 @@ struct LumenApp {
     original_preview_id: Option<u64>,
     histogram: Option<Histogram>,
     preview_worker: PreviewWorker,
-    preview_selection: PreviewSelection,
-    preview_pending: Option<(u64, u64, u64, Adjustments)>,
-    preview_prefetch_pending: Vec<(u64, u64, Adjustments)>,
-    preview_cache: VecDeque<(u64, PreparedPreview)>,
+    preview_pipeline: PreviewPipeline,
     thumbnails: HashMap<u64, TextureHandle>,
     draft: Adjustments,
     draft_id: Option<u64>,
@@ -285,10 +285,7 @@ impl LumenApp {
             original_preview_id: None,
             histogram: None,
             preview_worker: PreviewWorker::new(),
-            preview_selection: PreviewSelection::default(),
-            preview_pending: None,
-            preview_prefetch_pending: Vec::new(),
-            preview_cache: VecDeque::new(),
+            preview_pipeline: PreviewPipeline::default(),
             thumbnails: HashMap::new(),
             draft: Adjustments::default(),
             draft_id: None,
