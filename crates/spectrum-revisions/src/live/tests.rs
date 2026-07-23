@@ -2,7 +2,7 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Seek, SeekFrom, Write},
+    io::{Seek, SeekFrom},
     os::unix::fs::{FileExt, MetadataExt, symlink},
 };
 
