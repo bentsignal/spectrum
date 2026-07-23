@@ -334,32 +334,38 @@ impl PrismApp {
             .iter()
             .filter(|layer| layer.visible)
         {
-            if reuse_text_preview_frame(
+            let source_geometry = self.text_source_geometries.get(layer.id).copied();
+            let scheduling = self.text_source_geometries.schedule_layer(
+                layer,
                 interaction_active,
-                matches!(layer.kind, LayerKind::Text { .. }),
-                self.text_source_geometries.get(layer.id).is_some(),
                 self.layer_visuals.contains_key(&layer.id),
                 self.layer_visual_dirty.contains(&layer.id),
-            ) {
-                self.layer_render_pending.remove(&layer.id);
-                continue;
-            }
-            let key = desired_layer_visual_key(
-                layer,
-                display_scale,
-                interaction_active,
-                self.layer_visuals.get(&layer.id).map(|entry| &entry.key),
+                || {
+                    let key = desired_layer_visual_key(
+                        layer,
+                        display_scale,
+                        interaction_active,
+                        self.layer_visuals.get(&layer.id).map(|entry| &entry.key),
+                    );
+                    let font_asset = self.workspace.document.font_for_layer(layer);
+                    let required_max_size = required_preview_size(
+                        layer,
+                        &key,
+                        interaction_active,
+                        source_geometry,
+                        runtime_max_texture_side,
+                        layer_byte_budget,
+                    );
+                    (key, font_asset, required_max_size)
+                },
             );
-            let font_asset = self.workspace.document.font_for_layer(layer);
-            let source_geometry = self.text_source_geometries.get(layer.id).copied();
-            let required_max_size = required_preview_size(
-                layer,
-                &key,
-                interaction_active,
-                source_geometry,
-                runtime_max_texture_side,
-                layer_byte_budget,
-            );
+            let (key, font_asset, required_max_size) = match scheduling {
+                LayerPreviewSchedule::ReuseCachedTextVisual => {
+                    self.layer_render_pending.remove(&layer.id);
+                    continue;
+                }
+                LayerPreviewSchedule::Resolve(resolved) => resolved,
+            };
             if reuse_cached_visual_during_interaction(
                 self.layer_visuals
                     .get(&layer.id)

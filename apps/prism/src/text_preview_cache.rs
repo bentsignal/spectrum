@@ -1,5 +1,12 @@
 use std::collections::HashMap;
 
+use crate::{Layer, LayerKind};
+
+pub enum LayerPreviewSchedule<T> {
+    ReuseCachedTextVisual,
+    Resolve(T),
+}
+
 /// Source geometry retained across transform and zoom frames.
 ///
 /// The GUI invalidates an entry only when the text, typography, or font identity
@@ -37,16 +44,28 @@ impl<T> TextPreviewFrameCache<T> {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
-}
 
-pub fn reuse_text_preview_frame(
-    interaction_active: bool,
-    is_text: bool,
-    geometry_cached: bool,
-    visual_cached: bool,
-    visual_dirty: bool,
-) -> bool {
-    interaction_active && is_text && geometry_cached && visual_cached && !visual_dirty
+    /// Runs the same scheduling gate as the GUI before visual-key cloning,
+    /// font lookup, text shaping, or preview-size resolution.
+    pub fn schedule_layer<R>(
+        &self,
+        layer: &Layer,
+        interaction_active: bool,
+        visual_cached: bool,
+        visual_dirty: bool,
+        resolve: impl FnOnce() -> R,
+    ) -> LayerPreviewSchedule<R> {
+        if interaction_active
+            && matches!(layer.kind, LayerKind::Text { .. })
+            && self.entries.contains_key(&layer.id)
+            && visual_cached
+            && !visual_dirty
+        {
+            LayerPreviewSchedule::ReuseCachedTextVisual
+        } else {
+            LayerPreviewSchedule::Resolve(resolve())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -64,10 +83,30 @@ mod tests {
     }
 
     #[test]
-    fn interaction_reuse_requires_clean_visual_and_source_geometry() {
-        assert!(reuse_text_preview_frame(true, true, true, true, false));
-        assert!(!reuse_text_preview_frame(true, true, false, true, false));
-        assert!(!reuse_text_preview_frame(true, true, true, true, true));
-        assert!(!reuse_text_preview_frame(false, true, true, true, false));
+    fn scheduling_gate_skips_expensive_resolution_only_for_clean_cached_text() {
+        let layer = Layer {
+            id: 7,
+            kind: LayerKind::Text {
+                text: "Long transform text ".repeat(10_000),
+                font_size: 72.0,
+                color: [255; 4],
+                typography: Default::default(),
+            },
+            ..Layer::default()
+        };
+        let mut cache = TextPreviewFrameCache::default();
+        cache.insert(layer.id, "geometry");
+        let mut resolved = false;
+        let schedule = cache.schedule_layer(&layer, true, true, false, || {
+            resolved = true;
+        });
+        assert!(matches!(
+            schedule,
+            LayerPreviewSchedule::ReuseCachedTextVisual
+        ));
+        assert!(!resolved);
+
+        let schedule = cache.schedule_layer(&layer, true, true, true, || 42);
+        assert!(matches!(schedule, LayerPreviewSchedule::Resolve(42)));
     }
 }

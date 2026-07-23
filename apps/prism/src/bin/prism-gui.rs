@@ -12,8 +12,8 @@ use eframe::egui::{
 };
 use prism_core::{
     Alignment, AlignmentReference, BlendMode, Command, Document, GuideOrientation, Layer,
-    LayerKind, LayerMask, ShapeStroke, TextPreviewFrameCache, Transform, Workspace,
-    export_document, reuse_text_preview_frame,
+    LayerKind, LayerMask, LayerPreviewSchedule, ShapeStroke, TextPreviewFrameCache, Transform,
+    Workspace, export_document,
 };
 use spectrum_imaging::AdjustmentPatch;
 

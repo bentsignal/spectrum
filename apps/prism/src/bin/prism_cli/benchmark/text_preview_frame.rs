@@ -1,9 +1,9 @@
-use std::{hint::black_box, time::Instant};
+use std::{collections::HashSet, hint::black_box, time::Instant};
 
 use anyhow::{Result, bail};
 use prism_core::{
-    FontAsset, Layer, LayerKind, TextGeometry, TextPreviewFrameCache, TextTypography,
-    reuse_text_preview_frame,
+    Document, FontAsset, Layer, LayerKind, LayerPreviewSchedule, TextGeometry,
+    TextPreviewFrameCache, TextTypography, measure_text_geometry_with_typography,
 };
 
 use super::{TemporaryFont, sample_summary};
@@ -16,6 +16,7 @@ pub(super) struct Measurement {
 pub(super) fn measure() -> Result<Measurement> {
     let fixture = TemporaryFont::new()?;
     let font = FontAsset::import(911, &fixture.path)?;
+    let mut document = Document::new("GUI scheduling benchmark", 1_600, 1_200);
     let layer = Layer {
         id: 912,
         kind: LayerKind::Text {
@@ -29,6 +30,9 @@ pub(super) fn measure() -> Result<Measurement> {
         },
         ..Layer::default()
     };
+    document.font_assets.push(font);
+    document.layers.push(layer);
+    let layer = document.layer(912)?;
     let mut cache = TextPreviewFrameCache::default();
     cache.insert(
         layer.id,
@@ -45,26 +49,39 @@ pub(super) fn measure() -> Result<Measurement> {
             layout_height: 512.0,
         },
     );
+    let visual_cache = HashSet::from([layer.id]);
+    // Keep the imported face cold and make accidental font resolution fail
+    // deterministically instead of relying on timing or process RSS.
+    std::fs::remove_file(&fixture.path)?;
 
     let mut samples = Vec::with_capacity(240);
     for _ in 0..240 {
         let started = Instant::now();
-        let geometry_cached = cache.get(layer.id).is_some();
-        let reused = reuse_text_preview_frame(
-            true,
-            matches!(layer.kind, LayerKind::Text { .. }),
-            geometry_cached,
-            true,
-            false,
-        );
-        black_box(cache.get(layer.id));
-        if !reused {
-            bail!("GUI text preview frame unexpectedly left the geometry cache fast path");
+        let scheduling =
+            cache.schedule_layer(layer, true, visual_cache.contains(&layer.id), false, || {
+                let cloned_kind = layer.kind.clone();
+                let LayerKind::Text {
+                    text,
+                    font_size,
+                    typography,
+                    ..
+                } = &cloned_kind
+                else {
+                    unreachable!("benchmark layer is text")
+                };
+                let font = document
+                    .font_for_layer(layer)
+                    .ok_or_else(|| anyhow::anyhow!("benchmark font identity was not resolved"))?;
+                measure_text_geometry_with_typography(text, *font_size, typography, Some(font))
+            });
+        if !matches!(scheduling, LayerPreviewSchedule::ReuseCachedTextVisual) {
+            bail!(
+                "GUI text preview scheduling invoked key/font/shaping resolution instead of reusing caches"
+            );
         }
         samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    black_box(font);
-    black_box(layer);
+    black_box(document);
     let (median_ms, p95_ms) = sample_summary(&mut samples);
     Ok(Measurement { median_ms, p95_ms })
 }
