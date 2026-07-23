@@ -15,6 +15,8 @@ package_script="$repo_root/scripts/package-prism-macos.sh"
 lumen_package_script="$repo_root/scripts/package-macos.sh"
 bridge_source="$repo_root/crates/spectrum-terminal/native/ghostty-bridge/Sources/SpectrumGhosttyBridge/SpectrumGhosttyBridge.swift"
 surface_source="$repo_root/crates/spectrum-terminal/native/ghostty-bridge/Sources/SpectrumGhosttyBridge/SpectrumGhosttySurfaceView.swift"
+focus_handoff_source="$repo_root/crates/spectrum-terminal/native/ghostty-bridge/Sources/SpectrumGhosttyBridge/SpectrumGhosttyFocusHandoff.swift"
+focus_handoff_tests="$repo_root/crates/spectrum-terminal/native/ghostty-bridge/Tests/SpectrumGhosttyBridgeTests/SpectrumGhosttyFocusHandoffTests.swift"
 fixture="$(mktemp -d "$repo_root/target/ghostty-source-tests.XXXXXX")"
 
 [[ -x "$package_script" ]] || {
@@ -576,7 +578,8 @@ python3 - "$repo_root/scripts/build-spectrum-ghostty-macos.sh" \
   "$repo_root/scripts/build-spectrum-ghostty-bridge-macos.sh" \
   "$repo_root/scripts/package-prism-macos.sh" \
   "$repo_root/scripts/package-macos.sh" \
-  "$bridge_source" "$surface_source" <<'PY'
+  "$bridge_source" "$surface_source" \
+  "$focus_handoff_source" "$focus_handoff_tests" <<'PY'
 import sys
 from pathlib import Path
 
@@ -585,6 +588,8 @@ consumer = Path(sys.argv[2]).read_text()
 packages = [Path(sys.argv[3]).read_text(), Path(sys.argv[4]).read_text()]
 bridge_source = Path(sys.argv[5]).read_text()
 surface_source = Path(sys.argv[6]).read_text()
+focus_handoff_source = Path(sys.argv[7]).read_text()
+focus_handoff_tests = Path(sys.argv[8]).read_text()
 zig = proof.index('zig_source="$toolchains_dir/zig-$zig_arch-macos-$zig_version"')
 remove = proof.index('safe_remove_tree "$zig_source"', zig)
 extract = proof.index('extract_once "$zig_archive"', remove)
@@ -631,14 +636,24 @@ assert 'bridge packaging rejects externally prepared proof roots' in consumer
 assert all('verified-proof-root' not in package for package in packages)
 assert 'public typealias SpectrumGhosttyEventCallback' in bridge_source
 assert '@convention(c)' in bridge_source
-assert 'window.firstResponder === self' in surface_source
 assert surface_source.count('guard ownsPresentedFocus else { return }') >= 2
 assert 'ghostty_surface_set_focus(surface, ownsPresentedFocus)' in surface_source
-assert surface_source.count('restoreParentResponderIfOwned()') >= 3
+assert surface_source.count('SpectrumGhosttyFocusHandoff.applyVisibility') >= 3
 destroy = surface_source.index('func destroySurface()')
 free = surface_source.index('ghostty_surface_free(surface)', destroy)
-restore = surface_source.index('restoreParentResponderIfOwned()', destroy)
+restore = surface_source.index('SpectrumGhosttyFocusHandoff.applyVisibility(false', destroy)
 assert destroy < restore < free
+restore = focus_handoff_source.index('restoreHostResponderIfOwned')
+hide = focus_handoff_source.index('surfaceView.isHidden = !visible')
+assert restore < hide
+assert 'window.firstResponder === surfaceView' in focus_handoff_source
+assert 'for _ in 0..<4' in focus_handoff_tests
+assert 'window.firstResponder === host' in focus_handoff_tests
+assert 'window.firstResponder === editor' in focus_handoff_tests
+test_copy = consumer.index('cp -R -- "$bridge_source/Tests"')
+swift_test = consumer.index('xcrun swift test', test_copy)
+swift_build = consumer.index('xcrun swift build', swift_test)
+assert test_copy < swift_test < swift_build
 assert 'apps/prism/' not in packages[1]
 assert 'packaging/prism/' not in packages[1]
 assert 'scripts/build-prism' not in packages[1]

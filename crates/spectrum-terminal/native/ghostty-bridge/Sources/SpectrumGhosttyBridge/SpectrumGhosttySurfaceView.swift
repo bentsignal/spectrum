@@ -66,7 +66,7 @@ final class SpectrumGhosttySurfaceView: NSView {
   }
 
   deinit {
-    restoreParentResponderIfOwned()
+    SpectrumGhosttyFocusHandoff.applyVisibility(false, to: self, hostView: parentView)
     stopObservingWindow()
     if let surface {
       ghostty_surface_set_focus(surface, false)
@@ -77,7 +77,7 @@ final class SpectrumGhosttySurfaceView: NSView {
 
   func destroySurface() {
     guard let surface else { return }
-    restoreParentResponderIfOwned()
+    SpectrumGhosttyFocusHandoff.applyVisibility(false, to: self, hostView: parentView)
     self.surface = nil
     stopObservingWindow()
     ghostty_surface_set_focus(surface, false)
@@ -97,10 +97,7 @@ final class SpectrumGhosttySurfaceView: NSView {
     let y = parent.isFlipped ? top : Double(parent.bounds.height) - top - height
     frame = NSRect(x: x, y: y, width: max(0, width), height: max(0, height))
     desiredVisible = visible
-    isHidden = !visible
-    if !visible {
-      restoreParentResponderIfOwned()
-    }
+    SpectrumGhosttyFocusHandoff.applyVisibility(visible, to: self, hostView: parent)
     syncSurfaceGeometry()
     syncOcclusion()
     if visible && requestFocus {
@@ -198,14 +195,6 @@ final class SpectrumGhosttySurfaceView: NSView {
       NotificationCenter.default.removeObserver(observer)
     }
     windowObservers.removeAll()
-  }
-
-  private func restoreParentResponderIfOwned() {
-    guard let window, window.firstResponder === self else { return }
-    let restored = parentView.map { window.makeFirstResponder($0) } ?? false
-    if !restored {
-      window.makeFirstResponder(nil)
-    }
   }
 
   private func syncOcclusion() {
