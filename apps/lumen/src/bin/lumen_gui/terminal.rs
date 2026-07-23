@@ -223,6 +223,11 @@ impl TerminalTab {
 }
 
 impl LumenApp {
+    pub(super) fn hide_terminal(&mut self) {
+        self.terminal.visible = false;
+        self.terminal.focus_requested = false;
+    }
+
     pub(super) fn toggle_terminal(&mut self) {
         if self.history_open {
             return;

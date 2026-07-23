@@ -13,7 +13,7 @@ pub(super) enum NativeMenuAction {
     Paste,
     SelectAll,
     ToggleTerminal,
-    ToggleAllShoots,
+    ToggleWorkspaceView,
     PreviousPhoto,
     NextPhoto,
     ToggleHistory,
@@ -36,7 +36,7 @@ impl NativeMenuAction {
         Self::Paste,
         Self::SelectAll,
         Self::ToggleTerminal,
-        Self::ToggleAllShoots,
+        Self::ToggleWorkspaceView,
         Self::PreviousPhoto,
         Self::NextPhoto,
         Self::ToggleHistory,
@@ -123,7 +123,7 @@ const fn action_spec(
 pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 19] = [
     action_spec(
         NativeMenuSection::File,
-        "New Catalog",
+        "New Shoot",
         NativeMenuAction::NewCatalog,
         Some(ActionKeyEquivalent::command("n")),
         false,
@@ -137,17 +137,17 @@ pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 19] = [
     ),
     action_spec(
         NativeMenuSection::File,
-        "Import Photos…",
-        NativeMenuAction::ImportPhotos,
-        Some(ActionKeyEquivalent::command_shift("i")),
-        true,
+        "Move Catalog…",
+        NativeMenuAction::MoveCatalog,
+        Some(ActionKeyEquivalent::command_shift("m")),
+        false,
     ),
     action_spec(
         NativeMenuSection::File,
-        "Move Catalog…",
-        NativeMenuAction::MoveCatalog,
-        None,
-        false,
+        "Import Photos…",
+        NativeMenuAction::ImportPhotos,
+        Some(ActionKeyEquivalent::command("i")),
+        true,
     ),
     action_spec(
         NativeMenuSection::File,
@@ -207,8 +207,8 @@ pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 19] = [
     ),
     action_spec(
         NativeMenuSection::View,
-        "Show All Shoots",
-        NativeMenuAction::ToggleAllShoots,
+        "Show Catalog",
+        NativeMenuAction::ToggleWorkspaceView,
         Some(ActionKeyEquivalent::command("l")),
         true,
     ),
@@ -280,9 +280,17 @@ mod tests {
 
     #[test]
     fn catalog_and_photo_actions_live_in_expected_native_menus() {
+        let new_shoot = ACTION_MENU_ITEMS
+            .iter()
+            .find(|spec| spec.action == NativeMenuAction::NewCatalog)
+            .unwrap();
         let import = ACTION_MENU_ITEMS
             .iter()
             .find(|spec| spec.action == NativeMenuAction::ImportPhotos)
+            .unwrap();
+        let move_catalog = ACTION_MENU_ITEMS
+            .iter()
+            .find(|spec| spec.action == NativeMenuAction::MoveCatalog)
             .unwrap();
         let undo = ACTION_MENU_ITEMS
             .iter()
@@ -292,18 +300,44 @@ mod tests {
             .iter()
             .find(|spec| spec.action == NativeMenuAction::SelectAll)
             .unwrap();
-        let all_shoots = ACTION_MENU_ITEMS
+        let workspace_view = ACTION_MENU_ITEMS
             .iter()
-            .find(|spec| spec.action == NativeMenuAction::ToggleAllShoots)
+            .find(|spec| spec.action == NativeMenuAction::ToggleWorkspaceView)
             .unwrap();
         assert_eq!(import.section, NativeMenuSection::File);
+        assert_eq!(import.equivalent, Some(ActionKeyEquivalent::command("i")));
+        assert!(import.separator_before);
+        assert_eq!(
+            move_catalog.equivalent,
+            Some(ActionKeyEquivalent::command_shift("m"))
+        );
+        assert!(!move_catalog.separator_before);
+        let move_index = ACTION_MENU_ITEMS
+            .iter()
+            .position(|spec| spec.action == NativeMenuAction::MoveCatalog)
+            .unwrap();
+        let import_index = ACTION_MENU_ITEMS
+            .iter()
+            .position(|spec| spec.action == NativeMenuAction::ImportPhotos)
+            .unwrap();
+        assert_eq!(move_index + 1, import_index);
+        assert_eq!(new_shoot.title, "New Shoot");
+        assert_eq!(
+            new_shoot.equivalent,
+            Some(ActionKeyEquivalent::command("n"))
+        );
         assert_eq!(undo.section, NativeMenuSection::Edit);
         assert_eq!(select_all.section, NativeMenuSection::Edit);
         assert_eq!(
             select_all.equivalent,
             Some(ActionKeyEquivalent::command("a"))
         );
-        assert_eq!(all_shoots.section, NativeMenuSection::View);
+        assert_eq!(workspace_view.section, NativeMenuSection::View);
+        assert_eq!(workspace_view.title, "Show Catalog");
+        assert_eq!(
+            workspace_view.equivalent,
+            Some(ActionKeyEquivalent::command("l"))
+        );
     }
 
     #[test]
