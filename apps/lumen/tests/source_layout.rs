@@ -67,7 +67,7 @@ fn native_macos_menu_owns_catalog_photo_and_edit_navigation() {
     for action in [
         "ImportPhotos",
         "ExportPhotos",
-        "ToggleAllShoots",
+        "ToggleWorkspaceView",
         "PreviousPhoto",
         "NextPhoto",
         "Undo",
@@ -89,7 +89,56 @@ fn routine_status_and_pick_glyph_chatter_stay_out_of_lumen_ui() {
     assert!(!toolbar.contains("selectable_label(true, \"x\")"));
     assert!(!library.contains("RichText::new(\"+\")"));
     assert!(!library.contains("RichText::new(\"x\")"));
-    assert!(library.contains("Back to Photos"));
+    assert!(!library.contains("Back to Photos"));
+}
+
+#[test]
+fn catalog_navigation_has_one_top_level_switch_and_two_restrained_primary_actions() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let toolbar = fs::read_to_string(manifest.join("src/bin/lumen_gui/toolbar.rs"))
+        .expect("toolbar source should be readable");
+    let library = fs::read_to_string(manifest.join("src/bin/lumen_gui/library.rs"))
+        .expect("catalog source should be readable");
+
+    let wordmark = toolbar.find("\"LUMEN\"").expect("wordmark should remain");
+    let view_switch = toolbar[wordmark..]
+        .find("view_switch_presentation(")
+        .map(|offset| wordmark + offset)
+        .expect("workspace switch should follow the wordmark");
+    let terminal = toolbar[view_switch..]
+        .find("if self.terminal.visible()")
+        .map(|offset| view_switch + offset)
+        .expect("remaining toolbar actions should follow the workspace switch");
+    assert!(wordmark < view_switch && view_switch < terminal);
+    assert!(!toolbar.contains("divider_rect"));
+    assert!(toolbar.contains("ui.separator()"));
+    assert!(!toolbar.contains("button(\"All Shoots\")"));
+    assert!(!toolbar.contains("RichText::new(\"ALL SHOOTS\")"));
+
+    assert!(library.contains(".button(\"New Shoot\")"));
+    assert!(library.contains("self.new_catalog()"));
+    assert!(library.contains(".button(\"Import Photos\")"));
+    assert!(library.contains("self.import_dialog()"));
+    assert!(library.contains("Vec2::new(ui.available_width(), 44.0)"));
+    assert!(library.contains("Some(*photo_id)"));
+    assert!(!library.contains("photo_view_return_label"));
+}
+
+#[test]
+fn catalog_shortcuts_are_consistent_across_native_and_portable_surfaces() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let state = fs::read_to_string(manifest.join("src/bin/lumen_gui/state.rs"))
+        .expect("shortcut source should be readable");
+    let toolbar = fs::read_to_string(manifest.join("src/bin/lumen_gui/toolbar.rs"))
+        .expect("toolbar source should be readable");
+    let menu = fs::read_to_string(manifest.join("src/bin/lumen_gui/macos_menu_spec.rs"))
+        .expect("native menu source should be readable");
+
+    assert!(state.contains("input.key_pressed(egui::Key::I)"));
+    assert!(state.contains("input.key_pressed(egui::Key::M)"));
+    assert!(toolbar.contains("Move Catalog...  Ctrl+Shift+M"));
+    assert!(menu.contains("Some(ActionKeyEquivalent::command(\"i\"))"));
+    assert!(menu.contains("Some(ActionKeyEquivalent::command_shift(\"m\"))"));
 }
 
 #[test]

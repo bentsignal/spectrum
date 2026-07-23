@@ -56,7 +56,7 @@ pub(super) struct NativeMenuState {
     can_redo: bool,
     can_previous: bool,
     can_next: bool,
-    all_shoots_visible: bool,
+    catalog_visible: bool,
     history_visible: bool,
     keyboard_focus: bool,
     terminal_visible: bool,
@@ -73,7 +73,7 @@ impl NativeMenuState {
             NativeMenuAction::ExportPhotos => {
                 !self.modal_open
                     && self.selection_present
-                    && !self.all_shoots_visible
+                    && !self.catalog_visible
                     && !self.history_visible
             }
             NativeMenuAction::Undo => {
@@ -99,11 +99,11 @@ impl NativeMenuState {
                     && (self.keyboard_focus
                         || !self.modal_open
                             && self.has_photos
-                            && !self.all_shoots_visible
+                            && !self.catalog_visible
                             && !self.history_visible)
             }
             NativeMenuAction::ToggleTerminal => !self.modal_open && !self.history_visible,
-            NativeMenuAction::ToggleAllShoots => {
+            NativeMenuAction::ToggleWorkspaceView => {
                 !self.modal_open
                     && self.has_photos
                     && !self.history_visible
@@ -112,7 +112,7 @@ impl NativeMenuState {
             NativeMenuAction::PreviousPhoto => {
                 !self.modal_open
                     && self.can_previous
-                    && !self.all_shoots_visible
+                    && !self.catalog_visible
                     && !self.history_visible
                     && !self.keyboard_focus
                     && !self.terminal_visible
@@ -120,7 +120,7 @@ impl NativeMenuState {
             NativeMenuAction::NextPhoto => {
                 !self.modal_open
                     && self.can_next
-                    && !self.all_shoots_visible
+                    && !self.catalog_visible
                     && !self.history_visible
                     && !self.keyboard_focus
                     && !self.terminal_visible
@@ -128,13 +128,13 @@ impl NativeMenuState {
             NativeMenuAction::ToggleHistory => {
                 !self.modal_open
                     && self.selection_present
-                    && !self.all_shoots_visible
+                    && !self.catalog_visible
                     && (!self.keyboard_focus || self.terminal_visible)
             }
             NativeMenuAction::FitPhoto | NativeMenuAction::ZoomIn | NativeMenuAction::ZoomOut => {
                 !self.modal_open
                     && self.selection_present
-                    && !self.all_shoots_visible
+                    && !self.catalog_visible
                     && !self.history_visible
                     && !self.terminal_visible
             }
@@ -143,10 +143,10 @@ impl NativeMenuState {
 
     fn title(self, action: NativeMenuAction) -> Option<&'static str> {
         match action {
-            NativeMenuAction::ToggleAllShoots => Some(if self.all_shoots_visible {
-                "Back to Photos"
+            NativeMenuAction::ToggleWorkspaceView => Some(if self.catalog_visible {
+                "Show Editor"
             } else {
-                "Show All Shoots"
+                "Show Catalog"
             }),
             NativeMenuAction::ToggleHistory => Some(if self.history_visible {
                 "Hide History"
@@ -513,7 +513,7 @@ impl LumenApp {
             can_redo: self.workspace.can_redo(),
             can_previous: selected_index.is_some_and(|index| index > 0),
             can_next: selected_index.is_some_and(|index| index + 1 < visible.len()),
-            all_shoots_visible: self.library_mode,
+            catalog_visible: self.library_mode,
             history_visible: self.history_open,
             keyboard_focus: context.egui_wants_keyboard_input(),
             terminal_visible: self.terminal.visible(),
@@ -568,11 +568,11 @@ impl LumenApp {
                         self.select_all_visible_photos();
                     }
                 }
-                NativeMenuAction::ToggleAllShoots => {
+                NativeMenuAction::ToggleWorkspaceView => {
                     if self.library_mode {
-                        self.return_to_photo_view();
+                        self.show_editor();
                     } else {
-                        self.library_mode = true;
+                        self.show_catalog();
                     }
                 }
                 NativeMenuAction::ToggleTerminal => self.toggle_terminal(),
@@ -616,7 +616,7 @@ mod tests {
         assert!(photo.allows(NativeMenuAction::ImportPhotos));
         assert!(photo.allows(NativeMenuAction::ExportPhotos));
         assert!(photo.allows(NativeMenuAction::Undo));
-        assert!(photo.allows(NativeMenuAction::ToggleAllShoots));
+        assert!(photo.allows(NativeMenuAction::ToggleWorkspaceView));
         assert!(photo.allows(NativeMenuAction::PreviousPhoto));
 
         let modal = NativeMenuState {
@@ -644,29 +644,29 @@ mod tests {
     }
 
     #[test]
-    fn all_shoots_mode_offers_an_explicit_return() {
+    fn catalog_mode_offers_an_explicit_editor_switch() {
         let state = NativeMenuState {
             has_photos: true,
-            all_shoots_visible: true,
+            catalog_visible: true,
             ..Default::default()
         };
         assert_eq!(
-            state.title(NativeMenuAction::ToggleAllShoots),
-            Some("Back to Photos")
+            state.title(NativeMenuAction::ToggleWorkspaceView),
+            Some("Show Editor")
         );
         assert!(!state.allows(NativeMenuAction::ExportPhotos));
         assert!(!state.allows(NativeMenuAction::PreviousPhoto));
     }
 
     #[test]
-    fn history_blocks_all_shoots_navigation() {
+    fn history_blocks_workspace_view_navigation() {
         let state = NativeMenuState {
             has_photos: true,
             selection_present: true,
             history_visible: true,
             ..Default::default()
         };
-        assert!(!state.allows(NativeMenuAction::ToggleAllShoots));
+        assert!(!state.allows(NativeMenuAction::ToggleWorkspaceView));
         assert!(state.allows(NativeMenuAction::ToggleHistory));
         assert!(!state.allows(NativeMenuAction::ToggleTerminal));
     }

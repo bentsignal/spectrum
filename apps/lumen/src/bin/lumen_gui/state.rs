@@ -619,6 +619,20 @@ impl LumenApp {
         if self.terminal.visible() {
             return;
         }
+        #[cfg(not(target_os = "macos"))]
+        if context.input(|input| {
+            input.modifiers.command && !input.modifiers.shift && input.key_pressed(egui::Key::I)
+        }) {
+            self.import_dialog();
+            return;
+        }
+        #[cfg(not(target_os = "macos"))]
+        if context.input(|input| {
+            input.modifiers.command && input.modifiers.shift && input.key_pressed(egui::Key::M)
+        }) {
+            self.move_project();
+            return;
+        }
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
             if context.input(|input| input.modifiers.shift) {
                 self.move_project();
