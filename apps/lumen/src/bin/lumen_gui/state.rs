@@ -57,14 +57,12 @@ impl LumenApp {
     }
 
     pub(super) fn invalidate_selected(&mut self) {
-        self.preview = None;
-        self.preview_source = None;
-        self.preview_fast_source = None;
-        self.preview_id = None;
-        self.preview_layout_size = None;
-        self.original_preview = None;
-        self.original_preview_id = None;
-        self.histogram = None;
+        if let Some(id) = self.workspace.project.selected {
+            self.preview_selection.select(id, self.draft.clone());
+        } else {
+            self.preview_selection.clear();
+        }
+        self.preview_pending = None;
         if let Some(id) = self.workspace.project.selected {
             self.thumbnails.remove(&id);
         }
@@ -255,8 +253,15 @@ impl LumenApp {
         self.preview = None;
         self.preview_source = None;
         self.preview_fast_source = None;
+        self.preview_id = None;
+        self.preview_layout_size = None;
         self.original_preview = None;
+        self.original_preview_id = None;
         self.histogram = None;
+        self.preview_selection.reset_catalog();
+        self.preview_pending = None;
+        self.preview_prefetch_pending.clear();
+        self.preview_cache.clear();
         self.film_filter = FilmFilter::All;
         self.active_batch = None;
         self.library_mode = library_mode;
@@ -421,6 +426,46 @@ impl LumenApp {
         let Some(photo) = self.workspace.project.selected_photo().cloned() else {
             return;
         };
+        if self.preview_id != Some(id) {
+            let epoch = self.preview_selection.epoch();
+            if let Some(index) = self
+                .preview_cache
+                .iter()
+                .position(|(cached_epoch, preview)| {
+                    *cached_epoch == epoch
+                        && preview.photo_id == id
+                        && preview.adjustments == preview_adjustments
+                })
+            {
+                let (_, preview) = self
+                    .preview_cache
+                    .remove(index)
+                    .expect("located preview cache entry should still exist");
+                self.apply_prepared_preview(context, preview);
+                self.prefetch_adjacent_previews();
+                return;
+            }
+            let generation = self.preview_selection.generation();
+            let request_matches = self.preview_pending.as_ref().is_some_and(
+                |(pending_generation, pending_epoch, pending_id, pending_adjustments)| {
+                    *pending_generation == generation
+                        && *pending_epoch == epoch
+                        && *pending_id == id
+                        && *pending_adjustments == preview_adjustments
+                },
+            );
+            if !request_matches {
+                self.preview_worker.request_selected(
+                    generation,
+                    epoch,
+                    photo,
+                    preview_adjustments.clone(),
+                );
+                self.preview_pending = Some((generation, epoch, id, preview_adjustments.clone()));
+            }
+            context.request_repaint_after(Duration::from_millis(8));
+            return;
+        }
         if self
             .preview_source
             .as_ref()
@@ -475,6 +520,134 @@ impl LumenApp {
             self.preview_id = Some(id);
             self.preview_fast = use_fast;
             self.preview_adjustments = preview_adjustments;
+        }
+    }
+
+    pub(super) fn receive_prepared_previews(&mut self, context: &egui::Context) {
+        while let Ok(completion) = self.preview_worker.try_recv() {
+            match completion.request {
+                lumen_core::preview::PreviewRequest::Selected { generation, epoch } => {
+                    if self.preview_pending.as_ref().is_some_and(
+                        |(pending_generation, pending_epoch, pending_id, pending_adjustments)| {
+                            *pending_generation == generation
+                                && *pending_epoch == epoch
+                                && *pending_id == completion.photo_id
+                                && *pending_adjustments == completion.adjustments
+                        },
+                    ) {
+                        self.preview_pending = None;
+                    }
+                }
+                lumen_core::preview::PreviewRequest::Prefetch { epoch } => {
+                    self.preview_prefetch_pending.retain(
+                        |(pending_epoch, pending_id, pending_adjustments)| {
+                            *pending_epoch != epoch
+                                || *pending_id != completion.photo_id
+                                || *pending_adjustments != completion.adjustments
+                        },
+                    );
+                }
+            }
+            let can_publish = self.preview_selection.can_publish(&completion);
+            match completion.result {
+                Ok(preview) if can_publish => {
+                    self.apply_prepared_preview(context, preview);
+                    self.prefetch_adjacent_previews();
+                }
+                Ok(preview) => self.cache_prepared_preview(completion.request, preview),
+                Err(error) if can_publish => {
+                    self.status = format!("preview failed: {error}");
+                    self.error = true;
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    fn apply_prepared_preview(&mut self, context: &egui::Context, prepared: PreparedPreview) {
+        let PreparedPreview {
+            photo_id,
+            adjustments,
+            source,
+            fast_source,
+            rendered,
+            histogram,
+        } = prepared;
+        let layout_size = Vec2::new(rendered.width() as f32, rendered.height() as f32);
+        let original = load_texture(context, format!("original-{photo_id}"), source.clone());
+        let preview = load_texture(context, format!("preview-{photo_id}"), rendered);
+        self.preview_source = Some((photo_id, source));
+        self.preview_fast_source = Some((photo_id, fast_source));
+        self.original_preview = Some(original);
+        self.original_preview_id = Some(photo_id);
+        self.preview_layout_size = Some(layout_size);
+        self.preview = Some(preview);
+        self.preview_id = Some(photo_id);
+        self.preview_fast = false;
+        self.preview_adjustments = adjustments;
+        self.histogram = Some(histogram);
+        context.request_repaint();
+    }
+
+    fn cache_prepared_preview(
+        &mut self,
+        request: lumen_core::preview::PreviewRequest,
+        preview: PreparedPreview,
+    ) {
+        let epoch = match request {
+            lumen_core::preview::PreviewRequest::Selected { epoch, .. }
+            | lumen_core::preview::PreviewRequest::Prefetch { epoch } => epoch,
+        };
+        if epoch != self.preview_selection.epoch() {
+            return;
+        }
+        self.preview_cache.retain(|(cached_epoch, cached)| {
+            *cached_epoch != epoch
+                || cached.photo_id != preview.photo_id
+                || cached.adjustments != preview.adjustments
+        });
+        self.preview_cache.push_front((epoch, preview));
+        self.preview_cache.truncate(4);
+    }
+
+    fn prefetch_adjacent_previews(&mut self) {
+        let Some(id) = self.workspace.project.selected else {
+            return;
+        };
+        let visible = self.visible_photo_ids();
+        let Some(index) = visible.iter().position(|visible_id| *visible_id == id) else {
+            return;
+        };
+        let epoch = self.preview_selection.epoch();
+        for neighbor_index in [index.checked_sub(1), index.checked_add(1)]
+            .into_iter()
+            .flatten()
+            .filter(|neighbor_index| *neighbor_index < visible.len())
+        {
+            let neighbor_id = visible[neighbor_index];
+            let Ok(photo) = self.workspace.project.photo(neighbor_id) else {
+                continue;
+            };
+            let adjustments = photo.adjustments.clone();
+            let cached = self.preview_cache.iter().any(|(cached_epoch, preview)| {
+                *cached_epoch == epoch
+                    && preview.photo_id == neighbor_id
+                    && preview.adjustments == adjustments
+            });
+            let pending = self.preview_prefetch_pending.iter().any(
+                |(pending_epoch, pending_id, pending_adjustments)| {
+                    *pending_epoch == epoch
+                        && *pending_id == neighbor_id
+                        && *pending_adjustments == adjustments
+                },
+            );
+            if cached || pending {
+                continue;
+            }
+            self.preview_worker
+                .request_prefetch(epoch, photo.clone(), adjustments.clone());
+            self.preview_prefetch_pending
+                .push((epoch, neighbor_id, adjustments));
         }
     }
 

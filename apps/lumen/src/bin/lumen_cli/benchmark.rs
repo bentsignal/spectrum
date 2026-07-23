@@ -39,6 +39,20 @@ pub(super) fn benchmark(
             std::hint::black_box(import_project.import(&import_paths)?);
             import_samples.push(started.elapsed());
         }
+        let navigation_photos: Vec<_> = (0..6)
+            .map(|index| {
+                let mut photo = Photo::new(
+                    100 + index,
+                    import_source.clone(),
+                    format!("switch-{index}.jpg"),
+                    2400,
+                    1600,
+                );
+                photo.format = "jpg".into();
+                photo
+            })
+            .collect();
+        let navigation_metrics = navigation_switch_metrics(&navigation_photos, profile)?;
 
         let mut project = Project::new("Performance benchmark");
         let mut photo = Photo::new(
@@ -176,11 +190,15 @@ pub(super) fn benchmark(
         let passed = command["pass"].as_bool() == Some(true)
             && preview_metric["pass"].as_bool() == Some(true)
             && jpeg_import["pass"].as_bool() == Some(true)
+            && navigation_metrics
+                .iter()
+                .all(|metric| metric["pass"].as_bool() == Some(true))
             && raw_import_metric
                 .as_ref()
                 .is_none_or(|metric| metric["pass"].as_bool() == Some(true))
             && export_pass;
         let mut metrics = vec![command, preview_metric, jpeg_import, export];
+        metrics.extend(navigation_metrics);
         if let Some(metric) = raw_import_metric {
             metrics.push(metric);
         }
@@ -203,6 +221,127 @@ pub(super) fn benchmark(
     })();
     let _ = fs::remove_dir_all(&directory);
     result
+}
+
+fn navigation_switch_metrics(
+    photos: &[Photo],
+    profile: BenchmarkProfile,
+) -> Result<Vec<serde_json::Value>> {
+    let sequential: Vec<_> = (0..photos.len()).collect();
+    let nonsequential = [0, 4, 1, 5, 2, 3];
+    let sequential_dispatch = navigation_dispatch_samples(photos, &sequential)?;
+    let nonsequential_dispatch = navigation_dispatch_samples(photos, &nonsequential)?;
+
+    let prepared: Vec<_> = photos
+        .iter()
+        .map(|photo| prepare_preview(photo, photo.adjustments.clone()))
+        .collect::<Result<_>>()?;
+    let mut selection = PreviewSelection::default();
+    let mut prefetched_ready_samples = Vec::with_capacity(prepared.len());
+    for preview in &prepared {
+        let started = Instant::now();
+        selection.select(preview.photo_id, preview.adjustments.clone());
+        let completion = PreviewCompletion {
+            request: PreviewRequest::Prefetch {
+                epoch: selection.epoch(),
+            },
+            photo_id: preview.photo_id,
+            adjustments: preview.adjustments.clone(),
+            result: Err("prepared benchmark frame is held by the cache".into()),
+        };
+        anyhow::ensure!(
+            selection.can_publish(&completion),
+            "prefetched navigation result was rejected"
+        );
+        std::hint::black_box(preview.source.to_rgba8());
+        std::hint::black_box(preview.rendered.to_rgba8());
+        std::hint::black_box(&preview.histogram);
+        prefetched_ready_samples.push(started.elapsed());
+    }
+
+    let mut project = Project::new("Non-sequential navigation benchmark");
+    project.photos = photos.to_vec();
+    project.selected = photos.first().map(|photo| photo.id);
+    let mut workspace = Workspace::new(project, None);
+    let worker = PreviewWorker::new();
+    let mut selection = PreviewSelection::default();
+    let mut cold_ready_samples = Vec::with_capacity(nonsequential.len());
+    for index in nonsequential {
+        let started = Instant::now();
+        let id = photos[index].id;
+        workspace.execute(Command::Select { id })?;
+        let photo = workspace.project.photo(id)?.clone();
+        let adjustments = photo.adjustments.clone();
+        let generation = selection.select(id, adjustments.clone());
+        worker.request_selected(generation, selection.epoch(), photo, adjustments);
+        let completion = worker
+            .recv_timeout(Duration::from_secs(5))
+            .context("selected preview did not become ready within five seconds")?;
+        anyhow::ensure!(
+            selection.can_publish(&completion),
+            "selected navigation result was stale"
+        );
+        let preview = completion
+            .result
+            .map_err(anyhow::Error::msg)
+            .context("prepare selected navigation preview")?;
+        std::hint::black_box(preview.source.to_rgba8());
+        std::hint::black_box(preview.rendered.to_rgba8());
+        std::hint::black_box(preview.histogram);
+        cold_ready_samples.push(started.elapsed());
+    }
+
+    Ok(vec![
+        latency_metric(
+            "sequential_photo_switch_dispatch",
+            "Adjacent core selection and asynchronous preview request; UI keeps the prior atomic frame",
+            &sequential_dispatch,
+            1.0,
+            profile.switch_dispatch_budget_ms(),
+        ),
+        latency_metric(
+            "nonsequential_photo_switch_dispatch",
+            "Non-adjacent core selection and asynchronous preview request; UI keeps the prior atomic frame",
+            &nonsequential_dispatch,
+            1.0,
+            profile.switch_dispatch_budget_ms(),
+        ),
+        latency_metric(
+            "sequential_photo_switch_ready",
+            "Prefetched adjacent 1800px preview: generation validation plus original/developed texture buffers and histogram",
+            &prefetched_ready_samples,
+            16.7,
+            profile.prefetched_switch_ready_budget_ms(),
+        ),
+        latency_metric(
+            "nonsequential_photo_switch_ready",
+            "Non-prefetched 2400x1600 JPEG selection through background decode/develop/histogram and texture buffers",
+            &cold_ready_samples,
+            75.0,
+            profile.cold_switch_ready_budget_ms(),
+        ),
+    ])
+}
+
+fn navigation_dispatch_samples(photos: &[Photo], order: &[usize]) -> Result<Vec<Duration>> {
+    let mut project = Project::new("Navigation dispatch benchmark");
+    project.photos = photos.to_vec();
+    project.selected = photos.first().map(|photo| photo.id);
+    let mut workspace = Workspace::new(project, None);
+    let worker = PreviewWorker::new();
+    let mut selection = PreviewSelection::default();
+    let mut samples = Vec::with_capacity(order.len());
+    for index in order {
+        let started = Instant::now();
+        let id = photos[*index].id;
+        workspace.execute(Command::Select { id })?;
+        let photo = workspace.project.photo(id)?.clone();
+        let adjustments = photo.adjustments.clone();
+        let generation = selection.select(id, adjustments.clone());
+        worker.request_selected(generation, selection.epoch(), photo, adjustments);
+        samples.push(started.elapsed());
+    }
+    Ok(samples)
 }
 
 fn deterministic_rgb(width: u32, height: u32) -> RgbImage {

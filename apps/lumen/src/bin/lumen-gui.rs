@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::mpsc::Receiver,
     time::{Duration, Instant},
@@ -15,6 +15,7 @@ use lumen_core::{
     Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo, PickState,
     Project, SpotRemoval, ToneCurve, Workspace,
     engine::{RenderOptions, decode_photo, render_image, render_photo},
+    preview::{PreparedPreview, PreviewHistogram, PreviewSelection, PreviewWorker},
     project::is_supported_image,
 };
 
@@ -106,13 +107,7 @@ enum CatalogSwitch {
     Open(PathBuf),
 }
 
-#[derive(Clone)]
-struct Histogram {
-    red: [u32; 256],
-    green: [u32; 256],
-    blue: [u32; 256],
-    luma: [u32; 256],
-}
+type Histogram = PreviewHistogram;
 
 fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
@@ -167,6 +162,11 @@ struct LumenApp {
     original_preview: Option<TextureHandle>,
     original_preview_id: Option<u64>,
     histogram: Option<Histogram>,
+    preview_worker: PreviewWorker,
+    preview_selection: PreviewSelection,
+    preview_pending: Option<(u64, u64, u64, Adjustments)>,
+    preview_prefetch_pending: Vec<(u64, u64, Adjustments)>,
+    preview_cache: VecDeque<(u64, PreparedPreview)>,
     thumbnails: HashMap<u64, TextureHandle>,
     draft: Adjustments,
     draft_id: Option<u64>,
@@ -284,6 +284,11 @@ impl LumenApp {
             original_preview: None,
             original_preview_id: None,
             histogram: None,
+            preview_worker: PreviewWorker::new(),
+            preview_selection: PreviewSelection::default(),
+            preview_pending: None,
+            preview_prefetch_pending: Vec::new(),
+            preview_cache: VecDeque::new(),
             thumbnails: HashMap::new(),
             draft: Adjustments::default(),
             draft_id: None,
@@ -355,6 +360,7 @@ impl eframe::App for LumenApp {
         #[cfg(target_os = "macos")]
         self.process_native_menu_actions(&context);
         self.handle_drop_and_shortcuts(&context);
+        self.receive_prepared_previews(&context);
         spectrum_history_ui::reserve_history_shortcut();
         self.toolbar(ui);
         self.status_bar(ui);
@@ -372,6 +378,7 @@ impl eframe::App for LumenApp {
             #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
             self.native_terminal.hide_all();
             self.filmstrip(ui);
+            self.ensure_preview(&context);
             self.inspector(ui);
             self.canvas(ui);
         }

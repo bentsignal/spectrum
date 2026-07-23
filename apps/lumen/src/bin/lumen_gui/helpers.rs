@@ -8,28 +8,6 @@ pub(super) const fn history_shortcut_label() -> &'static str {
     }
 }
 
-impl Histogram {
-    pub(super) fn from_image(image: &DynamicImage) -> Self {
-        let mut histogram = Self {
-            red: [0; 256],
-            green: [0; 256],
-            blue: [0; 256],
-            luma: [0; 256],
-        };
-        let rgba = image.to_rgba8();
-        for pixel in rgba.pixels().step_by(2) {
-            histogram.red[pixel[0] as usize] += 1;
-            histogram.green[pixel[1] as usize] += 1;
-            histogram.blue[pixel[2] as usize] += 1;
-            let luma =
-                (pixel[0] as f32 * 0.2126 + pixel[1] as f32 * 0.7152 + pixel[2] as f32 * 0.0722)
-                    .round() as usize;
-            histogram.luma[luma.min(255)] += 1;
-        }
-        histogram
-    }
-}
-
 pub(super) fn paint_histogram(ui: &egui::Ui, rect: Rect, histogram: &Histogram) {
     let painter = ui.painter_at(rect);
     for fraction in [0.25, 0.5, 0.75] {
