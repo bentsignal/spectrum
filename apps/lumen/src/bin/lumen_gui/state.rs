@@ -428,10 +428,12 @@ impl LumenApp {
                 self.prefetch_adjacent_previews();
                 return;
             }
-            match self
-                .preview_pipeline
-                .request_decision(Instant::now(), id, &preview_adjustments)
-            {
+            match self.preview_pipeline.request_decision(
+                &self.preview_worker,
+                Instant::now(),
+                id,
+                &preview_adjustments,
+            ) {
                 PreviewRequestDecision::Request => {
                     let enqueue = self.preview_worker.request_selected(
                         self.preview_pipeline.generation(),
@@ -442,7 +444,9 @@ impl LumenApp {
                     self.preview_pipeline.track_enqueue(enqueue);
                     context.request_repaint_after(Duration::from_millis(8));
                 }
-                PreviewRequestDecision::Pending => {
+                PreviewRequestDecision::Promoted
+                | PreviewRequestDecision::ReusedActivePrefetch
+                | PreviewRequestDecision::Pending => {
                     context.request_repaint_after(Duration::from_millis(8));
                 }
                 PreviewRequestDecision::Backoff(delay) => {

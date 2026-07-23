@@ -289,7 +289,7 @@ fn navigation_switch_metrics(
         let adjustments = photo.adjustments.clone();
         let generation = pipeline.select(id, adjustments.clone());
         anyhow::ensure!(
-            pipeline.request_decision(Instant::now(), id, &adjustments)
+            pipeline.request_decision(&worker, Instant::now(), id, &adjustments)
                 == PreviewRequestDecision::Request,
             "cold selected preview was unexpectedly cached, pending, or backed off"
         );
@@ -315,7 +315,6 @@ fn navigation_switch_metrics(
     let selected = photos[24].clone();
     let priority_worker = PreviewWorker::new();
     let mut priority_pipeline = PreviewPipeline::default();
-    priority_pipeline.select(selected.id, selected.adjustments.clone());
     let prefetch = priority_worker.request_prefetch(
         priority_pipeline.epoch(),
         large_prefetch,
@@ -328,20 +327,29 @@ fn navigation_switch_metrics(
         .id;
     priority_pipeline.track_enqueue(prefetch);
     wait_until_active(&priority_worker, prefetch_id)?;
-    let priority_started = Instant::now();
-    let generation = priority_pipeline.generation();
-    let selected_enqueue = priority_worker.request_selected(
-        generation,
+    let queued_target = priority_worker.request_prefetch(
         priority_pipeline.epoch(),
         selected.clone(),
         selected.adjustments.clone(),
     );
-    let selected_id = selected_enqueue
+    let selected_id = queued_target
         .accepted
         .as_ref()
-        .context("priority selected preview was not accepted")?
+        .context("priority target prefetch was not accepted")?
         .id;
-    priority_pipeline.track_enqueue(selected_enqueue);
+    priority_pipeline.track_enqueue(queued_target);
+    priority_pipeline.select(selected.id, selected.adjustments.clone());
+    let priority_started = Instant::now();
+    let priority_decision = priority_pipeline.request_decision(
+        &priority_worker,
+        Instant::now(),
+        selected.id,
+        &selected.adjustments,
+    );
+    anyhow::ensure!(
+        priority_decision == PreviewRequestDecision::Promoted,
+        "queued priority target was not promoted through request_decision"
+    );
     let first_completion = priority_worker
         .recv_timeout(Duration::from_secs(5))
         .context("priority selected preview did not complete")?;
@@ -371,7 +379,7 @@ fn navigation_switch_metrics(
     let priority_pass = selected_won && priority_ms <= profile.cold_switch_ready_budget_ms();
     let priority_metric = json!({
         "name": "selected_over_prefetch_ready",
-        "workload": "Selected 1800x1200 JPEG completes while an authoritative 24 MP prefetch is already decoding",
+        "workload": "Queued adjacent 1800x1200 prefetch is promoted through request_decision while an unrelated authoritative 24 MP prefetch is already decoding",
         "elapsed_ms": rounded(priority_ms),
         "selected_completed_first": selected_won,
         "target_ms": 75.0,
