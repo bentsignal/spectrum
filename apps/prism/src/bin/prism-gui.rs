@@ -12,7 +12,8 @@ use eframe::egui::{
 };
 use prism_core::{
     Alignment, AlignmentReference, BlendMode, Command, Document, GuideOrientation, Layer,
-    LayerKind, LayerMask, ShapeStroke, Transform, Workspace, export_document,
+    LayerKind, LayerMask, LayerPreviewSchedule, ShapeStroke, TextPreviewFrameCache, Transform,
+    Workspace, export_document,
 };
 use spectrum_imaging::AdjustmentPatch;
 
@@ -59,6 +60,8 @@ mod model;
 use model::*;
 #[path = "prism_gui/pen_tool.rs"]
 mod pen_tool;
+#[path = "prism_gui/preview_cache.rs"]
+mod preview_cache;
 #[path = "prism_gui/project_lifecycle.rs"]
 mod project_lifecycle;
 #[path = "prism_gui/raster_sources.rs"]
@@ -88,6 +91,7 @@ mod theme;
 #[path = "prism_gui/typography_ui.rs"]
 mod typography_ui;
 use history::HistoryViewState;
+use preview_cache::*;
 use project_lifecycle::{MoveProjectDialog, NewDocumentDialog};
 use raster_sources::*;
 use renderer::*;
@@ -107,7 +111,9 @@ struct PrismApp {
     layer_visual_dirty: HashSet<u64>,
     layer_render_pending: HashMap<u64, LayerRenderRequest>,
     layer_render_in_flight: bool,
-    layer_render_request_sender: Sender<LayerRenderRequest>,
+    layer_render_request_sender: Sender<LayerRenderMessage>,
+    layer_render_active_cache_ids: HashSet<(u64, u64)>,
+    text_source_geometries: TextPreviewFrameCache<LayerSourceGeometry>,
     layer_render_receiver: Receiver<LayerRenderResult>,
     composite_preview: CompositePreview,
     raster_sources: RasterSourceCoordinator,
@@ -237,6 +243,8 @@ impl PrismApp {
             layer_render_pending: HashMap::new(),
             layer_render_in_flight: false,
             layer_render_request_sender,
+            layer_render_active_cache_ids: HashSet::new(),
+            text_source_geometries: TextPreviewFrameCache::default(),
             layer_render_receiver,
             composite_preview: CompositePreview::new(creation.egui_ctx.clone()),
             raster_sources: RasterSourceCoordinator::new(creation.egui_ctx.clone()),
@@ -312,9 +320,13 @@ impl PrismApp {
             self.settle_inline_text_editor();
         }
         let invalidation = canvas_invalidation(&command);
+        let text_geometry_id = text_geometry_invalidation(&command);
         match self.workspace.execute(command) {
             Ok(output) => {
                 self.apply_canvas_invalidation(invalidation);
+                if let Some(id) = text_geometry_id {
+                    self.text_source_geometries.remove(id);
+                }
                 self.sync_active_raster_sources();
                 if let Some(error) = self.workspace.pending_publish_error() {
                     self.status = format!(
@@ -347,10 +359,17 @@ impl PrismApp {
     fn execute_batch(&mut self, commands: Vec<Command>) -> bool {
         self.settle_inline_text_editor();
         let invalidations = commands.iter().map(canvas_invalidation).collect::<Vec<_>>();
+        let text_geometry_ids = commands
+            .iter()
+            .filter_map(text_geometry_invalidation)
+            .collect::<Vec<_>>();
         match self.workspace.execute_batch(commands) {
             Ok(outputs) => {
                 for invalidation in invalidations {
                     self.apply_canvas_invalidation(invalidation);
+                }
+                for id in text_geometry_ids {
+                    self.text_source_geometries.remove(id);
                 }
                 self.sync_active_raster_sources();
                 if let Some(error) = self.workspace.pending_publish_error() {
@@ -378,9 +397,13 @@ impl PrismApp {
 
     fn preview_command(&mut self, command: Command) -> bool {
         let invalidation = canvas_invalidation(&command);
+        let text_geometry_id = text_geometry_invalidation(&command);
         match self.workspace.preview(command) {
             Ok(_) => {
                 self.apply_canvas_invalidation(invalidation);
+                if let Some(id) = text_geometry_id {
+                    self.text_source_geometries.remove(id);
+                }
                 true
             }
             Err(error) => {
@@ -393,10 +416,17 @@ impl PrismApp {
 
     fn preview_commands(&mut self, commands: Vec<Command>) -> bool {
         let invalidations = commands.iter().map(canvas_invalidation).collect::<Vec<_>>();
+        let text_geometry_ids = commands
+            .iter()
+            .filter_map(text_geometry_invalidation)
+            .collect::<Vec<_>>();
         match self.workspace.preview_batch(commands) {
             Ok(_) => {
                 for invalidation in invalidations {
                     self.apply_canvas_invalidation(invalidation);
+                }
+                for id in text_geometry_ids {
+                    self.text_source_geometries.remove(id);
                 }
                 true
             }
@@ -428,9 +458,13 @@ impl PrismApp {
                 self.layer_render_pending
                     .retain(|id, _| active.contains(id));
                 self.layer_visual_dirty.retain(|id| active.contains(id));
+                self.text_source_geometries
+                    .retain(|id, _| active.contains(id));
+                self.sync_layer_render_cache_scope();
             }
             CanvasInvalidation::All => {
                 self.layer_source_overrides.clear();
+                self.text_source_geometries.clear();
                 self.layer_visual_dirty
                     .extend(self.workspace.document.layers.iter().map(|layer| layer.id));
             }
@@ -929,49 +963,6 @@ mod tests {
             resize_cursor(ResizeHandle::TopLeft, 0.0),
             egui::CursorIcon::ResizeNwSe
         );
-    }
-
-    #[test]
-    fn command_invalidation_keeps_transform_and_appearance_on_the_gpu() {
-        assert_eq!(
-            canvas_invalidation(&Command::SetTransform {
-                id: 7,
-                transform: Transform::default(),
-            }),
-            CanvasInvalidation::None
-        );
-        assert_eq!(
-            canvas_invalidation(&Command::SetOpacity {
-                id: 7,
-                opacity: 0.5,
-            }),
-            CanvasInvalidation::None
-        );
-        assert_eq!(
-            canvas_invalidation(&Command::AdjustLayer {
-                id: 7,
-                patch: AdjustmentPatch {
-                    exposure: Some(1.0),
-                    ..Default::default()
-                },
-            }),
-            CanvasInvalidation::Layer(7)
-        );
-        assert_eq!(
-            canvas_invalidation(&Command::SetTextTypography {
-                id: 7,
-                typography: prism_core::TextTypography::default(),
-            }),
-            CanvasInvalidation::Layer(7)
-        );
-        assert_eq!(
-            canvas_invalidation(&Command::ImportFont {
-                path: PathBuf::from("face.otf"),
-                source_name: None,
-            }),
-            CanvasInvalidation::None
-        );
-        assert_eq!(canvas_invalidation(&Command::Undo), CanvasInvalidation::All);
     }
 
     #[test]

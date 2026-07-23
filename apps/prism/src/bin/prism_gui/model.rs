@@ -197,6 +197,13 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
     }
 }
 
+pub(super) fn text_geometry_invalidation(command: &Command) -> Option<u64> {
+    match command {
+        Command::UpdateText { id, .. } | Command::SetTextTypography { id, .. } => Some(*id),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +248,78 @@ mod tests {
             }),
             CanvasInvalidation::Layer(42)
         );
+    }
+
+    #[test]
+    fn text_geometry_survives_transforms_but_not_text_or_font_identity_edits() {
+        assert_eq!(
+            text_geometry_invalidation(&Command::SetTransform {
+                id: 42,
+                transform: Transform::default(),
+            }),
+            None
+        );
+        assert_eq!(
+            text_geometry_invalidation(&Command::UpdateText {
+                id: 42,
+                text: "Changed".into(),
+                font_size: 72.0,
+                color: [255; 4],
+            }),
+            Some(42)
+        );
+        assert_eq!(
+            text_geometry_invalidation(&Command::SetTextTypography {
+                id: 42,
+                typography: prism_core::TextTypography {
+                    font_id: Some(7),
+                    ..Default::default()
+                },
+            }),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn command_invalidation_keeps_transform_and_appearance_on_the_gpu() {
+        assert_eq!(
+            canvas_invalidation(&Command::SetTransform {
+                id: 7,
+                transform: Transform::default(),
+            }),
+            CanvasInvalidation::None
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::SetOpacity {
+                id: 7,
+                opacity: 0.5,
+            }),
+            CanvasInvalidation::None
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::AdjustLayer {
+                id: 7,
+                patch: spectrum_imaging::AdjustmentPatch {
+                    exposure: Some(1.0),
+                    ..Default::default()
+                },
+            }),
+            CanvasInvalidation::Layer(7)
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::SetTextTypography {
+                id: 7,
+                typography: prism_core::TextTypography::default(),
+            }),
+            CanvasInvalidation::Layer(7)
+        );
+        assert_eq!(
+            canvas_invalidation(&Command::ImportFont {
+                path: std::path::PathBuf::from("face.otf"),
+                source_name: None,
+            }),
+            CanvasInvalidation::None
+        );
+        assert_eq!(canvas_invalidation(&Command::Undo), CanvasInvalidation::All);
     }
 }
