@@ -57,14 +57,11 @@ impl LumenApp {
     }
 
     pub(super) fn invalidate_selected(&mut self) {
-        self.preview = None;
-        self.preview_source = None;
-        self.preview_fast_source = None;
-        self.preview_id = None;
-        self.preview_layout_size = None;
-        self.original_preview = None;
-        self.original_preview_id = None;
-        self.histogram = None;
+        if let Some(id) = self.workspace.project.selected {
+            self.preview_pipeline.select(id, self.draft.clone());
+        } else {
+            self.preview_pipeline.clear();
+        }
         if let Some(id) = self.workspace.project.selected {
             self.thumbnails.remove(&id);
         }
@@ -255,8 +252,12 @@ impl LumenApp {
         self.preview = None;
         self.preview_source = None;
         self.preview_fast_source = None;
+        self.preview_id = None;
+        self.preview_layout_size = None;
         self.original_preview = None;
+        self.original_preview_id = None;
         self.histogram = None;
+        self.preview_pipeline.reset_catalog(&self.preview_worker);
         self.film_filter = FilmFilter::All;
         self.active_batch = None;
         self.library_mode = library_mode;
@@ -421,6 +422,39 @@ impl LumenApp {
         let Some(photo) = self.workspace.project.selected_photo().cloned() else {
             return;
         };
+        if self.preview_id != Some(id) {
+            if let Some(preview) = self.preview_pipeline.take_cached(id, &preview_adjustments) {
+                self.apply_prepared_preview(context, preview);
+                self.prefetch_adjacent_previews();
+                return;
+            }
+            match self.preview_pipeline.request_decision(
+                &self.preview_worker,
+                Instant::now(),
+                id,
+                &preview_adjustments,
+            ) {
+                PreviewRequestDecision::Request => {
+                    let enqueue = self.preview_worker.request_selected(
+                        self.preview_pipeline.generation(),
+                        self.preview_pipeline.epoch(),
+                        photo,
+                        preview_adjustments,
+                    );
+                    self.preview_pipeline.track_enqueue(enqueue);
+                    context.request_repaint_after(Duration::from_millis(8));
+                }
+                PreviewRequestDecision::Promoted
+                | PreviewRequestDecision::ReusedActivePrefetch
+                | PreviewRequestDecision::Pending => {
+                    context.request_repaint_after(Duration::from_millis(8));
+                }
+                PreviewRequestDecision::Backoff(delay) => {
+                    context.request_repaint_after(delay);
+                }
+            }
+            return;
+        }
         if self
             .preview_source
             .as_ref()
@@ -478,6 +512,79 @@ impl LumenApp {
         }
     }
 
+    pub(super) fn receive_prepared_previews(&mut self, context: &egui::Context) {
+        while let Ok(completion) = self.preview_worker.try_recv() {
+            match self.preview_pipeline.complete(completion, Instant::now()) {
+                PreviewCompletionDisposition::Publish(preview) => {
+                    self.apply_prepared_preview(context, *preview);
+                    self.prefetch_adjacent_previews();
+                }
+                PreviewCompletionDisposition::Failed(error) => {
+                    self.status = format!("preview failed: {error}");
+                    self.error = true;
+                }
+                PreviewCompletionDisposition::Cached | PreviewCompletionDisposition::Ignored => {}
+            }
+        }
+    }
+
+    fn apply_prepared_preview(&mut self, context: &egui::Context, prepared: PreparedPreview) {
+        let PreparedPreview {
+            photo_id,
+            adjustments,
+            source,
+            fast_source,
+            rendered,
+            histogram,
+        } = prepared;
+        let layout_size = Vec2::new(rendered.width() as f32, rendered.height() as f32);
+        let original = load_texture(context, format!("original-{photo_id}"), source.clone());
+        let preview = load_texture(context, format!("preview-{photo_id}"), rendered);
+        self.preview_source = Some((photo_id, source));
+        self.preview_fast_source = Some((photo_id, fast_source));
+        self.original_preview = Some(original);
+        self.original_preview_id = Some(photo_id);
+        self.preview_layout_size = Some(layout_size);
+        self.preview = Some(preview);
+        self.preview_id = Some(photo_id);
+        self.preview_fast = false;
+        self.preview_adjustments = adjustments;
+        self.histogram = Some(histogram);
+        context.request_repaint();
+    }
+
+    fn prefetch_adjacent_previews(&mut self) {
+        let Some(id) = self.workspace.project.selected else {
+            return;
+        };
+        let visible = self.visible_photo_ids();
+        let Some(index) = visible.iter().position(|visible_id| *visible_id == id) else {
+            return;
+        };
+        let epoch = self.preview_pipeline.epoch();
+        for neighbor_index in [index.checked_sub(1), index.checked_add(1)]
+            .into_iter()
+            .flatten()
+            .filter(|neighbor_index| *neighbor_index < visible.len())
+        {
+            let neighbor_id = visible[neighbor_index];
+            let Ok(photo) = self.workspace.project.photo(neighbor_id) else {
+                continue;
+            };
+            let adjustments = photo.adjustments.clone();
+            if self
+                .preview_pipeline
+                .has_cached_or_outstanding(neighbor_id, &adjustments)
+            {
+                continue;
+            }
+            let enqueue = self
+                .preview_worker
+                .request_prefetch(epoch, photo.clone(), adjustments);
+            self.preview_pipeline.track_enqueue(enqueue);
+        }
+    }
+
     pub(super) fn ensure_thumbnail(&mut self, context: &egui::Context, id: u64) {
         if self.thumbnails.contains_key(&id) {
             return;
@@ -485,6 +592,9 @@ impl LumenApp {
         let Ok(photo) = self.workspace.project.photo(id) else {
             return;
         };
+        // Keep #70's decode_photo_proxy path here when rebasing: thumbnails
+        // are display-only, while selected previews stay authoritative in
+        // PreviewWorker through decode_photo.
         if let Ok(rendered) = render_photo(
             photo,
             RenderOptions {

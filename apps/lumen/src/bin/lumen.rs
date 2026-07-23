@@ -12,6 +12,10 @@ use lumen_core::{
     AdjustmentPatch, Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo,
     PickState, Project, SpotRemoval, ToneCurve, ToneCurves, Workspace,
     engine::{RenderOptions, render_image},
+    preview::{
+        PreparedPreview, PreviewCompletionDisposition, PreviewPipeline, PreviewRequestDecision,
+        PreviewWorker,
+    },
 };
 use serde::Serialize;
 use serde_json::json;
@@ -405,6 +409,30 @@ impl BenchmarkProfile {
             // so this gate protects completion latency rather than frame time.
             Self::Interactive => 100.0,
             Self::HostedCi => 175.0,
+        }
+    }
+
+    fn switch_dispatch_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 4.0,
+            Self::HostedCi => 12.0,
+        }
+    }
+
+    fn prefetched_switch_ready_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 35.0,
+            Self::HostedCi => 75.0,
+        }
+    }
+
+    fn cold_switch_ready_budget_ms(self) -> f64 {
+        match self {
+            // The deterministic 2400x1600 JPEG path measured 120 ms p95
+            // locally. Keep 46% workstation and 150% hosted-runner headroom
+            // without allowing a regression into visibly sluggish switching.
+            Self::Interactive => 175.0,
+            Self::HostedCi => 300.0,
         }
     }
 }
