@@ -93,7 +93,8 @@ fn every_incremental_crash_phase_leaves_a_complete_old_or_new_project() {
     let old = vec![0x11; 128 * 1024];
     let mut new = old.clone();
     new[WRITE_BLOCK_BYTES + 3] = 0x22;
-    let state = Some([0x5a; 16]);
+    let old_state = Some([0x5a; 16]);
+    let new_state = Some([0x6b; 16]);
     for fault in [
         PublishFault::BackupLinked,
         PublishFault::MarkerRemoved,
@@ -113,7 +114,7 @@ fn every_incremental_crash_phase_leaves_a_complete_old_or_new_project() {
         fs::write(&destination, &old).unwrap();
         fs::write(&source, &new).unwrap();
         fs::write(&mirror, &old).unwrap();
-        write_ready_marker(&ready, 1, state).unwrap();
+        write_ready_marker(&ready, 1, old_state).unwrap();
         let canonical = open_nofollow(&destination, false).unwrap();
         let metadata = canonical.metadata().unwrap();
         let base = PublishBase {
@@ -121,11 +122,11 @@ fn every_incremental_crash_phase_leaves_a_complete_old_or_new_project() {
             permissions: Some(metadata.permissions()),
             canonical: Some(canonical),
             generation: 1,
-            state_id: state,
+            state_id: old_state,
         };
 
         PUBLISH_FAULT.set(Some(fault));
-        let result = incremental_publish(&source, &destination, &cache, &base, 2, state);
+        let result = incremental_publish(&source, &destination, &cache, &base, 2, new_state);
         PUBLISH_FAULT.set(None);
         assert!(result.is_err(), "{fault:?} did not inject a failure");
         let visible = fs::read(&destination).unwrap();
@@ -133,6 +134,32 @@ fn every_incremental_crash_phase_leaves_a_complete_old_or_new_project() {
             visible == old || visible == new,
             "{fault:?} exposed a torn project"
         );
+
+        let visible_is_new = visible == new;
+        let _ = fs::remove_file(cache.join(PUBLISH_BACKUP_FILE));
+        let _ = fs::remove_file(&mirror);
+        let _ = fs::remove_file(&ready);
+        seed_incremental_mirror(
+            &destination,
+            &cache,
+            if visible_is_new { 2 } else { 1 },
+            if visible_is_new { new_state } else { old_state },
+        );
+        let canonical = open_nofollow(&destination, false).unwrap();
+        let metadata = canonical.metadata().unwrap();
+        let recovered_base = PublishBase {
+            identity: Some(file_identity(&metadata)),
+            permissions: Some(metadata.permissions()),
+            canonical: Some(canonical),
+            generation: if visible_is_new { 2 } else { 1 },
+            state_id: if visible_is_new { new_state } else { old_state },
+        };
+        incremental_publish(&source, &destination, &cache, &recovered_base, 2, new_state)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), new);
+        assert!(ready_marker_matches(&ready, 2, new_state));
+        assert_eq!(fs::read(&mirror).unwrap(), new);
     }
 }
 
@@ -148,4 +175,14 @@ fn failed_seed_never_marks_a_partial_mirror_ready() {
     PUBLISH_FAULT.set(None);
     assert!(!cache.join(PUBLISH_MIRROR_READY_FILE).exists());
     assert!(!cache.join(PUBLISH_MIRROR_FILE).exists());
+    seed_incremental_mirror(&destination, &cache, 1, Some([0x44; 16]));
+    assert!(ready_marker_matches(
+        &cache.join(PUBLISH_MIRROR_READY_FILE),
+        1,
+        Some([0x44; 16])
+    ));
+    assert_eq!(
+        fs::read(cache.join(PUBLISH_MIRROR_FILE)).unwrap(),
+        fs::read(destination).unwrap()
+    );
 }

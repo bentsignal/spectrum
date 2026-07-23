@@ -430,11 +430,11 @@ fn publish_checkpoint(
             source_inspection.generation,
             source_inspection.state_id,
         );
-        return Ok(PublishStats {
+        Ok(PublishStats {
             incremental: false,
             scanned_bytes: written_bytes,
             written_bytes,
-        });
+        })
     }
 
     #[cfg(not(target_os = "linux"))]
