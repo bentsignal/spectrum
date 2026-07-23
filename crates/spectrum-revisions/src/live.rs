@@ -21,8 +21,8 @@ mod tests;
 use linux_io::write_ready_marker;
 #[cfg(target_os = "linux")]
 use linux_io::{
-    ExchangeIntent, PrivateDirectory, apply_checkpoint_delta, open_unnamed, publish_unnamed,
-    recover_exchange, remove_private_file, seed_incremental_mirror,
+    ExchangeIntent, PrivateDirectory, apply_checkpoint_delta, open_unnamed, prepare_reusable_slot,
+    publish_unnamed, recover_exchange, remove_private_file, seed_incremental_mirror,
 };
 
 const STORE_FILE: &str = "live.sqlite";
@@ -50,6 +50,7 @@ enum PublishFault {
     SlotWritable,
     MarkerCreated,
     IntentRemoved,
+    LinkedSlotUnlinked,
     SeedMirrorCreated,
 }
 
@@ -777,6 +778,7 @@ fn incremental_publish(
 
     if !old_slot_private {
         remove_private_file(&directory, PUBLISH_MIRROR_FILE)?;
+        maybe_publish_fault(PublishFault::LinkedSlotUnlinked)?;
         remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
         remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
         directory.sync()?;
@@ -785,13 +787,16 @@ fn incremental_publish(
         return Ok((Some(stats), false));
     }
 
-    directory.validate(PUBLISH_MIRROR_FILE, canonical_identity, true)?;
     let old_canonical = base
         .canonical
         .as_ref()
         .expect("incremental publication requires a canonical descriptor");
-    old_canonical.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-    old_canonical.sync_all()?;
+    prepare_reusable_slot(
+        &directory,
+        PUBLISH_MIRROR_FILE,
+        old_canonical,
+        canonical_identity,
+    )?;
     maybe_publish_fault(PublishFault::SlotWritable)?;
     write_ready_marker(&directory, base.generation, base.state_id)?;
     maybe_publish_fault(PublishFault::MarkerCreated)?;

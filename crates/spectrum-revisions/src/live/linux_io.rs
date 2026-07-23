@@ -409,12 +409,29 @@ pub(super) fn recover_exchange(
     };
     let canonical = super::open_nofollow(destination, false)?;
     let canonical_identity = validated_identity(&canonical, false)?;
-    let slot = directory.open_file(super::PUBLISH_MIRROR_FILE, false)?;
+    let canonical_inspection = RevisionStore::inspect(destination)?;
+    validate_named_identity(destination, canonical_identity, false)?;
+    let slot = match directory.open_file(super::PUBLISH_MIRROR_FILE, false) {
+        Ok(slot) => slot,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if canonical_identity != intent.candidate_identity
+                || canonical_inspection.generation != intent.target_generation
+                || canonical_inspection.state_id != intent.target_state_id
+            {
+                return Err(RevisionError::Invalid(
+                    "missing publication slot does not match a committed exchange".into(),
+                ));
+            }
+            remove_private_file(directory, super::PUBLISH_MIRROR_READY_FILE)?;
+            remove_private_file(directory, super::PUBLISH_EXCHANGE_INTENT_FILE)?;
+            directory.sync()?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
     let slot_identity = validated_identity(&slot, false)?;
     use std::os::unix::fs::MetadataExt as _;
     let slot_private = slot.metadata()?.nlink() == 1;
-    let canonical_inspection = RevisionStore::inspect(destination)?;
-    validate_named_identity(destination, canonical_identity, false)?;
     let slot_path = cache_directory.join(super::PUBLISH_MIRROR_FILE);
     let slot_inspection = RevisionStore::inspect(&slot_path)?;
     directory.validate(super::PUBLISH_MIRROR_FILE, slot_identity, false)?;
@@ -426,9 +443,12 @@ pub(super) fn recover_exchange(
         && slot_inspection.state_id == intent.state_id
     {
         if slot_private {
-            directory.validate(super::PUBLISH_MIRROR_FILE, intent.canonical_identity, true)?;
-            slot.set_permissions(fs::Permissions::from_mode(0o600))?;
-            slot.sync_all()?;
+            prepare_reusable_slot(
+                directory,
+                super::PUBLISH_MIRROR_FILE,
+                &slot,
+                intent.canonical_identity,
+            )?;
             write_ready_marker(directory, intent.generation, intent.state_id)?;
         } else {
             remove_private_file(directory, super::PUBLISH_MIRROR_FILE)?;
@@ -441,10 +461,12 @@ pub(super) fn recover_exchange(
         && slot_inspection.generation == intent.target_generation
         && slot_inspection.state_id == intent.target_state_id
     {
-        validated_identity(&slot, true)?;
-        slot.set_permissions(fs::Permissions::from_mode(0o600))?;
-        slot.sync_all()?;
-        directory.validate(super::PUBLISH_MIRROR_FILE, intent.candidate_identity, true)?;
+        prepare_reusable_slot(
+            directory,
+            super::PUBLISH_MIRROR_FILE,
+            &slot,
+            intent.candidate_identity,
+        )?;
         remove_private_file(directory, super::PUBLISH_MIRROR_READY_FILE)?;
     } else {
         return Err(RevisionError::Invalid(
@@ -461,6 +483,23 @@ pub(super) fn remove_private_file(directory: &PrivateDirectory, name: &str) -> R
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+pub(super) fn prepare_reusable_slot(
+    directory: &PrivateDirectory,
+    name: &str,
+    descriptor: &File,
+    identity: FileIdentity,
+) -> RevisionResult<()> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    directory.validate(name, identity, true)?;
+    validated_identity(descriptor, true)?;
+    if descriptor.metadata()?.mode() & 0o200 == 0 {
+        descriptor.set_permissions(fs::Permissions::from_mode(0o600))?;
+        descriptor.sync_all()?;
+    }
+    Ok(())
 }
 
 pub(super) fn apply_checkpoint_delta(source: &Path, mirror: &File) -> RevisionResult<PublishStats> {

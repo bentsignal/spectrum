@@ -362,10 +362,9 @@ fn hardlink_created_at_exchange_is_discarded_from_private_recovery_without_alias
 
     PUBLISH_HARDLINK_ALIAS.with(|hook| hook.replace(Some(alias.clone())));
     PUBLISH_FAULT.set(Some(PublishFault::Exchanged));
-    assert!(
-        live.mutate(|store| store.put_asset("application/x-raced", b"committed"))
-            .is_err()
-    );
+    live.mutate(|store| store.put_asset("application/x-raced", b"committed"))
+        .unwrap();
+    assert!(live.pending_publish_error().is_some());
     PUBLISH_FAULT.set(None);
     PUBLISH_HARDLINK_ALIAS.with(|hook| hook.replace(None));
 
@@ -385,6 +384,83 @@ fn hardlink_created_at_exchange_is_discarded_from_private_recovery_without_alias
     assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
     recovered
         .mutate(|store| store.put_asset("application/x-after-race", b"next edit"))
+        .unwrap();
+    assert_eq!(
+        recovered.last_publish_stats().strategy,
+        PublishStrategy::FullCopy
+    );
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
+}
+
+#[test]
+fn child_crash_after_linked_slot_unlink_recovers_without_the_slot() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let alias = directory.path().join("child-race-alias.lumen");
+    let cache = directory.path().join("cache");
+    let (live, info) = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        NewProject {
+            application_id: "spectrum.hardlink-child-crash-test".into(),
+            application_version: "1.0.0".into(),
+            actor: Actor {
+                id: "hardlink-child-crash-test".into(),
+                display_name: "Hardlink child crash test".into(),
+                kind: ActorKind::System,
+            },
+            session_id: SessionId::new(),
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![Payload::new(
+                crate::Encoding::new("test.snapshot", 1),
+                vec![0x55; 128 * 1024],
+            )],
+            assets: Vec::new(),
+        },
+    )
+    .unwrap();
+    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o640)).unwrap();
+    let alias_bytes = fs::read(&canonical).unwrap();
+    let alias_mode = canonical.metadata().unwrap().permissions().mode();
+    let base_generation = live.store().generation().unwrap();
+    let project_cache = cache.join(info.project_id.to_string());
+    drop(live);
+
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("publication_crash_child")
+        .arg("--nocapture")
+        .env("SPECTRUM_CRASH_CANONICAL", &canonical)
+        .env("SPECTRUM_CRASH_CACHE", &cache)
+        .env("SPECTRUM_CRASH_HARDLINK_ALIAS", &alias)
+        .env(
+            "SPECTRUM_CRASH_FAULT",
+            fault_name(PublishFault::LinkedSlotUnlinked),
+        )
+        .env("SPECTRUM_CRASH_MODE", "kill")
+        .status()
+        .unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    assert!(RevisionStore::inspect(&canonical).unwrap().generation > base_generation);
+    assert!(project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    assert!(!project_cache.join(PUBLISH_MIRROR_FILE).exists());
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
+
+    let child_asset = Asset::new(
+        "application/x-crash-child",
+        b"survives abrupt death".to_vec(),
+    );
+    let mut recovered = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    assert!(!project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    assert!(
+        recovered.store().asset(child_asset.id).unwrap().is_some(),
+        "the committed child mutation was not recovered"
+    );
+    recovered
+        .mutate(|store| store.put_asset("application/x-after-missing-slot", b"next edit"))
         .unwrap();
     assert_eq!(
         recovered.last_publish_stats().strategy,
@@ -436,6 +512,9 @@ fn publication_crash_child() {
         return;
     };
     let cache = std::env::var("SPECTRUM_CRASH_CACHE").unwrap();
+    if let Ok(alias) = std::env::var("SPECTRUM_CRASH_HARDLINK_ALIAS") {
+        PUBLISH_HARDLINK_ALIAS.with(|hook| hook.replace(Some(PathBuf::from(alias))));
+    }
     let fault = parse_fault(&std::env::var("SPECTRUM_CRASH_FAULT").unwrap());
     let mode = match std::env::var("SPECTRUM_CRASH_MODE").unwrap().as_str() {
         "exit" => CrashMode::Exit,
@@ -588,6 +667,7 @@ fn fault_name(fault: PublishFault) -> &'static str {
         PublishFault::SlotWritable => "slot-writable",
         PublishFault::MarkerCreated => "marker-created",
         PublishFault::IntentRemoved => "intent-removed",
+        PublishFault::LinkedSlotUnlinked => "linked-slot-unlinked",
         PublishFault::SeedMirrorCreated => "seed-mirror-created",
     }
 }
@@ -601,6 +681,7 @@ fn parse_fault(name: &str) -> PublishFault {
         "slot-writable" => PublishFault::SlotWritable,
         "marker-created" => PublishFault::MarkerCreated,
         "intent-removed" => PublishFault::IntentRemoved,
+        "linked-slot-unlinked" => PublishFault::LinkedSlotUnlinked,
         "seed-mirror-created" => PublishFault::SeedMirrorCreated,
         other => panic!("unknown publication fault {other}"),
     }
