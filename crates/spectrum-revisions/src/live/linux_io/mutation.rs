@@ -49,6 +49,7 @@ impl<'a> PrivateMutation<'a> {
             .gate
             .set_permissions(fs::Permissions::from_mode(0o0))?;
         validated_identity(descriptor, true)?;
+        super::super::maybe_publish_fault(super::super::PublishFault::SlotSealed)?;
         Ok(guard)
     }
 

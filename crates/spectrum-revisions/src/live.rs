@@ -44,6 +44,7 @@ const BULK_CHANGE_CATCH_UP_BYTES: u64 = 1024 * 1024;
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PublishFault {
+    SlotSealed,
     CandidateSynced,
     IntentCreated,
     PreExchangeValidated,

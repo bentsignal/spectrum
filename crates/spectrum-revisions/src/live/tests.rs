@@ -647,6 +647,7 @@ fn publication_crash_child() {
 #[test]
 fn every_incremental_crash_phase_recovers_actual_residual_state() {
     let faults = [
+        PublishFault::SlotSealed,
         PublishFault::CandidateSynced,
         PublishFault::IntentCreated,
         PublishFault::PreExchangeValidated,
@@ -774,6 +775,7 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
 
 fn fault_name(fault: PublishFault) -> &'static str {
     match fault {
+        PublishFault::SlotSealed => "slot-sealed",
         PublishFault::CandidateSynced => "candidate-synced",
         PublishFault::IntentCreated => "intent-created",
         PublishFault::PreExchangeValidated => "pre-exchange-validated",
@@ -788,6 +790,7 @@ fn fault_name(fault: PublishFault) -> &'static str {
 
 fn parse_fault(name: &str) -> PublishFault {
     match name {
+        "slot-sealed" => PublishFault::SlotSealed,
         "candidate-synced" => PublishFault::CandidateSynced,
         "intent-created" => PublishFault::IntentCreated,
         "pre-exchange-validated" => PublishFault::PreExchangeValidated,
