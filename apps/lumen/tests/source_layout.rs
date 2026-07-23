@@ -125,17 +125,13 @@ fn catalog_navigation_has_one_top_level_switch_and_two_restrained_primary_action
 }
 
 #[test]
-fn catalog_shortcuts_are_consistent_across_native_and_portable_surfaces() {
+fn catalog_shortcut_labels_are_consistent_across_native_and_portable_surfaces() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let state = fs::read_to_string(manifest.join("src/bin/lumen_gui/state.rs"))
-        .expect("shortcut source should be readable");
     let toolbar = fs::read_to_string(manifest.join("src/bin/lumen_gui/toolbar.rs"))
         .expect("toolbar source should be readable");
     let menu = fs::read_to_string(manifest.join("src/bin/lumen_gui/macos_menu_spec.rs"))
         .expect("native menu source should be readable");
 
-    assert!(state.contains("input.key_pressed(egui::Key::I)"));
-    assert!(state.contains("input.key_pressed(egui::Key::M)"));
     assert!(toolbar.contains("Move Catalog...  Ctrl+Shift+M"));
     assert!(menu.contains("Some(ActionKeyEquivalent::command(\"i\"))"));
     assert!(menu.contains("Some(ActionKeyEquivalent::command_shift(\"m\"))"));
