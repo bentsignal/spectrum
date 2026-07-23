@@ -467,6 +467,7 @@ output="$output_parent/$output_name"
 
 cp -- "$bridge_source/Package.swift" "$stage/package/Package.swift"
 cp -R -- "$bridge_source/Sources" "$stage/package/Sources"
+cp -R -- "$bridge_source/Tests" "$stage/package/Tests"
 
 scratch="$stage/swift-build"
 swift_prefix_flags=(
@@ -477,6 +478,10 @@ swift_prefix_flags=(
   -Xcc "-fdebug-prefix-map=$repo_root=/spectrum"
   -Xcc "-ffile-prefix-map=$repo_root=/spectrum"
 )
+xcrun swift test \
+  --package-path "$stage/package" \
+  --scratch-path "$scratch" \
+  "${swift_prefix_flags[@]}"
 xcrun swift build \
   --package-path "$stage/package" \
   --scratch-path "$scratch" \

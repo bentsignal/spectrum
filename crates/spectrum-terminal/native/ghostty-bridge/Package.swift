@@ -27,5 +27,10 @@ let package = Package(
         .linkedFramework("QuartzCore"),
       ]
     ),
+    .testTarget(
+      name: "SpectrumGhosttyBridgeTests",
+      dependencies: ["SpectrumGhosttyBridge"],
+      path: "Tests/SpectrumGhosttyBridgeTests"
+    ),
   ]
 )
