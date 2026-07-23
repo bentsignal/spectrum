@@ -2,6 +2,7 @@
 
 pub mod command;
 pub mod engine;
+pub mod preview;
 pub mod project;
 mod revisions;
 

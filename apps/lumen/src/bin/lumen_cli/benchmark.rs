@@ -39,6 +39,7 @@ pub(super) fn benchmark(
             std::hint::black_box(import_project.import(&import_paths)?);
             import_samples.push(started.elapsed());
         }
+        let navigation_photos = prepare_navigation_photos(&directory)?;
 
         let mut project = Project::new("Performance benchmark");
         let mut photo = Photo::new(
@@ -157,6 +158,8 @@ pub(super) fn benchmark(
             75.0,
             250.0,
         );
+        let navigation_metrics =
+            navigation_switch_metrics(&navigation_photos, &source_path, profile)?;
         let raw_import_metric = raw_import.map(|path| -> Result<serde_json::Value> {
             let mut samples = Vec::with_capacity(3);
             for _ in 0..3 {
@@ -176,11 +179,15 @@ pub(super) fn benchmark(
         let passed = command["pass"].as_bool() == Some(true)
             && preview_metric["pass"].as_bool() == Some(true)
             && jpeg_import["pass"].as_bool() == Some(true)
+            && navigation_metrics
+                .iter()
+                .all(|metric| metric["pass"].as_bool() == Some(true))
             && raw_import_metric
                 .as_ref()
                 .is_none_or(|metric| metric["pass"].as_bool() == Some(true))
             && export_pass;
         let mut metrics = vec![command, preview_metric, jpeg_import, export];
+        metrics.extend(navigation_metrics);
         if let Some(metric) = raw_import_metric {
             metrics.push(metric);
         }
@@ -205,12 +212,316 @@ pub(super) fn benchmark(
     result
 }
 
+fn navigation_switch_metrics(
+    photos: &[Photo],
+    large_prefetch_path: &std::path::Path,
+    profile: BenchmarkProfile,
+) -> Result<Vec<serde_json::Value>> {
+    anyhow::ensure!(
+        photos.len() >= 25,
+        "navigation benchmark requires twenty-five distinct photos"
+    );
+    let sequential_dispatch_photos = &photos[..6];
+    let nonsequential_dispatch_photos = &photos[6..12];
+    let warm_photos = &photos[12..18];
+    let cold_photos = &photos[18..24];
+    let sequential: Vec<_> = (0..warm_photos.len()).collect();
+    let nonsequential = [0, 4, 1, 5, 2, 3];
+    let sequential_dispatch = navigation_dispatch_samples(sequential_dispatch_photos, &sequential)?;
+    let nonsequential_dispatch =
+        navigation_dispatch_samples(nonsequential_dispatch_photos, &nonsequential)?;
+
+    let mut warm_project = Project::new("Prefetched navigation benchmark");
+    warm_project.photos = warm_photos.to_vec();
+    warm_project.selected = warm_photos.first().map(|photo| photo.id);
+    let mut warm_workspace = Workspace::new(warm_project, None);
+    let warm_worker = PreviewWorker::new();
+    let mut warm_pipeline = PreviewPipeline::default();
+    let first = warm_photos
+        .first()
+        .context("warm navigation photos are empty")?;
+    warm_pipeline.select(first.id, first.adjustments.clone());
+    let mut prefetched_ready_samples = Vec::with_capacity(warm_photos.len() - 1);
+    for photo in &warm_photos[1..] {
+        let enqueue = warm_worker.request_prefetch(
+            warm_pipeline.epoch(),
+            photo.clone(),
+            photo.adjustments.clone(),
+        );
+        anyhow::ensure!(
+            enqueue.accepted.is_some(),
+            "adjacent prefetch was not accepted"
+        );
+        warm_pipeline.track_enqueue(enqueue);
+        let completion = warm_worker
+            .recv_timeout(Duration::from_secs(5))
+            .context("adjacent prefetch did not complete")?;
+        anyhow::ensure!(
+            matches!(
+                warm_pipeline.complete(completion, Instant::now()),
+                PreviewCompletionDisposition::Cached
+            ),
+            "adjacent prefetch did not enter the prepared cache"
+        );
+
+        let started = Instant::now();
+        warm_workspace.execute(Command::Select { id: photo.id })?;
+        warm_pipeline.select(photo.id, photo.adjustments.clone());
+        let preview = warm_pipeline
+            .take_cached(photo.id, &photo.adjustments)
+            .context("selected adjacent preview was absent from the cache")?;
+        consume_ready_preview(preview);
+        prefetched_ready_samples.push(started.elapsed());
+    }
+
+    let mut project = Project::new("Non-sequential navigation benchmark");
+    project.photos = cold_photos.to_vec();
+    project.selected = cold_photos.first().map(|photo| photo.id);
+    let mut workspace = Workspace::new(project, None);
+    let worker = PreviewWorker::new();
+    let mut pipeline = PreviewPipeline::default();
+    let mut cold_ready_samples = Vec::with_capacity(nonsequential.len());
+    for index in nonsequential {
+        let started = Instant::now();
+        let id = cold_photos[index].id;
+        workspace.execute(Command::Select { id })?;
+        let photo = workspace.project.photo(id)?.clone();
+        let adjustments = photo.adjustments.clone();
+        let generation = pipeline.select(id, adjustments.clone());
+        anyhow::ensure!(
+            pipeline.request_decision(&worker, Instant::now(), id, &adjustments)
+                == PreviewRequestDecision::Request,
+            "cold selected preview was unexpectedly cached, pending, or backed off"
+        );
+        let enqueue = worker.request_selected(generation, pipeline.epoch(), photo, adjustments);
+        anyhow::ensure!(
+            enqueue.accepted.is_some(),
+            "cold selection was not accepted"
+        );
+        pipeline.track_enqueue(enqueue);
+        let preview = wait_for_published_preview(&worker, &mut pipeline)?;
+        consume_ready_preview(preview);
+        cold_ready_samples.push(started.elapsed());
+    }
+
+    let mut large_prefetch = Photo::new(
+        10_000,
+        large_prefetch_path.to_owned(),
+        "priority-prefetch.jpg".into(),
+        6000,
+        4000,
+    );
+    large_prefetch.format = "jpg".into();
+    let selected = photos[24].clone();
+    let priority_worker = PreviewWorker::new();
+    let mut priority_pipeline = PreviewPipeline::default();
+    let prefetch = priority_worker.request_prefetch(
+        priority_pipeline.epoch(),
+        large_prefetch,
+        Adjustments::default(),
+    );
+    let prefetch_id = prefetch
+        .accepted
+        .as_ref()
+        .context("priority prefetch was not accepted")?
+        .id;
+    priority_pipeline.track_enqueue(prefetch);
+    wait_until_active(&priority_worker, prefetch_id)?;
+    let queued_target = priority_worker.request_prefetch(
+        priority_pipeline.epoch(),
+        selected.clone(),
+        selected.adjustments.clone(),
+    );
+    let selected_id = queued_target
+        .accepted
+        .as_ref()
+        .context("priority target prefetch was not accepted")?
+        .id;
+    priority_pipeline.track_enqueue(queued_target);
+    priority_pipeline.select(selected.id, selected.adjustments.clone());
+    let priority_started = Instant::now();
+    let priority_decision = priority_pipeline.request_decision(
+        &priority_worker,
+        Instant::now(),
+        selected.id,
+        &selected.adjustments,
+    );
+    anyhow::ensure!(
+        priority_decision == PreviewRequestDecision::Promoted,
+        "queued priority target was not promoted through request_decision"
+    );
+    let first_completion = priority_worker
+        .recv_timeout(Duration::from_secs(5))
+        .context("priority selected preview did not complete")?;
+    let selected_won = first_completion.identity.id == selected_id;
+    let disposition = priority_pipeline.complete(first_completion, Instant::now());
+    let priority_preview = match disposition {
+        PreviewCompletionDisposition::Publish(preview) => *preview,
+        PreviewCompletionDisposition::Cached => {
+            wait_for_published_preview(&priority_worker, &mut priority_pipeline)?
+        }
+        PreviewCompletionDisposition::Failed(error) => {
+            anyhow::bail!("priority selected preview failed: {error}")
+        }
+        PreviewCompletionDisposition::Ignored => {
+            anyhow::bail!("priority completion was ignored")
+        }
+    };
+    consume_ready_preview(priority_preview);
+    let priority_duration = priority_started.elapsed();
+    if selected_won {
+        let prefetch_completion = priority_worker
+            .recv_timeout(Duration::from_secs(5))
+            .context("priority prefetch did not finish after selected publication")?;
+        let _ = priority_pipeline.complete(prefetch_completion, Instant::now());
+    }
+    let priority_ms = duration_ms(priority_duration);
+    let priority_pass = selected_won && priority_ms <= profile.cold_switch_ready_budget_ms();
+    let priority_metric = json!({
+        "name": "selected_over_prefetch_ready",
+        "workload": "Queued adjacent 1800x1200 prefetch is promoted through request_decision while an unrelated authoritative 24 MP prefetch is already decoding",
+        "elapsed_ms": rounded(priority_ms),
+        "selected_completed_first": selected_won,
+        "target_ms": 75.0,
+        "budget_ms": profile.cold_switch_ready_budget_ms(),
+        "pass": priority_pass,
+    });
+
+    Ok(vec![
+        latency_metric(
+            "sequential_photo_switch_dispatch",
+            "Adjacent core selection, pipeline generation, and accepted worker request",
+            &sequential_dispatch,
+            1.0,
+            profile.switch_dispatch_budget_ms(),
+        ),
+        latency_metric(
+            "nonsequential_photo_switch_dispatch",
+            "Non-adjacent core selection, pipeline generation, and accepted worker request",
+            &nonsequential_dispatch,
+            1.0,
+            profile.switch_dispatch_budget_ms(),
+        ),
+        latency_metric(
+            "sequential_photo_switch_ready",
+            "Distinct adjacent JPEG completes through PreviewWorker, cache insertion, selection, cache publication, and upload buffers",
+            &prefetched_ready_samples,
+            16.7,
+            profile.prefetched_switch_ready_budget_ms(),
+        ),
+        latency_metric(
+            "nonsequential_photo_switch_ready",
+            "Distinct non-prefetched JPEG path through worker completion, generation-safe publication, histogram, and upload buffers",
+            &cold_ready_samples,
+            75.0,
+            profile.cold_switch_ready_budget_ms(),
+        ),
+        priority_metric,
+    ])
+}
+
+fn navigation_dispatch_samples(photos: &[Photo], order: &[usize]) -> Result<Vec<Duration>> {
+    let mut project = Project::new("Navigation dispatch benchmark");
+    project.photos = photos.to_vec();
+    project.selected = photos.first().map(|photo| photo.id);
+    let mut workspace = Workspace::new(project, None);
+    let worker = PreviewWorker::new();
+    let mut pipeline = PreviewPipeline::default();
+    let mut samples = Vec::with_capacity(order.len());
+    for index in order {
+        let started = Instant::now();
+        let id = photos[*index].id;
+        workspace.execute(Command::Select { id })?;
+        let photo = workspace.project.photo(id)?.clone();
+        let adjustments = photo.adjustments.clone();
+        let generation = pipeline.select(id, adjustments.clone());
+        let enqueue = worker.request_selected(generation, pipeline.epoch(), photo, adjustments);
+        anyhow::ensure!(
+            enqueue.accepted.is_some(),
+            "navigation dispatch was not accepted"
+        );
+        pipeline.track_enqueue(enqueue);
+        samples.push(started.elapsed());
+    }
+    while pipeline.has_outstanding_work() {
+        let completion = worker
+            .recv_timeout(Duration::from_secs(5))
+            .context("dispatch worker did not drain within five seconds")?;
+        let _ = pipeline.complete(completion, Instant::now());
+    }
+    Ok(samples)
+}
+
+fn prepare_navigation_photos(directory: &std::path::Path) -> Result<Vec<Photo>> {
+    let mut photos = Vec::with_capacity(25);
+    for index in 0..25 {
+        let (width, height) = if index < 12 { (640, 426) } else { (1800, 1200) };
+        let path = directory.join(format!("navigation-{index:02}.jpg"));
+        DynamicImage::ImageRgb8(deterministic_rgb_seeded(width, height, index as u32 + 1))
+            .save(&path)
+            .with_context(|| format!("prepare navigation source {}", path.display()))?;
+        let mut photo = Photo::new(
+            100 + index,
+            path,
+            format!("navigation-{index:02}.jpg"),
+            width,
+            height,
+        );
+        photo.format = "jpg".into();
+        photos.push(photo);
+    }
+    Ok(photos)
+}
+
+fn wait_for_published_preview(
+    worker: &PreviewWorker,
+    pipeline: &mut PreviewPipeline,
+) -> Result<PreparedPreview> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        anyhow::ensure!(!remaining.is_zero(), "selected preview timed out");
+        let completion = worker
+            .recv_timeout(remaining)
+            .context("selected preview did not become ready within five seconds")?;
+        match pipeline.complete(completion, Instant::now()) {
+            PreviewCompletionDisposition::Publish(preview) => return Ok(*preview),
+            PreviewCompletionDisposition::Failed(error) => {
+                anyhow::bail!("selected preview failed: {error}")
+            }
+            PreviewCompletionDisposition::Cached | PreviewCompletionDisposition::Ignored => {}
+        }
+    }
+}
+
+fn wait_until_active(worker: &PreviewWorker, request_id: u64) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !worker.is_active(request_id) {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "prefetch did not become active within one second"
+        );
+        std::thread::yield_now();
+    }
+    Ok(())
+}
+
+fn consume_ready_preview(preview: PreparedPreview) {
+    std::hint::black_box(preview.source.to_rgba8());
+    std::hint::black_box(preview.rendered.to_rgba8());
+    std::hint::black_box(preview.histogram);
+}
+
 fn deterministic_rgb(width: u32, height: u32) -> RgbImage {
+    deterministic_rgb_seeded(width, height, 0)
+}
+
+fn deterministic_rgb_seeded(width: u32, height: u32, seed: u32) -> RgbImage {
     RgbImage::from_fn(width, height, |x, y| {
         Rgb([
-            ((x * 13 + y * 3) % 256) as u8,
-            ((x * 5 + y * 11) % 256) as u8,
-            ((x * 7 + y * 17) % 256) as u8,
+            ((x * 13 + y * 3 + seed * 19) % 256) as u8,
+            ((x * 5 + y * 11 + seed * 31) % 256) as u8,
+            ((x * 7 + y * 17 + seed * 47) % 256) as u8,
         ])
     })
 }

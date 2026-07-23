@@ -14,7 +14,11 @@ use image::{DynamicImage, imageops::FilterType};
 use lumen_core::{
     Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo, PickState,
     Project, SpotRemoval, ToneCurve, Workspace,
-    engine::{RenderOptions, decode_photo, render_image, render_photo},
+    engine::{decode_photo, decode_photo_proxy, render_preview_source},
+    preview::{
+        PreparedPreview, PreviewCompletionDisposition, PreviewHistogram, PreviewPipeline,
+        PreviewRequestDecision, PreviewWorker,
+    },
     project::is_supported_image,
 };
 
@@ -106,13 +110,7 @@ enum CatalogSwitch {
     Open(PathBuf),
 }
 
-#[derive(Clone)]
-struct Histogram {
-    red: [u32; 256],
-    green: [u32; 256],
-    blue: [u32; 256],
-    luma: [u32; 256],
-}
+type Histogram = PreviewHistogram;
 
 fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
@@ -167,6 +165,8 @@ struct LumenApp {
     original_preview: Option<TextureHandle>,
     original_preview_id: Option<u64>,
     histogram: Option<Histogram>,
+    preview_worker: PreviewWorker,
+    preview_pipeline: PreviewPipeline,
     thumbnails: HashMap<u64, TextureHandle>,
     draft: Adjustments,
     draft_id: Option<u64>,
@@ -284,6 +284,8 @@ impl LumenApp {
             original_preview: None,
             original_preview_id: None,
             histogram: None,
+            preview_worker: PreviewWorker::new(),
+            preview_pipeline: PreviewPipeline::default(),
             thumbnails: HashMap::new(),
             draft: Adjustments::default(),
             draft_id: None,
@@ -355,6 +357,7 @@ impl eframe::App for LumenApp {
         #[cfg(target_os = "macos")]
         self.process_native_menu_actions(&context);
         self.handle_drop_and_shortcuts(&context);
+        self.receive_prepared_previews(&context);
         spectrum_history_ui::reserve_history_shortcut();
         self.toolbar(ui);
         self.status_bar(ui);
@@ -372,6 +375,7 @@ impl eframe::App for LumenApp {
             #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
             self.native_terminal.hide_all();
             self.filmstrip(ui);
+            self.ensure_preview(&context);
             self.inspector(ui);
             self.canvas(ui);
         }

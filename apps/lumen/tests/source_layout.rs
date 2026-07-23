@@ -93,6 +93,25 @@ fn routine_status_and_pick_glyph_chatter_stay_out_of_lumen_ui() {
 }
 
 #[test]
+fn catalog_and_filmstrip_thumbnails_stay_on_the_display_only_proxy_path() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let state = fs::read_to_string(manifest.join("src/bin/lumen_gui/state.rs"))
+        .expect("Lumen GUI state source should be readable");
+    let start = state
+        .find("pub(super) fn ensure_thumbnail")
+        .expect("thumbnail renderer should remain explicit");
+    let end = state[start..]
+        .find("pub(super) fn handle_drop_and_shortcuts")
+        .map(|offset| start + offset)
+        .expect("thumbnail renderer should remain bounded");
+    let thumbnail_renderer = &state[start..end];
+
+    assert!(thumbnail_renderer.contains("decode_photo_proxy(photo, 240)"));
+    assert!(!thumbnail_renderer.contains("render_settled_preview"));
+    assert!(!thumbnail_renderer.contains("render_photo("));
+}
+
+#[test]
 fn lumen_branding_is_wired_to_runtime_and_native_packages() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repository = manifest.join("../..");
