@@ -6,15 +6,21 @@ use std::{
 
 use fs2::FileExt;
 #[cfg(target_os = "linux")]
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::{
     NewProject, ProjectInfo, RevisionError, RevisionResult, RevisionStore, SessionId,
     metadata::StorageStateId, storage_io::sidecar_path,
 };
 
+#[cfg(target_os = "linux")]
+mod linux_io;
 #[cfg(test)]
 mod tests;
+#[cfg(target_os = "linux")]
+use linux_io::{clone_unnamed, open_unnamed, publish_unnamed, stage_unnamed};
+#[cfg(target_os = "linux")]
+use linux_io::{ready_marker_matches, write_ready_marker};
 
 const STORE_FILE: &str = "live.sqlite";
 const LOCK_FILE: &str = "publish.lock";
@@ -43,14 +49,27 @@ enum PublishFault {
 }
 
 #[cfg(all(test, target_os = "linux"))]
+#[derive(Clone, Copy)]
+enum CrashMode {
+    Exit,
+    Abort,
+    Kill,
+}
+
+#[cfg(all(test, target_os = "linux"))]
 thread_local! {
     static PUBLISH_FAULT: Cell<Option<PublishFault>> = const { Cell::new(None) };
+    static PUBLISH_CRASH_MODE: Cell<Option<CrashMode>> = const { Cell::new(None) };
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PublishStats {
     pub incremental: bool,
+    pub reflink_unavailable: bool,
     pub scanned_bytes: u64,
+    /// Bytes whose contents differ from the previous checkpoint.
+    pub changed_bytes: u64,
+    /// File-data bytes physically submitted by publication. Reflink-only publication writes zero.
     pub written_bytes: u64,
 }
 
@@ -138,15 +157,17 @@ impl LiveRevisionStore {
             canonical
         } else {
             #[cfg(target_os = "linux")]
-            let _canonical_lock = lock_directory(
-                canonical_path
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .unwrap_or_else(|| Path::new(".")),
-            )?;
-            #[cfg(target_os = "linux")]
-            let permission_restore = CanonicalPermissionGuard::make_writable(&canonical_path)?;
-            let prepared = (|| {
+            {
+                let _canonical_lock = lock_directory(
+                    canonical_path
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or_else(|| Path::new(".")),
+                )?;
+                prepare_canonical_copy(&canonical_path, cache_root)?
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
                 recover_legacy_sidecars(&canonical_path)?;
                 // Container migrations happen against the portable file first. Incremented
                 // storage generation then invalidates an older live cache before it can diverge.
@@ -154,10 +175,7 @@ impl LiveRevisionStore {
                 canonical_store.checkpoint()?;
                 drop(canonical_store);
                 RevisionStore::inspect(&canonical_path)
-            })();
-            #[cfg(target_os = "linux")]
-            permission_restore.restore()?;
-            prepared?
+            }?
         };
         create_private_dir_all(cache_root)?;
         let project_directory = cache_root.join(canonical.info.project_id.to_string());
@@ -337,6 +355,7 @@ fn make_private(_path: &Path) -> RevisionResult<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn recover_legacy_sidecars(path: &Path) -> RevisionResult<()> {
     if sidecar_path(path, "-wal").exists() || sidecar_path(path, "-shm").exists() {
         let store = RevisionStore::open(path)?;
@@ -349,6 +368,29 @@ fn recover_legacy_sidecars(path: &Path) -> RevisionResult<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_canonical_copy(
+    canonical_path: &Path,
+    cache_root: &Path,
+) -> RevisionResult<crate::store::StoreInspection> {
+    if sidecar_path(canonical_path, "-shm").exists() {
+        return Err(RevisionError::Invalid(
+            "project is already open by a legacy Spectrum process".into(),
+        ));
+    }
+    create_private_dir_all(cache_root)?;
+    let staging = cache_root.join(format!(".canonical-prepare-{}.sqlite", SessionId::new()));
+    let prepared = (|| {
+        RevisionStore::snapshot_for_migration(canonical_path, &staging)?;
+        atomic_publish(&staging, canonical_path)?;
+        sync_parent(canonical_path)?;
+        RevisionStore::inspect(canonical_path)
+    })();
+    remove_sidecars(&staging).ok();
+    let _ = fs::remove_file(&staging);
+    prepared
 }
 
 fn remove_sidecars(path: &Path) -> RevisionResult<()> {
@@ -400,6 +442,30 @@ fn atomic_publish(source: &Path, destination: &Path) -> RevisionResult<()> {
     {
         fs::create_dir_all(parent)?;
     }
+    #[cfg(target_os = "linux")]
+    {
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        if let Ok(mut candidate) = open_unnamed(parent) {
+            let mut source_file = open_nofollow(source, false)?;
+            io::copy(&mut source_file, &mut candidate)?;
+            let permissions = destination
+                .metadata()
+                .or_else(|_| source.metadata())
+                .map(|metadata| metadata.permissions())?;
+            candidate.set_permissions(permissions)?;
+            candidate.sync_all()?;
+            publish_unnamed(candidate, destination)?;
+            return Ok(());
+        }
+    }
+
+    atomic_publish_named(source, destination)
+}
+
+fn atomic_publish_named(source: &Path, destination: &Path) -> RevisionResult<()> {
     let temporary = temporary_path(destination);
     let permissions = destination
         .metadata()
@@ -436,16 +502,18 @@ fn publish_checkpoint(
             source_inspection.generation,
             source_inspection.state_id,
         )?;
-        if let Some(stats) = incremental_publish(
+        let (incremental, mut reflink_unavailable) = incremental_publish(
             source,
             destination,
             _cache_directory,
             &base,
             source_inspection.generation,
             source_inspection.state_id,
-        )? {
+        )?;
+        if let Some(stats) = incremental {
             return Ok(stats);
         }
+        reflink_unavailable |= open_unnamed(_cache_directory).is_err();
         atomic_publish(source, destination)?;
         sync_parent(destination)?;
         let written_bytes = source.metadata()?.len();
@@ -457,7 +525,9 @@ fn publish_checkpoint(
         );
         Ok(PublishStats {
             incremental: false,
+            reflink_unavailable,
             scanned_bytes: written_bytes,
+            changed_bytes: written_bytes,
             written_bytes,
         })
     }
@@ -469,7 +539,9 @@ fn publish_checkpoint(
     #[cfg(not(target_os = "linux"))]
     Ok(PublishStats {
         incremental: false,
+        reflink_unavailable: false,
         scanned_bytes: written_bytes,
+        changed_bytes: written_bytes,
         written_bytes,
     })
 }
@@ -479,58 +551,6 @@ fn publish_checkpoint(
 struct FileIdentity {
     device: u64,
     inode: u64,
-}
-
-#[cfg(target_os = "linux")]
-struct CanonicalPermissionGuard {
-    descriptor: File,
-    path: PathBuf,
-    identity: FileIdentity,
-    permissions: fs::Permissions,
-    restored: bool,
-}
-
-#[cfg(target_os = "linux")]
-impl CanonicalPermissionGuard {
-    fn make_writable(path: &Path) -> RevisionResult<Self> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let descriptor = open_nofollow(path, false)?;
-        let identity = validated_identity(&descriptor, false)?;
-        let permissions = descriptor.metadata()?.permissions();
-        if permissions.mode() & 0o200 == 0 {
-            descriptor.set_permissions(fs::Permissions::from_mode(permissions.mode() | 0o200))?;
-            descriptor.sync_all()?;
-        }
-        Ok(Self {
-            descriptor,
-            path: path.to_owned(),
-            identity,
-            permissions,
-            restored: false,
-        })
-    }
-
-    fn restore(mut self) -> RevisionResult<()> {
-        self.restore_inner()?;
-        self.restored = true;
-        Ok(())
-    }
-
-    fn restore_inner(&self) -> RevisionResult<()> {
-        self.descriptor.set_permissions(self.permissions.clone())?;
-        self.descriptor.sync_all()?;
-        validate_named_identity(&self.path, self.identity, false)
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Drop for CanonicalPermissionGuard {
-    fn drop(&mut self) {
-        if !self.restored {
-            let _ = self.restore_inner();
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -614,7 +634,7 @@ fn incremental_publish(
     base: &PublishBase,
     source_generation: u64,
     source_state_id: Option<StorageStateId>,
-) -> RevisionResult<Option<PublishStats>> {
+) -> RevisionResult<(Option<PublishStats>, bool)> {
     let mirror = cache_directory.join(PUBLISH_MIRROR_FILE);
     let ready = cache_directory.join(PUBLISH_MIRROR_READY_FILE);
     let (Some(_), Some(canonical_identity), Some(canonical_permissions)) = (
@@ -622,25 +642,51 @@ fn incremental_publish(
         base.identity,
         base.permissions.clone(),
     ) else {
-        return Ok(None);
+        return Ok((None, false));
     };
     if !ready_marker_matches(&ready, base.generation, base.state_id) {
-        return Ok(None);
+        return Ok((None, false));
     }
-    let mut mirror_file = match open_private_writable(&mirror) {
+    let mut mirror_file = match open_nofollow(&mirror, false) {
         Ok(file) => file,
-        Err(_) => return Ok(None),
+        Err(_) => return Ok((None, false)),
     };
     let mirror_identity = validated_identity(&mirror_file, true)?;
     if mirror_identity == canonical_identity {
-        return Ok(None);
+        return Ok((None, false));
     }
+
+    let canonical_candidate = match clone_unnamed(source, cache_directory) {
+        Ok(candidate) => candidate,
+        Err(_) => return Ok((None, true)),
+    };
+    let mirror_candidate = match clone_unnamed(source, cache_directory) {
+        Ok(candidate) => candidate,
+        Err(_) => return Ok((None, true)),
+    };
+    let stats = compare_checkpoint(source, &mut mirror_file)?;
+    canonical_candidate.set_permissions(canonical_permissions.clone())?;
+    canonical_candidate.sync_all()?;
+    mirror_candidate.set_permissions(canonical_permissions)?;
+    mirror_candidate.sync_all()?;
+    let canonical_candidate = match stage_unnamed(canonical_candidate, destination) {
+        Ok(candidate) => candidate,
+        Err(_) => return Ok((None, true)),
+    };
+    let mirror_candidate = match stage_unnamed(mirror_candidate, &mirror) {
+        Ok(candidate) => candidate,
+        Err(_) => return Ok((None, true)),
+    };
+    maybe_publish_fault(PublishFault::MirrorSynced)?;
+    // The old named mirror is never writable. If it gained a link or was replaced while the
+    // completed unnamed candidates were prepared, fail before any user-visible publication.
+    validate_named_identity(&mirror, mirror_identity, true)?;
 
     let backup = cache_directory.join(PUBLISH_BACKUP_FILE);
     let _ = fs::remove_file(&backup);
     sync_directory(cache_directory)?;
     if fs::hard_link(destination, &backup).is_err() {
-        return Ok(None);
+        return Ok((None, false));
     }
     sync_directory(cache_directory)?;
     maybe_publish_fault(PublishFault::BackupLinked)?;
@@ -652,47 +698,21 @@ fn incremental_publish(
     maybe_publish_fault(PublishFault::MarkerRemoved)?;
 
     let result = (|| -> RevisionResult<PublishStats> {
-        let mut stats = update_mirror(source, &mut mirror_file)?;
-        mirror_file.set_permissions(canonical_permissions.clone())?;
-        mirror_file.sync_all()?;
-        maybe_publish_fault(PublishFault::MirrorSynced)?;
         validate_named_identity(&mirror, mirror_identity, true)?;
         validate_named_identity(destination, canonical_identity, false)?;
-        fs::rename(&mirror, destination)?;
-        sync_parent(destination)?;
+        canonical_candidate.publish(destination)?;
         maybe_publish_fault(PublishFault::CanonicalRenamed)?;
-        if validated_identity(&open_nofollow(destination, false)?, false)? != mirror_identity {
-            return Err(RevisionError::Invalid(
-                "published project does not match the completed mirror".into(),
-            ));
-        }
-        fs::rename(&backup, &mirror)?;
-        sync_directory(cache_directory)?;
+        mirror_candidate.publish(&mirror)?;
         maybe_publish_fault(PublishFault::BackupRenamed)?;
-
-        let mut next_mirror = open_private_writable(&mirror)?;
-        let next_identity = validated_identity(&next_mirror, true)?;
-        if next_identity == mirror_identity {
-            return Err(RevisionError::Invalid(
-                "next mirror aliases the visible project".into(),
-            ));
-        }
-        let synchronized = update_mirror(source, &mut next_mirror)?;
-        next_mirror.set_permissions(canonical_permissions)?;
-        next_mirror.sync_all()?;
+        fs::remove_file(&backup)?;
+        sync_directory(cache_directory)?;
         maybe_publish_fault(PublishFault::MirrorResynced)?;
-        stats.scanned_bytes = stats
-            .scanned_bytes
-            .saturating_add(synchronized.scanned_bytes);
-        stats.written_bytes = stats
-            .written_bytes
-            .saturating_add(synchronized.written_bytes);
         write_ready_marker(&ready, source_generation, source_state_id)?;
         sync_directory(cache_directory)?;
         maybe_publish_fault(PublishFault::MarkerCreated)?;
         Ok(stats)
     })();
-    result.map(Some)
+    result.map(|stats| (Some(stats), false))
 }
 
 #[cfg(target_os = "linux")]
@@ -705,28 +725,6 @@ fn open_nofollow(path: &Path, write: bool) -> std::io::Result<File> {
         .write(write)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
     options.open(path)
-}
-
-#[cfg(target_os = "linux")]
-fn open_private_writable(path: &Path) -> RevisionResult<File> {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Ok(file) = open_nofollow(path, true) {
-        validated_identity(&file, true)?;
-        return Ok(file);
-    }
-    let read_only = open_nofollow(path, false)?;
-    let identity = validated_identity(&read_only, true)?;
-    let mode = read_only.metadata()?.permissions().mode();
-    read_only.set_permissions(fs::Permissions::from_mode(mode | 0o200))?;
-    read_only.sync_all()?;
-    let writable = open_nofollow(path, true)?;
-    if validated_identity(&writable, true)? != identity {
-        return Err(RevisionError::Invalid(
-            "mirror changed while it was made writable".into(),
-        ));
-    }
-    Ok(writable)
 }
 
 #[cfg(target_os = "linux")]
@@ -768,12 +766,11 @@ fn validate_named_identity(
 }
 
 #[cfg(target_os = "linux")]
-fn update_mirror(source: &Path, mirror: &mut File) -> RevisionResult<PublishStats> {
+fn compare_checkpoint(source: &Path, mirror: &mut File) -> RevisionResult<PublishStats> {
     let mut source = open_nofollow(source, false)?;
     validated_identity(&source, false)?;
     let source_len = source.metadata()?.len();
     let mirror_len = mirror.metadata()?.len();
-    mirror.set_len(source_len)?;
     source.seek(SeekFrom::Start(0))?;
     mirror.seek(SeekFrom::Start(0))?;
 
@@ -785,7 +782,13 @@ fn update_mirror(source: &Path, mirror: &mut File) -> RevisionResult<PublishStat
         let chunk_len = usize::try_from((source_len - offset).min(COMPARE_CHUNK_BYTES as u64))
             .expect("bounded comparison chunk");
         source.read_exact(&mut source_chunk[..chunk_len])?;
-        mirror.read_exact(&mut mirror_chunk[..chunk_len])?;
+        mirror_chunk[..chunk_len].fill(0);
+        let mirror_chunk_len =
+            usize::try_from((mirror_len.saturating_sub(offset)).min(chunk_len as u64))
+                .expect("bounded comparison chunk");
+        if mirror_chunk_len > 0 {
+            mirror.read_exact(&mut mirror_chunk[..mirror_chunk_len])?;
+        }
         if source_chunk[..chunk_len] != mirror_chunk[..chunk_len] {
             for block_start in (0..chunk_len).step_by(WRITE_BLOCK_BYTES) {
                 let block_end = (block_start + WRITE_BLOCK_BYTES).min(chunk_len);
@@ -807,19 +810,17 @@ fn update_mirror(source: &Path, mirror: &mut File) -> RevisionResult<PublishStat
                 } else {
                     block_start
                 };
-                mirror.seek(SeekFrom::Start(offset + write_start as u64))?;
-                mirror.write_all(&source_chunk[write_start..block_end])?;
                 written_bytes += (block_end - write_start) as u64;
             }
-            mirror.seek(SeekFrom::Start(offset + chunk_len as u64))?;
         }
         offset += chunk_len as u64;
     }
-    mirror.sync_all()?;
     Ok(PublishStats {
         incremental: true,
+        reflink_unavailable: false,
         scanned_bytes: source_len,
-        written_bytes,
+        changed_bytes: written_bytes,
+        written_bytes: 0,
     })
 }
 
@@ -840,25 +841,44 @@ fn seed_incremental_mirror(
         return;
     }
     let _ = fs::remove_file(&probe);
-    let _ = fs::remove_file(&mirror);
-    if copy_or_clone(destination, &mirror)
-        .and_then(|_| open_nofollow(&mirror, false)?.sync_all())
-        .and_then(|_| maybe_seed_fault().map_err(std::io::Error::other))
-        .and_then(|_| sync_directory(cache_directory).map_err(std::io::Error::other))
-        .and_then(|_| {
-            write_ready_marker(&ready, generation, state_id).map_err(std::io::Error::other)
-        })
-        .and_then(|_| sync_directory(cache_directory).map_err(std::io::Error::other))
-        .is_err()
-    {
+    let seeded = (|| -> RevisionResult<()> {
+        let candidate = match clone_unnamed(destination, cache_directory) {
+            Ok(candidate) => candidate,
+            Err(_) => {
+                let mut candidate = open_unnamed(cache_directory)?;
+                let mut source = open_nofollow(destination, false)?;
+                io::copy(&mut source, &mut candidate)?;
+                candidate
+            }
+        };
+        candidate.set_permissions(destination.metadata()?.permissions())?;
+        candidate.sync_all()?;
+        publish_unnamed(candidate, &mirror)?;
+        maybe_seed_fault()?;
+        write_ready_marker(&ready, generation, state_id)?;
+        sync_directory(cache_directory)?;
+        Ok(())
+    })();
+    if seeded.is_err() {
         let _ = fs::remove_file(&mirror);
         let _ = fs::remove_file(&ready);
+        let _ = sync_directory(cache_directory);
     }
 }
 
 #[cfg(all(test, target_os = "linux"))]
 fn maybe_publish_fault(point: PublishFault) -> RevisionResult<()> {
     if PUBLISH_FAULT.get() == Some(point) {
+        if let Some(mode) = PUBLISH_CRASH_MODE.get() {
+            match mode {
+                CrashMode::Exit => unsafe { libc::_exit(86) },
+                CrashMode::Abort => std::process::abort(),
+                CrashMode::Kill => unsafe {
+                    libc::raise(libc::SIGKILL);
+                    libc::_exit(87);
+                },
+            }
+        }
         return Err(RevisionError::Invalid(format!(
             "injected publication fault at {point:?}"
         )));
@@ -879,45 +899,6 @@ fn maybe_seed_fault() -> RevisionResult<()> {
 #[cfg(all(not(test), target_os = "linux"))]
 fn maybe_seed_fault() -> RevisionResult<()> {
     maybe_publish_fault(PublishFault::SeedMirrorCreated)
-}
-
-#[cfg(target_os = "linux")]
-fn marker_bytes(generation: u64, state_id: Option<StorageStateId>) -> Vec<u8> {
-    let mut marker = generation.to_string();
-    marker.push(':');
-    match state_id {
-        Some(state_id) => {
-            for byte in state_id {
-                use std::fmt::Write as _;
-                write!(&mut marker, "{byte:02x}").expect("writing to a string cannot fail");
-            }
-        }
-        None => marker.push('-'),
-    }
-    marker.into_bytes()
-}
-
-#[cfg(target_os = "linux")]
-fn ready_marker_matches(path: &Path, generation: u64, state_id: Option<StorageStateId>) -> bool {
-    let Ok(mut marker) = open_nofollow(path, false) else {
-        return false;
-    };
-    if validated_identity(&marker, true).is_err() {
-        return false;
-    }
-    let mut bytes = Vec::new();
-    marker.read_to_end(&mut bytes).is_ok() && bytes == marker_bytes(generation, state_id)
-}
-
-#[cfg(target_os = "linux")]
-fn write_ready_marker(
-    path: &Path,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> RevisionResult<()> {
-    fs::write(path, marker_bytes(generation, state_id))?;
-    open_nofollow(path, false)?.sync_all()?;
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]

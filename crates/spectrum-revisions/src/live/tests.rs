@@ -2,15 +2,16 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Seek, SeekFrom},
-    os::unix::fs::{FileExt, MetadataExt, PermissionsExt, symlink},
+    os::unix::fs::{FileExt, MetadataExt, symlink},
+    process::Command,
 };
 
 use super::*;
+use crate::{Actor, ActorKind, Asset, Payload};
 
 fn bytes_file(path: &Path, bytes: &[u8]) -> File {
     fs::write(path, bytes).unwrap();
-    open_private_writable(path).unwrap()
+    open_nofollow(path, false).unwrap()
 }
 
 #[test]
@@ -24,27 +25,30 @@ fn mirror_diff_counts_growth_shrink_partial_tail_and_sparse_blocks_exactly() {
     let mut mirror_file = bytes_file(&mirror, &baseline);
     baseline[WRITE_BLOCK_BYTES + 9] = 0x22;
     fs::write(&source, &baseline).unwrap();
-    let changed = update_mirror(&source, &mut mirror_file).unwrap();
-    assert_eq!(changed.written_bytes, WRITE_BLOCK_BYTES as u64);
-    assert_eq!(fs::read(&mirror).unwrap(), baseline);
+    let changed = compare_checkpoint(&source, &mut mirror_file).unwrap();
+    assert_eq!(changed.changed_bytes, WRITE_BLOCK_BYTES as u64);
+    assert_eq!(changed.written_bytes, 0);
 
+    fs::write(&mirror, &baseline).unwrap();
     baseline.extend([0x33; 123]);
     fs::write(&source, &baseline).unwrap();
-    let grown = update_mirror(&source, &mut mirror_file).unwrap();
-    assert_eq!(grown.written_bytes, 123);
-    assert_eq!(fs::read(&mirror).unwrap(), baseline);
+    mirror_file = open_nofollow(&mirror, false).unwrap();
+    let grown = compare_checkpoint(&source, &mut mirror_file).unwrap();
+    assert_eq!(grown.changed_bytes, 123);
 
+    fs::write(&mirror, &baseline).unwrap();
     baseline.truncate(WRITE_BLOCK_BYTES + 3);
     fs::write(&source, &baseline).unwrap();
-    let shrunk = update_mirror(&source, &mut mirror_file).unwrap();
-    assert_eq!(shrunk.written_bytes, 0);
-    assert_eq!(mirror_file.metadata().unwrap().len(), baseline.len() as u64);
+    mirror_file = open_nofollow(&mirror, false).unwrap();
+    let shrunk = compare_checkpoint(&source, &mut mirror_file).unwrap();
+    assert_eq!(shrunk.changed_bytes, 0);
 
+    fs::write(&mirror, &baseline).unwrap();
     baseline[WRITE_BLOCK_BYTES] = 0x44;
     fs::write(&source, &baseline).unwrap();
-    let partial = update_mirror(&source, &mut mirror_file).unwrap();
-    assert_eq!(partial.written_bytes, 3);
-    assert_eq!(fs::read(&mirror).unwrap(), baseline);
+    mirror_file = open_nofollow(&mirror, false).unwrap();
+    let partial = compare_checkpoint(&source, &mut mirror_file).unwrap();
+    assert_eq!(partial.changed_bytes, 3);
 
     let sparse_len = 64 * 1024 * 1024;
     let sparse_source = OpenOptions::new()
@@ -58,13 +62,18 @@ fn mirror_diff_counts_growth_shrink_partial_tail_and_sparse_blocks_exactly() {
     sparse_source
         .write_all_at(b"sparse-change", 32 * 1024 * 1024 + 17)
         .unwrap();
-    mirror_file.set_len(0).unwrap();
-    mirror_file.set_len(sparse_len).unwrap();
-    mirror_file.seek(SeekFrom::Start(0)).unwrap();
-    let sparse = update_mirror(&source, &mut mirror_file).unwrap();
-    assert_eq!(sparse.written_bytes, WRITE_BLOCK_BYTES as u64);
-    assert_eq!(fs::read(&source).unwrap(), fs::read(&mirror).unwrap());
-    assert!(mirror_file.metadata().unwrap().blocks() * 512 < sparse_len / 4);
+    let sparse_mirror = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&mirror)
+        .unwrap();
+    sparse_mirror.set_len(sparse_len).unwrap();
+    mirror_file = open_nofollow(&mirror, false).unwrap();
+    let sparse = compare_checkpoint(&source, &mut mirror_file).unwrap();
+    assert_eq!(sparse.changed_bytes, WRITE_BLOCK_BYTES as u64);
+    assert!(sparse_mirror.metadata().unwrap().blocks() * 512 < sparse_len / 4);
 }
 
 #[test]
@@ -74,10 +83,11 @@ fn descriptor_validation_rejects_symlinks_hardlinks_and_replacements() {
     let alias = directory.path().join("alias");
     fs::write(&mirror, b"mirror").unwrap();
     fs::hard_link(&mirror, &alias).unwrap();
-    assert!(open_private_writable(&mirror).is_err());
+    let linked = open_nofollow(&mirror, false).unwrap();
+    assert!(validated_identity(&linked, true).is_err());
     fs::remove_file(&alias).unwrap();
 
-    let descriptor = open_private_writable(&mirror).unwrap();
+    let descriptor = open_nofollow(&mirror, false).unwrap();
     let identity = validated_identity(&descriptor, true).unwrap();
     let replacement = directory.path().join("replacement");
     fs::write(&replacement, b"replacement").unwrap();
@@ -90,96 +100,167 @@ fn descriptor_validation_rejects_symlinks_hardlinks_and_replacements() {
 }
 
 #[test]
-fn canonical_permission_guard_restores_mode_on_error_and_panic() {
+fn hardlink_after_validation_never_receives_candidate_bytes() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("canonical");
-    fs::write(&canonical, b"canonical").unwrap();
-    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o400)).unwrap();
+    let source = directory.path().join("source");
+    let mirror = directory.path().join("mirror");
+    let external = directory.path().join("external");
+    fs::write(&source, b"new candidate bytes").unwrap();
+    fs::write(&mirror, b"old mirror bytes").unwrap();
+    let mut descriptor = open_nofollow(&mirror, false).unwrap();
+    let identity = validated_identity(&descriptor, true).unwrap();
 
-    {
-        let _guard = CanonicalPermissionGuard::make_writable(&canonical).unwrap();
-    }
-    assert_eq!(canonical.metadata().unwrap().mode() & 0o777, 0o400);
-
-    let _ = std::panic::catch_unwind(|| {
-        let _guard = CanonicalPermissionGuard::make_writable(&canonical).unwrap();
-        panic!("injected preparation panic");
-    });
-    assert_eq!(canonical.metadata().unwrap().mode() & 0o777, 0o400);
+    fs::hard_link(&mirror, &external).unwrap();
+    let stats = compare_checkpoint(&source, &mut descriptor).unwrap();
+    assert!(stats.changed_bytes > 0);
+    assert_eq!(stats.written_bytes, 0);
+    assert_eq!(fs::read(&external).unwrap(), b"old mirror bytes");
+    assert!(validate_named_identity(&mirror, identity, true).is_err());
 }
 
 #[test]
-fn every_incremental_crash_phase_leaves_a_complete_old_or_new_project() {
-    let old = vec![0x11; 128 * 1024];
-    let mut new = old.clone();
-    new[WRITE_BLOCK_BYTES + 3] = 0x22;
-    let old_state = Some([0x5a; 16]);
-    let new_state = Some([0x6b; 16]);
-    for fault in [
+fn atomic_marker_replacement_never_follows_a_symlink() {
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("ready");
+    let victim = directory.path().join("victim");
+    fs::write(&victim, b"untouched").unwrap();
+    symlink(&victim, &marker).unwrap();
+
+    write_ready_marker(&marker, 7, Some([0x42; 16])).unwrap();
+    assert_eq!(fs::read(&victim).unwrap(), b"untouched");
+    assert!(marker.symlink_metadata().unwrap().file_type().is_file());
+    assert!(ready_marker_matches(&marker, 7, Some([0x42; 16])));
+}
+
+#[test]
+fn publication_crash_child() {
+    let Ok(canonical) = std::env::var("SPECTRUM_CRASH_CANONICAL") else {
+        return;
+    };
+    let cache = std::env::var("SPECTRUM_CRASH_CACHE").unwrap();
+    let fault = parse_fault(&std::env::var("SPECTRUM_CRASH_FAULT").unwrap());
+    let mode = match std::env::var("SPECTRUM_CRASH_MODE").unwrap().as_str() {
+        "exit" => CrashMode::Exit,
+        "abort" => CrashMode::Abort,
+        "kill" => CrashMode::Kill,
+        other => panic!("unknown crash mode {other}"),
+    };
+    let mut live = LiveRevisionStore::open(Path::new(&canonical), Path::new(&cache)).unwrap();
+    PUBLISH_FAULT.set(Some(fault));
+    PUBLISH_CRASH_MODE.set(Some(mode));
+    live.mutate(|store| store.put_asset("application/x-crash-child", b"survives abrupt death"))
+        .unwrap();
+    panic!("publication fault {fault:?} did not terminate the child");
+}
+
+#[test]
+fn every_incremental_crash_phase_recovers_actual_residual_state() {
+    let faults = [
+        PublishFault::MirrorSynced,
         PublishFault::BackupLinked,
         PublishFault::MarkerRemoved,
-        PublishFault::MirrorSynced,
         PublishFault::CanonicalRenamed,
         PublishFault::BackupRenamed,
         PublishFault::MirrorResynced,
         PublishFault::MarkerCreated,
-    ] {
+    ];
+    for (index, fault) in faults.into_iter().enumerate() {
         let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().join("project.lumen");
         let cache = directory.path().join("cache");
-        fs::create_dir(&cache).unwrap();
-        let destination = directory.path().join("project");
-        let source = cache.join("source");
-        let mirror = cache.join(PUBLISH_MIRROR_FILE);
-        let ready = cache.join(PUBLISH_MIRROR_READY_FILE);
-        fs::write(&destination, &old).unwrap();
-        fs::write(&source, &new).unwrap();
-        fs::write(&mirror, &old).unwrap();
-        write_ready_marker(&ready, 1, old_state).unwrap();
-        let canonical = open_nofollow(&destination, false).unwrap();
-        let metadata = canonical.metadata().unwrap();
-        let base = PublishBase {
-            identity: Some(file_identity(&metadata)),
-            permissions: Some(metadata.permissions()),
-            canonical: Some(canonical),
-            generation: 1,
-            state_id: old_state,
-        };
-
-        PUBLISH_FAULT.set(Some(fault));
-        let result = incremental_publish(&source, &destination, &cache, &base, 2, new_state);
-        PUBLISH_FAULT.set(None);
-        assert!(result.is_err(), "{fault:?} did not inject a failure");
-        let visible = fs::read(&destination).unwrap();
-        assert!(
-            visible == old || visible == new,
-            "{fault:?} exposed a torn project"
-        );
-
-        let visible_is_new = visible == new;
-        let _ = fs::remove_file(cache.join(PUBLISH_BACKUP_FILE));
-        let _ = fs::remove_file(&mirror);
-        let _ = fs::remove_file(&ready);
-        seed_incremental_mirror(
-            &destination,
+        let session = SessionId::new();
+        let (live, info) = LiveRevisionStore::create(
+            &canonical,
             &cache,
-            if visible_is_new { 2 } else { 1 },
-            if visible_is_new { new_state } else { old_state },
-        );
-        let canonical = open_nofollow(&destination, false).unwrap();
-        let metadata = canonical.metadata().unwrap();
-        let recovered_base = PublishBase {
-            identity: Some(file_identity(&metadata)),
-            permissions: Some(metadata.permissions()),
-            canonical: Some(canonical),
-            generation: if visible_is_new { 2 } else { 1 },
-            state_id: if visible_is_new { new_state } else { old_state },
-        };
-        incremental_publish(&source, &destination, &cache, &recovered_base, 2, new_state)
-            .unwrap()
+            NewProject {
+                application_id: "spectrum.crash-test".into(),
+                application_version: "1.0.0".into(),
+                actor: Actor {
+                    id: "crash-test".into(),
+                    display_name: "Crash test".into(),
+                    kind: ActorKind::System,
+                },
+                session_id: session,
+                root_label: Some("Created".into()),
+                track_kind: "test.document".into(),
+                track_label: "Document".into(),
+                initial_snapshots: vec![Payload::new(
+                    crate::Encoding::new("test.snapshot", 1),
+                    vec![0x55; 128 * 1024],
+                )],
+                assets: vec![Asset::new(
+                    "application/x-baseline",
+                    vec![0x44; 1024 * 1024],
+                )],
+            },
+        )
+        .unwrap();
+        let project_cache = cache.join(info.project_id.to_string());
+        if clone_unnamed(live.working_path(), &project_cache).is_err() {
+            return;
+        }
+        drop(live);
+
+        let mode = ["exit", "abort", "kill"][index % 3];
+        let status = Command::new(std::env::current_exe().unwrap())
+            .arg("publication_crash_child")
+            .arg("--nocapture")
+            .env("SPECTRUM_CRASH_CANONICAL", &canonical)
+            .env("SPECTRUM_CRASH_CACHE", &cache)
+            .env("SPECTRUM_CRASH_FAULT", fault_name(fault))
+            .env("SPECTRUM_CRASH_MODE", mode)
+            .status()
             .unwrap();
-        assert_eq!(fs::read(&destination).unwrap(), new);
-        assert!(ready_marker_matches(&ready, 2, new_state));
-        assert_eq!(fs::read(&mirror).unwrap(), new);
+        assert!(!status.success(), "{fault:?} child unexpectedly succeeded");
+
+        let child_asset = Asset::new(
+            "application/x-crash-child",
+            b"survives abrupt death".to_vec(),
+        );
+        let followup = format!("followup-{fault:?}");
+        let followup_asset = Asset::new("application/x-followup", followup.as_bytes().to_vec());
+        let mut recovered = LiveRevisionStore::open(&canonical, &cache).unwrap();
+        assert!(
+            recovered.store().asset(child_asset.id).unwrap().is_some(),
+            "{fault:?} lost the child mutation"
+        );
+        recovered
+            .mutate(|store| store.put_asset("application/x-followup", followup.as_bytes()))
+            .unwrap();
+        drop(recovered);
+
+        let verified =
+            LiveRevisionStore::open(&canonical, &directory.path().join("verification-cache"))
+                .unwrap();
+        assert!(verified.store().asset(child_asset.id).unwrap().is_some());
+        assert!(verified.store().asset(followup_asset.id).unwrap().is_some());
+    }
+}
+
+fn fault_name(fault: PublishFault) -> &'static str {
+    match fault {
+        PublishFault::BackupLinked => "backup-linked",
+        PublishFault::MarkerRemoved => "marker-removed",
+        PublishFault::MirrorSynced => "staged-links",
+        PublishFault::CanonicalRenamed => "canonical-renamed",
+        PublishFault::BackupRenamed => "mirror-renamed",
+        PublishFault::MirrorResynced => "backup-removed",
+        PublishFault::MarkerCreated => "marker-created",
+        PublishFault::SeedMirrorCreated => "seed-mirror-created",
+    }
+}
+
+fn parse_fault(name: &str) -> PublishFault {
+    match name {
+        "backup-linked" => PublishFault::BackupLinked,
+        "marker-removed" => PublishFault::MarkerRemoved,
+        "staged-links" => PublishFault::MirrorSynced,
+        "canonical-renamed" => PublishFault::CanonicalRenamed,
+        "mirror-renamed" => PublishFault::BackupRenamed,
+        "backup-removed" => PublishFault::MirrorResynced,
+        "marker-created" => PublishFault::MarkerCreated,
+        "seed-mirror-created" => PublishFault::SeedMirrorCreated,
+        other => panic!("unknown publication fault {other}"),
     }
 }
 

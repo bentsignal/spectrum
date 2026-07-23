@@ -528,6 +528,32 @@ fn distinct_cache_publishers_detect_same_generation_peer_conflicts() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn read_only_canonical_with_an_inactive_wal_is_prepared_without_chmod() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    let project_id = fixture.live.store().project_info().unwrap().project_id;
+    drop(fixture.live);
+    fs::set_permissions(&fixture.canonical, fs::Permissions::from_mode(0o400)).unwrap();
+    fs::write(sidecar(&fixture.canonical, "-wal"), []).unwrap();
+
+    let reopened = LiveRevisionStore::open(
+        &fixture.canonical,
+        &fixture.directory.path().join("read-only-reopen-cache"),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.canonical.metadata().unwrap().permissions().mode() & 0o777,
+        0o400
+    );
+    assert_eq!(
+        reopened.store().project_info().unwrap().project_id,
+        project_id
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn cross_filesystem_cache_uses_the_full_copy_fallback() {
     use std::os::unix::fs::MetadataExt;
 
