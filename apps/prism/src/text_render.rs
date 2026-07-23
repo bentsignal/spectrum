@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::collections::VecDeque;
 
 use anyhow::{Context, Result, bail};
 use fontdue::Font;
@@ -13,9 +10,12 @@ const MAX_EFFECT_PIXELS: u64 = 4_096 * 4_096;
 const MAX_EFFECT_RADIUS: i32 = 2_048;
 const MAX_EFFECT_OFFSET: i32 = 8_192;
 const MAX_GLYPH_PIXELS: u64 = 4_096 * 4_096;
-const MAX_CACHED_FONTS: usize = 64;
-const MIN_FONT_OUTLINE_SCALE: u32 = 64;
-const MAX_FONT_OUTLINE_SCALE: u32 = 4_096;
+
+#[path = "text_render/font_cache.rs"]
+mod font_cache;
+use font_cache::cached_font;
+#[cfg(test)]
+pub(crate) use font_cache::font_outline_scale;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGeometry {
@@ -106,62 +106,6 @@ pub(crate) fn render_text_region(
     let font = cached_font(font_asset, font_size)?;
     let layout = layout_text(&font, text, font_size, typography)?;
     render_layout_region(&font, &layout, font_size, color, typography, region)
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-enum FontCacheKey {
-    Bundled(u32),
-    Imported(String, u32),
-}
-
-pub(crate) fn font_outline_scale(font_size: f32) -> u32 {
-    if !font_size.is_finite() {
-        return MIN_FONT_OUTLINE_SCALE;
-    }
-    (font_size
-        .ceil()
-        .clamp(MIN_FONT_OUTLINE_SCALE as f32, MAX_FONT_OUTLINE_SCALE as f32) as u32)
-        .next_power_of_two()
-}
-
-fn cached_font(font_asset: Option<&FontAsset>, font_size: f32) -> Result<Arc<Font>> {
-    static CACHE: OnceLock<Mutex<HashMap<FontCacheKey, Arc<Font>>>> = OnceLock::new();
-    let outline_scale = font_outline_scale(font_size);
-    let key = font_asset.map_or(FontCacheKey::Bundled(outline_scale), |font| {
-        FontCacheKey::Imported(font.content_hash.clone(), outline_scale)
-    });
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(font) = cache
-        .lock()
-        .map_err(|_| anyhow::anyhow!("text font cache is unavailable"))?
-        .get(&key)
-        .cloned()
-    {
-        return Ok(font);
-    }
-    let settings = fontdue::FontSettings {
-        scale: outline_scale as f32,
-        ..fontdue::FontSettings::default()
-    };
-    let font = if let Some(asset) = font_asset {
-        Font::from_bytes(asset.bytes()?, settings)
-            .map_err(|error| anyhow::anyhow!("could not load imported font: {error}"))?
-    } else {
-        Font::from_bytes(epaint_default_fonts::UBUNTU_LIGHT, settings)
-            .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?
-    };
-    let font = Arc::new(font);
-    let mut cache = cache
-        .lock()
-        .map_err(|_| anyhow::anyhow!("text font cache is unavailable"))?;
-    if let Some(cached) = cache.get(&key) {
-        return Ok(cached.clone());
-    }
-    if cache.len() >= MAX_CACHED_FONTS && !cache.contains_key(&key) {
-        cache.retain(|key, _| matches!(key, FontCacheKey::Bundled(_)));
-    }
-    cache.insert(key, font.clone());
-    Ok(font)
 }
 
 #[derive(Clone, Copy)]
@@ -762,7 +706,7 @@ mod tests {
         let first = cached_font(Some(&asset), 72.0).unwrap();
         let second = cached_font(Some(&asset), 72.0).unwrap();
         let _ = std::fs::remove_file(path);
-        assert!(Arc::ptr_eq(&first, &second));
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
     }
 
     #[test]

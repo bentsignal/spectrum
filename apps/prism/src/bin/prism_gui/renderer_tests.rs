@@ -58,8 +58,22 @@ fn settled_large_text_is_not_forced_through_the_legacy_2k_cap() {
         ..Default::default()
     };
     let key = LayerVisualKey::new(&layer, 4.0);
-    let settled = required_preview_size(&layer, &key, false, None);
-    let interactive = required_preview_size(&layer, &key, true, None);
+    let settled = required_preview_size(
+        &layer,
+        &key,
+        false,
+        None,
+        MAX_PREVIEW_TEXTURE_SIDE as usize,
+        MAX_PREVIEW_TEXTURE_BYTES,
+    );
+    let interactive = required_preview_size(
+        &layer,
+        &key,
+        true,
+        None,
+        MAX_PREVIEW_TEXTURE_SIDE as usize,
+        MAX_PREVIEW_TEXTURE_BYTES,
+    );
     assert!(settled > 2_048);
     assert_eq!(interactive, 1_024);
 }
