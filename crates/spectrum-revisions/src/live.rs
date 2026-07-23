@@ -21,8 +21,9 @@ mod tests;
 use linux_io::write_ready_marker;
 #[cfg(target_os = "linux")]
 use linux_io::{
-    ExchangeIntent, PrivateDirectory, apply_checkpoint_delta, open_unnamed, prepare_reusable_slot,
+    ExchangeIntent, PrivateDirectory, catch_up_after_bulk, open_unnamed, prepare_reusable_slot,
     publish_unnamed, recover_exchange, remove_private_file, seed_incremental_mirror,
+    update_candidate_slot,
 };
 
 const STORE_FILE: &str = "live.sqlite";
@@ -743,10 +744,13 @@ fn incremental_publish(
         return Ok((None, false));
     }
     remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
-    let mut stats = apply_checkpoint_delta(source, &mirror_file)?;
-    mirror_file.set_permissions(canonical_permissions)?;
-    mirror_file.sync_all()?;
-    directory.validate(PUBLISH_MIRROR_FILE, mirror_identity, true)?;
+    let mut stats = update_candidate_slot(
+        &directory,
+        source,
+        &mirror_file,
+        mirror_identity,
+        canonical_permissions,
+    )?;
     maybe_publish_fault(PublishFault::CandidateSynced)?;
 
     let intent = ExchangeIntent {
@@ -804,19 +808,13 @@ fn incremental_publish(
     directory.sync()?;
     maybe_publish_fault(PublishFault::IntentRemoved)?;
 
-    if stats.changed_bytes >= BULK_CHANGE_CATCH_UP_BYTES
-        && stats.changed_bytes.saturating_mul(4) >= stats.scanned_bytes
-    {
-        let caught_up_slot = directory.open_file(PUBLISH_MIRROR_FILE, true)?;
-        let caught_up_identity = validated_identity(&caught_up_slot, true)?;
-        let catch_up = apply_checkpoint_delta(source, &caught_up_slot)?;
-        caught_up_slot.sync_all()?;
-        directory.validate(PUBLISH_MIRROR_FILE, caught_up_identity, true)?;
-        write_ready_marker(&directory, source_generation, source_state_id)?;
-        stats.scanned_bytes = stats.scanned_bytes.saturating_add(catch_up.scanned_bytes);
-        stats.changed_bytes = stats.changed_bytes.saturating_add(catch_up.changed_bytes);
-        stats.written_bytes = stats.written_bytes.saturating_add(catch_up.written_bytes);
-    }
+    stats = catch_up_after_bulk(
+        &directory,
+        source,
+        stats,
+        source_generation,
+        source_state_id,
+    )?;
 
     stats.incremental = true;
     stats.strategy = PublishStrategy::PageDiffExchange;
