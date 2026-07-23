@@ -1,5 +1,9 @@
 use super::*;
 
+#[path = "renderer_worker.rs"]
+mod worker;
+pub(super) use worker::spawn_layer_render_worker;
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct LayerVisualKey {
     pub(super) kind: LayerKind,
@@ -45,11 +49,20 @@ pub(super) fn desired_layer_visual_key(
     cached: Option<&LayerVisualKey>,
 ) -> LayerVisualKey {
     let mut key = LayerVisualKey::new(layer, display_scale);
-    if interaction_active
-        && matches!(layer.kind, LayerKind::Text { .. })
+    if matches!(layer.kind, LayerKind::Text { .. })
         && let Some(cached) = cached
     {
-        key.text_raster_scale = cached.text_raster_scale;
+        if interaction_active {
+            key.text_raster_scale = cached.text_raster_scale;
+        } else if cached.text_raster_scale == key.text_raster_scale.saturating_mul(2)
+            && text_display_scale_target(layer, display_scale)
+                > key.text_raster_scale as f32 * 0.875
+        {
+            // Keep the higher tier through a narrow dead band while zooming out.
+            // Zooming in still upgrades immediately, so settled text is never
+            // magnified beyond its requested source resolution.
+            key.text_raster_scale = cached.text_raster_scale;
+        }
     }
     key
 }
@@ -102,6 +115,7 @@ pub(super) struct LayerVisualEntry {
     source_geometry: LayerSourceGeometry,
     texture_visual_bounds: Rect,
     max_size: u32,
+    texture_bytes: u64,
 }
 
 pub(super) struct LayerRenderRequest {
@@ -110,6 +124,7 @@ pub(super) struct LayerRenderRequest {
     font_asset: Option<prism_core::FontAsset>,
     key: LayerVisualKey,
     max_size: u32,
+    resident_byte_budget: u64,
 }
 
 pub(super) struct LayerRenderResult {
@@ -117,7 +132,13 @@ pub(super) struct LayerRenderResult {
     layer_id: u64,
     key: LayerVisualKey,
     max_size: u32,
+    resident_byte_budget: u64,
     result: Result<(image::DynamicImage, LayerSourceGeometry, Rect), String>,
+}
+
+pub(super) enum LayerRenderMessage {
+    Render(Box<LayerRenderRequest>),
+    Prune(HashSet<(u64, u64)>),
 }
 
 pub(super) fn reuse_cached_visual_during_interaction(
@@ -131,17 +152,61 @@ pub(super) fn reuse_cached_visual_during_interaction(
         && cached_max_size.is_some_and(|max_size| max_size >= required_max_size)
 }
 
+fn make_texture_budget_room(
+    visuals: &mut HashMap<u64, LayerVisualEntry>,
+    replacement_id: u64,
+    replacement_bytes: u64,
+) {
+    visuals.remove(&replacement_id);
+    while visuals
+        .values()
+        .map(|entry| entry.texture_bytes)
+        .sum::<u64>()
+        .saturating_add(replacement_bytes)
+        > MAX_PREVIEW_TEXTURE_RESIDENT_BYTES
+    {
+        let Some(largest) = visuals
+            .iter()
+            .max_by_key(|(_, entry)| entry.texture_bytes)
+            .map(|(id, _)| *id)
+        else {
+            break;
+        };
+        visuals.remove(&largest);
+    }
+}
+
 impl PrismApp {
     pub(super) fn reset_canvas_cache(&mut self) {
         self.layer_visuals.clear();
         self.layer_source_overrides.clear();
+        self.text_source_geometries.clear();
         self.layer_visual_dirty.clear();
         self.layer_render_pending.clear();
         self.preview_error = None;
         self.composite_preview.reset();
+        self.sync_layer_render_cache_scope();
+    }
+
+    pub(super) fn sync_layer_render_cache_scope(&mut self) {
+        let active = self
+            .workspace
+            .document
+            .layers
+            .iter()
+            .map(|layer| (self.active_tab_id, layer.id))
+            .collect::<HashSet<_>>();
+        if active == self.layer_render_active_cache_ids {
+            return;
+        }
+        self.layer_render_active_cache_ids = active.clone();
+        let _ = self
+            .layer_render_request_sender
+            .send(LayerRenderMessage::Prune(active));
     }
 
     pub(super) fn ensure_layer_visuals(&mut self, context: &egui::Context, display_scale: f32) {
+        let runtime_max_texture_side = context.input(|input| input.max_texture_side);
         while let Ok(result) = self.layer_render_receiver.try_recv() {
             self.layer_render_in_flight = false;
             if result.tab_id != self.active_tab_id {
@@ -169,6 +234,27 @@ impl PrismApp {
             match result.result {
                 Ok((image, source_geometry, texture_visual_bounds)) => {
                     let rgba = image.to_rgba8();
+                    let texture_bytes = preview_texture_resident_bytes(
+                        rgba.width(),
+                        rgba.height(),
+                        result.key.colored_shadow_mask,
+                    );
+                    if !preview_upload_allowed(
+                        rgba.width(),
+                        rgba.height(),
+                        runtime_max_texture_side,
+                        result.resident_byte_budget,
+                        result.key.colored_shadow_mask,
+                    ) {
+                        self.preview_error =
+                            Some("Layer preview exceeds the bounded texture budget".into());
+                        continue;
+                    }
+                    make_texture_budget_room(
+                        &mut self.layer_visuals,
+                        result.layer_id,
+                        texture_bytes,
+                    );
                     let size = [rgba.width() as usize, rgba.height() as usize];
                     let pixels = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
                     let texture = context.load_texture(
@@ -185,6 +271,7 @@ impl PrismApp {
                             TextureOptions::LINEAR,
                         )
                     });
+                    let is_text = matches!(&result.key.kind, LayerKind::Text { .. });
                     self.layer_visuals.insert(
                         result.layer_id,
                         LayerVisualEntry {
@@ -194,8 +281,13 @@ impl PrismApp {
                             source_geometry,
                             texture_visual_bounds,
                             max_size: result.max_size,
+                            texture_bytes,
                         },
                     );
+                    if is_text {
+                        self.text_source_geometries
+                            .insert(result.layer_id, source_geometry);
+                    }
                     self.layer_source_overrides.remove(&result.layer_id);
                     self.layer_visual_dirty.remove(&result.layer_id);
                     self.preview_error = None;
@@ -212,6 +304,9 @@ impl PrismApp {
             .map(|layer| layer.id)
             .collect();
         self.layer_visuals.retain(|id, _| active_ids.contains(id));
+        self.text_source_geometries
+            .retain(|id, _| active_ids.contains(id));
+        self.sync_layer_render_cache_scope();
         let visible_ids: HashSet<_> = self
             .workspace
             .document
@@ -224,6 +319,14 @@ impl PrismApp {
             .retain(|id, _| visible_ids.contains(id));
 
         let interaction_active = self.workspace.interaction_active();
+        let visible_texture_layers = self
+            .workspace
+            .document
+            .layers
+            .iter()
+            .filter(|layer| layer.visible && solid_preview(layer).is_none())
+            .count();
+        let layer_byte_budget = per_layer_texture_bytes(visible_texture_layers);
         for layer in self
             .workspace
             .document
@@ -231,13 +334,38 @@ impl PrismApp {
             .iter()
             .filter(|layer| layer.visible)
         {
-            let key = desired_layer_visual_key(
+            let source_geometry = self.text_source_geometries.get(layer.id).copied();
+            let scheduling = self.text_source_geometries.schedule_layer(
                 layer,
-                display_scale,
                 interaction_active,
-                self.layer_visuals.get(&layer.id).map(|entry| &entry.key),
+                self.layer_visuals.contains_key(&layer.id),
+                self.layer_visual_dirty.contains(&layer.id),
+                || {
+                    let key = desired_layer_visual_key(
+                        layer,
+                        display_scale,
+                        interaction_active,
+                        self.layer_visuals.get(&layer.id).map(|entry| &entry.key),
+                    );
+                    let font_asset = self.workspace.document.font_for_layer(layer);
+                    let required_max_size = required_preview_size(
+                        layer,
+                        &key,
+                        interaction_active,
+                        source_geometry,
+                        runtime_max_texture_side,
+                        layer_byte_budget,
+                    );
+                    (key, font_asset, required_max_size)
+                },
             );
-            let required_max_size = required_preview_size(layer, &key, interaction_active);
+            let (key, font_asset, required_max_size) = match scheduling {
+                LayerPreviewSchedule::ReuseCachedTextVisual => {
+                    self.layer_render_pending.remove(&layer.id);
+                    continue;
+                }
+                LayerPreviewSchedule::Resolve(resolved) => resolved,
+            };
             if reuse_cached_visual_during_interaction(
                 self.layer_visuals
                     .get(&layer.id)
@@ -272,6 +400,7 @@ impl PrismApp {
                         )),
                         texture_visual_bounds: Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                         max_size: u32::MAX,
+                        texture_bytes: 0,
                     },
                 );
                 self.layer_visual_dirty.remove(&layer.id);
@@ -282,9 +411,10 @@ impl PrismApp {
                     LayerRenderRequest {
                         tab_id: self.active_tab_id,
                         layer: layer.clone(),
-                        font_asset: self.workspace.document.font_for_layer(layer).cloned(),
+                        font_asset: font_asset.cloned(),
                         key,
                         max_size: required_max_size,
+                        resident_byte_budget: layer_byte_budget,
                     },
                 );
             }
@@ -300,7 +430,11 @@ impl PrismApp {
                 && let Some(request) = self.layer_render_pending.remove(&id)
             {
                 self.layer_render_in_flight = true;
-                if self.layer_render_request_sender.send(request).is_err() {
+                if self
+                    .layer_render_request_sender
+                    .send(LayerRenderMessage::Render(Box::new(request)))
+                    .is_err()
+                {
                     self.layer_render_in_flight = false;
                     self.preview_error = Some("Layer preview worker stopped".into());
                 }
@@ -319,6 +453,13 @@ impl PrismApp {
             .layer_visuals
             .get(&layer.id)
             .map(|entry| (&entry.key, entry.source_geometry));
+        let cached_text = self.text_source_geometries.get(layer.id).copied();
+        if matches!(layer.kind, LayerKind::Text { .. })
+            && source_override.is_none()
+            && cached.is_none()
+        {
+            return cached_text;
+        }
         current_layer_source_geometry(
             layer,
             source_override,
@@ -326,140 +467,6 @@ impl PrismApp {
             self.workspace.document.font_for_layer(layer),
         )
     }
-}
-
-struct CachedLayerBase {
-    kind: LayerKind,
-    stroke: ShapeStroke,
-    shape_fill: Option<prism_core::ShapeFill>,
-    pixel_mask_identity: Option<[u8; 32]>,
-    max_size: u32,
-    shape_raster_scale: [u32; 2],
-    image: image::DynamicImage,
-}
-
-pub(super) fn spawn_layer_render_worker(
-    receiver: Receiver<LayerRenderRequest>,
-    sender: Sender<LayerRenderResult>,
-    repaint: egui::Context,
-) {
-    std::thread::spawn(move || {
-        let mut bases: HashMap<(u64, u64), CachedLayerBase> = HashMap::new();
-        while let Ok(request) = receiver.recv() {
-            let cache_id = (request.tab_id, request.layer.id);
-            let mut render_layer = request.layer.clone();
-            if let LayerKind::Text {
-                font_size,
-                typography,
-                ..
-            } = &mut render_layer.kind
-            {
-                *font_size *= request.key.text_raster_scale as f32;
-                typography.scale_for_raster(request.key.text_raster_scale as f32);
-            }
-            let texture_visual_bounds = if matches!(render_layer.kind, LayerKind::Path { .. }) {
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))
-            } else {
-                source_geometry_before_preview(&render_layer, request.font_asset.as_ref())
-                    .map(normalized_visual_bounds)
-                    .unwrap_or_else(|| Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)))
-            };
-            let cached = bases.get(&cache_id).filter(|cached| {
-                cached.kind == render_layer.kind
-                    && cached.stroke == render_layer.stroke
-                    && cached.shape_fill == render_layer.shape_fill
-                    && cached.pixel_mask_identity
-                        == render_layer
-                            .pixel_mask
-                            .as_ref()
-                            .map(prism_core::PixelMask::identity)
-                    && cached.shape_raster_scale == request.key.shape_raster_scale
-                    && cached.max_size >= request.max_size
-            });
-            let paint_final = matches!(render_layer.kind, LayerKind::Paint { .. });
-            let base = if paint_final {
-                prism_core::render_layer_preview_scaled_with_font(
-                    &render_layer,
-                    Some(request.max_size),
-                    [1.0; 2],
-                    request.font_asset.as_ref(),
-                )
-            } else if let Some(cached) = cached {
-                Ok(cached.image.clone())
-            } else {
-                prism_core::render_layer_base_scaled_with_font(
-                    &render_layer,
-                    Some(request.max_size),
-                    [
-                        request.key.shape_raster_scale[0] as f32,
-                        request.key.shape_raster_scale[1] as f32,
-                    ],
-                    request.font_asset.as_ref(),
-                )
-                .inspect(|image| {
-                    bases.insert(
-                        cache_id,
-                        CachedLayerBase {
-                            kind: render_layer.kind.clone(),
-                            stroke: render_layer.stroke,
-                            shape_fill: render_layer.shape_fill.clone(),
-                            pixel_mask_identity: render_layer
-                                .pixel_mask
-                                .as_ref()
-                                .map(prism_core::PixelMask::identity),
-                            max_size: request.max_size,
-                            shape_raster_scale: request.key.shape_raster_scale,
-                            image: image.clone(),
-                        },
-                    );
-                })
-            };
-            let source_geometry =
-                source_geometry_before_preview(&request.layer, request.font_asset.as_ref());
-            let result = base
-                .and_then(|image| {
-                    if paint_final {
-                        return Ok(image);
-                    }
-                    let mut image = spectrum_imaging::render_image(
-                        image,
-                        request.layer.adjustments.clone(),
-                        spectrum_imaging::RenderOptions {
-                            max_size: Some(request.max_size),
-                        },
-                    )
-                    .to_rgba8();
-                    let (width, height) = image.dimensions();
-                    prism_core::apply_vector_mask_to_image(
-                        &mut image,
-                        request.layer.vector_mask.as_ref(),
-                        width,
-                        height,
-                        0,
-                        0,
-                    )?;
-                    Ok(image::DynamicImage::ImageRgba8(image))
-                })
-                .map(|image| {
-                    let geometry = source_geometry.unwrap_or_else(|| {
-                        LayerSourceGeometry::full(Vec2::new(
-                            image.width() as f32,
-                            image.height() as f32,
-                        ))
-                    });
-                    (image, geometry, texture_visual_bounds)
-                })
-                .map_err(|error| format!("{error:#}"));
-            let _ = sender.send(LayerRenderResult {
-                tab_id: request.tab_id,
-                layer_id: request.layer.id,
-                key: request.key,
-                max_size: request.max_size,
-                result,
-            });
-            repaint.request_repaint();
-        }
-    });
 }
 
 fn normalized_visual_bounds(geometry: LayerSourceGeometry) -> Rect {
@@ -521,24 +528,56 @@ pub(super) fn source_geometry_before_preview(
 }
 
 fn preview_text_scale(layer: &Layer, zoom: f32) -> u32 {
-    if !matches!(layer.kind, LayerKind::Text { .. }) {
-        return 1;
-    }
-    let target = layer
+    prism_core::recommended_text_raster_scale(layer, zoom) as u32
+}
+
+fn text_display_scale_target(layer: &Layer, display_scale: f32) -> f32 {
+    layer
         .transform
         .scale_x
         .abs()
         .max(layer.transform.scale_y.abs())
-        * zoom.max(0.1);
-    (target.max(1.0).ceil() as u32).next_power_of_two().min(16)
+        * display_scale.max(0.1)
 }
 
-fn required_preview_size(layer: &Layer, key: &LayerVisualKey, interaction_active: bool) -> u32 {
+fn required_preview_size(
+    layer: &Layer,
+    key: &LayerVisualKey,
+    interaction_active: bool,
+    source_geometry: Option<LayerSourceGeometry>,
+    runtime_max_texture_side: usize,
+    layer_byte_budget: u64,
+) -> u32 {
     if let Some((width, height)) = prism_core::shape_dimensions(layer) {
-        return width
-            .saturating_mul(key.shape_raster_scale[0])
-            .max(height.saturating_mul(key.shape_raster_scale[1]))
-            .clamp(1, 8_192);
+        return bounded_preview_max_size(
+            width.saturating_mul(key.shape_raster_scale[0]),
+            height.saturating_mul(key.shape_raster_scale[1]),
+            1,
+            runtime_max_texture_side,
+            resident_texture_copies(key.colored_shadow_mask),
+            layer_byte_budget,
+        );
+    }
+    if matches!(layer.kind, LayerKind::Text { .. }) {
+        let (width, height) = source_geometry.map_or((2_048, 2_048), |geometry| {
+            (
+                geometry.size.x.ceil().max(1.0) as u32,
+                geometry.size.y.ceil().max(1.0) as u32,
+            )
+        });
+        let settled = bounded_preview_max_size(
+            width,
+            height,
+            key.text_raster_scale,
+            runtime_max_texture_side,
+            resident_texture_copies(key.colored_shadow_mask),
+            layer_byte_budget,
+        );
+        return if interaction_active {
+            settled.min(1_024)
+        } else {
+            settled
+        };
     }
     if interaction_active { 1024 } else { 2048 }
 }

@@ -643,13 +643,31 @@ impl LumenApp {
         if self.terminal.visible() {
             return;
         }
-        if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
-            if context.input(|input| input.modifiers.shift) {
-                self.move_project();
-            } else {
-                self.status = "Every completed action is already saved".into();
-                self.error = false;
-            }
+        #[cfg(not(target_os = "macos"))]
+        if context.input(|input| {
+            input.key_pressed(egui::Key::I)
+                && catalog_shortcut_action(input.modifiers, egui::Key::I)
+                    == Some(CatalogShortcutAction::ImportPhotos)
+        }) {
+            self.import_dialog();
+            return;
+        }
+        #[cfg(not(target_os = "macos"))]
+        if context.input(|input| {
+            input.key_pressed(egui::Key::M)
+                && catalog_shortcut_action(input.modifiers, egui::Key::M)
+                    == Some(CatalogShortcutAction::MoveCatalog)
+        }) {
+            self.move_project();
+            return;
+        }
+        if context.input(|input| {
+            input.key_pressed(egui::Key::S)
+                && catalog_shortcut_action(input.modifiers, egui::Key::S)
+                    == Some(CatalogShortcutAction::AlreadySaved)
+        }) {
+            self.status = "Every completed action is already saved".into();
+            self.error = false;
         }
         #[cfg(not(target_os = "macos"))]
         if context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::H)) {
@@ -752,6 +770,28 @@ impl LumenApp {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CatalogShortcutAction {
+    ImportPhotos,
+    MoveCatalog,
+    AlreadySaved,
+}
+
+fn catalog_shortcut_action(
+    modifiers: egui::Modifiers,
+    key: egui::Key,
+) -> Option<CatalogShortcutAction> {
+    if !modifiers.command {
+        return None;
+    }
+    match (key, modifiers.shift) {
+        (egui::Key::I, false) => Some(CatalogShortcutAction::ImportPhotos),
+        (egui::Key::M, true) => Some(CatalogShortcutAction::MoveCatalog),
+        (egui::Key::S, false) => Some(CatalogShortcutAction::AlreadySaved),
+        _ => None,
+    }
+}
+
 fn local_session_id() -> anyhow::Result<spectrum_revisions::SessionId> {
     let directory = eframe::storage_dir("Spectrum")
         .ok_or_else(|| anyhow::anyhow!("Spectrum could not locate its local application folder"))?;
@@ -816,5 +856,37 @@ fn safe_project_stem(name: &str) -> String {
         "Untitled shoot".into()
     } else {
         stem.into()
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_shortcuts_give_move_one_owner_and_keep_plain_save_informational() {
+        let command = egui::Modifiers {
+            command: true,
+            ..Default::default()
+        };
+        let command_shift = egui::Modifiers {
+            command: true,
+            shift: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            catalog_shortcut_action(command_shift, egui::Key::M),
+            Some(CatalogShortcutAction::MoveCatalog)
+        );
+        assert_eq!(
+            catalog_shortcut_action(command, egui::Key::S),
+            Some(CatalogShortcutAction::AlreadySaved)
+        );
+        assert_eq!(
+            catalog_shortcut_action(command_shift, egui::Key::S),
+            None,
+            "Shift-S must not retain a hidden Move Catalog binding"
+        );
     }
 }

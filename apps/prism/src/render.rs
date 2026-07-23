@@ -943,7 +943,10 @@ mod text_tests {
     fn glyph_layout_does_not_discard_descender_pixels() {
         let font = Font::from_bytes(
             epaint_default_fonts::UBUNTU_LIGHT,
-            fontdue::FontSettings::default(),
+            fontdue::FontSettings {
+                scale: crate::text_render::font_outline_scale(72.0) as f32,
+                ..fontdue::FontSettings::default()
+            },
         )
         .unwrap();
         let (_, glyph) = font.rasterize('g', 72.0);

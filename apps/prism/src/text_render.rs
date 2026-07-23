@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::collections::VecDeque;
 
 use anyhow::{Context, Result, bail};
 use fontdue::Font;
@@ -13,7 +10,12 @@ const MAX_EFFECT_PIXELS: u64 = 4_096 * 4_096;
 const MAX_EFFECT_RADIUS: i32 = 2_048;
 const MAX_EFFECT_OFFSET: i32 = 8_192;
 const MAX_GLYPH_PIXELS: u64 = 4_096 * 4_096;
-const MAX_CACHED_FONTS: usize = 64;
+
+#[path = "text_render/font_loader.rs"]
+mod font_loader;
+#[cfg(test)]
+pub(crate) use font_loader::font_outline_scale;
+use font_loader::load_font;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGeometry {
@@ -64,7 +66,7 @@ pub fn measure_text_geometry_with_typography(
     typography: &TextTypography,
     font_asset: Option<&FontAsset>,
 ) -> Result<TextGeometry> {
-    let font = cached_font(font_asset)?;
+    let font = load_font(font_asset, font_size)?;
     Ok(layout_text(&font, text, font_size, typography)?.geometry())
 }
 
@@ -75,7 +77,7 @@ pub(crate) fn render_text(
     typography: &TextTypography,
     font_asset: Option<&FontAsset>,
 ) -> Result<RgbaImage> {
-    let font = cached_font(font_asset)?;
+    let font = load_font(font_asset, font_size)?;
     let layout = layout_text(&font, text, font_size, typography)?;
     validate_effect_surface(&layout, typography)?;
     render_layout_region(
@@ -101,49 +103,9 @@ pub(crate) fn render_text_region(
     font_asset: Option<&FontAsset>,
     region: RenderRegion,
 ) -> Result<RgbaImage> {
-    let font = cached_font(font_asset)?;
+    let font = load_font(font_asset, font_size)?;
     let layout = layout_text(&font, text, font_size, typography)?;
     render_layout_region(&font, &layout, font_size, color, typography, region)
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-enum FontCacheKey {
-    Bundled,
-    Imported(String),
-}
-
-fn cached_font(font_asset: Option<&FontAsset>) -> Result<Arc<Font>> {
-    static CACHE: OnceLock<Mutex<HashMap<FontCacheKey, Arc<Font>>>> = OnceLock::new();
-    let key = font_asset.map_or(FontCacheKey::Bundled, |font| {
-        FontCacheKey::Imported(font.content_hash.clone())
-    });
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(font) = cache
-        .lock()
-        .map_err(|_| anyhow::anyhow!("text font cache is unavailable"))?
-        .get(&key)
-        .cloned()
-    {
-        return Ok(font);
-    }
-    let font = if let Some(asset) = font_asset {
-        Font::from_bytes(asset.bytes()?, fontdue::FontSettings::default())
-            .map_err(|error| anyhow::anyhow!("could not load imported font: {error}"))?
-    } else {
-        Font::from_bytes(
-            epaint_default_fonts::UBUNTU_LIGHT,
-            fontdue::FontSettings::default(),
-        )
-        .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?
-    };
-    let font = Arc::new(font);
-    let mut cache = cache
-        .lock()
-        .map_err(|_| anyhow::anyhow!("text font cache is unavailable"))?;
-    if cache.len() >= MAX_CACHED_FONTS && !cache.contains_key(&key) {
-        cache.retain(|key, _| matches!(key, FontCacheKey::Bundled));
-    }
-    Ok(cache.entry(key).or_insert_with(|| font.clone()).clone())
 }
 
 #[derive(Clone, Copy)]
@@ -738,13 +700,37 @@ mod tests {
     }
 
     #[test]
-    fn parsed_imported_fonts_are_reused_by_content_hash() {
+    fn imported_fonts_are_loaded_ephemerally_from_verified_bytes() {
         let path = temporary_font("cache");
         let asset = FontAsset::import(7, &path).unwrap();
-        let first = cached_font(Some(&asset)).unwrap();
-        let second = cached_font(Some(&asset)).unwrap();
+        let first = load_font(Some(&asset), 72.0).unwrap();
+        let second = load_font(Some(&asset), 72.0).unwrap();
         let _ = std::fs::remove_file(path);
-        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.file_hash(), second.file_hash());
+    }
+
+    #[test]
+    fn outline_quality_uses_bounded_power_of_two_tiers() {
+        assert_eq!(font_outline_scale(4.0), 64);
+        assert_eq!(font_outline_scale(64.0), 64);
+        assert_eq!(font_outline_scale(64.1), 128);
+        assert_eq!(font_outline_scale(768.0), 1_024);
+        assert_eq!(font_outline_scale(16_000.0), 4_096);
+        assert_eq!(font_outline_scale(f32::NAN), 64);
+    }
+
+    #[test]
+    fn large_curves_match_high_resolution_oracles_for_bundled_and_imported_fonts() {
+        assert_large_curve_matches_oracle(None, epaint_default_fonts::UBUNTU_LIGHT);
+
+        let imported = include_bytes!(
+            "../../../crates/spectrum-fonts/tests/fonts/noto-sans-static-source.ttf"
+        );
+        let path = temporary_font_bytes("large-curve-oracle", imported);
+        let asset = FontAsset::import(17, &path).unwrap();
+        let bytes = asset.bytes().unwrap();
+        assert_large_curve_matches_oracle(Some(&asset), &bytes);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -804,6 +790,10 @@ mod tests {
     }
 
     fn temporary_font(label: &str) -> PathBuf {
+        temporary_font_bytes(label, epaint_default_fonts::HACK_REGULAR)
+    }
+
+    fn temporary_font_bytes(label: &str, bytes: &[u8]) -> PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -812,7 +802,36 @@ mod tests {
         let path = std::fs::canonicalize(&temporary_root)
             .unwrap_or(temporary_root)
             .join(format!("prism-{label}-{stamp}.ttf"));
-        std::fs::write(&path, epaint_default_fonts::HACK_REGULAR).unwrap();
+        std::fs::write(&path, bytes).unwrap();
         path
+    }
+
+    fn assert_large_curve_matches_oracle(font_asset: Option<&FontAsset>, bytes: &[u8]) {
+        let font_size = 768.0;
+        let actual_font = load_font(font_asset, font_size).unwrap();
+        let (_, actual) = actual_font.rasterize('S', font_size);
+        let oracle_font = Font::from_bytes(
+            bytes,
+            fontdue::FontSettings {
+                scale: font_outline_scale(font_size) as f32,
+                ..fontdue::FontSettings::default()
+            },
+        )
+        .unwrap();
+        let (_, oracle) = oracle_font.rasterize('S', font_size);
+        assert_eq!(actual, oracle);
+
+        let low_detail_font = Font::from_bytes(bytes, fontdue::FontSettings::default()).unwrap();
+        let (_, low_detail) = low_detail_font.rasterize('S', font_size);
+        assert_eq!(actual.len(), low_detail.len());
+        let changed_pixels = actual
+            .iter()
+            .zip(low_detail)
+            .filter(|(actual, low_detail)| actual != &low_detail)
+            .count();
+        assert!(
+            changed_pixels > 1_000,
+            "large curved glyph should materially differ from fontdue's 40 px outline tier"
+        );
     }
 }
