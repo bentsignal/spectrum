@@ -2,7 +2,11 @@ use std::{
     fs::{self, File, FileTimes},
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    thread,
     time::{Duration, SystemTime},
 };
 
@@ -359,6 +363,141 @@ fn deterministic_lru_uses_access_mtime_then_key() {
     assert!(entry_path(&cache_root, identities[3].key()).exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn child_spawn_cannot_inherit_a_live_cache_maintenance_lease() {
+    use std::os::unix::process::CommandExt;
+
+    let directory = TestDirectory::new("fork-inherited-maintenance");
+    let cache_root = directory.path().join("cache");
+    let seed_source = directory.path().join("seed.webp");
+    let first_source = directory.path().join("first.webp");
+    let second_source = directory.path().join("second.webp");
+    write_source(&seed_source, 30);
+    write_source(&first_source, 31);
+    write_source(&second_source, 32);
+    let cache = DerivedBackingCache::new(&cache_root, DerivedBackingLimits::default());
+    let seed_identity = cache.identify(&seed_source).unwrap();
+    let first_identity = cache.identify(&first_source).unwrap();
+    let second_identity = cache.identify(&second_source).unwrap();
+    drop(prepare_ready(&cache, &seed_source));
+    let seed_access = entry_path(&cache_root, seed_identity.key()).join(".access");
+    let seed_access_before = fs::read(&seed_access).unwrap();
+    let seed_access_mtime_before = fs::metadata(&seed_access).unwrap().modified().unwrap();
+
+    let (worker, child) =
+        crate::raster_backing_cache::prepare::with_full_raster_decode_permit_for_test(|| {
+            let worker_root = cache_root.clone();
+            let worker_source = first_source.clone();
+            let worker = thread::spawn(move || {
+                DerivedBackingCache::new(worker_root, DerivedBackingLimits::default())
+                    .prepare(&worker_source)
+            });
+
+            let temporary = wait_for_cache_temporary(&cache_root);
+            assert!(temporary.is_dir());
+            assert!(!entry_path(&cache_root, first_identity.key()).exists());
+            assert!(matches!(
+                cache.prepare(&second_source).unwrap(),
+                PrepareDerivedBacking::InProgress(_)
+            ));
+            assert!(temporary.is_dir(), "sibling prepare scavenged a live build");
+            assert_eq!(fs::read(&seed_access).unwrap(), seed_access_before);
+            assert_eq!(
+                fs::metadata(&seed_access).unwrap().modified().unwrap(),
+                seed_access_mtime_before,
+                "sibling prepare changed live eviction metadata"
+            );
+
+            let (spawn_started_tx, spawn_started_rx) = mpsc::channel();
+            let child = thread::spawn(move || {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command.args([
+                    "--exact",
+                    "raster_backing_eviction_tests::cache_spawn_exec_sentinel",
+                ]);
+                // Keep the forked child alive before exec long enough to expose
+                // any inherited advisory lock descriptor deterministically.
+                unsafe {
+                    command.pre_exec(|| {
+                        libc::usleep(250_000);
+                        Ok(())
+                    });
+                }
+                spawn_started_tx.send(()).unwrap();
+                let mut child =
+                    crate::raster_backing_cache::spawn_cache_test_child(&mut command).unwrap();
+                child.wait().unwrap()
+            });
+            spawn_started_rx.recv().unwrap();
+            thread::sleep(Duration::from_millis(50));
+
+            assert!(temporary.is_dir(), "sibling spawn touched a live build");
+            assert!(
+                fs::read_dir(version_root(&cache_root))
+                    .unwrap()
+                    .all(|entry| !entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".evict-")),
+                "sibling spawn exposed live eviction metadata"
+            );
+            (worker, child)
+        });
+
+    let first = worker.join().unwrap().unwrap();
+    assert!(matches!(
+        first,
+        PrepareDerivedBacking::Ready { created: true, .. }
+    ));
+    drop(first);
+
+    let second = cache.prepare(&second_source).unwrap();
+    assert!(
+        matches!(second, PrepareDerivedBacking::Ready { created: true, .. }),
+        "a forked sibling inherited an unrelated live cache lease"
+    );
+    drop(second);
+    assert!(child.join().unwrap().success());
+    assert!(entry_path(&cache_root, seed_identity.key()).is_dir());
+    assert!(entry_path(&cache_root, first_identity.key()).is_dir());
+    assert!(entry_path(&cache_root, second_identity.key()).is_dir());
+    assert!(
+        fs::read_dir(version_root(&cache_root))
+            .unwrap()
+            .all(|entry| {
+                let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+                !name.starts_with(".tmp-") && !name.starts_with(".evict-")
+            })
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_spawn_exec_sentinel() {}
+
+fn wait_for_cache_temporary(root: &Path) -> PathBuf {
+    // A whole-library stress run can have another cache test between this
+    // worker and the CPU for several seconds. This waits only for a test hook;
+    // production lock acquisition remains strictly nonblocking.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(entries) = fs::read_dir(version_root(root)) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(".tmp-") {
+                    return entry.path();
+                }
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cache worker did not publish its live temporary in time"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 #[test]
 fn retained_reader_prevents_eviction_until_drop() {
     let directory = TestDirectory::new("retained-reader");
@@ -539,7 +678,8 @@ fn cross_process_reader_lease_blocks_eviction() {
 
     let run_child = |expect_ready: bool| {
         let _ = fs::remove_file(&marker);
-        let status = Command::new(std::env::current_exe().unwrap())
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--exact",
                 "raster_backing_eviction_tests::cross_process_reader_lease_blocks_eviction",
@@ -550,8 +690,10 @@ fn cross_process_reader_lease_blocks_eviction() {
             .env(CHILD_LIMIT, entry_bytes.to_string())
             .env(CHILD_EXPECT_READY, if expect_ready { "1" } else { "0" })
             .env(CHILD_MARKER, &marker)
-            .env(CHILD_MODE, CHILD_MODE_READER_LEASE)
-            .status()
+            .env(CHILD_MODE, CHILD_MODE_READER_LEASE);
+        let status = crate::raster_backing_cache::spawn_cache_test_child(&mut command)
+            .unwrap()
+            .wait()
             .unwrap();
         assert!(status.success());
         assert_eq!(fs::read(&marker).unwrap(), b"ran");
