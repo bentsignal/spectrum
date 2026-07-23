@@ -63,9 +63,15 @@ pub(super) fn benchmark(
             Workspace::create_durable(project, &catalog_path, actor.clone(), session)?;
 
         let mut command_samples = Vec::with_capacity(12);
+        let mut open_samples = Vec::with_capacity(12);
+        let mut execute_samples = Vec::with_capacity(12);
+        let mut publication_bytes = Vec::with_capacity(12);
+        let mut incremental_publications = 0_usize;
         for iteration in 0..12 {
             let started = Instant::now();
+            let open_started = Instant::now();
             let mut invocation = Workspace::open_as(&catalog_path, actor.clone(), session)?;
+            open_samples.push(open_started.elapsed());
             let mut adjustments = invocation.project.photo(1)?.adjustments.clone();
             let y = if iteration % 2 == 0 { 0.42 } else { 0.58 };
             adjustments.curves.master = ToneCurve {
@@ -75,7 +81,13 @@ pub(super) fn benchmark(
                     CurvePoint { x: 1.0, y: 1.0 },
                 ],
             };
+            let execute_started = Instant::now();
             invocation.execute(Command::SetAdjustments { id: 1, adjustments })?;
+            execute_samples.push(execute_started.elapsed());
+            if let Some(stats) = invocation.last_publish_stats() {
+                incremental_publications += usize::from(stats.incremental);
+                publication_bytes.push(stats.written_bytes);
+            }
             command_samples.push(started.elapsed());
             workspace = invocation;
         }
@@ -125,13 +137,25 @@ pub(super) fn benchmark(
         let export_duration = started.elapsed();
         let export_size = fs::metadata(&export_path)?.len();
 
-        let command = latency_metric(
+        let mut command = latency_metric(
             "tone_curve_command",
             "Portable project load, core command, and atomic 24 MP project publication",
             &command_samples,
             50.0,
             profile.command_budget_ms(),
         );
+        command["phases"] = json!({
+            "portable_open": latency_distribution(&open_samples),
+            "core_command_and_publication": latency_distribution(&execute_samples),
+        });
+        publication_bytes.sort_unstable();
+        command["publication"] = json!({
+            "incremental_samples": incremental_publications,
+            "samples": publication_bytes.len(),
+            "median_written_bytes": percentile_u64(&publication_bytes, 0.5),
+            "p95_written_bytes": percentile_u64(&publication_bytes, 0.95),
+            "embedded_project_bytes": fs::metadata(&catalog_path)?.len(),
+        });
         let preview_metric = latency_metric(
             "tone_curve_preview",
             "1800x1200 developed preview frame",
@@ -547,6 +571,20 @@ fn latency_metric(
         "budget_ms": budget_ms,
         "pass": p95 <= budget_ms,
     })
+}
+
+fn latency_distribution(samples: &[Duration]) -> serde_json::Value {
+    let mut milliseconds: Vec<_> = samples.iter().copied().map(duration_ms).collect();
+    milliseconds.sort_by(f64::total_cmp);
+    json!({
+        "median_ms": rounded(percentile(&milliseconds, 0.5)),
+        "p95_ms": rounded(percentile(&milliseconds, 0.95)),
+    })
+}
+
+fn percentile_u64(sorted: &[u64], quantile: f64) -> u64 {
+    let index = ((sorted.len().saturating_sub(1)) as f64 * quantile).ceil() as usize;
+    sorted.get(index).copied().unwrap_or_default()
 }
 
 fn percentile(sorted: &[f64], quantile: f64) -> f64 {

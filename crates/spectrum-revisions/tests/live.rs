@@ -1,5 +1,7 @@
 use std::{ffi::OsString, fs, path::Path};
 
+#[cfg(target_os = "linux")]
+use spectrum_revisions::Asset;
 use spectrum_revisions::{
     Actor, ActorKind, AppendRevision, Encoding, LiveRevisionStore, NewProject, Payload, RevisionId,
     SessionId, TrackId,
@@ -212,7 +214,7 @@ fn equally_advanced_returned_copy_replaces_an_inactive_local_cache() {
     drop(fixture.live);
 
     fs::copy(&traveler, &fixture.canonical).unwrap();
-    let reopened = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
+    let mut reopened = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
     assert!(
         reopened
             .store()
@@ -221,6 +223,35 @@ fn equally_advanced_returned_copy_replaces_an_inactive_local_cache() {
             .is_some()
     );
     assert!(reopened.store().revision(local).unwrap().is_none());
+    let after_return = reopened
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: fixture.track,
+                session_id: fixture.human_session,
+                expected_parent: remote_revision,
+                application_version: "1.0.0".into(),
+                label: Some("After return".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"after-return")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
+        })
+        .unwrap()
+        .id;
+    drop(reopened);
+    let independently_verified = LiveRevisionStore::open(
+        &fixture.canonical,
+        &fixture.directory.path().join("returned-verified-cache"),
+    )
+    .unwrap();
+    assert!(
+        independently_verified
+            .store()
+            .revision(after_return)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[cfg(unix)]
@@ -243,6 +274,172 @@ fn failed_publish_keeps_the_committed_edit_recoverable() {
     )
     .unwrap();
     assert!(verified.store().revision(latest).unwrap().is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn small_edits_do_not_rewrite_large_immutable_assets() {
+    use std::os::unix::fs::MetadataExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("large-project.lumen");
+    let cache = directory.path().join("private-cache");
+    let session = SessionId::new();
+    let original = Asset::new("image/jpeg", vec![0x5a; 8 * 1024 * 1024]);
+    let original_id = original.id;
+    let (mut live, info) = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        NewProject {
+            application_id: "spectrum.test".into(),
+            application_version: "1.0.0".into(),
+            actor: actor("person:1", ActorKind::Human),
+            session_id: session,
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![payload("test.snapshot", b"root")],
+            assets: vec![original],
+        },
+    )
+    .unwrap();
+    let project_cache = cache.join(info.project_id.to_string());
+    let mirror = project_cache.join("published-mirror.sqlite");
+    let ready = project_cache.join("published-mirror.ready");
+    let backup = project_cache.join("published-backup.sqlite");
+    assert_ne!(
+        canonical.metadata().unwrap().ino(),
+        mirror.metadata().unwrap().ino(),
+        "the mutable mirror must never alias the visible project inode"
+    );
+    assert_eq!(mirror.metadata().unwrap().nlink(), 1);
+    fs::write(&backup, b"stale interrupted backup").unwrap();
+
+    let tiny = live
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: info.default_track_id,
+                session_id: session,
+                expected_parent: info.root_revision,
+                application_version: "1.0.0".into(),
+                label: Some("Tiny edit".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"tiny")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
+        })
+        .unwrap()
+        .id;
+
+    assert!(!backup.exists());
+    assert_ne!(
+        canonical.metadata().unwrap().ino(),
+        mirror.metadata().unwrap().ino(),
+        "the previous checkpoint mirror must remain distinct after the atomic rename"
+    );
+    assert_eq!(mirror.metadata().unwrap().nlink(), 1);
+    let stats = live.last_publish_stats();
+    assert!(stats.incremental);
+    assert!(stats.scanned_bytes > 8 * 1024 * 1024);
+    assert!(
+        stats.written_bytes < 512 * 1024,
+        "tiny edit rewrote {} bytes",
+        stats.written_bytes
+    );
+
+    let canonical_len = canonical.metadata().unwrap().len();
+    fs::write(&mirror, vec![0x3c; canonical_len as usize]).unwrap();
+    let after_corruption = live
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: info.default_track_id,
+                session_id: session,
+                expected_parent: tiny,
+                application_version: "1.0.0".into(),
+                label: Some("Recover corrupt mirror".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"recover-corrupt")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
+        })
+        .unwrap()
+        .id;
+    assert!(live.last_publish_stats().incremental);
+    assert_eq!(
+        fs::read(&canonical).unwrap(),
+        fs::read(live.working_path()).unwrap(),
+        "page diff must reconstruct even a corrupt cache mirror exactly"
+    );
+
+    fs::remove_file(&ready).unwrap();
+    fs::write(&mirror, b"interrupted partial mirror").unwrap();
+    let after_interruption = live
+        .mutate(|store| {
+            store.append(AppendRevision {
+                track_id: info.default_track_id,
+                session_id: session,
+                expected_parent: after_corruption,
+                application_version: "1.0.0".into(),
+                label: Some("Recover interrupted mirror".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"recover-interrupted")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })
+        })
+        .unwrap()
+        .id;
+    assert!(!live.last_publish_stats().incremental);
+    assert!(ready.is_file());
+    live.mutate(|store| {
+        store.append(AppendRevision {
+            track_id: info.default_track_id,
+            session_id: session,
+            expected_parent: after_interruption,
+            application_version: "1.0.0".into(),
+            label: Some("Incremental after recovery".into()),
+            command_count: 1,
+            operation_payloads: vec![payload("test.operations", b"incremental-again")],
+            snapshots: Vec::new(),
+            assets: Vec::new(),
+        })
+    })
+    .unwrap();
+
+    assert!(live.last_publish_stats().incremental);
+    assert_eq!(
+        live.store().asset(original_id).unwrap().unwrap().len(),
+        8 * 1024 * 1024
+    );
+    drop(live);
+
+    let verified =
+        LiveRevisionStore::open(&canonical, &directory.path().join("independent-cache")).unwrap();
+    assert_eq!(
+        verified.store().asset(original_id).unwrap().unwrap(),
+        vec![0x5a; 8 * 1024 * 1024]
+    );
+    assert!(
+        fs::read_dir(directory.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry.file_name().to_string_lossy().contains("publish"))
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn non_linux_publish_keeps_the_atomic_full_copy_fallback() {
+    let mut fixture = Fixture::new();
+    fixture.append(fixture.human_session, fixture.root, "Fallback");
+    let stats = fixture.live.last_publish_stats();
+    assert!(!stats.incremental);
+    assert_eq!(
+        stats.written_bytes,
+        fixture.canonical.metadata().unwrap().len()
+    );
 }
 
 fn actor(id: &str, kind: ActorKind) -> Actor {

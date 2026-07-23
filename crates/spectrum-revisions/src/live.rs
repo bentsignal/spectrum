@@ -5,6 +5,8 @@ use std::{
 };
 
 use fs2::FileExt;
+#[cfg(target_os = "linux")]
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::{
     NewProject, ProjectInfo, RevisionError, RevisionResult, RevisionStore, SessionId,
@@ -13,6 +15,23 @@ use crate::{
 
 const STORE_FILE: &str = "live.sqlite";
 const LOCK_FILE: &str = "publish.lock";
+#[cfg(target_os = "linux")]
+const PUBLISH_MIRROR_FILE: &str = "published-mirror.sqlite";
+#[cfg(target_os = "linux")]
+const PUBLISH_MIRROR_READY_FILE: &str = "published-mirror.ready";
+#[cfg(target_os = "linux")]
+const PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
+#[cfg(target_os = "linux")]
+const COMPARE_CHUNK_BYTES: usize = 64 * 1024;
+#[cfg(target_os = "linux")]
+const WRITE_BLOCK_BYTES: usize = 4 * 1024;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PublishStats {
+    pub incremental: bool,
+    pub scanned_bytes: u64,
+    pub written_bytes: u64,
+}
 
 /// A live SQLite working store whose user-facing project is always a single checkpointed file.
 ///
@@ -26,6 +45,7 @@ pub struct LiveRevisionStore {
     published_generation: Cell<u64>,
     temps_cleaned: Cell<bool>,
     pending_publish_error: RefCell<Option<String>>,
+    last_publish_stats: Cell<PublishStats>,
 }
 
 impl LiveRevisionStore {
@@ -76,6 +96,7 @@ impl LiveRevisionStore {
             published_generation: Cell::new(0),
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
+            last_publish_stats: Cell::new(PublishStats::default()),
         };
         live.publish()?;
         Ok((live, info))
@@ -135,6 +156,7 @@ impl LiveRevisionStore {
             published_generation: Cell::new(canonical.generation),
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
+            last_publish_stats: Cell::new(PublishStats::default()),
         };
         if live.store.generation()? > canonical.generation {
             live.publish()?;
@@ -180,9 +202,17 @@ impl LiveRevisionStore {
         }
         let working_generation = self.store.generation()?;
         if self.canonical_path.is_file() && self.published_generation.get() >= working_generation {
+            self.last_publish_stats.set(PublishStats::default());
             return Ok(());
         }
-        atomic_publish(&self.working_path, &self.canonical_path)?;
+        let stats = publish_checkpoint(
+            &self.working_path,
+            &self.canonical_path,
+            self.lock_path
+                .parent()
+                .expect("publish lock always has a cache directory"),
+        )?;
+        self.last_publish_stats.set(stats);
         self.published_generation.set(working_generation);
         Ok(())
     }
@@ -197,6 +227,10 @@ impl LiveRevisionStore {
 
     pub fn pending_publish_error(&self) -> Option<String> {
         self.pending_publish_error.borrow().clone()
+    }
+
+    pub fn last_publish_stats(&self) -> PublishStats {
+        self.last_publish_stats.get()
     }
 }
 
@@ -297,6 +331,156 @@ fn atomic_publish(source: &Path, destination: &Path) -> RevisionResult<()> {
         let _ = fs::remove_file(&temporary);
         return Err(error.into());
     }
+    Ok(())
+}
+
+fn publish_checkpoint(
+    source: &Path,
+    destination: &Path,
+    _cache_directory: &Path,
+) -> RevisionResult<PublishStats> {
+    #[cfg(target_os = "linux")]
+    if let Some(stats) = incremental_publish(source, destination, _cache_directory)? {
+        return Ok(stats);
+    }
+
+    atomic_publish(source, destination)?;
+    let written_bytes = source.metadata()?.len();
+    #[cfg(target_os = "linux")]
+    seed_incremental_mirror(destination, _cache_directory);
+    Ok(PublishStats {
+        incremental: false,
+        scanned_bytes: written_bytes,
+        written_bytes,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn incremental_publish(
+    source: &Path,
+    destination: &Path,
+    cache_directory: &Path,
+) -> RevisionResult<Option<PublishStats>> {
+    let mirror = cache_directory.join(PUBLISH_MIRROR_FILE);
+    let ready = cache_directory.join(PUBLISH_MIRROR_READY_FILE);
+    if !destination.is_file()
+        || !is_private_file(&mirror)
+        || !is_regular_file(&ready)
+        || same_file(destination, &mirror)?
+    {
+        return Ok(None);
+    }
+
+    let backup = cache_directory.join(PUBLISH_BACKUP_FILE);
+    let _ = fs::remove_file(&backup);
+    if fs::hard_link(destination, &backup).is_err() {
+        return Ok(None);
+    }
+    // The backup link preserves the old checkpoint while the distinct mirror is updated.
+    // Renaming the completed mirror over the canonical path is the only point at which the
+    // user-visible project changes. The backup then becomes the next private mirror.
+    fs::remove_file(&ready)?;
+
+    let result = (|| -> RevisionResult<PublishStats> {
+        fs::set_permissions(&mirror, destination.metadata()?.permissions())?;
+        let stats = update_mirror(source, &mirror)?;
+        fs::rename(&mirror, destination)?;
+        fs::rename(&backup, &mirror)?;
+        write_ready_marker(&ready)?;
+        Ok(stats)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&backup);
+    }
+    result.map(Some)
+}
+
+#[cfg(target_os = "linux")]
+fn is_private_file(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    path.symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_file() && metadata.nlink() == 1)
+}
+
+#[cfg(target_os = "linux")]
+fn is_regular_file(path: &Path) -> bool {
+    path.symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_file())
+}
+
+#[cfg(target_os = "linux")]
+fn same_file(left: &Path, right: &Path) -> RevisionResult<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let left = left.metadata()?;
+    let right = right.metadata()?;
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
+}
+
+#[cfg(target_os = "linux")]
+fn update_mirror(source: &Path, mirror: &Path) -> RevisionResult<PublishStats> {
+    let mut source = File::open(source)?;
+    let source_len = source.metadata()?.len();
+    let mut mirror = OpenOptions::new().read(true).write(true).open(mirror)?;
+    mirror.set_len(source_len)?;
+
+    let mut source_chunk = vec![0; COMPARE_CHUNK_BYTES];
+    let mut mirror_chunk = vec![0; COMPARE_CHUNK_BYTES];
+    let mut offset = 0_u64;
+    let mut written_bytes = 0_u64;
+    while offset < source_len {
+        let chunk_len = usize::try_from((source_len - offset).min(COMPARE_CHUNK_BYTES as u64))
+            .expect("bounded comparison chunk");
+        source.read_exact(&mut source_chunk[..chunk_len])?;
+        mirror.read_exact(&mut mirror_chunk[..chunk_len])?;
+        if source_chunk[..chunk_len] != mirror_chunk[..chunk_len] {
+            for block_start in (0..chunk_len).step_by(WRITE_BLOCK_BYTES) {
+                let block_end = (block_start + WRITE_BLOCK_BYTES).min(chunk_len);
+                if source_chunk[block_start..block_end] == mirror_chunk[block_start..block_end] {
+                    continue;
+                }
+                mirror.seek(SeekFrom::Start(offset + block_start as u64))?;
+                mirror.write_all(&source_chunk[block_start..block_end])?;
+                written_bytes += (block_end - block_start) as u64;
+            }
+            mirror.seek(SeekFrom::Start(offset + chunk_len as u64))?;
+        }
+        offset += chunk_len as u64;
+    }
+    mirror.sync_all()?;
+    Ok(PublishStats {
+        incremental: true,
+        scanned_bytes: source_len,
+        written_bytes,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn seed_incremental_mirror(destination: &Path, cache_directory: &Path) {
+    let mirror = cache_directory.join(PUBLISH_MIRROR_FILE);
+    let ready = cache_directory.join(PUBLISH_MIRROR_READY_FILE);
+    let probe = cache_directory.join(PUBLISH_BACKUP_FILE);
+    let _ = fs::remove_file(&probe);
+    if fs::hard_link(destination, &probe).is_err() {
+        return;
+    }
+    let _ = fs::remove_file(&probe);
+    let _ = fs::remove_file(&mirror);
+    if copy_or_clone(destination, &mirror)
+        .and_then(|_| File::open(&mirror)?.sync_all())
+        .and_then(|_| write_ready_marker(&ready).map_err(std::io::Error::other))
+        .is_err()
+    {
+        let _ = fs::remove_file(&mirror);
+        let _ = fs::remove_file(&ready);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn write_ready_marker(path: &Path) -> RevisionResult<()> {
+    fs::write(path, b"ready")?;
+    File::open(path)?.sync_all()?;
     Ok(())
 }
 
