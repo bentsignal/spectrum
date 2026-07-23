@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn preview_and_export_share_text_raster_scale_tiers() {
+    let mut layer = Layer {
+        kind: LayerKind::Text {
+            text: "Smooth S".into(),
+            font_size: 240.0,
+            color: [255, 255, 255, 255],
+            typography: prism_core::TextTypography::default(),
+        },
+        ..Default::default()
+    };
+    layer.transform.scale_x = 3.2;
+    layer.transform.scale_y = 1.7;
+    let document = Document::new("Scale parity", 1_600, 1_200);
+
+    for display_scale in [0.1, 0.5, 1.0, 2.0, 8.0] {
+        let preview = LayerVisualKey::new(&layer, display_scale);
+        let export = prism_core::region_source_scales(&document, &layer, display_scale).unwrap();
+        assert_eq!(preview.text_raster_scale as f32, export.text_raster);
+    }
+}
+
+#[test]
+fn settled_zoom_out_uses_one_tier_of_hysteresis() {
+    let layer = Layer {
+        transform: Transform {
+            scale_x: 1.0,
+            scale_y: 1.0,
+            ..Default::default()
+        },
+        kind: LayerKind::Text {
+            text: "Smooth S".into(),
+            font_size: 240.0,
+            color: [255, 255, 255, 255],
+            typography: prism_core::TextTypography::default(),
+        },
+        ..Default::default()
+    };
+    let cached = LayerVisualKey::new(&layer, 4.01);
+    assert_eq!(cached.text_raster_scale, 8);
+    let inside_dead_band = desired_layer_visual_key(&layer, 3.75, false, Some(&cached));
+    let outside_dead_band = desired_layer_visual_key(&layer, 3.25, false, Some(&cached));
+    assert_eq!(inside_dead_band.text_raster_scale, 8);
+    assert_eq!(outside_dead_band.text_raster_scale, 4);
+}
+
+#[test]
+fn settled_large_text_is_not_forced_through_the_legacy_2k_cap() {
+    let layer = Layer {
+        kind: LayerKind::Text {
+            text: "S".into(),
+            font_size: 768.0,
+            color: [255, 255, 255, 255],
+            typography: prism_core::TextTypography::default(),
+        },
+        ..Default::default()
+    };
+    let key = LayerVisualKey::new(&layer, 4.0);
+    let settled = required_preview_size(&layer, &key, false, None);
+    let interactive = required_preview_size(&layer, &key, true, None);
+    assert!(settled > 2_048);
+    assert_eq!(interactive, 1_024);
+}
+
+#[test]
 fn rotated_solid_quad_samples_only_the_font_atlas_white_pixel() {
     let mesh = quad_mesh(
         egui::TextureId::default(),

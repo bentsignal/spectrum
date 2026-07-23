@@ -48,7 +48,7 @@ pub fn region_source_scales(
     if !document_scale.is_finite() || document_scale <= 0.0 {
         bail!("document render scale must be a positive finite number");
     }
-    let text_raster = text_raster_scale(layer, document_scale);
+    let text_raster = recommended_text_raster_scale(layer, document_scale);
     let shape_raster = if matches!(
         layer.kind,
         LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } | LayerKind::Path { .. }
@@ -74,7 +74,9 @@ pub fn region_source_scales(
     })
 }
 
-fn text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
+/// Chooses the bounded power-of-two text source scale shared by viewport,
+/// export, and interactive preview rendering.
+pub fn recommended_text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
     if !matches!(layer.kind, LayerKind::Text { .. }) {
         return 1.0;
     }

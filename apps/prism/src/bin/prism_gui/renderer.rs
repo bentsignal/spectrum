@@ -45,11 +45,20 @@ pub(super) fn desired_layer_visual_key(
     cached: Option<&LayerVisualKey>,
 ) -> LayerVisualKey {
     let mut key = LayerVisualKey::new(layer, display_scale);
-    if interaction_active
-        && matches!(layer.kind, LayerKind::Text { .. })
+    if matches!(layer.kind, LayerKind::Text { .. })
         && let Some(cached) = cached
     {
-        key.text_raster_scale = cached.text_raster_scale;
+        if interaction_active {
+            key.text_raster_scale = cached.text_raster_scale;
+        } else if cached.text_raster_scale == key.text_raster_scale.saturating_mul(2)
+            && text_display_scale_target(layer, display_scale)
+                > key.text_raster_scale as f32 * 0.875
+        {
+            // Keep the higher tier through a narrow dead band while zooming out.
+            // Zooming in still upgrades immediately, so settled text is never
+            // magnified beyond its requested source resolution.
+            key.text_raster_scale = cached.text_raster_scale;
+        }
     }
     key
 }
@@ -237,7 +246,9 @@ impl PrismApp {
                 interaction_active,
                 self.layer_visuals.get(&layer.id).map(|entry| &entry.key),
             );
-            let required_max_size = required_preview_size(layer, &key, interaction_active);
+            let font_asset = self.workspace.document.font_for_layer(layer);
+            let required_max_size =
+                required_preview_size(layer, &key, interaction_active, font_asset);
             if reuse_cached_visual_during_interaction(
                 self.layer_visuals
                     .get(&layer.id)
@@ -282,7 +293,7 @@ impl PrismApp {
                     LayerRenderRequest {
                         tab_id: self.active_tab_id,
                         layer: layer.clone(),
-                        font_asset: self.workspace.document.font_for_layer(layer).cloned(),
+                        font_asset: font_asset.cloned(),
                         key,
                         max_size: required_max_size,
                     },
@@ -521,24 +532,41 @@ pub(super) fn source_geometry_before_preview(
 }
 
 fn preview_text_scale(layer: &Layer, zoom: f32) -> u32 {
-    if !matches!(layer.kind, LayerKind::Text { .. }) {
-        return 1;
-    }
-    let target = layer
+    prism_core::recommended_text_raster_scale(layer, zoom) as u32
+}
+
+fn text_display_scale_target(layer: &Layer, display_scale: f32) -> f32 {
+    layer
         .transform
         .scale_x
         .abs()
         .max(layer.transform.scale_y.abs())
-        * zoom.max(0.1);
-    (target.max(1.0).ceil() as u32).next_power_of_two().min(16)
+        * display_scale.max(0.1)
 }
 
-fn required_preview_size(layer: &Layer, key: &LayerVisualKey, interaction_active: bool) -> u32 {
+fn required_preview_size(
+    layer: &Layer,
+    key: &LayerVisualKey,
+    interaction_active: bool,
+    font_asset: Option<&prism_core::FontAsset>,
+) -> u32 {
     if let Some((width, height)) = prism_core::shape_dimensions(layer) {
         return width
             .saturating_mul(key.shape_raster_scale[0])
             .max(height.saturating_mul(key.shape_raster_scale[1]))
             .clamp(1, 8_192);
+    }
+    if matches!(layer.kind, LayerKind::Text { .. }) {
+        let settled = source_geometry_before_preview(layer, font_asset)
+            .map(|geometry| geometry.size.x.max(geometry.size.y).ceil() as u32)
+            .unwrap_or(512)
+            .saturating_mul(key.text_raster_scale)
+            .clamp(1, 8_192);
+        return if interaction_active {
+            settled.min(1_024)
+        } else {
+            settled
+        };
     }
     if interaction_active { 1024 } else { 2048 }
 }
