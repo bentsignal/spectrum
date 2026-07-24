@@ -186,6 +186,13 @@ fn rotated_masked_clipped_shadow_matches_full_export() {
     };
     styled.blend_mode = BlendMode::Screen;
     styled.clip_to_below = true;
+    styled.adjustments = spectrum_imaging::Adjustments {
+        exposure: 0.2,
+        noise_reduction: 12.0,
+        sharpening: 9.0,
+        straighten: 2.5,
+        ..Default::default()
+    };
     document.layers.push(Layer {
         id: 2,
         transform: Transform {
@@ -205,19 +212,29 @@ fn rotated_masked_clipped_shadow_matches_full_export() {
     document.next_id = 3;
 
     let full = render_document_scaled(&document, 1.0).unwrap().to_rgba8();
-    let preview = render_document_region_scaled(
-        &document,
-        1.0,
-        RenderRegion {
-            x: 0,
-            y: 0,
-            width: document.width,
-            height: document.height,
-        },
-    )
-    .unwrap()
-    .to_rgba8();
-    assert_eq!(preview, full);
+    let region = RenderRegion {
+        x: 12,
+        y: 8,
+        width: 96,
+        height: 74,
+    };
+    let (preview, stats) =
+        render_document_region_scaled_with_stats(&document, 1.0, region).unwrap();
+    let preview = preview.to_rgba8();
+    let oracle = image::imageops::crop_imm(&full, region.x, region.y, region.width, region.height)
+        .to_image();
+    assert_eq!(preview, oracle);
+    assert!(stats.adjusted_staging_pixels > 0);
+    assert!(stats.shadow_alpha_tile_pixels > 0);
+    assert_eq!(
+        stats.shadow_alpha_tile_bytes,
+        stats.shadow_alpha_tile_pixels
+    );
+    assert!(stats.max_shadow_alpha_tile_pixels <= 4_096 * 4_096);
+    assert_eq!(
+        stats.shadow_source_samples, stats.shadow_alpha_tile_pixels,
+        "adjusted shadows must not fall back to direct source-alpha sampling"
+    );
 }
 
 #[test]

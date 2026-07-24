@@ -222,6 +222,9 @@ fn merge_region_stats(total: &mut RegionRenderStats, tile: RegionRenderStats) {
         .transformed_surface_pixels
         .saturating_add(tile.transformed_surface_pixels);
     total.shadow_samples = total.shadow_samples.saturating_add(tile.shadow_samples);
+    total.shadow_source_samples = total
+        .shadow_source_samples
+        .saturating_add(tile.shadow_source_samples);
     total.shadow_alpha_tile_pixels = total
         .shadow_alpha_tile_pixels
         .saturating_add(tile.shadow_alpha_tile_pixels);
