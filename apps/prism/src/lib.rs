@@ -117,6 +117,14 @@ pub use alignment::{
 mod selection;
 pub use selection::{MAX_COLOR_SELECTION_PIXELS, Selection, magic_wand_selection};
 
+mod selection_outline;
+pub use selection_outline::{
+    MAX_SELECTION_OUTLINE_EDGES, SelectionMaskOutline, SelectionOutlineFrame, SelectionOutlinePath,
+    SelectionOutlinePoint, SelectionOutlineRect, SelectionOutlineSegment,
+    SelectionOutlineTransform, SelectionOutlineView, complex_selection_mask_outline,
+    marching_ants_frame, selection_mask_outline,
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Transform {

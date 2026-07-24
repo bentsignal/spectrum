@@ -118,14 +118,14 @@ pub(super) fn schema() -> Value {
         },
         "selection": {
             "rectangle": "selection rectangle <x> <y> <width> <height> uses integer document pixels and clips at canvas edges",
-            "magic_wand": "selection magic-wand <x> <y> [--tolerance <0..255>] [--noncontiguous] [--no-antialias] samples the exact CPU composite; tolerance is deterministic max-channel distance over premultiplied RGBA (hidden RGB at alpha 0 is ignored, alpha differences remain visible), and anti-aliasing adds one soft boundary pixel",
+            "magic_wand": "selection magic-wand <x> <y> [--tolerance <0..255>] [--noncontiguous] [--no-antialias] defaults tolerance to 20 and samples the exact CPU composite; tolerance is deterministic max-channel distance over premultiplied RGBA (hidden RGB at alpha 0 is ignored, alpha differences remain visible), and anti-aliasing adds one soft boundary pixel",
             "lasso": "selection lasso --point <x,y> --point <x,y> --point <x,y> [--mode <replace|add|subtract|intersect>] [--no-antialias] quantizes coordinates to 1/256 pixel and applies a deterministic even-odd polygon selection",
             "lasso_limits": {"input_points": prism_core::MAX_LASSO_INPUT_POINTS, "simplified_vertices": prism_core::MAX_LASSO_VERTICES, "raster_edge_tests": prism_core::MAX_LASSO_RASTER_EDGE_TESTS, "mask_pixels": prism_core::MAX_COLOR_SELECTION_PIXELS},
-            "clear": "selection clear removes the persistent marquee",
-            "crop": "selection crop atomically crops the canvas to the current marquee and clears the selection in one revision",
+            "clear": "selection clear removes the persistent pixel selection",
+            "crop": "selection crop atomically crops the canvas to the current selection and clears it in one revision",
             "fill": "selection fill [--color <RRGGBBAA>] [--name <label>] creates one new editable solid layer honoring rectangular or soft color-selection alpha without changing source pixels",
             "combination": "replace uses the new lasso; add uses a+b-round(ab/255); subtract uses round(a*(255-b)/255); intersect uses round(ab/255)",
-            "history": "each completed marquee, lasso drag, magic wand click, clear, fill, or crop is one command and one durable revision"
+            "history": "each completed Selection-tool drag, lasso drag, magic wand click, clear, fill, or crop is one command and one durable revision"
         },
         "typography": {
             "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot and transactionally embeds those exact bytes as a content-addressed project asset; installable, editable, preview/print, and restricted embedding classes, including bitmap-only flags, import directly for local text, while malformed, unparseable, oversized, or unsafe sources fail closed; Windows final-handle proof rejects junction and 8.3 aliases unless the normalized handle path exactly matches",

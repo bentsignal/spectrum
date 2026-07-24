@@ -1,13 +1,21 @@
 use super::*;
 
-const MARQUEE_STROKE_POINTS: f32 = 1.0;
-const MAX_COLOR_OVERLAY_EDGE: u32 = 512;
+const SELECTION_STROKE_POINTS: f32 = 1.5;
+const SELECTION_CONTRAST_STROKE_POINTS: f32 = 3.5;
+const SELECTION_DASH_POINTS: f32 = 4.0;
+const SELECTION_ANIMATION_POINTS_PER_SECOND: f32 = 24.0;
+const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(42);
 
 pub(super) struct SelectionOverlay {
     tab_id: u64,
     selection: prism_core::Selection,
-    bounds: (u32, u32, u32, u32),
-    texture: TextureHandle,
+    exact_paths: Option<std::sync::Arc<[prism_core::SelectionOutlinePath]>>,
+    view: Option<SelectionOverlayView>,
+}
+
+struct SelectionOverlayView {
+    key: prism_core::SelectionOutlineView,
+    paths: std::sync::Arc<[prism_core::SelectionOutlinePath]>,
 }
 
 pub(super) struct SelectionUiState {
@@ -28,7 +36,7 @@ impl Default for SelectionUiState {
         Self {
             fill_color: Color32::from_rgba_unmultiplied(93, 216, 199, 255),
             overlay: None,
-            magic_wand_tolerance: 32,
+            magic_wand_tolerance: 20,
             magic_wand_contiguous: true,
             magic_wand_antialias: true,
             lasso_points: Vec::new(),
@@ -87,43 +95,102 @@ fn can_crop_to_selection(
     selection.is_some_and(|selection| selection.bounds() != (0, 0, canvas_width, canvas_height))
 }
 
-fn paint_marquee(ui: &egui::Ui, rect: Rect, preview: bool) {
-    if preview {
-        ui.painter().rect_filled(rect, 0.0, with_alpha(ACCENT, 24));
+fn outline_point(point: Pos2) -> prism_core::SelectionOutlinePoint {
+    prism_core::SelectionOutlinePoint::new(point.x, point.y)
+}
+
+fn rectangle_path(rect: Rect) -> prism_core::SelectionOutlinePath {
+    vec![
+        outline_point(rect.left_top()),
+        outline_point(rect.right_top()),
+        outline_point(rect.right_bottom()),
+        outline_point(rect.left_bottom()),
+        outline_point(rect.left_top()),
+    ]
+}
+
+fn paint_selection_preview(ui: &egui::Ui, rect: Rect) {
+    ui.painter().rect_filled(rect, 0.0, with_alpha(ACCENT, 24));
+    paint_marching_ants(
+        ui,
+        std::slice::from_ref(&rectangle_path(rect)),
+        prism_core::SelectionOutlineTransform {
+            scale: 1.0,
+            offset: prism_core::SelectionOutlinePoint::new(0.0, 0.0),
+        },
+    );
+}
+
+fn paint_marching_ants(
+    ui: &egui::Ui,
+    paths: &[prism_core::SelectionOutlinePath],
+    transform: prism_core::SelectionOutlineTransform,
+) {
+    if paths.is_empty() {
+        return;
     }
-    ui.painter().rect_stroke(
-        rect,
-        0.0,
-        Stroke::new(MARQUEE_STROKE_POINTS + 2.0, Color32::from_black_alpha(190)),
-        egui::StrokeKind::Inside,
+    ui.ctx().request_repaint_after(SELECTION_REPAINT_INTERVAL);
+    let cycle = f64::from(SELECTION_DASH_POINTS * 2.0);
+    let phase = ui.input(|input| {
+        (input.time * f64::from(SELECTION_ANIMATION_POINTS_PER_SECOND)).rem_euclid(cycle) as f32
+    });
+    let clip = ui.clip_rect().expand(SELECTION_CONTRAST_STROKE_POINTS);
+    let frame = prism_core::marching_ants_frame(
+        paths,
+        transform,
+        prism_core::SelectionOutlineRect::new(outline_point(clip.min), outline_point(clip.max)),
+        phase,
+        SELECTION_DASH_POINTS,
     );
-    ui.painter().rect_stroke(
-        rect,
-        0.0,
-        Stroke::new(MARQUEE_STROKE_POINTS, Color32::WHITE),
-        egui::StrokeKind::Inside,
-    );
+    let painter = ui.painter();
+    for segment in frame.contrast {
+        painter.line_segment(
+            [
+                Pos2::new(segment.start.x, segment.start.y),
+                Pos2::new(segment.end.x, segment.end.y),
+            ],
+            Stroke::new(
+                SELECTION_CONTRAST_STROKE_POINTS,
+                Color32::from_black_alpha(230),
+            ),
+        );
+    }
+    for segment in frame.light {
+        painter.line_segment(
+            [
+                Pos2::new(segment.start.x, segment.start.y),
+                Pos2::new(segment.end.x, segment.end.y),
+            ],
+            Stroke::new(SELECTION_STROKE_POINTS, Color32::WHITE),
+        );
+    }
 }
 
 pub(super) fn paint_selection_overlay(
     ui: &egui::Ui,
     geometry: CanvasGeometry,
     selection: &prism_core::Selection,
-    overlay: Option<(egui::TextureId, (u32, u32, u32, u32))>,
+    paths: Option<&[prism_core::SelectionOutlinePath]>,
 ) {
-    if selection.alpha().is_none() {
-        paint_marquee(ui, selection_screen_rect(geometry, selection), false);
-        return;
-    }
-    if let Some((texture, bounds)) = overlay {
-        let selection = prism_core::Selection::rectangle(bounds.0, bounds.1, bounds.2, bounds.3);
-        ui.painter().image(
-            texture,
-            selection_screen_rect(geometry, &selection),
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            Color32::WHITE,
-        );
-    }
+    let rectangle;
+    let paths = if selection.alpha().is_none() {
+        rectangle = vec![rectangle_path(selection_screen_rect(geometry, selection))];
+        rectangle.as_slice()
+    } else {
+        paths.unwrap_or_default()
+    };
+    let transform = if selection.alpha().is_none() {
+        prism_core::SelectionOutlineTransform {
+            scale: 1.0,
+            offset: prism_core::SelectionOutlinePoint::new(0.0, 0.0),
+        }
+    } else {
+        prism_core::SelectionOutlineTransform {
+            scale: geometry.pixels_per_point,
+            offset: outline_point(geometry.canvas.min),
+        }
+    };
+    paint_marching_ants(ui, paths, transform);
 }
 
 pub(super) fn paint_selection_drag(
@@ -131,41 +198,91 @@ pub(super) fn paint_selection_drag(
     geometry: CanvasGeometry,
     selection: &prism_core::Selection,
 ) {
-    paint_marquee(ui, selection_screen_rect(geometry, selection), true);
+    paint_selection_preview(ui, selection_screen_rect(geometry, selection));
 }
 
+fn selection_outline_view(
+    geometry: CanvasGeometry,
+    clip: Rect,
+    bounds: (u32, u32, u32, u32),
+) -> Option<prism_core::SelectionOutlineView> {
+    let clip = clip.intersect(geometry.canvas);
+    if !clip.is_positive() {
+        return None;
+    }
+    let min = geometry.screen_to_canvas(clip.min);
+    let max = geometry.screen_to_canvas(clip.max);
+    let local_left =
+        (min.x.floor() as i64 - i64::from(bounds.0) - 1).clamp(0, i64::from(bounds.2)) as u32;
+    let local_top =
+        (min.y.floor() as i64 - i64::from(bounds.1) - 1).clamp(0, i64::from(bounds.3)) as u32;
+    let local_right =
+        (max.x.ceil() as i64 - i64::from(bounds.0) + 1).clamp(0, i64::from(bounds.2)) as u32;
+    let local_bottom =
+        (max.y.ceil() as i64 - i64::from(bounds.1) + 1).clamp(0, i64::from(bounds.3)) as u32;
+    (local_right > local_left && local_bottom > local_top).then_some(
+        prism_core::SelectionOutlineView {
+            x: local_left,
+            y: local_top,
+            width: local_right - local_left,
+            height: local_bottom - local_top,
+        },
+    )
+}
+
+/*
+ * Keep the contour cache separate from document history: it is derived entirely
+ * from the current immutable selection and can be discarded at any time.
+ */
 impl PrismApp {
     pub(super) fn ensure_selection_overlay(
         &mut self,
-        context: &egui::Context,
-    ) -> Option<(egui::TextureId, (u32, u32, u32, u32))> {
+        geometry: CanvasGeometry,
+        clip: Rect,
+    ) -> Option<std::sync::Arc<[prism_core::SelectionOutlinePath]>> {
         let selection = self.workspace.document.selection.as_ref()?.clone();
-        let bounds = selection.bounds();
-        if self.selection_ui.overlay.as_ref().is_some_and(|overlay| {
+        let matches_cached_selection = self.selection_ui.overlay.as_ref().is_some_and(|overlay| {
             overlay.tab_id == self.active_tab_id && overlay.selection == selection
-        }) {
-            let overlay = self.selection_ui.overlay.as_ref()?;
-            return Some((overlay.texture.id(), overlay.bounds));
-        }
-        let alpha = selection.alpha()?;
-        let image = color_mask_overlay_image(bounds.2, bounds.3, alpha)?;
-        let size = [image.width() as usize, image.height() as usize];
-        let pixels = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-        let texture = context.load_texture(
-            format!("prism-selection-overlay-{}", self.active_tab_id),
-            pixels,
-            TextureOptions::NEAREST,
-        );
-        self.selection_ui.overlay = Some(SelectionOverlay {
-            tab_id: self.active_tab_id,
-            selection,
-            bounds,
-            texture,
         });
-        let overlay = self.selection_ui.overlay.as_ref()?;
-        Some((overlay.texture.id(), overlay.bounds))
+        if !matches_cached_selection {
+            let exact_paths = selection.alpha().map_or_else(
+                || Some(std::sync::Arc::from([])),
+                |alpha| match prism_core::selection_mask_outline(selection.bounds(), alpha) {
+                    prism_core::SelectionMaskOutline::Exact(paths) => Some(paths),
+                    prism_core::SelectionMaskOutline::Complex => None,
+                },
+            );
+            self.selection_ui.overlay = Some(SelectionOverlay {
+                tab_id: self.active_tab_id,
+                selection,
+                exact_paths,
+                view: None,
+            });
+        }
+        let overlay = self.selection_ui.overlay.as_mut()?;
+        if let Some(paths) = &overlay.exact_paths {
+            return Some(std::sync::Arc::clone(paths));
+        }
+        let key = selection_outline_view(geometry, clip, overlay.selection.bounds())?;
+        if let Some(view) = &overlay.view
+            && view.key == key
+        {
+            return Some(std::sync::Arc::clone(&view.paths));
+        }
+        let paths = prism_core::complex_selection_mask_outline(
+            overlay.selection.bounds(),
+            overlay.selection.alpha()?,
+            key,
+        );
+        overlay.view = Some(SelectionOverlayView {
+            key,
+            paths: std::sync::Arc::clone(&paths),
+        });
+        Some(paths)
     }
+}
 
+impl PrismApp {
     pub(super) fn select_all_pixels(&mut self) {
         let document = &self.workspace.document;
         self.execute(Command::SetSelection {
@@ -186,7 +303,7 @@ impl PrismApp {
         );
         ui.separator();
         if self.tool == Tool::MagicWand {
-            ui.label(RichText::new("RANGE").size(9.0).strong().color(SUBTLE));
+            ui.label(RichText::new("TOLERANCE").size(9.0).strong().color(SUBTLE));
             ui.add(
                 egui::Slider::new(&mut self.selection_ui.magic_wand_tolerance, 0..=255)
                     .text("Tolerance")
@@ -240,7 +357,7 @@ impl PrismApp {
         }
         if ui
             .add_enabled(can_crop, egui::Button::new("Crop canvas to selection"))
-            .on_hover_text("Crop to the marquee and deselect in one revision")
+            .on_hover_text("Crop to the selection and deselect in one revision")
             .clicked()
             && self.execute(Command::CropToSelection)
         {
@@ -256,68 +373,12 @@ impl PrismApp {
     }
 }
 
-fn color_mask_overlay_image(width: u32, height: u32, alpha: &[u8]) -> Option<image::RgbaImage> {
-    if width == 0 || height == 0 || alpha.len() != (u64::from(width) * u64::from(height)) as usize {
-        return None;
-    }
-    let longest = width.max(height);
-    let (output_width, output_height) = if longest <= MAX_COLOR_OVERLAY_EDGE {
-        (width, height)
-    } else if width >= height {
-        (
-            MAX_COLOR_OVERLAY_EDGE,
-            ((u64::from(height) * u64::from(MAX_COLOR_OVERLAY_EDGE) + u64::from(width) / 2)
-                / u64::from(width))
-            .max(1) as u32,
-        )
-    } else {
-        (
-            ((u64::from(width) * u64::from(MAX_COLOR_OVERLAY_EDGE) + u64::from(height) / 2)
-                / u64::from(height))
-            .max(1) as u32,
-            MAX_COLOR_OVERLAY_EDGE,
-        )
-    };
-    Some(image::RgbaImage::from_fn(
-        output_width,
-        output_height,
-        |x, y| {
-            // Max-area aggregation guarantees even a one-pixel disconnected island
-            // remains visible in the bounded overview texture. Nearest GPU sampling
-            // avoids interpolating coverage across a known-zero cell.
-            let source_left = u64::from(x) * u64::from(width) / u64::from(output_width);
-            let source_right = (u64::from(x + 1) * u64::from(width))
-                .div_ceil(u64::from(output_width))
-                .max(source_left + 1)
-                .min(u64::from(width));
-            let source_top = u64::from(y) * u64::from(height) / u64::from(output_height);
-            let source_bottom = (u64::from(y + 1) * u64::from(height))
-                .div_ceil(u64::from(output_height))
-                .max(source_top + 1)
-                .min(u64::from(height));
-            let mut selection_alpha = 0;
-            for source_y in source_top..source_bottom {
-                for source_x in source_left..source_right {
-                    let index = (source_y * u64::from(width) + source_x) as usize;
-                    selection_alpha = selection_alpha.max(alpha[index]);
-                }
-            }
-            image::Rgba([
-                ACCENT.r(),
-                ACCENT.g(),
-                ACCENT.b(),
-                ((u16::from(selection_alpha) * 92) / 255) as u8,
-            ])
-        },
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn marquee_mapping_is_stable_across_zoom_pan_and_rotated_content() {
+    fn selection_mapping_is_stable_across_zoom_pan_and_rotated_content() {
         let viewport = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(900.0, 700.0));
         let expected = prism_core::Selection::rectangle(120, 80, 241, 161);
         for geometry in [
@@ -346,7 +407,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(rotated_layer.transform.rotation, 37.0);
-        assert_eq!(MARQUEE_STROKE_POINTS, 1.0);
+        assert_eq!(SELECTION_STROKE_POINTS, 1.5);
     }
 
     #[test]
@@ -379,17 +440,32 @@ mod tests {
     }
 
     #[test]
-    fn bounded_color_overlay_preserves_single_pixel_islands() {
-        let mut alpha = vec![0; 4_096 * 4_096];
-        alpha[2_047 * 4_096 + 3_001] = 255;
-        let overlay = color_mask_overlay_image(4_096, 4_096, &alpha).unwrap();
-        assert_eq!(overlay.dimensions(), (512, 512));
-        assert!(overlay.pixels().any(|pixel| pixel[3] > 0));
-        assert!(overlay.pixels().filter(|pixel| pixel[3] > 0).count() <= 4);
+    fn complex_outline_view_tracks_the_visible_source_pixels_at_high_zoom() {
+        let geometry = CanvasGeometry {
+            viewport: Rect::from_min_max(Pos2::ZERO, Pos2::new(1_000.0, 800.0)),
+            canvas: Rect::from_min_size(
+                Pos2::new(100.0, 200.0),
+                Vec2::new(1_024.0, 1_024.0) * 16.0,
+            ),
+            pixels_per_point: 16.0,
+        };
+        assert_eq!(
+            selection_outline_view(
+                geometry,
+                Rect::from_min_max(Pos2::new(260.0, 360.0), Pos2::new(420.0, 520.0)),
+                (0, 0, 1_024, 1_024),
+            ),
+            Some(prism_core::SelectionOutlineView {
+                x: 9,
+                y: 9,
+                width: 12,
+                height: 12,
+            })
+        );
     }
 
     #[test]
-    fn color_overlay_rejects_malformed_alpha_without_allocating_a_texture() {
-        assert!(color_mask_overlay_image(4, 4, &[255; 15]).is_none());
+    fn default_magic_wand_tolerance_is_twenty() {
+        assert_eq!(SelectionUiState::default().magic_wand_tolerance, 20);
     }
 }
