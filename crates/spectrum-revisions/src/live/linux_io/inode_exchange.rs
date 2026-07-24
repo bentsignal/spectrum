@@ -63,9 +63,8 @@ fn read_exchange_intent_fd(descriptor: RawFd) -> RevisionResult<Option<ExchangeI
     };
     if read < 0 {
         let error = io::Error::last_os_error();
-        return if error.raw_os_error() == Some(libc::ENODATA) {
-            Ok(None)
-        } else if exchange_xattr_unsupported(&error) {
+        return if error.raw_os_error() == Some(libc::ENODATA) || exchange_xattr_unsupported(&error)
+        {
             Ok(None)
         } else {
             Err(error.into())

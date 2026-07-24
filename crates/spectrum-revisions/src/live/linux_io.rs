@@ -768,27 +768,31 @@ pub(super) fn update_private_slot(
     source: &Path,
     mirror: &File,
     identity: FileIdentity,
-    permissions: Option<fs::Permissions>,
-    point: SlotMutationPoint,
-    exchange_intent: Option<ExchangeIntent>,
+    update: PrivateSlotUpdate,
 ) -> RevisionResult<Option<PublishStats>> {
     let source = super::open_nofollow(source, false)?;
     validated_identity(&source, false)?;
-    let mutation = directory.begin_mutation(name, mirror, identity, point)?;
+    let mutation = directory.begin_mutation(name, mirror, identity, update.point)?;
     let stats = apply_checkpoint_delta_from(&source, mirror)?;
-    if let Some(permissions) = permissions {
+    if let Some(permissions) = update.permissions {
         mirror.set_permissions(permissions)?;
     }
-    if let Some(intent) = exchange_intent {
-        if !write_exchange_intent(mirror, intent)? {
-            mutation.finish(name, identity)?;
-            return Ok(None);
-        }
+    if let Some(intent) = update.exchange_intent
+        && !write_exchange_intent(mirror, intent)?
+    {
+        mutation.finish(name, identity)?;
+        return Ok(None);
     }
     mirror.sync_all()?;
     validated_identity(mirror, true)?;
     mutation.finish(name, identity)?;
     Ok(Some(stats))
+}
+
+pub(super) struct PrivateSlotUpdate {
+    pub(super) permissions: Option<fs::Permissions>,
+    pub(super) point: SlotMutationPoint,
+    pub(super) exchange_intent: Option<ExchangeIntent>,
 }
 
 pub(super) fn update_candidate_slot(
@@ -805,9 +809,11 @@ pub(super) fn update_candidate_slot(
         source,
         mirror,
         identity,
-        Some(permissions),
-        SlotMutationPoint::CandidateDelta,
-        Some(intent),
+        PrivateSlotUpdate {
+            permissions: Some(permissions),
+            point: SlotMutationPoint::CandidateDelta,
+            exchange_intent: Some(intent),
+        },
     )
 }
 
@@ -831,9 +837,11 @@ pub(super) fn catch_up_after_bulk(
         source,
         &slot,
         identity,
-        None,
-        SlotMutationPoint::BulkCatchUp,
-        None,
+        PrivateSlotUpdate {
+            permissions: None,
+            point: SlotMutationPoint::BulkCatchUp,
+            exchange_intent: None,
+        },
     )?
     .expect("bulk catch-up does not install an exchange intent");
     write_ready_marker(directory, generation, state_id)?;

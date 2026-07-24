@@ -7,7 +7,8 @@ use std::{
 };
 
 use super::linux_io::{
-    SlotMutationPoint, clear_slot_hardlink_race, set_slot_hardlink_race, update_private_slot,
+    PrivateSlotUpdate, SlotMutationPoint, clear_slot_hardlink_race, set_slot_hardlink_race,
+    update_private_slot,
 };
 use super::*;
 
@@ -156,9 +157,11 @@ fn slot_races_after_validation_fail_before_candidate_or_bulk_mutation() {
                 &source,
                 &mirror,
                 identity,
-                permissions,
-                point,
-                None,
+                PrivateSlotUpdate {
+                    permissions,
+                    point,
+                    exchange_intent: None,
+                },
             )
             .is_err()
         );
