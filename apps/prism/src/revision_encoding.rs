@@ -109,7 +109,7 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
                 | Command::AddPaintLayerWithStroke { .. }
                 | Command::AddBrushStroke { .. }
         ) || matches!(command, Command::InsertLayer { transfer, .. }
-                if transfer.version >= crate::LAYER_TRANSFER_VERSION
+                if transfer.version >= crate::PAINT_LAYER_TRANSFER_VERSION
                     || matches!(transfer.layer.kind, crate::LayerKind::Paint { .. }))
     }) {
         return PAINT_OPERATIONS_VERSION;
@@ -121,7 +121,7 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
         ) || matches!(
             command,
             Command::InsertLayer { transfer, .. }
-                if transfer.version >= crate::LAYER_TRANSFER_VERSION
+                if transfer.version >= crate::PATH_LAYER_TRANSFER_VERSION
                     || transfer.layer.vector_mask.is_some()
                     || matches!(transfer.layer.kind, crate::LayerKind::Path { .. })
         )
@@ -174,20 +174,26 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
 pub(super) fn downgrade_compatible_transfers(commands: &mut [Command]) {
     for command in commands {
         if let Command::InsertLayer { transfer, .. } = command
-            && transfer.version == crate::LAYER_TRANSFER_VERSION
-            && transfer.layer.vector_mask.is_none()
-            && !matches!(transfer.layer.kind, crate::LayerKind::Path { .. })
-            && !matches!(transfer.layer.kind, crate::LayerKind::Paint { .. })
-            && transfer.layer.blend_mode != crate::BlendMode::Dissolve
-            && transfer.layer.dissolve_seed == 0
+            && transfer.validate_envelope().is_ok()
         {
-            transfer.version = if transfer.layer.pixel_mask.is_some() {
+            let minimal_version = if transfer.layer.blend_mode == crate::BlendMode::Dissolve
+                || transfer.layer.dissolve_seed != 0
+            {
+                crate::DISSOLVE_LAYER_TRANSFER_VERSION
+            } else if matches!(transfer.layer.kind, crate::LayerKind::Paint { .. }) {
+                crate::PAINT_LAYER_TRANSFER_VERSION
+            } else if transfer.layer.vector_mask.is_some()
+                || matches!(transfer.layer.kind, crate::LayerKind::Path { .. })
+            {
+                crate::PATH_LAYER_TRANSFER_VERSION
+            } else if transfer.layer.pixel_mask.is_some() {
                 3
             } else if transfer.layer.style.is_empty() && transfer.layer.shape_fill.is_none() {
                 1
             } else {
                 2
             };
+            transfer.version = transfer.version.min(minimal_version);
         }
     }
 }
@@ -212,6 +218,25 @@ mod tests {
         DropShadow, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LassoPath, LassoPoint, Layer,
         LayerStyle, LayerTransfer, Selection, SelectionCombineMode,
     };
+
+    fn insert_transfer(version: u32, layer: Layer) -> Vec<Command> {
+        vec![Command::InsertLayer {
+            transfer: Box::new(LayerTransfer {
+                format: LAYER_TRANSFER_FORMAT.into(),
+                version,
+                layer,
+                font_asset: None,
+            }),
+            index: None,
+        }]
+    }
+
+    fn inserted_transfer(commands: &[Command]) -> &LayerTransfer {
+        let Command::InsertLayer { transfer, .. } = &commands[0] else {
+            unreachable!("test helper only accepts InsertLayer commands");
+        };
+        transfer
+    }
 
     #[test]
     fn document_rename_requires_the_lifecycle_operation_envelope() {
@@ -438,6 +463,129 @@ mod tests {
         assert_eq!(
             operations_version(&styled),
             LAYER_EFFECTS_OPERATIONS_VERSION
+        );
+    }
+
+    #[test]
+    fn legacy_transfer_stamps_use_safe_operation_envelopes_and_normalize_when_possible() {
+        for version in [
+            crate::PATH_LAYER_TRANSFER_VERSION,
+            crate::PAINT_LAYER_TRANSFER_VERSION,
+        ] {
+            let mut generic = insert_transfer(version, Layer::default());
+            assert_eq!(
+                operations_version(&generic),
+                if version == crate::PATH_LAYER_TRANSFER_VERSION {
+                    PATH_OPERATIONS_VERSION
+                } else {
+                    PAINT_OPERATIONS_VERSION
+                }
+            );
+            assert!(
+                validate_operations_version(&generic, LAYER_TRANSFER_OPERATIONS_VERSION).is_err()
+            );
+            downgrade_compatible_transfers(&mut generic);
+            assert_eq!(inserted_transfer(&generic).version, 1);
+            assert_eq!(
+                operations_version(&generic),
+                LAYER_TRANSFER_OPERATIONS_VERSION
+            );
+        }
+
+        let geometry = crate::PathGeometry::new(
+            8,
+            8,
+            false,
+            crate::PathFillRule::EvenOdd,
+            vec![
+                crate::PathAnchor::corner(0.0, 0.0),
+                crate::PathAnchor::corner(8.0, 8.0),
+            ],
+        )
+        .unwrap();
+        for version in [
+            crate::PATH_LAYER_TRANSFER_VERSION,
+            crate::PAINT_LAYER_TRANSFER_VERSION,
+        ] {
+            let mut path = insert_transfer(
+                version,
+                Layer {
+                    kind: crate::LayerKind::Path {
+                        geometry: geometry.clone(),
+                        color: [255; 4],
+                    },
+                    ..Layer::default()
+                },
+            );
+            downgrade_compatible_transfers(&mut path);
+            assert_eq!(
+                inserted_transfer(&path).version,
+                crate::PATH_LAYER_TRANSFER_VERSION
+            );
+            assert_eq!(operations_version(&path), PATH_OPERATIONS_VERSION);
+            assert!(
+                validate_operations_version(&path, COLOR_SELECTION_OPERATIONS_VERSION).is_err()
+            );
+        }
+
+        let mut paint = insert_transfer(
+            crate::PAINT_LAYER_TRANSFER_VERSION,
+            Layer {
+                kind: crate::LayerKind::Paint {
+                    program: crate::BrushProgram::new(8, 8).unwrap(),
+                },
+                ..Layer::default()
+            },
+        );
+        downgrade_compatible_transfers(&mut paint);
+        assert_eq!(
+            inserted_transfer(&paint).version,
+            crate::PAINT_LAYER_TRANSFER_VERSION
+        );
+        assert_eq!(operations_version(&paint), PAINT_OPERATIONS_VERSION);
+        assert!(validate_operations_version(&paint, PATH_OPERATIONS_VERSION).is_err());
+    }
+
+    #[test]
+    fn transfer_downgrade_never_repairs_invalid_legacy_feature_stamps() {
+        let mut paint_v4 = insert_transfer(
+            crate::PATH_LAYER_TRANSFER_VERSION,
+            Layer {
+                kind: crate::LayerKind::Paint {
+                    program: crate::BrushProgram::new(8, 8).unwrap(),
+                },
+                ..Layer::default()
+            },
+        );
+        assert!(inserted_transfer(&paint_v4).validate_envelope().is_err());
+        downgrade_compatible_transfers(&mut paint_v4);
+        assert_eq!(
+            inserted_transfer(&paint_v4).version,
+            crate::PATH_LAYER_TRANSFER_VERSION
+        );
+        assert_eq!(operations_version(&paint_v4), PAINT_OPERATIONS_VERSION);
+        assert!(validate_operations_version(&paint_v4, PATH_OPERATIONS_VERSION).is_err());
+
+        let mut dissolve_v5 = insert_transfer(
+            crate::PAINT_LAYER_TRANSFER_VERSION,
+            Layer {
+                blend_mode: crate::BlendMode::Dissolve,
+                ..Layer::default()
+            },
+        );
+        assert!(inserted_transfer(&dissolve_v5).validate_envelope().is_err());
+        downgrade_compatible_transfers(&mut dissolve_v5);
+        assert_eq!(
+            inserted_transfer(&dissolve_v5).version,
+            crate::PAINT_LAYER_TRANSFER_VERSION
+        );
+        assert_eq!(
+            operations_version(&dissolve_v5),
+            DISSOLVE_OPERATIONS_VERSION
+        );
+        assert!(
+            validate_operations_version(&dissolve_v5, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION)
+                .is_err()
         );
     }
 

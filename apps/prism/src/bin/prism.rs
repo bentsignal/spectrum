@@ -659,11 +659,8 @@ fn run(cli: Cli) -> Result<Value> {
                         bail!("--seed is only valid with the dissolve blend mode");
                     }
                     let mut commands = vec![Command::SetBlendMode { id, blend_mode }];
-                    if blend_mode == BlendMode::Dissolve {
-                        commands.push(Command::SetDissolveSeed {
-                            id,
-                            seed: seed.unwrap_or(0),
-                        });
+                    if let Some(seed) = seed {
+                        commands.push(Command::SetDissolveSeed { id, seed });
                     }
                     workspace.execute_batch(commands)?
                 }
