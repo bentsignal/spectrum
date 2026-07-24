@@ -169,9 +169,19 @@ fn lumen_branding_is_wired_to_runtime_and_native_packages() {
     assert!(app.contains("with_icon(lumen_icon())"));
     assert!(app.contains("lumen-app-icon.png"));
     assert!(plist.contains("<string>Lumen.icns</string>"));
-    assert!(macos.contains("lumen-app-icon.png"));
+    assert!(plist.contains("<key>CFBundleIconName</key><string>Lumen</string>"));
+    assert!(macos.contains("assets/branding/Lumen.icon"));
     assert!(linux.contains("com.bentsignal.Lumen.png"));
     assert!(windows.contains("Lumen.png"));
+
+    let native_icon = repository.join("assets/branding/Lumen.icon");
+    let icon = fs::read_to_string(native_icon.join("icon.json")).unwrap();
+    let source = fs::read(repository.join("assets/branding/lumen-violet-final-clean.png")).unwrap();
+    let embedded = fs::read(native_icon.join("Assets/lumen-violet-final-clean.png")).unwrap();
+    assert_eq!(source, embedded, "Icon Composer must preserve approved art");
+    assert!(icon.contains("\"squares\" : \"shared\""));
+    assert!(icon.contains("\"image-name\" : \"lumen-violet-final-clean.png\""));
+    assert!(!icon.contains("\"position\""));
 }
 
 #[test]
