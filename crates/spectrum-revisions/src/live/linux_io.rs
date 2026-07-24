@@ -19,6 +19,8 @@ use super::{
 
 const RENAME_EXCHANGE: libc::c_uint = 2;
 mod mutation;
+mod publication;
+pub(super) use publication::{PublishBase, validate_publish_base};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SlotMutationPoint {
@@ -903,6 +905,27 @@ pub(super) fn write_ready_marker(
 ) -> RevisionResult<()> {
     directory.write_marker(
         super::PUBLISH_MIRROR_READY_FILE,
+        &marker_bytes(generation, state_id),
+    )
+}
+
+pub(super) fn publication_marker_matches(
+    directory: &PrivateDirectory,
+    generation: u64,
+    state_id: Option<StorageStateId>,
+) -> bool {
+    directory
+        .read_marker(super::PUBLISH_CURRENT_FILE)
+        .is_ok_and(|bytes| bytes == marker_bytes(generation, state_id))
+}
+
+pub(super) fn write_publication_marker(
+    directory: &PrivateDirectory,
+    generation: u64,
+    state_id: Option<StorageStateId>,
+) -> RevisionResult<()> {
+    directory.write_marker(
+        super::PUBLISH_CURRENT_FILE,
         &marker_bytes(generation, state_id),
     )
 }

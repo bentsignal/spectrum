@@ -5,7 +5,7 @@ use spectrum_revisions::{
     SessionId, TrackId,
 };
 #[cfg(target_os = "linux")]
-use spectrum_revisions::{Asset, PublishStrategy};
+use spectrum_revisions::{Asset, PublishStats, PublishStrategy, RevisionStore};
 
 struct Fixture {
     directory: tempfile::TempDir,
@@ -161,6 +161,61 @@ fn independent_live_connections_publish_both_branches_without_visible_sidecars()
     );
     assert!(!sidecar(&fixture.canonical, "-wal").exists());
     assert!(!sidecar(&fixture.canonical, "-shm").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn same_cache_publishers_rebase_and_explicit_retry_converges() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("shared.prism");
+    let cache = directory.path().join("shared-cache");
+    let (mut first, info) = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        NewProject {
+            application_id: "spectrum.test".into(),
+            application_version: "1.0.0".into(),
+            actor: actor("person:1", ActorKind::Human),
+            session_id: SessionId::new(),
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![payload("test.snapshot", b"root")],
+            assets: Vec::new(),
+        },
+    )
+    .unwrap();
+    let mut second = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    let first_asset = Asset::new("application/x-first-client", b"first".to_vec());
+    let second_asset = Asset::new("application/x-second-client", b"second".to_vec());
+
+    first
+        .mutate(|store| store.put_asset(&first_asset.media_type, &first_asset.bytes))
+        .unwrap();
+    second
+        .mutate(|store| store.put_asset(&second_asset.media_type, &second_asset.bytes))
+        .unwrap();
+    assert!(second.pending_publish_error().is_none());
+    assert_eq!(
+        RevisionStore::open_read_only(&canonical)
+            .unwrap()
+            .generation()
+            .unwrap(),
+        second.store().generation().unwrap()
+    );
+
+    second.publish().unwrap();
+    assert!(second.pending_publish_error().is_none());
+    assert_eq!(second.last_publish_stats(), PublishStats::default());
+    let project_cache = cache.join(info.project_id.to_string());
+    assert!(!project_cache.join("published-exchange.intent").exists());
+
+    drop(first);
+    drop(second);
+    let verified =
+        LiveRevisionStore::open(&canonical, &directory.path().join("verified-cache")).unwrap();
+    assert!(verified.store().asset(first_asset.id).unwrap().is_some());
+    assert!(verified.store().asset(second_asset.id).unwrap().is_some());
 }
 
 #[test]

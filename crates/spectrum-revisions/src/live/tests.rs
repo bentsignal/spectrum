@@ -562,6 +562,14 @@ fn hardlink_created_at_exchange_is_discarded_from_private_recovery_without_alias
     assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
     assert_eq!(alias.metadata().unwrap().nlink(), 2);
     assert!(project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    live.publish().unwrap();
+    assert!(live.pending_publish_error().is_none());
+    assert_eq!(live.last_publish_stats(), PublishStats::default());
+    assert!(!project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    assert!(!project_cache.join(PUBLISH_MIRROR_FILE).exists());
+    assert_eq!(alias.metadata().unwrap().nlink(), 1);
+    assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
+    assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
     drop(live);
 
     let mut recovered = LiveRevisionStore::open(&canonical, &cache).unwrap();

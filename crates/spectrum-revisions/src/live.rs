@@ -21,9 +21,10 @@ mod tests;
 use linux_io::write_ready_marker;
 #[cfg(target_os = "linux")]
 use linux_io::{
-    ExchangeIntent, PrivateDirectory, catch_up_after_bulk, open_unnamed, prepare_reusable_slot,
-    publish_unnamed, recover_exchange, remove_private_file, seed_incremental_mirror,
-    update_candidate_slot,
+    ExchangeIntent, PrivateDirectory, PublishBase, catch_up_after_bulk, open_unnamed,
+    prepare_reusable_slot, publish_unnamed, recover_exchange, remove_private_file,
+    seed_incremental_mirror, update_candidate_slot, validate_publish_base,
+    write_publication_marker,
 };
 
 const STORE_FILE: &str = "live.sqlite";
@@ -34,6 +35,8 @@ const PUBLISH_MIRROR_FILE: &str = "published-mirror.sqlite";
 const PUBLISH_MIRROR_READY_FILE: &str = "published-mirror.ready";
 #[cfg(target_os = "linux")]
 const PUBLISH_EXCHANGE_INTENT_FILE: &str = "published-exchange.intent";
+#[cfg(target_os = "linux")]
+const PUBLISH_CURRENT_FILE: &str = "published-current.ready";
 #[cfg(target_os = "linux")]
 const LEGACY_PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
 #[cfg(target_os = "linux")]
@@ -571,6 +574,8 @@ fn publish_checkpoint(
     #[cfg(target_os = "linux")]
     {
         let source_inspection = RevisionStore::inspect(source)?;
+        let directory = PrivateDirectory::open(_cache_directory)?;
+        recover_exchange(&directory, destination, _cache_directory)?;
         let base = validate_publish_base(
             destination,
             _cache_directory,
@@ -579,6 +584,16 @@ fn publish_checkpoint(
             source_inspection.generation,
             source_inspection.state_id,
         )?;
+        if base.generation == source_inspection.generation
+            && base.state_id == source_inspection.state_id
+        {
+            write_publication_marker(
+                &directory,
+                source_inspection.generation,
+                source_inspection.state_id,
+            )?;
+            return Ok(PublishStats::default());
+        }
         let (incremental, mut reflink_unavailable) = incremental_publish(
             source,
             destination,
@@ -588,6 +603,11 @@ fn publish_checkpoint(
             source_inspection.state_id,
         )?;
         if let Some(stats) = incremental {
+            write_publication_marker(
+                &directory,
+                source_inspection.generation,
+                source_inspection.state_id,
+            )?;
             return Ok(stats);
         }
         reflink_unavailable |= open_unnamed(_cache_directory).is_err();
@@ -600,6 +620,11 @@ fn publish_checkpoint(
             source_inspection.generation,
             source_inspection.state_id,
         );
+        write_publication_marker(
+            &directory,
+            source_inspection.generation,
+            source_inspection.state_id,
+        )?;
         Ok(PublishStats {
             incremental: false,
             reflink_unavailable,
@@ -633,74 +658,6 @@ struct FileIdentity {
 }
 
 #[cfg(target_os = "linux")]
-struct PublishBase {
-    canonical: Option<File>,
-    identity: Option<FileIdentity>,
-    permissions: Option<fs::Permissions>,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-}
-
-#[cfg(target_os = "linux")]
-fn validate_publish_base(
-    destination: &Path,
-    _cache_directory: &Path,
-    expected_generation: u64,
-    expected_state_id: Option<StorageStateId>,
-    source_generation: u64,
-    source_state_id: Option<StorageStateId>,
-) -> RevisionResult<PublishBase> {
-    let canonical = match open_nofollow(destination, false) {
-        Ok(file) => file,
-        Err(error)
-            if error.kind() == std::io::ErrorKind::NotFound
-                && expected_generation == 0
-                && expected_state_id.is_none() =>
-        {
-            return Ok(PublishBase {
-                canonical: None,
-                identity: None,
-                permissions: None,
-                generation: 0,
-                state_id: None,
-            });
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let metadata = canonical.metadata()?;
-    if !metadata.file_type().is_file() {
-        return Err(RevisionError::Invalid(
-            "canonical project is not a regular file".into(),
-        ));
-    }
-    let identity = file_identity(&metadata);
-    let inspection = RevisionStore::inspect(destination)?;
-    let revalidated = open_nofollow(destination, false)?;
-    if validated_identity(&revalidated, false)? != identity {
-        return Err(RevisionError::Invalid(
-            "canonical project changed while it was inspected".into(),
-        ));
-    }
-    let expected_matches =
-        inspection.generation == expected_generation && inspection.state_id == expected_state_id;
-    let already_published =
-        inspection.generation == source_generation && inspection.state_id == source_state_id;
-    if !expected_matches && !already_published {
-        return Err(RevisionError::Invalid(format!(
-            "project publication conflict: expected generation {expected_generation}, found {}",
-            inspection.generation
-        )));
-    }
-    Ok(PublishBase {
-        canonical: Some(canonical),
-        identity: Some(identity),
-        permissions: Some(metadata.permissions()),
-        generation: inspection.generation,
-        state_id: inspection.state_id,
-    })
-}
-
-#[cfg(target_os = "linux")]
 fn incremental_publish(
     source: &Path,
     destination: &Path,
@@ -717,7 +674,6 @@ fn incremental_publish(
         return Ok((None, false));
     };
     let directory = PrivateDirectory::open(cache_directory)?;
-    recover_exchange(&directory, destination, cache_directory)?;
     use std::os::unix::fs::MetadataExt as _;
     if base
         .canonical
