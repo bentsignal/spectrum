@@ -20,7 +20,9 @@ use super::{
 const RENAME_EXCHANGE: libc::c_uint = 2;
 mod mutation;
 mod publication;
-pub(super) use publication::{PublishBase, validate_publish_base};
+pub(super) use publication::{
+    PublishBase, recover_full_copy, validate_publish_base, write_full_copy_intent,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SlotMutationPoint {
@@ -542,6 +544,7 @@ pub(super) fn recover_exchange(
                     "missing publication slot does not match a committed exchange".into(),
                 ));
             }
+            write_publication_marker(directory, intent.target_generation, intent.target_state_id)?;
             remove_private_file(directory, super::PUBLISH_MIRROR_READY_FILE)?;
             remove_private_file(directory, super::PUBLISH_EXCHANGE_INTENT_FILE)?;
             directory.sync()?;
@@ -573,6 +576,7 @@ pub(super) fn recover_exchange(
             remove_private_file(directory, super::PUBLISH_MIRROR_FILE)?;
             remove_private_file(directory, super::PUBLISH_MIRROR_READY_FILE)?;
         }
+        write_publication_marker(directory, intent.target_generation, intent.target_state_id)?;
     } else if canonical_identity == intent.canonical_identity
         && slot_identity == intent.candidate_identity
         && canonical_inspection.generation == intent.generation
@@ -587,6 +591,7 @@ pub(super) fn recover_exchange(
             intent.candidate_identity,
         )?;
         remove_private_file(directory, super::PUBLISH_MIRROR_READY_FILE)?;
+        write_publication_marker(directory, intent.generation, intent.state_id)?;
     } else {
         return Err(RevisionError::Invalid(
             "publication exchange residuals do not match either atomic state".into(),

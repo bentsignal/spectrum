@@ -11,7 +11,8 @@ use std::{
 
 use super::linux_io::{
     ExchangeIntent, SlotMutationPoint, apply_checkpoint_delta, clear_slot_hardlink_race,
-    inspect_named_checkpoint, ready_marker_matches, set_slot_hardlink_race, update_private_slot,
+    inspect_named_checkpoint, publication_marker_matches, ready_marker_matches,
+    set_slot_hardlink_race, update_private_slot,
 };
 use super::*;
 use crate::{Actor, ActorKind, Asset, Payload};
@@ -456,12 +457,12 @@ fn bulk_growth_catches_up_the_alternate_slot_before_the_next_small_edit() {
 }
 
 #[test]
-fn preexisting_canonical_hardlink_uses_full_copy_without_mutating_the_alias() {
+fn committed_full_copy_crash_recovers_for_an_already_open_survivor() {
     let directory = tempfile::tempdir().unwrap();
     let canonical = directory.path().join("project.lumen");
     let alias = directory.path().join("external-alias.lumen");
     let cache = directory.path().join("cache");
-    let (mut live, _) = LiveRevisionStore::create(
+    let (mut live, info) = LiveRevisionStore::create(
         &canonical,
         &cache,
         NewProject {
@@ -488,26 +489,50 @@ fn preexisting_canonical_hardlink_uses_full_copy_without_mutating_the_alias() {
     fs::hard_link(&canonical, &alias).unwrap();
     let alias_bytes = fs::read(&alias).unwrap();
     let alias_mode = alias.metadata().unwrap().permissions().mode();
+    let base_generation = live.store().generation().unwrap();
 
-    live.mutate(|store| store.put_asset("application/x-linked-fallback", b"published"))
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("publication_crash_child")
+        .arg("--nocapture")
+        .env("SPECTRUM_CRASH_CANONICAL", &canonical)
+        .env("SPECTRUM_CRASH_CACHE", &cache)
+        .env("SPECTRUM_CRASH_FAULT", "full-copy-published")
+        .env("SPECTRUM_CRASH_MODE", "exit")
+        .status()
         .unwrap();
-    assert_eq!(
-        live.last_publish_stats().strategy,
-        PublishStrategy::FullCopy
+    assert_eq!(status.code(), Some(86));
+    assert!(RevisionStore::inspect(&canonical).unwrap().generation > base_generation);
+    assert!(
+        cache
+            .join(info.project_id.to_string())
+            .join(PUBLISH_FULL_COPY_INTENT_FILE)
+            .exists()
     );
-    assert!(!live.last_publish_stats().incremental);
     assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
     assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
     assert_eq!(canonical.metadata().unwrap().nlink(), 1);
 
-    drop(live);
-    let mut reopened = LiveRevisionStore::open(&canonical, &cache).unwrap();
-    reopened
-        .mutate(|store| store.put_asset("application/x-after-fallback", b"next edit"))
+    live.mutate(|store| store.put_asset("application/x-after-fallback", b"next edit"))
         .unwrap();
+    assert!(live.pending_publish_error().is_none());
+    let child_asset = Asset::new(
+        "application/x-crash-child",
+        b"survives abrupt death".to_vec(),
+    );
+    assert!(live.store().asset(child_asset.id).unwrap().is_some());
     assert_eq!(
-        reopened.last_publish_stats().strategy,
+        live.last_publish_stats().strategy,
         PublishStrategy::PageDiffExchange
+    );
+    live.publish().unwrap();
+    assert_eq!(live.last_publish_stats(), PublishStats::default());
+    let verified = RevisionStore::open_read_only(&canonical).unwrap();
+    assert!(verified.asset(child_asset.id).unwrap().is_some());
+    assert!(
+        verified
+            .asset(Asset::new("application/x-after-fallback", b"next edit".to_vec()).id)
+            .unwrap()
+            .is_some()
     );
     assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
     assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
@@ -771,6 +796,7 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
         .unwrap();
         let base_generation = live.store().generation().unwrap();
         let project_cache = cache.join(info.project_id.to_string());
+        let mut survivor = LiveRevisionStore::open(&canonical, &cache).unwrap();
         drop(live);
 
         let mode = ["exit", "abort", "kill"][index % 3];
@@ -837,15 +863,32 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
         );
         let followup = format!("followup-{fault:?}");
         let followup_asset = Asset::new("application/x-followup", followup.as_bytes().to_vec());
-        let mut recovered = LiveRevisionStore::open(&canonical, &cache).unwrap();
         assert!(
-            recovered.store().asset(child_asset.id).unwrap().is_some(),
+            survivor.store().asset(child_asset.id).unwrap().is_some(),
             "{fault:?} lost the child mutation"
         );
-        recovered
+        survivor
             .mutate(|store| store.put_asset("application/x-followup", followup.as_bytes()))
             .unwrap();
-        drop(recovered);
+        assert!(
+            survivor.pending_publish_error().is_none(),
+            "{fault:?} left the already-open survivor unable to publish"
+        );
+        survivor.publish().unwrap();
+        assert_eq!(survivor.last_publish_stats(), PublishStats::default());
+        let survivor_inspection = RevisionStore::inspect(survivor.working_path()).unwrap();
+        let canonical_inspection = RevisionStore::inspect(&canonical).unwrap();
+        assert_eq!(
+            canonical_inspection.generation,
+            survivor_inspection.generation
+        );
+        assert_eq!(canonical_inspection.state_id, survivor_inspection.state_id);
+        assert!(publication_marker_matches(
+            &PrivateDirectory::open(&project_cache).unwrap(),
+            canonical_inspection.generation,
+            canonical_inspection.state_id,
+        ));
+        drop(survivor);
 
         let verified =
             LiveRevisionStore::open(&canonical, &directory.path().join("verification-cache"))
@@ -866,6 +909,7 @@ fn fault_name(fault: PublishFault) -> &'static str {
         PublishFault::MarkerCreated => "marker-created",
         PublishFault::IntentRemoved => "intent-removed",
         PublishFault::LinkedSlotUnlinked => "linked-slot-unlinked",
+        PublishFault::FullCopyPublished => "full-copy-published",
         PublishFault::SeedMirrorCreated => "seed-mirror-created",
     }
 }
@@ -881,6 +925,7 @@ fn parse_fault(name: &str) -> PublishFault {
         "marker-created" => PublishFault::MarkerCreated,
         "intent-removed" => PublishFault::IntentRemoved,
         "linked-slot-unlinked" => PublishFault::LinkedSlotUnlinked,
+        "full-copy-published" => PublishFault::FullCopyPublished,
         "seed-mirror-created" => PublishFault::SeedMirrorCreated,
         other => panic!("unknown publication fault {other}"),
     }

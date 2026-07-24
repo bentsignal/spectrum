@@ -22,9 +22,9 @@ use linux_io::write_ready_marker;
 #[cfg(target_os = "linux")]
 use linux_io::{
     ExchangeIntent, PrivateDirectory, PublishBase, catch_up_after_bulk, open_unnamed,
-    prepare_reusable_slot, publish_unnamed, recover_exchange, remove_private_file,
-    seed_incremental_mirror, update_candidate_slot, validate_publish_base,
-    write_publication_marker,
+    prepare_reusable_slot, publish_unnamed, recover_exchange, recover_full_copy,
+    remove_private_file, seed_incremental_mirror, update_candidate_slot, validate_publish_base,
+    write_full_copy_intent, write_publication_marker,
 };
 
 const STORE_FILE: &str = "live.sqlite";
@@ -37,6 +37,8 @@ const PUBLISH_MIRROR_READY_FILE: &str = "published-mirror.ready";
 const PUBLISH_EXCHANGE_INTENT_FILE: &str = "published-exchange.intent";
 #[cfg(target_os = "linux")]
 const PUBLISH_CURRENT_FILE: &str = "published-current.ready";
+#[cfg(target_os = "linux")]
+const PUBLISH_FULL_COPY_INTENT_FILE: &str = "published-copy.intent";
 #[cfg(target_os = "linux")]
 const LEGACY_PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
 #[cfg(target_os = "linux")]
@@ -56,6 +58,7 @@ enum PublishFault {
     MarkerCreated,
     IntentRemoved,
     LinkedSlotUnlinked,
+    FullCopyPublished,
     SeedMirrorCreated,
 }
 
@@ -276,6 +279,10 @@ impl LiveRevisionStore {
                 &PrivateDirectory::open(cache_directory)?,
                 &live.canonical_path,
                 cache_directory,
+            )?;
+            recover_full_copy(
+                &PrivateDirectory::open(cache_directory)?,
+                &live.canonical_path,
             )?;
         }
         if live.store.generation()? > canonical.generation {
@@ -576,6 +583,7 @@ fn publish_checkpoint(
         let source_inspection = RevisionStore::inspect(source)?;
         let directory = PrivateDirectory::open(_cache_directory)?;
         recover_exchange(&directory, destination, _cache_directory)?;
+        recover_full_copy(&directory, destination)?;
         let base = validate_publish_base(
             destination,
             _cache_directory,
@@ -603,16 +611,25 @@ fn publish_checkpoint(
             source_inspection.state_id,
         )?;
         if let Some(stats) = incremental {
-            write_publication_marker(
-                &directory,
-                source_inspection.generation,
-                source_inspection.state_id,
-            )?;
             return Ok(stats);
         }
         reflink_unavailable |= open_unnamed(_cache_directory).is_err();
+        write_full_copy_intent(
+            &directory,
+            base.generation,
+            base.state_id,
+            source_inspection.generation,
+            source_inspection.state_id,
+        )?;
         atomic_publish(source, destination)?;
         sync_parent(destination)?;
+        maybe_publish_fault(PublishFault::FullCopyPublished)?;
+        write_publication_marker(
+            &directory,
+            source_inspection.generation,
+            source_inspection.state_id,
+        )?;
+        remove_private_file(&directory, PUBLISH_FULL_COPY_INTENT_FILE)?;
         let written_bytes = source.metadata()?.len();
         seed_incremental_mirror(
             destination,
@@ -620,11 +637,6 @@ fn publish_checkpoint(
             source_inspection.generation,
             source_inspection.state_id,
         );
-        write_publication_marker(
-            &directory,
-            source_inspection.generation,
-            source_inspection.state_id,
-        )?;
         Ok(PublishStats {
             incremental: false,
             reflink_unavailable,
@@ -736,6 +748,7 @@ fn incremental_publish(
         linux_io::ExchangeOutcome::Exchanged { old_slot_private } => old_slot_private,
     };
     maybe_publish_fault(PublishFault::Exchanged)?;
+    write_publication_marker(&directory, source_generation, source_state_id)?;
 
     if !old_slot_private {
         remove_private_file(&directory, PUBLISH_MIRROR_FILE)?;
