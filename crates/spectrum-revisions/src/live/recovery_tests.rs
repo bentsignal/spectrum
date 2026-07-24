@@ -26,6 +26,48 @@ fn project(application_id: &str) -> NewProject {
 }
 
 #[test]
+fn initial_create_publication_is_one_shot_and_cannot_recreate_a_deleted_project() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    std::fs::write(&canonical, []).unwrap();
+    let (live, _) =
+        LiveRevisionStore::create(&canonical, &cache, project("spectrum.initial-publication"))
+            .unwrap();
+    assert!(!live.initial_publish_pending.get());
+    assert!(canonical.is_file());
+
+    std::fs::remove_file(&canonical).unwrap();
+    assert!(live.publish().is_err());
+    assert!(!canonical.exists());
+}
+
+#[test]
+fn failed_initial_publication_reopens_through_durable_recovery_proof() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    PUBLISH_FAULT.set(Some(PublishFault::FullCopyPublished));
+    let failed = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        project("spectrum.initial-publication-retry"),
+    );
+    PUBLISH_FAULT.set(None);
+    assert!(failed.is_err());
+    assert!(canonical.is_file());
+
+    let project_id = RevisionStore::inspect(&canonical).unwrap().info.project_id;
+    let project_cache = cache.join(project_id.to_string());
+    assert!(project_cache.join(PUBLISH_WORKING_RECOVERY_FILE).is_file());
+
+    let reopened = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    assert!(!reopened.initial_publish_pending.get());
+    reopened.publish().unwrap();
+    assert!(!project_cache.join(PUBLISH_WORKING_RECOVERY_FILE).exists());
+}
+
+#[test]
 fn recovery_protocol_crash_child() {
     let Ok(canonical) = std::env::var("SPECTRUM_RECOVERY_CRASH_CANONICAL") else {
         return;

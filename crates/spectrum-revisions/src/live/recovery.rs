@@ -166,6 +166,7 @@ impl LiveRevisionStore {
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
             publication_poisoned: Cell::new(false),
+            initial_publish_pending: Cell::new(false),
             last_publish_stats: Cell::new(PublishStats::default()),
             publish_capabilities: PublishCapabilities::default(),
         };
@@ -260,6 +261,27 @@ impl LiveRevisionStore {
         if poisoned {
             return Err(RevisionError::Invalid(
                 "live cache contains an unacknowledged publication failure".into(),
+            ));
+        }
+        if self.initial_publish_pending.get() {
+            let destination_is_empty = match fs::metadata(&self.canonical_path) {
+                Ok(metadata) => metadata.is_file() && metadata.len() == 0,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+                Err(error) => return Err(error.into()),
+            };
+            if self.published_generation.get() == 0
+                && self.published_state_id.get().is_none()
+                && destination_is_empty
+            {
+                return Ok(());
+            }
+            return Err(RevisionError::Invalid(
+                "initial live publication no longer has an empty canonical destination".into(),
+            ));
+        }
+        if !self.canonical_path.is_file() {
+            return Err(RevisionError::Invalid(
+                "published project file disappeared while its live cache remained open".into(),
             ));
         }
         let published_here = self.published_generation.get() == generation

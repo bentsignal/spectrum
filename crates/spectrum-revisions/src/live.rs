@@ -83,6 +83,7 @@ pub struct LiveRevisionStore {
     temps_cleaned: Cell<bool>,
     pending_publish_error: RefCell<Option<String>>,
     publication_poisoned: Cell<bool>,
+    initial_publish_pending: Cell<bool>,
     last_publish_stats: Cell<PublishStats>,
     publish_capabilities: PublishCapabilities,
 }
@@ -140,6 +141,7 @@ impl LiveRevisionStore {
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
             publication_poisoned: Cell::new(false),
+            initial_publish_pending: Cell::new(true),
             last_publish_stats: Cell::new(PublishStats::default()),
             publish_capabilities: PublishCapabilities::default(),
         };
@@ -255,6 +257,7 @@ impl LiveRevisionStore {
                 )?,
                 PUBLISH_WORKING_RECOVERY_FILE,
             )?;
+            self.initial_publish_pending.set(false);
             return Ok(());
         }
         let stats = publish_checkpoint(
@@ -280,6 +283,7 @@ impl LiveRevisionStore {
             )?,
             PUBLISH_WORKING_RECOVERY_FILE,
         )?;
+        self.initial_publish_pending.set(false);
         Ok(())
     }
 
