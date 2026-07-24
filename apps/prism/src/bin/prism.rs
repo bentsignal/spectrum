@@ -232,7 +232,7 @@ enum CliCommand {
     Select {
         id: Option<u64>,
     },
-    /// Create, clear, color-select, crop, or nondestructively fill pixels.
+    /// Create, clear, color-select, crop, fill, or nondestructively delete pixels.
     Selection(SelectionArgs),
     Reorder {
         id: u64,

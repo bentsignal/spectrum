@@ -51,12 +51,13 @@ pub(crate) fn spawn_layer_render_worker(
                         && cached.stroke == render_layer.stroke
                         && cached.shape_fill == render_layer.shape_fill
                         && cached.pixel_mask_identity
-                            == render_layer
-                                .pixel_mask
-                                .as_ref()
-                                .map(prism_core::PixelMask::identity)
+                            == cached_base_pixel_mask_identity(&render_layer)
                         && cached.shape_raster_scale == request.key.shape_raster_scale
-                        && cached.max_size >= request.max_size
+                        && cached_base_max_size_is_compatible(
+                            &render_layer,
+                            cached.max_size,
+                            request.max_size,
+                        )
                 })
                 .map(|cached| cached.image.clone());
             let paint_final = matches!(render_layer.kind, LayerKind::Paint { .. });
@@ -86,10 +87,7 @@ pub(crate) fn spawn_layer_render_worker(
                             kind: render_layer.kind.clone(),
                             stroke: render_layer.stroke,
                             shape_fill: render_layer.shape_fill.clone(),
-                            pixel_mask_identity: render_layer
-                                .pixel_mask
-                                .as_ref()
-                                .map(prism_core::PixelMask::identity),
+                            pixel_mask_identity: cached_base_pixel_mask_identity(&render_layer),
                             max_size: request.max_size,
                             shape_raster_scale: request.key.shape_raster_scale,
                             image: image.clone(),
@@ -105,24 +103,11 @@ pub(crate) fn spawn_layer_render_worker(
                     if paint_final {
                         return Ok(image);
                     }
-                    let mut image = spectrum_imaging::render_image(
+                    prism_core::render_layer_preview_from_base(
+                        &render_layer,
                         image,
-                        request.layer.adjustments.clone(),
-                        spectrum_imaging::RenderOptions {
-                            max_size: Some(request.max_size),
-                        },
+                        Some(request.max_size),
                     )
-                    .to_rgba8();
-                    let (width, height) = image.dimensions();
-                    prism_core::apply_vector_mask_to_image(
-                        &mut image,
-                        request.layer.vector_mask.as_ref(),
-                        width,
-                        height,
-                        0,
-                        0,
-                    )?;
-                    Ok(image::DynamicImage::ImageRgba8(image))
                 })
                 .map(|image| {
                     let geometry = source_geometry.unwrap_or_else(|| {
@@ -145,4 +130,75 @@ pub(crate) fn spawn_layer_render_worker(
             repaint.request_repaint();
         }
     });
+}
+
+fn cached_base_pixel_mask_identity(layer: &Layer) -> Option<[u8; 32]> {
+    if matches!(layer.kind, LayerKind::Raster { .. }) {
+        None
+    } else {
+        layer
+            .pixel_mask
+            .as_ref()
+            .map(prism_core::PixelMask::identity)
+    }
+}
+
+fn cached_base_max_size_is_compatible(layer: &Layer, cached: u32, requested: u32) -> bool {
+    if matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some() {
+        cached == requested
+    } else {
+        cached >= requested
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raster_bases_ignore_masks_but_shape_bases_keep_mask_identity() {
+        let mask = prism_core::PixelMask::new(2, 1, vec![255, 0]);
+        let raster = Layer {
+            pixel_mask: Some(mask.clone()),
+            kind: LayerKind::Raster {
+                path: "source.png".into(),
+                original_path: None,
+            },
+            ..Layer::default()
+        };
+        assert_eq!(cached_base_pixel_mask_identity(&raster), None);
+
+        let shape = Layer {
+            pixel_mask: Some(mask.clone()),
+            kind: LayerKind::Rectangle {
+                width: 2,
+                height: 1,
+                color: [255; 4],
+                corner_radius: 0.0,
+            },
+            ..Layer::default()
+        };
+        assert_eq!(
+            cached_base_pixel_mask_identity(&shape),
+            Some(mask.identity())
+        );
+    }
+
+    #[test]
+    fn masked_raster_bases_do_not_reuse_a_differently_resized_cache_entry() {
+        let masked_raster = Layer {
+            pixel_mask: Some(prism_core::PixelMask::new(16, 12, vec![255; 192])),
+            kind: LayerKind::Raster {
+                path: "source.png".into(),
+                original_path: None,
+            },
+            ..Layer::default()
+        };
+        assert!(!cached_base_max_size_is_compatible(&masked_raster, 8, 4));
+        assert!(cached_base_max_size_is_compatible(&masked_raster, 4, 4));
+
+        let mut unmasked_raster = masked_raster;
+        unmasked_raster.pixel_mask = None;
+        assert!(cached_base_max_size_is_compatible(&unmasked_raster, 8, 4));
+    }
 }

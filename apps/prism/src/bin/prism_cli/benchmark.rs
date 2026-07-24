@@ -111,6 +111,7 @@ fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
 pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value> {
     let selection_fill = selection::measure_selection_fill()?;
     let magic_wand = selection::measure_magic_wand_bound()?;
+    let raster_delete = selection::measure_color_mask_raster_delete()?;
     let lasso = selection::measure_lasso_bound()?;
     let selection_outline = selection_outline::measure()?;
     let path = path::measure()?;
@@ -647,6 +648,20 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: selection_fill.p95_ms,
             budget_ms: 5.0,
             pass: selection_fill.p95_ms <= 5.0,
+        },
+        BenchmarkMetric {
+            name: "16384_canvas_color_mask_raster_selection_delete",
+            median_ms: raster_delete.median_ms,
+            p95_ms: raster_delete.p95_ms,
+            budget_ms: profile.raster_delete_budget_ms(),
+            pass: raster_delete.p95_ms <= profile.raster_delete_budget_ms(),
+        },
+        BenchmarkMetric {
+            name: "near_cap_straightened_color_mask_raster_selection_delete",
+            median_ms: raster_delete.near_cap_ms,
+            p95_ms: raster_delete.near_cap_ms,
+            budget_ms: profile.near_cap_raster_delete_budget_ms(),
+            pass: raster_delete.near_cap_ms <= profile.near_cap_raster_delete_budget_ms(),
         },
         BenchmarkMetric {
             name: "16384_canvas_bounded_lasso_selection",

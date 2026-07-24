@@ -107,7 +107,9 @@ fn brush_document_is_monotonic_prefix(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prism_core::{BrushMode, BrushSample, BrushStroke, BrushStyle, Command, PaintSelection};
+    use prism_core::{
+        BrushMode, BrushSample, BrushStroke, BrushStyle, Command, PaintSelection, PixelMask,
+    };
 
     fn progressive_brush_document(
         samples: &[[f32; 2]],
@@ -306,5 +308,39 @@ mod tests {
         assert!(completed_preview_is_safe_to_display(&short, &long));
         assert!(!immediate_preview_is_safe_to_display(&short, &long));
         assert!(immediate_preview_is_safe_to_display(&long, &long));
+    }
+
+    #[test]
+    fn raster_mask_changes_invalidate_brush_prefix_and_settlement_reuse() {
+        let (mut short_document, short_brush) =
+            progressive_brush_document(&[[12.0, 14.0], [30.0, 25.0]], 91);
+        let (mut long_document, long_brush) =
+            progressive_brush_document(&[[12.0, 14.0], [30.0, 25.0], [58.0, 61.0]], 91);
+        let raster = Layer {
+            id: 2,
+            kind: LayerKind::Raster {
+                path: "immutable-source.png".into(),
+                original_path: None,
+            },
+            pixel_mask: Some(PixelMask::new(2, 2, vec![255, 255, 255, 255])),
+            blend_mode: BlendMode::Dissolve,
+            dissolve_seed: 0x55aa_33cc,
+            ..Layer::default()
+        };
+        short_document.layers.push(raster.clone());
+        long_document.layers.push(raster);
+        long_document.layers[1].pixel_mask = Some(PixelMask::new(2, 2, vec![255, 0, 255, 255]));
+
+        let completed = progressive_key(&short_document, short_brush, 29);
+        let desired_progressive = progressive_key(&long_document, long_brush, 29);
+        let desired_durable = durable_key(&long_document, 29);
+        assert!(!completed_preview_is_safe_to_display(
+            &completed,
+            &desired_progressive
+        ));
+        assert!(!completed_preview_is_safe_to_display(
+            &completed,
+            &desired_durable
+        ));
     }
 }

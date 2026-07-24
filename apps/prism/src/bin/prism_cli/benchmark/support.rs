@@ -37,6 +37,20 @@ impl BenchmarkProfile {
         }
     }
 
+    pub(crate) fn raster_delete_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 75.0,
+            Self::HostedCi => 225.0,
+        }
+    }
+
+    pub(crate) fn near_cap_raster_delete_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 5_000.0,
+            Self::HostedCi => 15_000.0,
+        }
+    }
+
     pub(crate) fn path_raster_budget_ms(self) -> f64 {
         match self {
             Self::Interactive => 250.0,

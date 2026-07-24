@@ -241,6 +241,86 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
 }
 
 #[test]
+fn cli_magic_wand_delete_is_nondestructive_and_durable() {
+    let directory = std::env::temp_dir().join(format!(
+        "prism-cli-wand-delete-{}",
+        spectrum_revisions::RevisionId::new()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("two-colors.png");
+    image::RgbaImage::from_fn(8, 4, |x, _| {
+        if x < 4 {
+            image::Rgba([235, 20, 30, 255])
+        } else {
+            image::Rgba([20, 30, 235, 255])
+        }
+    })
+    .save(&source)
+    .unwrap();
+    let source = std::fs::canonicalize(source).unwrap();
+    let original = std::fs::read(&source).unwrap();
+    let project = directory.join("wand-delete.prism");
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "init",
+        "Wand delete CLI",
+        "--width",
+        "8",
+        "--height",
+        "4",
+        "--background",
+        "00000000",
+    ]);
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "add-image",
+        source.to_str().unwrap(),
+    ]);
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "selection",
+        "magic-wand",
+        "1",
+        "1",
+        "--tolerance",
+        "0",
+        "--no-antialias",
+    ]);
+    let deleted = run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "selection",
+        "delete",
+        "1",
+    ]);
+    assert_eq!(deleted["results"][0]["action"], "delete_selected_pixels");
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+
+    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let mask = &listed["document"]["layers"][0]["pixel_mask"];
+    assert_eq!(mask["width"], 8);
+    assert_eq!(mask["height"], 4);
+    assert!(
+        mask["alpha"]
+            .as_str()
+            .is_some_and(|alpha| !alpha.is_empty())
+    );
+    assert!(listed["document"]["selection"].is_object());
+
+    let reopened = Workspace::open(&project).unwrap();
+    let pixel_mask = reopened.document.layers[0].pixel_mask.as_ref().unwrap();
+    assert_eq!((pixel_mask.width, pixel_mask.height), (8, 4));
+    assert_eq!(
+        pixel_mask.alpha.iter().filter(|alpha| **alpha == 0).count(),
+        16
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn cli_rasterizes_a_shape_through_the_core_command() {
     let directory = std::env::temp_dir().join(format!(
         "prism-cli-rasterize-{}",
