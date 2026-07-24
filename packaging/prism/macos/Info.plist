@@ -10,6 +10,8 @@
 	<string>com.bentsignal.prism</string>
 	<key>CFBundleIconFile</key>
 	<string>Prism.icns</string>
+	<key>CFBundleIconName</key>
+	<string>Prism</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
