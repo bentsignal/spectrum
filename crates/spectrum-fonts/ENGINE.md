@@ -51,10 +51,13 @@ variable-font table including VARC, all color/bitmap/SVG tables including
 explicit direction/script/language other than `und` are outside this candidate API until those
 inputs are modeled directly rather than guessed.
 
-Before this crate can be connected to Prism export, the path-pinned dependency
-and licensed conformance corpus must pass on macOS, Windows, and Linux. The
-approved local bounded build and corpus pass are complete; the platform build
-matrix explicitly runs
+Prism's optimized-copy transaction is the only production caller allowed to
+persist a candidate artifact. It additionally verifies immutable source identity,
+linear history, reachable assets, and exact full/region render parity before
+atomic publication; this does not authorize the general export path. The
+path-pinned dependency and licensed conformance corpus must continue to pass on
+macOS, Windows, and Linux. The approved local bounded build and corpus pass are
+complete; the platform build matrix explicitly runs
 `cargo test -p spectrum-fonts --locked` so the library-only crate and its exact
 output goldens cannot be skipped by `--workspace --bins`. The accepted corpus
 uses pinned unhinted static and layout fixtures; the

@@ -80,6 +80,9 @@ pub use readonly_font::{
     ReadOnlyFontSource, ReadOnlyFontSubsetInput, inspect_font_source_read_only,
     inspect_font_subset_read_only,
 };
+#[path = "optimized_copy.rs"]
+mod optimized_copy;
+pub use optimized_copy::{OptimizedCopyFont, OptimizedCopyReport, create_optimized_font_copy};
 
 impl DurableProject {
     pub fn looks_durable(path: &Path) -> Result<bool> {

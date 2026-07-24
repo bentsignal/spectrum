@@ -45,7 +45,7 @@ use linux_io::{
 };
 use metrics::elapsed_us;
 pub use metrics::{PublishStats, PublishStrategy, PublishTimings};
-use no_replace::rename_no_replace;
+pub(crate) use no_replace::rename_no_replace;
 
 const STORE_FILE: &str = "live.sqlite";
 const LOCK_FILE: &str = "publish.lock";
