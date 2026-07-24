@@ -206,7 +206,11 @@ fn corrupted_private_predecessor_is_reconstructed_before_exchange() {
     live.mutate(|store| store.put_asset("application/x-third", b"third"))
         .unwrap();
 
-    assert!(live.pending_publish_error().is_none());
+    let pending_error = live.pending_publish_error();
+    assert!(
+        pending_error.is_none(),
+        "stale read-only slot publication failed: {pending_error:?}"
+    );
     assert!(live.last_publish_stats().incremental);
     assert_eq!(canonical.metadata().unwrap().mode() & 0o777, 0o400);
     let published = RevisionStore::inspect(&canonical).unwrap();
