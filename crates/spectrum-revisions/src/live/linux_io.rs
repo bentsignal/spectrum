@@ -608,6 +608,17 @@ pub(super) fn remove_private_file(directory: &PrivateDirectory, name: &str) -> R
     }
 }
 
+pub(super) fn remove_private_file_lazy(
+    directory: &PrivateDirectory,
+    name: &str,
+) -> RevisionResult<()> {
+    match directory.remove(name) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(super) fn prepare_reusable_slot(
     directory: &PrivateDirectory,
     name: &str,
@@ -931,6 +942,27 @@ pub(super) fn write_publication_marker(
 ) -> RevisionResult<()> {
     directory.write_marker(
         super::PUBLISH_CURRENT_FILE,
+        &marker_bytes(generation, state_id),
+    )
+}
+
+pub(super) fn working_recovery_marker_matches(
+    directory: &PrivateDirectory,
+    generation: u64,
+    state_id: Option<StorageStateId>,
+) -> bool {
+    directory
+        .read_marker(super::PUBLISH_WORKING_RECOVERY_FILE)
+        .is_ok_and(|bytes| bytes == marker_bytes(generation, state_id))
+}
+
+pub(super) fn write_working_recovery_marker(
+    directory: &PrivateDirectory,
+    generation: u64,
+    state_id: Option<StorageStateId>,
+) -> RevisionResult<()> {
+    directory.write_marker(
+        super::PUBLISH_WORKING_RECOVERY_FILE,
         &marker_bytes(generation, state_id),
     )
 }

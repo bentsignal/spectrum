@@ -82,7 +82,7 @@ fn abandoned_exchange_probe_entries_are_ignored_by_recovery() {
 }
 
 #[test]
-fn intent_removed_is_durable_across_real_process_death_modes() {
+fn intent_removed_abrupt_death_recovers_exact_committed_state() {
     for mode in ["exit", "abort", "kill"] {
         let directory = tempfile::tempdir().unwrap();
         let canonical = directory.path().join("project.lumen");
@@ -114,7 +114,6 @@ fn intent_removed_is_durable_across_real_process_death_modes() {
         }
 
         assert!(RevisionStore::inspect(&canonical).unwrap().generation > base_generation);
-        assert!(!project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
         assert!(project_cache.join(PUBLISH_MIRROR_READY_FILE).exists());
 
         let child_asset = Asset::new(
@@ -122,6 +121,7 @@ fn intent_removed_is_durable_across_real_process_death_modes() {
             b"survives abrupt death".to_vec(),
         );
         let mut recovered = LiveRevisionStore::open(&canonical, &cache).unwrap();
+        assert!(!project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
         assert!(recovered.store().asset(child_asset.id).unwrap().is_some());
         recovered
             .mutate(|store| store.put_asset("application/x-followup", mode.as_bytes()))
