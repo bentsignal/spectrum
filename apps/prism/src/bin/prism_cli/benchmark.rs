@@ -22,6 +22,8 @@ mod temporary_font;
 use temporary_font::TemporaryFont;
 #[path = "benchmark/adjusted_vector.rs"]
 mod adjusted_vector;
+#[path = "benchmark/dissolve_preview.rs"]
+mod dissolve_preview;
 #[path = "benchmark/font_picker.rs"]
 mod font_picker;
 #[path = "benchmark/paint.rs"]
@@ -174,6 +176,9 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let paint = paint::measure()?;
     let text_preview_frame = text_preview_frame::measure()?;
     let font_picker = font_picker::measure();
+    let dissolve_preview = dissolve_preview::measure()?;
+    let dissolve_preview_budget =
+        dissolve_preview::budget_ms(matches!(profile, BenchmarkProfile::HostedCi));
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -729,6 +734,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: text_interaction_p95,
             budget_ms: 1.0,
             pass: text_interaction_p95 <= 1.0,
+        },
+        BenchmarkMetric {
+            name: "seeded_dissolve_direct_transform_composite",
+            median_ms: dissolve_preview.median_ms,
+            p95_ms: dissolve_preview.p95_ms,
+            budget_ms: dissolve_preview_budget,
+            pass: dissolve_preview.p95_ms <= dissolve_preview_budget,
         },
         BenchmarkMetric {
             name: "gui_long_text_cold_face_cached_preview_frame",

@@ -14,7 +14,9 @@ use crate::{
 
 pub const LAYER_TRANSFER_FORMAT: &str = "spectrum.prism.layer";
 pub const PATH_LAYER_TRANSFER_VERSION: u32 = 4;
-pub const LAYER_TRANSFER_VERSION: u32 = 5;
+pub const PAINT_LAYER_TRANSFER_VERSION: u32 = 5;
+pub const DISSOLVE_LAYER_TRANSFER_VERSION: u32 = 6;
+pub const LAYER_TRANSFER_VERSION: u32 = DISSOLVE_LAYER_TRANSFER_VERSION;
 const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
@@ -63,8 +65,11 @@ impl LayerTransfer {
             },
             _ => None,
         };
-        let version = if matches!(layer.kind, LayerKind::Paint { .. }) {
-            LAYER_TRANSFER_VERSION
+        let version = if layer.blend_mode == crate::BlendMode::Dissolve || layer.dissolve_seed != 0
+        {
+            DISSOLVE_LAYER_TRANSFER_VERSION
+        } else if matches!(layer.kind, LayerKind::Paint { .. }) {
+            PAINT_LAYER_TRANSFER_VERSION
         } else if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. }) {
             PATH_LAYER_TRANSFER_VERSION
         } else if layer.pixel_mask.is_some() {
@@ -164,8 +169,16 @@ impl LayerTransfer {
         {
             bail!("Prism layer transfer versions before 4 cannot contain paths or vector masks");
         }
-        if self.version < 5 && matches!(self.layer.kind, LayerKind::Paint { .. }) {
+        if self.version < PAINT_LAYER_TRANSFER_VERSION
+            && matches!(self.layer.kind, LayerKind::Paint { .. })
+        {
             bail!("Prism layer transfer versions before 5 cannot contain Paint layers");
+        }
+        if self.version < DISSOLVE_LAYER_TRANSFER_VERSION
+            && (self.layer.blend_mode == crate::BlendMode::Dissolve
+                || self.layer.dissolve_seed != 0)
+        {
+            bail!("Prism layer transfer versions before 6 cannot contain Dissolve settings");
         }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum BlendMode {
     #[default]
     Normal,
+    Dissolve,
     Darken,
     Multiply,
     ColorBurn,
@@ -33,8 +34,9 @@ pub enum BlendMode {
 }
 
 impl BlendMode {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::Normal,
+        Self::Dissolve,
         Self::Darken,
         Self::Multiply,
         Self::ColorBurn,
@@ -65,6 +67,7 @@ impl BlendMode {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Normal => "Normal",
+            Self::Dissolve => "Dissolve",
             Self::Darken => "Darken",
             Self::Multiply => "Multiply",
             Self::ColorBurn => "Color Burn",
@@ -96,6 +99,7 @@ impl BlendMode {
     pub const fn description(self) -> &'static str {
         match self {
             Self::Normal => "Uses the layer color without blending it with layers below.",
+            Self::Dissolve => "Uses a seeded pixel pattern to replace partial opacity.",
             Self::Darken => "Keeps the darker channel value.",
             Self::Multiply => "Darkens by multiplying colors; white has no effect.",
             Self::ColorBurn => "Darkens the base and increases shadow contrast.",
@@ -123,6 +127,65 @@ impl BlendMode {
             Self::Luminosity => "Uses layer luminosity with base hue and saturation.",
         }
     }
+}
+
+/// Defines how a future group participates in the stack below it.
+///
+/// `Isolated` composites children onto a transparent intermediate before applying
+/// the group's opacity and blend mode. `PassThrough` composites children directly
+/// into the parent stack; the group's opacity scales each child's effective
+/// opacity and the group has no independent blend operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupCompositing {
+    Isolated,
+    #[default]
+    PassThrough,
+}
+
+/// Quantizes Dissolve's effective coverage to portable UNORM16.
+///
+/// Persisted layer opacity is rounded once to UNORM16. Source, mask, and clip
+/// alpha start as exact UNORM8 values, and every factor is then combined with
+/// rounded integer UNORM multiplication.
+pub fn dissolve_coverage(
+    source_alpha: u8,
+    layer_opacity: f32,
+    mask_alpha: u8,
+    clip_alpha: u8,
+) -> u16 {
+    let opacity = (layer_opacity.clamp(0.0, 1.0) * 65_535.0).round() as u16;
+    [source_alpha, mask_alpha, clip_alpha]
+        .into_iter()
+        .map(|alpha| u16::from(alpha) * 257)
+        .fold(opacity, multiply_unorm16)
+}
+
+fn multiply_unorm16(left: u16, right: u16) -> u16 {
+    ((u32::from(left) * u32::from(right) + 32_767) / 65_535) as u16
+}
+
+/// Returns whether a Dissolve pixel is present for quantized effective coverage.
+///
+/// Coordinates are pixels in the scaled document, and region renders pass
+/// absolute rather than tile-local coordinates. The hash and probability test
+/// are integer-only so future GPU implementations can reproduce them exactly.
+/// A present pixel is intentionally composited fully opaque; effective alpha is
+/// the probability of presence, matching conventional Dissolve semantics.
+pub fn dissolve_pixel_present(seed: u32, x: u32, y: u32, coverage: u16) -> bool {
+    if coverage == 0 {
+        return false;
+    }
+    if coverage == u16::MAX {
+        return true;
+    }
+    let mut hash = seed ^ x.wrapping_mul(0x9e37_79b9) ^ y.wrapping_mul(0x85eb_ca6b);
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x7feb_352d);
+    hash ^= hash >> 15;
+    hash = hash.wrapping_mul(0x846c_a68b);
+    hash ^= hash >> 16;
+    (hash >> 16) < u32::from(coverage)
 }
 
 pub fn blend_rgb(source: [u8; 4], destination: [u8; 4], mode: BlendMode) -> [u8; 3] {
@@ -162,7 +225,7 @@ pub fn blend_rgb(source: [u8; 4], destination: [u8; 4], mode: BlendMode) -> [u8;
 
 fn blend_channel(source: f32, destination: f32, mode: BlendMode) -> f32 {
     match mode {
-        BlendMode::Normal => source,
+        BlendMode::Normal | BlendMode::Dissolve => source,
         BlendMode::Darken => source.min(destination),
         BlendMode::Multiply => source * destination,
         BlendMode::ColorBurn => color_burn(source, destination),
@@ -332,6 +395,7 @@ mod tests {
             .collect();
         let expected = vec![
             (BlendMode::Normal, [190, 80, 220]),
+            (BlendMode::Dissolve, [190, 80, 220]),
             (BlendMode::Darken, [45, 80, 110]),
             (BlendMode::Multiply, [34, 53, 95]),
             (BlendMode::ColorBurn, [0, 0, 87]),
@@ -379,5 +443,37 @@ mod tests {
         let green = [0, 200, 0, 255];
         assert_eq!(blend_rgb(red, green, BlendMode::DarkerColor), [0, 200, 0]);
         assert_eq!(blend_rgb(red, green, BlendMode::LighterColor), [255, 0, 0]);
+    }
+
+    #[test]
+    fn dissolve_hash_is_stable_and_honors_alpha_edges() {
+        assert!(!dissolve_pixel_present(7, 31, 47, 0));
+        assert!(dissolve_pixel_present(7, 31, 47, u16::MAX));
+        let pattern: Vec<_> = (0..8)
+            .map(|x| dissolve_pixel_present(0x1234_5678, x, 9, 32_768))
+            .collect();
+        assert_eq!(pattern, [true, true, false, true, true, true, false, true]);
+    }
+
+    #[test]
+    fn dissolve_coverage_has_fixed_quantization_and_integer_factor_edges() {
+        assert_eq!(dissolve_coverage(255, 0.0, 255, 255), 0);
+        assert_eq!(dissolve_coverage(255, 1.0, 255, 255), u16::MAX);
+        assert_eq!(dissolve_coverage(255, 0.5, 255, 255), 32_768);
+        assert_eq!(dissolve_coverage(128, 1.0, 255, 255), 32_896);
+        assert_eq!(dissolve_coverage(255, 1.0, 0, 255), 0);
+        assert_eq!(dissolve_coverage(255, 1.0, 255, 128), 32_896);
+    }
+
+    #[test]
+    fn group_compositing_contract_is_stably_serialized() {
+        assert_eq!(
+            serde_json::to_string(&GroupCompositing::Isolated).unwrap(),
+            "\"isolated\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GroupCompositing::PassThrough).unwrap(),
+            "\"pass_through\""
+        );
     }
 }
