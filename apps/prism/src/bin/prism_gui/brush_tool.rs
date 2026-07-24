@@ -152,6 +152,10 @@ impl PrismApp {
         }
     }
 
+    pub(super) fn finish_durable_revision_advance(&mut self) {
+        finish_durable_revision_advance(&mut self.brush, &mut self.composite_preview);
+    }
+
     pub(super) fn brush_preview_key(&self) -> Option<ProgressiveBrushPreview> {
         self.brush.preview_key
     }
@@ -444,6 +448,18 @@ impl PrismApp {
     }
 }
 
+fn finish_durable_revision_advance(
+    brush: &mut BrushState,
+    composite_preview: &mut CompositePreview,
+) {
+    // A collaboration follow or history jump replaces the durable document without
+    // going through command execution. Never let a live gesture, retained settling
+    // document, or an asynchronous compositor result from the prior revision cross
+    // that boundary.
+    brush.clear_transient_preview();
+    composite_preview.reset();
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BrushColorAction {
     Apply,
@@ -724,5 +740,155 @@ mod tests {
         assert!(brush.settle_composited_preview_if_ready(true));
         assert!(brush.preview.is_none());
         assert!(brush.settling_layer_id.is_none());
+    }
+
+    fn revision_test_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "prism-gui-{label}-{}-{}.prism",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn revision_test_actor(
+        id: &str,
+        kind: spectrum_revisions::ActorKind,
+    ) -> spectrum_revisions::Actor {
+        spectrum_revisions::Actor {
+            id: id.into(),
+            display_name: id.into(),
+            kind,
+        }
+    }
+
+    fn seed_live_preview(brush: &mut BrushState, stale: Document) {
+        brush.gesture = Some(gesture(None));
+        brush.preview = Some(stale);
+        brush.preview_key = Some(ProgressiveBrushPreview {
+            gesture_id: 7,
+            target_layer_id: 1,
+            sample_count: 1,
+            mode: prism_core::BrushMode::Paint,
+        });
+    }
+
+    fn seed_settling_preview(brush: &mut BrushState, stale: Document) {
+        brush.preview = Some(stale);
+        brush.preview_key = Some(ProgressiveBrushPreview {
+            gesture_id: 8,
+            target_layer_id: 1,
+            sample_count: 2,
+            mode: prism_core::BrushMode::Paint,
+        });
+        brush.settling_layer_id = Some(1);
+    }
+
+    fn assert_revision_boundary_is_clean(
+        brush: &BrushState,
+        compositor: &CompositePreview,
+        prior_generation: u64,
+        durable: &Document,
+    ) {
+        assert!(brush.gesture.is_none());
+        assert!(brush.preview.is_none());
+        assert!(brush.preview_key.is_none());
+        assert!(brush.settling_layer_id.is_none());
+        assert!(!brush.committing_preview);
+        assert!(std::ptr::eq(
+            brush_display_document(brush, durable),
+            durable
+        ));
+        assert_eq!(
+            compositor.generation_for_test(),
+            prior_generation.wrapping_add(1)
+        );
+        assert!(compositor.is_empty_for_test());
+    }
+
+    #[test]
+    fn collaboration_revision_advance_discards_live_brush_frame_and_key() {
+        let path = revision_test_path("collaboration-brush-boundary");
+        let human_session = spectrum_revisions::SessionId::new();
+        let mut human = Workspace::create_durable(
+            Document::new("Before collaboration", 100, 80),
+            &path,
+            revision_test_actor("human:brush-boundary", spectrum_revisions::ActorKind::Human),
+            human_session,
+        )
+        .unwrap();
+        let collaboration = Workspace::start_collaboration(
+            &path,
+            Some(human_session),
+            revision_test_actor("agent:brush-boundary", spectrum_revisions::ActorKind::Agent),
+            spectrum_revisions::CollaborationMode::Together,
+        )
+        .unwrap();
+        let mut agent = Workspace::open_session(&path, collaboration.agent_session).unwrap();
+        agent
+            .execute(Command::RenameDocument {
+                name: "After collaboration".into(),
+            })
+            .unwrap();
+
+        let mut brush = BrushState::configured();
+        seed_live_preview(&mut brush, human.document.clone());
+        let mut compositor = CompositePreview::new(egui::Context::default());
+        let prior_generation = compositor.generation_for_test();
+        assert!(matches!(
+            human.sync_together().unwrap(),
+            spectrum_revisions::CollaborationSync::Advanced { .. }
+        ));
+        assert_eq!(human.document.name, "After collaboration");
+
+        finish_durable_revision_advance(&mut brush, &mut compositor);
+        assert_revision_boundary_is_clean(&brush, &compositor, prior_generation, &human.document);
+
+        drop(agent);
+        drop(human);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn history_revision_advance_discards_settling_brush_frame_and_key() {
+        let path = revision_test_path("history-brush-boundary");
+        let session = spectrum_revisions::SessionId::new();
+        let mut workspace = Workspace::create_durable(
+            Document::new("History root", 100, 80),
+            &path,
+            revision_test_actor(
+                "human:history-boundary",
+                spectrum_revisions::ActorKind::Human,
+            ),
+            session,
+        )
+        .unwrap();
+        let root = workspace.history().unwrap().unwrap().current;
+        workspace
+            .execute(Command::RenameDocument {
+                name: "History branch".into(),
+            })
+            .unwrap();
+        let stale = workspace.document.clone();
+
+        let mut brush = BrushState::configured();
+        seed_settling_preview(&mut brush, stale);
+        let mut compositor = CompositePreview::new(egui::Context::default());
+        let prior_generation = compositor.generation_for_test();
+        assert!(workspace.move_to_revision(root).unwrap());
+        assert_eq!(workspace.document.name, "History root");
+
+        finish_durable_revision_advance(&mut brush, &mut compositor);
+        assert_revision_boundary_is_clean(
+            &brush,
+            &compositor,
+            prior_generation,
+            &workspace.document,
+        );
+
+        drop(workspace);
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -300,6 +300,7 @@ impl PrismApp {
         match self.workspace.sync_together() {
             Ok(spectrum_revisions::CollaborationSync::Advanced { collaboration, .. }) => {
                 let agent = collaboration_agent_name(&self.workspace, collaboration.agent_session);
+                self.finish_durable_revision_advance();
                 self.apply_canvas_invalidation(CanvasInvalidation::All);
                 self.sync_active_raster_sources();
                 self.history.mark_stale();

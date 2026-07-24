@@ -180,6 +180,20 @@ impl CompositePreview {
         self.active_this_frame = false;
     }
 
+    #[cfg(test)]
+    pub(super) fn generation_for_test(&self) -> u64 {
+        self.generation
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty_for_test(&self) -> bool {
+        self.desired.is_none()
+            && self.ready.is_none()
+            && self.failed.is_none()
+            && self.pending.is_none()
+            && !self.active_this_frame
+    }
+
     pub(super) fn poll(&mut self, context: &egui::Context) {
         if !self.active_this_frame {
             self.desired = None;
