@@ -74,6 +74,8 @@ pub(super) fn inspector_group_heading(ui: &mut egui::Ui, label: &str) {
 }
 
 pub(super) fn install_style(context: &egui::Context) {
+    context.set_theme(egui::Theme::Dark);
+
     let radius = egui::CornerRadius::same(RADIUS as u8);
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = PANEL;
@@ -189,6 +191,19 @@ mod tests {
         assert!(luminance(SURFACE) < luminance(RAISED));
         assert!(luminance(RAISED) < luminance(HOVER_SURFACE));
         assert!(luminance(MUTED) < luminance(TEXT));
+    }
+
+    #[test]
+    fn install_style_pins_prism_to_dark_even_after_a_light_theme_selection() {
+        let context = egui::Context::default();
+        context.set_theme(egui::Theme::Light);
+        assert_eq!(context.theme(), egui::Theme::Light);
+
+        install_style(&context);
+
+        assert_eq!(context.theme(), egui::Theme::Dark);
+        assert!(context.global_style().visuals.dark_mode);
+        assert_eq!(context.global_style().visuals.panel_fill, PANEL);
     }
 
     #[test]
