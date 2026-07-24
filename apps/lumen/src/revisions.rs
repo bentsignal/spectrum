@@ -18,8 +18,8 @@ use codec::{
 use serde::Serialize;
 use spectrum_revisions::{
     Actor, ActorKind, AppendRevision, ChangeSetId, Collaboration, CollaborationMode,
-    CollaborationSync, LiveRevisionStore, NewProject, NewTrack, ProjectInfo, Revision, RevisionId,
-    Session, SessionId, TrackId,
+    CollaborationSync, LiveRevisionStore, NewProject, NewTrack, ProjectInfo, PublishStats,
+    Revision, RevisionId, Session, SessionId, TrackId,
 };
 
 use crate::{Command, Photo, Project, command::apply_replay_command};
@@ -538,6 +538,10 @@ impl DurableCatalog {
 
     pub fn pending_publish_error(&self) -> Option<String> {
         self.store.pending_publish_error()
+    }
+
+    pub fn last_publish_stats(&self) -> PublishStats {
+        self.store.last_publish_stats()
     }
 
     pub fn checkpoint(&self) -> Result<()> {

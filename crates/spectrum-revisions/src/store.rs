@@ -199,6 +199,26 @@ impl RevisionStore {
         })
     }
 
+    /// Take a SQLite-consistent snapshot, including any committed WAL frames, into a private
+    /// writable file and migrate that copy to the current container format.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn snapshot_for_migration(
+        source: &Path,
+        destination: &Path,
+    ) -> RevisionResult<StoreInspection> {
+        let source = Connection::open_with_flags(
+            source,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        source.busy_timeout(std::time::Duration::from_secs(5))?;
+        schema::verify_header(&source)?;
+        source.backup(rusqlite::MAIN_DB, destination, None)?;
+        let migrated = Self::open(destination)?;
+        migrated.checkpoint()?;
+        drop(migrated);
+        Self::inspect(destination)
+    }
+
     pub fn resume_session(
         &mut self,
         id: SessionId,

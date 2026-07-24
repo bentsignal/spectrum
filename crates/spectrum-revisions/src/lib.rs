@@ -23,7 +23,7 @@ mod store_tracks;
 pub use error::{RevisionError, RevisionResult};
 pub use id::{AssetId, ChangeSetId, ProjectId, RevisionId, SessionId, TrackId};
 pub use identity::local_session_id;
-pub use live::LiveRevisionStore;
+pub use live::{LiveRevisionStore, PublishStats, PublishStrategy};
 pub use model::{
     Actor, ActorKind, AppendRevision, Asset, Collaboration, CollaborationMode, CollaborationStatus,
     CollaborationSync, Encoding, NewProject, NewTrack, Payload, Preview, ProjectInfo, ReplayPlan,
