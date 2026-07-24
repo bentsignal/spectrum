@@ -662,6 +662,7 @@ mod command_apply;
 use command_apply::apply_command;
 use commands::output;
 
+mod direct_preview;
 mod raster_backing_cache;
 mod raster_region;
 mod raster_sources;
@@ -675,6 +676,10 @@ mod transform_math;
 
 pub use transform_math::rotation_sin_cos;
 
+pub use direct_preview::{
+    DIRECT_PREVIEW_MAX_OUTPUT_PIXELS, DIRECT_PREVIEW_STRIPS, render_direct_preview_region_scaled,
+    render_direct_preview_region_scaled_with_sources,
+};
 pub use raster_backing_cache::{
     DerivedBackingCache, DerivedBackingIdentity, DerivedBackingLimits, DerivedBackingMemoryPlan,
     DerivedBackingReadError, DerivedRasterBacking, PrepareDerivedBacking,

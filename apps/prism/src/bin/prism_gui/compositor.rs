@@ -138,13 +138,36 @@ fn render_composite_request(
     result.map_err(|error| format!("{error:#}"))
 }
 
+fn render_immediate_composite_request(
+    request: &CompositeRenderRequest,
+) -> Result<image::DynamicImage, String> {
+    let result = match request.key.raster_mode {
+        RasterRenderMode::Provider { .. } => {
+            prism_core::render_direct_preview_region_scaled_with_sources(
+                &request.key.document,
+                request.key.scale(),
+                request.key.region,
+                request.raster_sources.as_ref(),
+            )
+        }
+        RasterRenderMode::LegacyNative | RasterRenderMode::FallbackCapped => {
+            prism_core::render_direct_preview_region_scaled(
+                &request.key.document,
+                request.key.scale(),
+                request.key.region,
+            )
+        }
+    };
+    result.map_err(|error| format!("{error:#}"))
+}
+
 fn composite_frame_from_image(
     context: &egui::Context,
     sequence: u64,
     key: CompositePreviewKey,
     image: image::DynamicImage,
 ) -> CompositeFrame {
-    let rgba = image.to_rgba8();
+    let rgba = image.into_rgba8();
     let pixels = egui::ColorImage::from_rgba_unmultiplied(
         [rgba.width() as usize, rgba.height() as usize],
         rgba.as_raw(),
@@ -307,7 +330,7 @@ impl CompositePreview {
         self.desired = Some((sequence, key.clone()));
         self.pending = None;
         self.failed = None;
-        let image = render_composite_request(&CompositeRenderRequest {
+        let image = render_immediate_composite_request(&CompositeRenderRequest {
             sequence,
             key: key.clone(),
             raster_sources,

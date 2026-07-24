@@ -1,8 +1,10 @@
 use std::{hint::black_box, time::Instant};
 
 use anyhow::{Result, bail};
+use eframe::egui;
 use prism_core::{
-    BlendMode, Document, Layer, LayerKind, RenderRegion, Transform, render_document_region_scaled,
+    BlendMode, Document, Layer, LayerKind, RenderRegion, Transform,
+    render_direct_preview_region_scaled,
 };
 
 use super::sample_summary;
@@ -10,6 +12,10 @@ use super::sample_summary;
 pub(super) struct Measurement {
     pub(super) median_ms: f64,
     pub(super) p95_ms: f64,
+}
+
+pub(super) fn budget_ms(hosted_ci: bool) -> f64 {
+    if hosted_ci { 250.0 } else { 100.0 }
 }
 
 pub(super) fn measure() -> Result<Measurement> {
@@ -35,8 +41,8 @@ pub(super) fn measure() -> Result<Measurement> {
     let region = RenderRegion {
         x: 0,
         y: 0,
-        width: document.width,
-        height: document.height,
+        width: document.width * 2,
+        height: document.height * 2,
     };
     let mut samples = Vec::with_capacity(15);
     for frame in 0..15 {
@@ -48,11 +54,17 @@ pub(super) fn measure() -> Result<Measurement> {
             rotation: frame as f32 * 2.0,
         };
         let started = Instant::now();
-        let rendered = render_document_region_scaled(&document, 1.0, region)?;
+        let request_document = document.clone();
+        let rendered = render_direct_preview_region_scaled(&request_document, 2.0, region)?;
         if (rendered.width(), rendered.height()) != (region.width, region.height) {
             bail!("direct Dissolve compositor returned the wrong physical dimensions");
         }
-        black_box(rendered);
+        let rgba = rendered.into_rgba8();
+        let upload = egui::ColorImage::from_rgba_unmultiplied(
+            [rgba.width() as usize, rgba.height() as usize],
+            rgba.as_raw(),
+        );
+        black_box((request_document, upload));
         samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
     let (median_ms, p95_ms) = sample_summary(&mut samples);
