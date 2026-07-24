@@ -98,6 +98,7 @@ fn create_optimized_font_copy_before_publish(
     for revision in &revisions[1..] {
         let (_, commands) = operation_batch(&source_store, revision)?;
         replay_commands(&source_store, &mut document, commands)?;
+        validate_source_exact_snapshot(&source_store, revision.id, &document)?;
         collect_font_requirements(&source_store, &document, &mut requirements)?;
     }
     let rewritten_fonts = subset_fonts(requirements)?;
@@ -385,6 +386,25 @@ fn root_document(store: &RevisionStore, root: RevisionId) -> Result<Document> {
     readonly_font::hydrate_read_only_legacy_font_permissions(store, &mut document)?;
     document.migrate()?;
     Ok(document)
+}
+
+fn validate_source_exact_snapshot(
+    store: &RevisionStore,
+    revision: RevisionId,
+    replayed: &Document,
+) -> Result<()> {
+    let plan = store.replay_plan(revision, &PrismCompatibility)?;
+    if plan.snapshot_revision != revision || !plan.steps.is_empty() {
+        return Ok(());
+    }
+    let mut exact: Document = serde_json::from_slice(&decode_snapshot(&plan.snapshot)?)
+        .context("invalid exact Prism source snapshot")?;
+    readonly_font::hydrate_read_only_legacy_font_permissions(store, &mut exact)?;
+    exact.migrate()?;
+    if &exact != replayed {
+        bail!("source Prism revision {revision} operations do not reproduce its exact snapshot");
+    }
+    Ok(())
 }
 
 fn operation_batch(store: &RevisionStore, revision: &Revision) -> Result<(Payload, Vec<Command>)> {

@@ -224,11 +224,115 @@ fn runtime_validation_rejects_exact_snapshots_that_mask_nonreplayable_operations
 }
 
 #[test]
+fn source_validation_rejects_hash_valid_operations_that_disagree_with_an_exact_snapshot() {
+    let directory = directory("optimized-tampered-source-replay");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("source.prism");
+    let output = directory.join("optimized.prism");
+    let font_path = directory.join("NotoSans.ttf");
+    fs::write(&font_path, STATIC_FONT).unwrap();
+    let mut workspace = Workspace::create_durable(
+        Document::new("Hash-valid source divergence", 320, 200),
+        &source,
+        actor(),
+        SessionId::new(),
+    )
+    .unwrap();
+    let mut commands = vec![
+        Command::ImportFont {
+            path: font_path,
+            source_name: None,
+        },
+        Command::AddText {
+            text: "AVBA".into(),
+            name: None,
+            font_size: 36.0,
+            color: [255; 4],
+            x: 4.0,
+            y: 8.0,
+        },
+        Command::SetTextTypography {
+            id: 1,
+            typography: TextTypography {
+                font_id: Some(1),
+                ..Default::default()
+            },
+        },
+    ];
+    commands.extend((0..97).map(|index| Command::RenameDocument {
+        name: format!("Hash-valid source divergence {index}"),
+    }));
+    workspace.execute_batch(commands).unwrap();
+    let history = workspace.history().unwrap().unwrap();
+    let revision = history.revisions.last().unwrap().id;
+    drop(workspace);
+
+    let store = RevisionStore::open_read_only(&source).unwrap();
+    let plan = store.replay_plan(revision, &PrismCompatibility).unwrap();
+    assert_eq!(plan.snapshot_revision, revision);
+    assert!(plan.steps.is_empty());
+    let payload = store
+        .compatible_operation_payload(revision, &PrismCompatibility)
+        .unwrap()
+        .unwrap();
+    let mut commands: Vec<Command> = serde_json::from_slice(&payload.bytes).unwrap();
+    let mut changed = false;
+    for command in &mut commands {
+        if let Command::AddText { text, .. } = command {
+            *text = "AAAA".into();
+            changed = true;
+        }
+    }
+    assert!(changed);
+    let tampered = serde_json::to_vec(&commands).unwrap();
+    let digest: [u8; 32] = Sha256::digest(&tampered).into();
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&source).unwrap();
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE operation_payloads SET bytes = ?1, sha256 = ?2 WHERE revision_id = ?3",
+                rusqlite::params![tampered, digest.as_slice(), revision.as_bytes().as_slice()],
+            )
+            .unwrap(),
+        1
+    );
+    drop(connection);
+    RevisionStore::open_read_only(&source)
+        .unwrap()
+        .verify_integrity()
+        .unwrap();
+    let source_before = fs::read(&source).unwrap();
+
+    let error = create_optimized_font_copy(&source, &output).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("operations do not reproduce its exact snapshot")
+    );
+    assert_eq!(fs::read(&source).unwrap(), source_before);
+    assert!(!output.exists());
+    assert!(fs::read_dir(&directory).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("optimized-copy.tmp")
+    }));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn rewrites_linear_history_with_union_font_repertoire_and_exact_snapshots() {
     let directory = directory("optimized-history");
     let (source, source_hash, revision_count) = project_with_historical_font_usage(&directory);
     let source_store = RevisionStore::open_read_only(&source).unwrap();
     let (source_revisions, source_track) = linear_history(&source_store, &source).unwrap();
+    for revisions in source_revisions.windows(2) {
+        assert_eq!(revisions[1].parent_id, Some(revisions[0].id));
+    }
     let source_tip = source_revisions.last().unwrap().id;
     let source_root_session = source_revisions[0].session_id;
     drop(source_store);
