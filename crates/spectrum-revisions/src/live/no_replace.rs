@@ -1,7 +1,7 @@
 use std::{io, path::Path};
 
 #[cfg(target_os = "linux")]
-pub(super) fn rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
 
     let source = CString::new(source.as_os_str().as_bytes())
@@ -25,7 +25,7 @@ pub(super) fn rename_no_replace(source: &Path, destination: &Path) -> io::Result
 }
 
 #[cfg(target_vendor = "apple")]
-pub(super) fn rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
 
     let source = CString::new(source.as_os_str().as_bytes())
@@ -42,7 +42,7 @@ pub(super) fn rename_no_replace(source: &Path, destination: &Path) -> io::Result
 }
 
 #[cfg(target_os = "windows")]
-pub(super) fn rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn rename_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
     use windows_sys::Win32::Storage::FileSystem::MoveFileW;
 
@@ -66,7 +66,7 @@ pub(super) fn rename_no_replace(source: &Path, destination: &Path) -> io::Result
 }
 
 #[cfg(not(any(target_os = "linux", target_vendor = "apple", target_os = "windows")))]
-pub(super) fn rename_no_replace(_source: &Path, _destination: &Path) -> io::Result<()> {
+pub(crate) fn rename_no_replace(_source: &Path, _destination: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "atomic no-replace publication is unavailable on this platform",

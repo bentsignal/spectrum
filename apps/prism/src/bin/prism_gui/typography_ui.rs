@@ -264,7 +264,7 @@ impl PrismApp {
                 .color(MUTED),
             );
             ui.label(
-                RichText::new("A history-safe compact-copy export is still required to create one")
+                RichText::new("Use Prism optimized-copy to create a verified smaller project")
                     .size(9.0)
                     .color(MUTED),
             )
