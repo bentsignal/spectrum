@@ -72,6 +72,9 @@ impl PrismApp {
                             None
                         }
                     };
+                    let exact_desired_frame_ready = frame.as_ref().is_some_and(|frame| {
+                        self.composite_preview.frame_matches_exact_desired(frame)
+                    });
                     if let Some(frame) = frame.as_ref() {
                         paint_composite_preview(ui, geometry, Some(frame));
                     } else {
@@ -85,6 +88,7 @@ impl PrismApp {
                             &self.layer_visuals,
                         );
                     }
+                    self.settle_composited_brush_preview_if_ready(exact_desired_frame_ready);
                 } else {
                     paint_interactive_document(ui, geometry, preview_document, &self.layer_visuals);
                 }

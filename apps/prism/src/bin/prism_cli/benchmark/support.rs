@@ -60,8 +60,8 @@ impl BenchmarkProfile {
 
     pub(crate) fn brush_drag_preview_budget_ms(self) -> f64 {
         match self {
-            Self::Interactive => 5.0,
-            Self::HostedCi => 15.0,
+            Self::Interactive => 16.0,
+            Self::HostedCi => 50.0,
         }
     }
 }

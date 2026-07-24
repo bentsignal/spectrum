@@ -67,6 +67,19 @@ impl BrushState {
         self.clear_transient_preview();
         true
     }
+
+    fn settle_composited_preview_if_ready(&mut self, exact_desired_frame_ready: bool) -> bool {
+        if self.settling_layer_id.is_none() || !exact_desired_frame_ready {
+            return false;
+        }
+        if self.preview_key.take().is_some() {
+            // The exact final progressive key is ready. Keep the retained document
+            // while the compositor requests the otherwise-identical durable key.
+            return false;
+        }
+        self.clear_transient_preview();
+        true
+    }
 }
 
 pub(super) fn brush_display_document<'a>(
@@ -147,12 +160,21 @@ impl PrismApp {
         let Some(id) = self.brush.settling_layer_id else {
             return;
         };
+        if document_requires_composite_preview(&self.workspace.document) {
+            return;
+        }
         if self.layer_visual_is_current(id, display_scale) {
-            self.brush.preview = None;
-            self.brush.preview_key = None;
-            self.brush.settling_layer_id = None;
+            self.brush.clear_transient_preview();
             self.composite_preview.reset();
         }
+    }
+
+    pub(super) fn settle_composited_brush_preview_if_ready(
+        &mut self,
+        exact_desired_frame_ready: bool,
+    ) {
+        self.brush
+            .settle_composited_preview_if_ready(exact_desired_frame_ready);
     }
 
     pub(super) fn brush_settings_control(&mut self, ui: &mut egui::Ui) {
@@ -662,5 +684,45 @@ mod tests {
         brush.committing_preview = false;
         assert!(brush.discard_for_document_mutation());
         assert!(brush.preview.is_none());
+    }
+
+    #[test]
+    fn composited_paint_waits_for_progressive_then_exact_durable_readiness() {
+        let mut durable = Document::new("Composited Paint", 100, 80);
+        durable.layers.push(Layer {
+            id: 1,
+            blend_mode: BlendMode::Multiply,
+            kind: LayerKind::Paint {
+                program: prism_core::BrushProgram::new(100, 80).unwrap(),
+            },
+            ..Layer::default()
+        });
+        durable.next_id = 2;
+        assert!(document_requires_composite_preview(&durable));
+
+        let mut brush = BrushState::configured();
+        brush.preview = Some(durable.clone());
+        brush.preview_key = Some(ProgressiveBrushPreview {
+            gesture_id: 11,
+            target_layer_id: 1,
+            sample_count: 3,
+            mode: prism_core::BrushMode::Paint,
+        });
+        brush.settling_layer_id = Some(1);
+
+        assert!(!brush.settle_composited_preview_if_ready(false));
+        assert!(brush.preview.is_some());
+        assert!(brush.preview_key.is_some());
+
+        assert!(!brush.settle_composited_preview_if_ready(true));
+        assert!(brush.preview.is_some());
+        assert!(brush.preview_key.is_none());
+        assert_eq!(brush.settling_layer_id, Some(1));
+
+        assert!(!brush.settle_composited_preview_if_ready(false));
+        assert!(brush.preview.is_some());
+        assert!(brush.settle_composited_preview_if_ready(true));
+        assert!(brush.preview.is_none());
+        assert!(brush.settling_layer_id.is_none());
     }
 }

@@ -271,6 +271,12 @@ impl CompositePreview {
             .map(|(_, frame)| frame.clone()))
     }
 
+    pub(super) fn frame_matches_exact_desired(&self, frame: &CompositeFrame) -> bool {
+        self.desired
+            .as_ref()
+            .is_some_and(|(_, desired)| frame.key == *desired)
+    }
+
     fn dispatch_pending(&mut self) -> Result<(), String> {
         while self.pending.is_some() {
             let Some(worker) =

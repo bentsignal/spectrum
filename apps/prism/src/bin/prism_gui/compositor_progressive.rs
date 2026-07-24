@@ -4,7 +4,23 @@ pub(super) fn completed_preview_is_safe_to_display(
     completed: &CompositePreviewKey,
     desired: &CompositePreviewKey,
 ) -> bool {
-    completed == desired || progressive_brush_keys_are_compatible(completed, desired)
+    completed == desired
+        || progressive_brush_keys_are_compatible(completed, desired)
+        || final_progressive_preview_matches_durable(completed, desired)
+}
+
+fn final_progressive_preview_matches_durable(
+    completed: &CompositePreviewKey,
+    desired: &CompositePreviewKey,
+) -> bool {
+    completed.progressive_brush.is_some()
+        && desired.progressive_brush.is_none()
+        && completed.tab_id == desired.tab_id
+        && completed.generation == desired.generation
+        && completed.document == desired.document
+        && completed.scale_sixty_fourths == desired.scale_sixty_fourths
+        && completed.region == desired.region
+        && completed.raster_mode == desired.raster_mode
 }
 
 fn progressive_brush_keys_are_compatible(
@@ -161,6 +177,22 @@ mod tests {
         .unwrap()
     }
 
+    fn durable_key(document: &Document, generation: u64) -> CompositePreviewKey {
+        let bounds = Rect::from_min_size(Pos2::ZERO, Vec2::new(128.0, 96.0));
+        CompositePreviewKey::new(
+            3,
+            generation,
+            document,
+            CanvasGeometry {
+                canvas: bounds,
+                viewport: bounds,
+                pixels_per_point: 1.0,
+            },
+            1.0,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn accepts_only_a_monotonic_prefix_of_the_same_gesture() {
         let (short_document, short_brush) =
@@ -218,5 +250,43 @@ mod tests {
             &completed,
             &progressive_key(&long_document, eraser, 12)
         ));
+    }
+
+    #[test]
+    fn final_composited_paint_frame_hands_off_only_to_identical_durable_key() {
+        let (base, brush) =
+            progressive_brush_document(&[[12.0, 14.0], [30.0, 25.0], [58.0, 61.0]], 51);
+        let mut cases = Vec::new();
+
+        let mut blended = base.clone();
+        blended.layers[0].blend_mode = BlendMode::Multiply;
+        cases.push(blended);
+
+        let mut clipped = base.clone();
+        clipped.layers[0].clip_to_below = true;
+        cases.push(clipped);
+
+        let mut shadowed = base.clone();
+        shadowed.layers[0].style.drop_shadow = Some(prism_core::DropShadow::default());
+        cases.push(shadowed);
+
+        let mut inverted_mask = base;
+        inverted_mask.layers[0].mask.enabled = true;
+        inverted_mask.layers[0].mask.invert = true;
+        cases.push(inverted_mask);
+
+        for document in cases {
+            assert!(document_requires_composite_preview(&document));
+            let progressive = progressive_key(&document, brush, 17);
+            let durable = durable_key(&document, 17);
+            assert!(completed_preview_is_safe_to_display(&progressive, &durable));
+
+            let mut changed = document.clone();
+            changed.layers[0].opacity = 0.75;
+            assert!(!completed_preview_is_safe_to_display(
+                &progressive,
+                &durable_key(&changed, 17)
+            ));
+        }
     }
 }

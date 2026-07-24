@@ -768,7 +768,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: paint.p95_ms <= profile.paint_viewport_budget_ms(),
         },
         BenchmarkMetric {
-            name: "16k_live_brush_drag_preview_command",
+            name: "16k_live_brush_drag_bounded_render",
             median_ms: paint.drag_preview_median_ms,
             p95_ms: paint.drag_preview_p95_ms,
             budget_ms: profile.brush_drag_preview_budget_ms(),
@@ -856,7 +856,10 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         "setup": {
             "cached_raster_cold_prepare_ms": cached_raster_cold_prepare.as_secs_f64() * 1_000.0,
             "cached_raster_samples": "warm file-backed provider reads",
-            "paint_max_source_staging_pixels": paint.max_source_staging_pixels
+            "paint_max_source_staging_pixels": paint.max_source_staging_pixels,
+            "live_brush_max_source_staging_pixels": paint.drag_preview_max_source_staging_pixels,
+            "live_brush_peak_bytes": paint.drag_preview_peak_bytes,
+            "live_brush_final_visible_pixels": paint.drag_preview_visible_pixels
         },
         "metrics": metrics
     }))
