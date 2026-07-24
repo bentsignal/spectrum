@@ -12,8 +12,8 @@ use std::{
 };
 
 use super::{
-    FileIdentity, PublishStats, PublishStrategy, RevisionError, RevisionResult, RevisionStore,
-    SessionId, StorageStateId, sync_parent, temporary_path, validate_named_identity,
+    FileIdentity, PublishStats, PublishStrategy, PublishTimings, RevisionError, RevisionResult,
+    RevisionStore, SessionId, StorageStateId, sync_parent, temporary_path, validate_named_identity,
     validated_identity,
 };
 
@@ -675,6 +675,7 @@ fn apply_checkpoint_delta_from(source: &File, mirror: &File) -> RevisionResult<P
         scanned_bytes: source_len.max(mirror_len),
         changed_bytes,
         written_bytes,
+        timings: PublishTimings::default(),
     })
 }
 

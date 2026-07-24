@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use fs2::FileExt;
@@ -15,6 +16,7 @@ use crate::{
 
 #[cfg(target_os = "linux")]
 mod linux_io;
+mod metrics;
 #[cfg(test)]
 mod tests;
 #[cfg(target_os = "linux")]
@@ -26,6 +28,8 @@ use linux_io::{
     remove_private_file, seed_incremental_mirror, update_candidate_slot, validate_publish_base,
     write_full_copy_intent, write_publication_marker,
 };
+use metrics::elapsed_us;
+pub use metrics::{PublishStats, PublishStrategy, PublishTimings};
 
 const STORE_FILE: &str = "live.sqlite";
 const LOCK_FILE: &str = "publish.lock";
@@ -75,36 +79,6 @@ thread_local! {
     static PUBLISH_FAULT: Cell<Option<PublishFault>> = const { Cell::new(None) };
     static PUBLISH_CRASH_MODE: Cell<Option<CrashMode>> = const { Cell::new(None) };
     static PUBLISH_HARDLINK_ALIAS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum PublishStrategy {
-    #[default]
-    None,
-    FullCopy,
-    PageDiffExchange,
-}
-
-impl PublishStrategy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::FullCopy => "full-copy",
-            Self::PageDiffExchange => "page-diff-exchange",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PublishStats {
-    pub incremental: bool,
-    pub reflink_unavailable: bool,
-    pub strategy: PublishStrategy,
-    pub scanned_bytes: u64,
-    /// Bytes whose contents differ from the previous checkpoint.
-    pub changed_bytes: u64,
-    /// File-data bytes physically submitted by publication. Reflink-only publication writes zero.
-    pub written_bytes: u64,
 }
 
 /// A live SQLite working store whose user-facing project is always a single checkpointed file.
@@ -301,13 +275,20 @@ impl LiveRevisionStore {
     ) -> RevisionResult<T> {
         #[cfg(target_os = "linux")]
         let _cache_lock = lock_private(&self.lock_path)?;
+        let core_started = Instant::now();
         let result = mutation(&mut self.store)?;
+        let core_write_us = elapsed_us(core_started.elapsed());
         #[cfg(target_os = "linux")]
         let published = self.publish_current_locked();
         #[cfg(not(target_os = "linux"))]
         let published = self.publish_current();
         match published {
-            Ok(()) => self.pending_publish_error.replace(None),
+            Ok(()) => {
+                let mut stats = self.last_publish_stats.get();
+                stats.timings.core_write_us = core_write_us;
+                self.last_publish_stats.set(stats);
+                self.pending_publish_error.replace(None)
+            }
             Err(error) => self.pending_publish_error.replace(Some(error.to_string())),
         };
         Ok(result)
@@ -580,6 +561,7 @@ fn publish_checkpoint(
 ) -> RevisionResult<PublishStats> {
     #[cfg(target_os = "linux")]
     {
+        let preparation_started = Instant::now();
         let source_inspection = RevisionStore::inspect(source)?;
         let directory = PrivateDirectory::open(_cache_directory)?;
         recover_exchange(&directory, destination, _cache_directory)?;
@@ -602,6 +584,7 @@ fn publish_checkpoint(
             )?;
             return Ok(PublishStats::default());
         }
+        let preparation_us = elapsed_us(preparation_started.elapsed());
         let (incremental, mut reflink_unavailable) = incremental_publish(
             source,
             destination,
@@ -610,7 +593,8 @@ fn publish_checkpoint(
             source_inspection.generation,
             source_inspection.state_id,
         )?;
-        if let Some(stats) = incremental {
+        if let Some(mut stats) = incremental {
+            stats.timings.preparation_us = preparation_us;
             return Ok(stats);
         }
         reflink_unavailable |= open_unnamed(_cache_directory).is_err();
@@ -644,6 +628,10 @@ fn publish_checkpoint(
             scanned_bytes: written_bytes,
             changed_bytes: written_bytes,
             written_bytes,
+            timings: PublishTimings {
+                preparation_us,
+                ..PublishTimings::default()
+            },
         })
     }
 
@@ -659,6 +647,7 @@ fn publish_checkpoint(
         scanned_bytes: written_bytes,
         changed_bytes: written_bytes,
         written_bytes,
+        timings: PublishTimings::default(),
     })
 }
 
@@ -678,6 +667,7 @@ fn incremental_publish(
     source_generation: u64,
     source_state_id: Option<StorageStateId>,
 ) -> RevisionResult<(Option<PublishStats>, bool)> {
+    let candidate_started = Instant::now();
     let (Some(_), Some(canonical_identity), Some(canonical_permissions)) = (
         base.canonical.as_ref(),
         base.identity,
@@ -701,9 +691,11 @@ fn incremental_publish(
     if destination.metadata()?.dev() != directory.device()? {
         return Ok((None, false));
     }
+    let exchange_probe_started = Instant::now();
     if !directory.exchange_supported()? {
         return Ok((None, false));
     }
+    let exchange_probe_us = elapsed_us(exchange_probe_started.elapsed());
     let mirror_file = match directory.open_file(PUBLISH_MIRROR_FILE, true) {
         Ok(file) => file,
         Err(_) => return Ok((None, false)),
@@ -720,8 +712,11 @@ fn incremental_publish(
         mirror_identity,
         canonical_permissions,
     )?;
+    stats.timings.exchange_probe_us = exchange_probe_us;
+    stats.timings.candidate_us = elapsed_us(candidate_started.elapsed());
     maybe_publish_fault(PublishFault::CandidateSynced)?;
 
+    let intent_started = Instant::now();
     let intent = ExchangeIntent {
         canonical_identity,
         candidate_identity: mirror_identity,
@@ -734,7 +729,9 @@ fn incremental_publish(
     maybe_publish_fault(PublishFault::IntentCreated)?;
     directory.validate(PUBLISH_MIRROR_FILE, mirror_identity, true)?;
     validate_named_identity(destination, canonical_identity, false)?;
+    stats.timings.intent_us = elapsed_us(intent_started.elapsed());
     maybe_publish_fault(PublishFault::PreExchangeValidated)?;
+    let exchange_started = Instant::now();
     let old_slot_private = match directory.exchange(
         PUBLISH_MIRROR_FILE,
         mirror_identity,
@@ -747,15 +744,20 @@ fn incremental_publish(
         }
         linux_io::ExchangeOutcome::Exchanged { old_slot_private } => old_slot_private,
     };
+    stats.timings.exchange_us = elapsed_us(exchange_started.elapsed());
     maybe_publish_fault(PublishFault::Exchanged)?;
+    let marker_started = Instant::now();
     write_publication_marker(&directory, source_generation, source_state_id)?;
+    stats.timings.current_marker_us = elapsed_us(marker_started.elapsed());
 
     if !old_slot_private {
+        let cleanup_started = Instant::now();
         remove_private_file(&directory, PUBLISH_MIRROR_FILE)?;
         maybe_publish_fault(PublishFault::LinkedSlotUnlinked)?;
         remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
         remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
         directory.sync()?;
+        stats.timings.intent_cleanup_us = elapsed_us(cleanup_started.elapsed());
         stats.incremental = true;
         stats.strategy = PublishStrategy::PageDiffExchange;
         return Ok((Some(stats), false));
@@ -765,19 +767,26 @@ fn incremental_publish(
         .canonical
         .as_ref()
         .expect("incremental publication requires a canonical descriptor");
+    let slot_started = Instant::now();
     prepare_reusable_slot(
         &directory,
         PUBLISH_MIRROR_FILE,
         old_canonical,
         canonical_identity,
     )?;
+    stats.timings.slot_prepare_us = elapsed_us(slot_started.elapsed());
     maybe_publish_fault(PublishFault::SlotWritable)?;
+    let ready_started = Instant::now();
     write_ready_marker(&directory, base.generation, base.state_id)?;
+    stats.timings.ready_marker_us = elapsed_us(ready_started.elapsed());
     maybe_publish_fault(PublishFault::MarkerCreated)?;
+    let cleanup_started = Instant::now();
     remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
     directory.sync()?;
+    stats.timings.intent_cleanup_us = elapsed_us(cleanup_started.elapsed());
     maybe_publish_fault(PublishFault::IntentRemoved)?;
 
+    let catch_up_started = Instant::now();
     stats = catch_up_after_bulk(
         &directory,
         source,
@@ -785,6 +794,7 @@ fn incremental_publish(
         source_generation,
         source_state_id,
     )?;
+    stats.timings.catch_up_us = elapsed_us(catch_up_started.elapsed());
 
     stats.incremental = true;
     stats.strategy = PublishStrategy::PageDiffExchange;
