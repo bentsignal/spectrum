@@ -50,6 +50,9 @@ impl PreparedSnapshot {
             .layers
             .iter()
             .any(|layer| matches!(layer.kind, LayerKind::Paint { .. }));
+        let dissolve_schema = document.layers.iter().any(|layer| {
+            layer.blend_mode == crate::BlendMode::Dissolve || layer.dissolve_seed != 0
+        });
         let selection_schema =
             document.version >= SELECTION_SNAPSHOT_VERSION || document.selection.is_some();
         let effects_schema = document.version >= LAYER_EFFECTS_SNAPSHOT_VERSION
@@ -57,7 +60,9 @@ impl PreparedSnapshot {
                 .layers
                 .iter()
                 .any(|layer| !layer.style.is_empty() || layer.shape_fill.is_some());
-        let snapshot_version = if paint_schema {
+        let snapshot_version = if dissolve_schema {
+            DISSOLVE_SNAPSHOT_VERSION
+        } else if paint_schema {
             PAINT_SNAPSHOT_VERSION
         } else if path_schema {
             PATH_SNAPSHOT_VERSION
@@ -125,7 +130,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | SELECTION_SNAPSHOT_VERSION
             | COLOR_SELECTION_SNAPSHOT_VERSION
             | PATH_SNAPSHOT_VERSION
-            | PAINT_SNAPSHOT_VERSION,
+            | PAINT_SNAPSHOT_VERSION
+            | DISSOLVE_SNAPSHOT_VERSION,
             true,
             false,
         ) => bounded_snapshot_bytes(&payload.bytes),
@@ -134,7 +140,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | SELECTION_SNAPSHOT_VERSION
             | COLOR_SELECTION_SNAPSHOT_VERSION
             | PATH_SNAPSHOT_VERSION
-            | PAINT_SNAPSHOT_VERSION,
+            | PAINT_SNAPSHOT_VERSION
+            | DISSOLVE_SNAPSHOT_VERSION,
             false,
             true,
         ) => inflate_snapshot(&payload.bytes),
@@ -253,5 +260,22 @@ mod tests {
             serde_json::from_slice(&decode_snapshot(&prepared.payload).unwrap()).unwrap();
         assert_eq!(decoded.version, PAINT_SNAPSHOT_VERSION);
         assert_eq!(decoded.layers, document.layers);
+    }
+
+    #[test]
+    fn dissolve_snapshot_uses_v8_and_round_trips_the_seed() {
+        let mut document = Document::new("V8 Dissolve", 32, 24);
+        document.layers.push(crate::Layer {
+            id: 1,
+            blend_mode: crate::BlendMode::Dissolve,
+            dissolve_seed: 0x1234_5678,
+            ..crate::Layer::default()
+        });
+        let prepared = PreparedSnapshot::compressed(&document).unwrap();
+        assert_eq!(prepared.payload.encoding.version, DISSOLVE_SNAPSHOT_VERSION);
+        let decoded: Document =
+            serde_json::from_slice(&decode_snapshot(&prepared.payload).unwrap()).unwrap();
+        assert_eq!(decoded.layers[0].dissolve_seed, 0x1234_5678);
+        assert_eq!(decoded.layers[0].blend_mode, crate::BlendMode::Dissolve);
     }
 }

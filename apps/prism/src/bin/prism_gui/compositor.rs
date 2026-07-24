@@ -77,6 +77,56 @@ fn render_composite_request(
     result.map_err(|error| format!("{error:#}"))
 }
 
+fn render_immediate_composite_request(
+    request: &CompositeRenderRequest,
+) -> Result<image::DynamicImage, String> {
+    let result = match request.key.raster_mode {
+        RasterRenderMode::Provider { .. } => {
+            prism_core::render_direct_preview_region_scaled_with_sources(
+                &request.key.document,
+                request.key.scale(),
+                request.key.region,
+                request.raster_sources.as_ref(),
+            )
+        }
+        RasterRenderMode::LegacyNative | RasterRenderMode::FallbackCapped => {
+            prism_core::render_direct_preview_region_scaled(
+                &request.key.document,
+                request.key.scale(),
+                request.key.region,
+            )
+        }
+    };
+    result.map_err(|error| format!("{error:#}"))
+}
+
+fn composite_frame_from_image(
+    context: &egui::Context,
+    sequence: u64,
+    key: CompositePreviewKey,
+    image: image::DynamicImage,
+) -> CompositeFrame {
+    let rgba = image.into_rgba8();
+    let pixels = egui::ColorImage::from_rgba_unmultiplied(
+        [rgba.width() as usize, rgba.height() as usize],
+        rgba.as_raw(),
+    );
+    let tab_id = key.tab_id;
+    let texture = context.load_texture(
+        format!("prism-document-region-{tab_id}-{sequence}"),
+        pixels,
+        TextureOptions::LINEAR,
+    );
+    CompositeFrame { key, texture }
+}
+
+fn immediate_preview_is_safe_to_display(
+    completed: &CompositePreviewKey,
+    desired: &CompositePreviewKey,
+) -> bool {
+    completed == desired
+}
+
 impl CompositePreview {
     pub(super) fn new(repaint: egui::Context) -> Self {
         let (result_sender, receiver) = mpsc::channel::<CompositeRenderResult>();
@@ -171,17 +221,6 @@ impl CompositePreview {
                     continue;
                 }
             };
-            let rgba = image.to_rgba8();
-            let pixels = egui::ColorImage::from_rgba_unmultiplied(
-                [rgba.width() as usize, rgba.height() as usize],
-                rgba.as_raw(),
-            );
-            let tab_id = response.key.tab_id;
-            let texture = context.load_texture(
-                format!("prism-document-region-{tab_id}-{}", response.sequence),
-                pixels,
-                TextureOptions::LINEAR,
-            );
             if self
                 .failed
                 .as_ref()
@@ -197,13 +236,68 @@ impl CompositePreview {
             ) {
                 self.ready = Some((
                     response.sequence,
-                    CompositeFrame {
-                        key: response.key,
-                        texture,
-                    },
+                    composite_frame_from_image(context, response.sequence, response.key, image),
                 ));
             }
         }
+    }
+
+    /// Produces the exact current composited surface before returning.
+    ///
+    /// Dissolve hashes absolute output coordinates, so transforming an ordinary
+    /// cached layer texture would move or stretch the stipple and cease to match
+    /// the durable renderer. Direct manipulation therefore uses this path for
+    /// documents containing a visible Dissolve layer.
+    pub(super) fn ensure_immediate(
+        &mut self,
+        context: &egui::Context,
+        request: CompositePreviewRequest<'_>,
+    ) -> Result<Option<CompositeFrame>, String> {
+        let CompositePreviewRequest {
+            tab_id,
+            document,
+            geometry,
+            physical_pixels_per_point,
+            raster_sources,
+            progressive_brush,
+        } = request;
+        let Some(key) = CompositePreviewKey::new_with_sources_and_brush(
+            tab_id,
+            self.generation,
+            document,
+            geometry,
+            physical_pixels_per_point,
+            raster_sources.as_ref(),
+            progressive_brush,
+        ) else {
+            return Ok(None);
+        };
+        self.active_this_frame = true;
+
+        if let Some((sequence, frame)) = self
+            .ready
+            .as_ref()
+            .filter(|(_, frame)| immediate_preview_is_safe_to_display(&frame.key, &key))
+        {
+            self.desired = Some((*sequence, key));
+            self.pending = None;
+            self.failed = None;
+            return Ok(Some(frame.clone()));
+        }
+
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        let sequence = self.next_sequence;
+        self.desired = Some((sequence, key.clone()));
+        self.pending = None;
+        self.failed = None;
+        let image = render_immediate_composite_request(&CompositeRenderRequest {
+            sequence,
+            key: key.clone(),
+            raster_sources,
+        })?;
+        let frame = composite_frame_from_image(context, sequence, key, image);
+        self.ready = Some((sequence, frame.clone()));
+        Ok(Some(frame))
     }
 
     pub(super) fn ensure(
@@ -416,6 +510,13 @@ pub(super) fn document_requires_composite_preview(document: &Document) -> bool {
                 || layer.style.drop_shadow.is_some()
                 || (layer.mask.enabled && layer.mask.invert))
     })
+}
+
+pub(super) fn document_requires_immediate_direct_preview(document: &Document) -> bool {
+    document
+        .layers
+        .iter()
+        .any(|layer| layer.visible && layer.blend_mode == BlendMode::Dissolve)
 }
 
 pub(super) fn paint_composite_preview(
@@ -753,8 +854,12 @@ mod tests {
         let mut document = Document::new("Parity", 100, 100);
         document.layers.push(Layer::default());
         assert!(!document_requires_composite_preview(&document));
+        document.layers[0].blend_mode = BlendMode::Dissolve;
+        assert!(document_requires_composite_preview(&document));
+        assert!(document_requires_immediate_direct_preview(&document));
         document.layers[0].blend_mode = BlendMode::Color;
         assert!(document_requires_composite_preview(&document));
+        assert!(!document_requires_immediate_direct_preview(&document));
         document.layers[0].blend_mode = BlendMode::Normal;
         document.layers[0].clip_to_below = true;
         assert!(document_requires_composite_preview(&document));
@@ -812,3 +917,7 @@ mod tests {
 #[cfg(test)]
 #[path = "compositor_review_tests.rs"]
 mod review_tests;
+
+#[cfg(test)]
+#[path = "compositor_dissolve_tests.rs"]
+mod dissolve_tests;

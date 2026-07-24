@@ -289,4 +289,22 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn visible_dissolve_keeps_monotonic_brush_prefixes_but_not_exact_immediate_reuse() {
+        let (mut short_document, short_brush) =
+            progressive_brush_document(&[[12.0, 14.0], [30.0, 25.0]], 73);
+        let (mut long_document, long_brush) =
+            progressive_brush_document(&[[12.0, 14.0], [30.0, 25.0], [58.0, 61.0]], 73);
+        short_document.layers[0].blend_mode = BlendMode::Dissolve;
+        long_document.layers[0].blend_mode = BlendMode::Dissolve;
+        let short = progressive_key(&short_document, short_brush, 21);
+        let long = progressive_key(&long_document, long_brush, 21);
+
+        assert!(document_requires_immediate_direct_preview(&short_document));
+        assert!(document_requires_immediate_direct_preview(&long_document));
+        assert!(completed_preview_is_safe_to_display(&short, &long));
+        assert!(!immediate_preview_is_safe_to_display(&short, &long));
+        assert!(immediate_preview_is_safe_to_display(&long, &long));
+    }
 }

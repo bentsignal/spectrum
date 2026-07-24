@@ -643,6 +643,11 @@ impl PrismApp {
                 blend_mode: blend,
             });
         }
+        if layer.blend_mode == BlendMode::Dissolve {
+            let mut seed = layer.dissolve_seed;
+            let response = ui.add(egui::DragValue::new(&mut seed).prefix("Seed "));
+            self.widget_command(&response, Command::SetDissolveSeed { id: layer.id, seed });
+        }
         let mut clipped = layer.clip_to_below;
         if ui.checkbox(&mut clipped, "Clip to object below").changed() {
             self.execute(Command::SetClipping {

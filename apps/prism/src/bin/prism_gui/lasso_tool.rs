@@ -117,7 +117,6 @@ impl PrismApp {
                 self.selection_ui.lasso_overflowed = true;
             }
         }
-        paint_lasso_draft(ui, geometry, &self.selection_ui.lasso_points);
         if response.drag_stopped() {
             let points = std::mem::take(&mut self.selection_ui.lasso_points);
             let mode = self
@@ -158,6 +157,35 @@ mod tests {
         let points = vec![Pos2::new(10.0, 10.0)];
         assert!(!should_sample(&points, Pos2::new(10.5, 10.0), geometry));
         assert!(should_sample(&points, Pos2::new(11.0, 10.0), geometry));
+    }
+
+    #[test]
+    fn draft_projection_is_zoom_independent_in_screen_space() {
+        let points = [Pos2::new(10.0, 20.0), Pos2::new(18.0, 29.0)];
+        for pixels_per_point in [0.25, 1.0, 8.0] {
+            let geometry = CanvasGeometry {
+                viewport: Rect::EVERYTHING,
+                canvas: Rect::from_min_size(
+                    Pos2::new(40.0, 60.0),
+                    Vec2::new(400.0, 300.0) * pixels_per_point,
+                ),
+                pixels_per_point,
+            };
+            let screen: Vec<_> = points
+                .iter()
+                .map(|point| geometry.canvas_to_screen(*point))
+                .collect();
+            assert_eq!(
+                geometry.screen_to_canvas(screen[0]),
+                points[0],
+                "draft points must round-trip at {pixels_per_point}x"
+            );
+            assert_eq!(
+                geometry.screen_to_canvas(screen[1]),
+                points[1],
+                "draft points must round-trip at {pixels_per_point}x"
+            );
+        }
     }
 
     #[test]
