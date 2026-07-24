@@ -78,6 +78,13 @@ impl BenchmarkProfile {
             Self::HostedCi => 50.0,
         }
     }
+
+    pub(crate) fn optimized_copy_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 1_000.0,
+            Self::HostedCi => 3_000.0,
+        }
+    }
 }
 
 #[derive(Serialize)]

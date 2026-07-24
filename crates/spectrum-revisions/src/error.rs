@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, path::PathBuf};
 
 use crate::{RevisionId, SessionId};
 
@@ -19,6 +19,10 @@ pub enum RevisionError {
         actual: RevisionId,
     },
     IncompatibleRevision(RevisionId),
+    PublishedButNotSynced {
+        destination: PathBuf,
+        source: std::io::Error,
+    },
     Corrupt(String),
     Invalid(String),
 }
@@ -44,6 +48,14 @@ impl fmt::Display for RevisionError {
             Self::IncompatibleRevision(id) => {
                 write!(formatter, "revision {id} has no compatible replay path")
             }
+            Self::PublishedButNotSynced {
+                destination,
+                source,
+            } => write!(
+                formatter,
+                "revision store was atomically published at {}, but parent-directory durability sync failed: {source}",
+                destination.display()
+            ),
             Self::Corrupt(message) => write!(formatter, "revision store is corrupt: {message}"),
             Self::Invalid(message) => write!(formatter, "invalid revision data: {message}"),
         }
@@ -54,6 +66,7 @@ impl Error for RevisionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
+            Self::PublishedButNotSynced { source, .. } => Some(source),
             Self::Database(error) => Some(error),
             Self::Serialization(error) => Some(error),
             _ => None,

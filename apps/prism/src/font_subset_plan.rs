@@ -107,10 +107,9 @@ fn plan_font_subset_bytes(
         candidate_blockers,
         physical_replacement_supported: false,
         physical_replacement_blockers: vec![
-            "editable projects must retain the complete source font for future text edits".into(),
-            "durable revision history retains every referenced content-addressed full-font blob"
+            "in-place replacement must retain complete source fonts for future text edits and replayable history"
                 .into(),
-            "history-preserving compact-copy rewriting and whole-document render parity are not implemented"
+            "use optimized-copy to create a separately verified smaller project without changing this source"
                 .into(),
         ],
     })

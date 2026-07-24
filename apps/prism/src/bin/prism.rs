@@ -31,6 +31,9 @@ use blend::CliBlend;
 #[path = "prism_cli/effects.rs"]
 mod effects;
 use effects::{GradientArgs, ShadowArgs};
+#[path = "prism_cli/from_lumen.rs"]
+mod from_lumen;
+use from_lumen::from_lumen;
 #[path = "prism_cli/paths.rs"]
 mod paths;
 use paths::{PathArgs, PathCommand, VectorMaskArgs};
@@ -126,6 +129,11 @@ enum CliCommand {
     /// Prove an in-memory subset candidate and report why physical replacement is not yet safe.
     FontSubsetPlan {
         font_id: u64,
+    },
+    /// Create a smaller project by safely rewriting linear history with font subsets.
+    OptimizedCopy {
+        #[arg(long)]
+        output: PathBuf,
     },
     /// Update one text layer's font, paragraph metrics, and effects.
     Typography(TypographyArgs),
@@ -442,6 +450,13 @@ fn run(cli: Cli) -> Result<Value> {
         }
         CliCommand::FontSubsetPlan { font_id } => {
             typography::font_subset_plan_command(&cli.project, cli.session, font_id)
+        }
+        CliCommand::OptimizedCopy { output } => {
+            if cli.session.is_some() {
+                bail!("optimized-copy does not accept --session");
+            }
+            let report = prism_core::create_optimized_font_copy(&cli.project, &output)?;
+            Ok(json!({"ok": true, "action": "optimized_copy", "report": report}))
         }
         CliCommand::LayerCopy(arguments) => {
             transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)
@@ -793,6 +808,7 @@ fn run(cli: Cli) -> Result<Value> {
                 | CliCommand::FontUsage { .. }
                 | CliCommand::FontSource { .. }
                 | CliCommand::FontSubsetPlan { .. }
+                | CliCommand::OptimizedCopy { .. }
                 | CliCommand::LayerCopy(..)
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }
@@ -827,48 +843,6 @@ fn cli_actor() -> Actor {
         display_name: "Prism CLI".into(),
         kind: ActorKind::Agent,
     }
-}
-
-fn from_lumen(catalog: &Path, photo_id: u64, output: &Path) -> Result<Value> {
-    let project = if LumenDurableCatalog::looks_durable(catalog)? {
-        LumenDurableCatalog::load_current(catalog)?
-    } else {
-        LumenProject::load(catalog)?
-    };
-    let photo = project.photo(photo_id)?;
-    let rendered = render_photo(photo, RenderOptions::default())?;
-    let session = SessionId::new();
-    let import_directory = std::env::temp_dir().join("spectrum-prism-imports");
-    std::fs::create_dir_all(&import_directory)?;
-    let asset = import_directory.join(format!("{session}.png"));
-    rendered.save(&asset)?;
-
-    let mut workspace = Workspace::new(
-        Document::new(
-            format!("{} — {}", project.name, photo.name),
-            rendered.width(),
-            rendered.height(),
-        ),
-        None,
-    );
-    workspace.document.background = [0, 0, 0, 0];
-    workspace.execute(Command::AddRaster {
-        path: asset.clone(),
-        name: Some(photo.name.clone()),
-        x: 0.0,
-        y: 0.0,
-    })?;
-    let durable = Workspace::create_durable(workspace.document, output, cli_actor(), session);
-    let _ = std::fs::remove_file(asset);
-    let mut workspace = durable?;
-    workspace.save(None)?;
-    Ok(json!({
-        "ok": true,
-        "action": "from_lumen",
-        "catalog": catalog,
-        "photo_id": photo_id,
-        "project": output
-    }))
 }
 
 fn parse_color(value: &str) -> Result<[u8; 4]> {

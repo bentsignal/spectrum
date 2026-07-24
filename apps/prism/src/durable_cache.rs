@@ -172,7 +172,12 @@ fn staged_asset_is_valid(path: &Path, expected: AssetId) -> Result<bool> {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Ok(false);
     }
-    Ok(AssetId::for_bytes(&fs::read(path)?) == expected)
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(AssetId::for_bytes(&bytes) == expected)
 }
 
 fn remove_invalid_staged_asset(path: &Path) -> Result<()> {

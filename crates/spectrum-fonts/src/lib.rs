@@ -1,10 +1,11 @@
 //! Candidate cross-platform, in-process font subsetting with conservative runtime checks.
 //!
-//! This crate deliberately exposes an engine seam rather than a user-facing copy or
-//! export command. Passing these runtime checks is not proof of production conformance.
+//! This crate deliberately exposes an engine seam rather than a general export command.
+//! Prism's optimized-copy transaction may use a passing artifact only after its own
+//! history, asset, and exact-render checks. Passing these checks is not proof of broad
+//! production conformance.
 //! Callers must retain the immutable source snapshot, provenance, and font-license
-//! decision; OS/2 embedding bits are technical metadata, not legal advice. This crate
-//! must remain disconnected from export until its licensed corpus passes on every target.
+//! decision; OS/2 embedding bits are technical metadata, not legal advice.
 
 mod cmap;
 mod conformance;
@@ -120,7 +121,7 @@ pub struct SubsetArtifact {
     pub subset_bytes: usize,
 }
 
-/// Pluggable candidate seam; no implementation is approved for export until corpus proof.
+/// Pluggable candidate seam used only behind caller-owned fail-closed proof.
 pub trait FontSubsetEngine {
     /// Produces a candidate or fails closed under the implementation's current gates.
     fn subset(&self, source: &[u8], request: &SubsetRequest)
@@ -132,7 +133,7 @@ pub trait FontSubsetEngine {
 /// It currently accepts only standalone, static, unhinted TrueType fonts with the
 /// crate's strict table allowlist. Hint programs and local glyph instructions fail
 /// closed because no portable interpreter proof exists. GSUB/GPOS/GDEF fonts require
-/// explicit shaping samples. Passing does not authorize export integration.
+/// explicit shaping samples. Passing does not authorize any broader export path.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HarfBuzzSubsetEngine;
 

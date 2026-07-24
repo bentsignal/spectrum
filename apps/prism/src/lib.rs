@@ -62,8 +62,9 @@ use validation::*;
 
 mod revisions;
 pub use revisions::{
-    DurableProject, ProjectHistory, ReadOnlyFontSource, ReadOnlyFontSubsetInput,
-    inspect_font_source_read_only, inspect_font_subset_read_only,
+    DurableProject, OptimizedCopyFont, OptimizedCopyReport, ProjectHistory, ReadOnlyFontSource,
+    ReadOnlyFontSubsetInput, create_optimized_font_copy, inspect_font_source_read_only,
+    inspect_font_subset_read_only,
 };
 
 mod workspace;

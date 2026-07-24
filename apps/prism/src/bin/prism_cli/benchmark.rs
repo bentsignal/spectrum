@@ -24,6 +24,8 @@ mod adjusted_vector;
 mod dissolve_preview;
 #[path = "benchmark/font_picker.rs"]
 mod font_picker;
+#[path = "benchmark/optimized_copy.rs"]
+mod optimized_copy;
 #[path = "benchmark/paint.rs"]
 mod paint;
 #[path = "benchmark/path.rs"]
@@ -121,6 +123,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let dissolve_preview = dissolve_preview::measure()?;
     let dissolve_preview_budget =
         dissolve_preview::budget_ms(matches!(profile, BenchmarkProfile::HostedCi));
+    let mut optimized_copy = optimized_copy::measure()?;
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -631,6 +634,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let (adjusted_vector_source_median, adjusted_vector_source_p95) =
         sample_summary(&mut adjusted_vector.samples);
     let (cached_spot_median, cached_spot_p95) = sample_summary(&mut cached_spot_samples);
+    let (optimized_copy_median, optimized_copy_p95) = sample_summary(&mut optimized_copy.samples);
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = [
         BenchmarkMetric {
@@ -732,6 +736,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: text_preview_frame.cold_edit_p95_ms,
             budget_ms: 100.0,
             pass: text_preview_frame.cold_edit_p95_ms <= 100.0,
+        },
+        BenchmarkMetric {
+            name: "verified_linear_history_optimized_font_copy",
+            median_ms: optimized_copy_median,
+            p95_ms: optimized_copy_p95,
+            budget_ms: profile.optimized_copy_budget_ms(),
+            pass: optimized_copy_p95 <= profile.optimized_copy_budget_ms(),
         },
         BenchmarkMetric {
             name: "24_layer_command_batch",
@@ -865,6 +876,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             "cached_raster_cold_prepare_ms": cached_raster_cold_prepare.as_secs_f64() * 1_000.0,
             "cached_raster_samples": "warm file-backed provider reads",
             "paint_max_source_staging_pixels": paint.max_source_staging_pixels,
+            "optimized_copy_reduction_bytes": optimized_copy.reduction_bytes,
             "live_brush_max_source_staging_pixels": paint.drag_preview_max_source_staging_pixels,
             "live_brush_peak_bytes": paint.drag_preview_peak_bytes,
             "live_brush_final_visible_pixels": paint.drag_preview_visible_pixels,

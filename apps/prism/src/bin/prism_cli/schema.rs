@@ -12,7 +12,8 @@ pub(super) fn schema() -> Value {
             "persistence": "each completed semantic action is an attributed durable revision",
             "batching": "run arrays commit atomically as one revision",
             "history": "immutable revision tree with session-specific cursors",
-            "assets": "embedded and content-addressed"
+            "assets": "embedded and content-addressed",
+            "optimized_copy": "prism --project <source.prism> optimized-copy --output <fresh.prism> rewrites one linear history with verified font subsets and exact per-revision snapshots; it rejects branches, active Undo cursors, unsupported fonts, non-reducing results, and every existing destination; the shareable fresh copy retains revision author/session attribution, resets every retained author session to the new tip, and intentionally omits non-author follower sessions and live collaboration records"
         },
         "agent_collaboration": {
             "transport": "CLI JSON; no vendor-specific integration required",
@@ -133,7 +134,7 @@ pub(super) fn schema() -> Value {
             "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot and transactionally embeds those exact bytes as a content-addressed project asset; installable, editable, preview/print, and restricted embedding classes, including bitmap-only flags, import directly for local text, while malformed, unparseable, oversized, or unsafe sources fail closed; Windows final-handle proof rejects junction and 8.3 aliases unless the normalized handle path exactly matches",
             "source_snapshot": "font-source <font-id> reads one full-font blob directly from an immutable SQLite view that ignores live caches and recovery sidecars, verifies its deterministic SHA-256 identity and embedding metadata, and reports proof without modifying the project; --session is rejected",
             "subset_plan": "font-subset-plan <font-id> immutably replays the current document, derives exact Unicode and per-line shaping requirements, runs the fail-closed in-process candidate in memory, and reports deterministic candidate identity/reduction or blockers without emitting bytes or modifying the project; --session is rejected",
-            "subset_storage_decision": "appending a subset cannot shrink a durable project because replayable history retains content-addressed full-font blobs; physical reduction requires a future fresh-database compact-copy transaction that rewrites all retained branches and copies only reachable assets",
+            "subset_storage_decision": "appending a subset cannot shrink a durable project because replayable history retains content-addressed full-font blobs; optimized-copy --output <fresh.prism> instead performs a fail-closed single-track linear-history rewrite, preserves an exact snapshot per revision, copies reachable assets only, and never overwrites a destination",
             "discovery": "font-list --query <text> searches embedded family and style metadata",
             "optimization_analysis": "font-usage [--font-id <id>] reports deterministic Unicode cmap subset-retention requirements, variation sequences, embedding metadata, provenance, and source size without changing font bytes; --session retains standard session-resume behavior",
             "optimization_limitations": "analysis excludes symbol and other non-Unicode cmaps, shaping, and renderer fallback",

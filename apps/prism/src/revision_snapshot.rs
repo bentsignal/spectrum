@@ -14,6 +14,29 @@ impl PreparedSnapshot {
         Self::prepare(document, true)
     }
 
+    pub(super) fn portable(document: &Document) -> Result<Self> {
+        let mut portable = document.clone();
+        for layer in &mut portable.layers {
+            if let LayerKind::Raster {
+                path,
+                original_path,
+            } = &mut layer.kind
+            {
+                AssetReference::parse(path).context("raster layer is not a project asset")?;
+                *original_path = None;
+            }
+        }
+        for font in &mut portable.font_assets {
+            let reference =
+                AssetReference::parse(&font.path).context("font is not a project asset")?;
+            if reference.id.to_string() != font.content_hash {
+                bail!("font path does not match its content identity");
+            }
+            font.original_path = None;
+        }
+        Self::encode(portable, true, Vec::new())
+    }
+
     fn prepare(document: &Document, compressed: bool) -> Result<Self> {
         let mut portable = document.clone();
         let mut assets = Vec::new();
@@ -35,32 +58,36 @@ impl PreparedSnapshot {
             font.original_path = None;
             assets.push(prepared.asset);
         }
-        let color_selection_schema = document
+        Self::encode(portable, compressed, assets)
+    }
+
+    fn encode(mut portable: Document, compressed: bool, assets: Vec<Asset>) -> Result<Self> {
+        let color_selection_schema = portable
             .selection
             .as_ref()
             .is_some_and(|selection| selection.alpha().is_some())
-            || document
+            || portable
                 .layers
                 .iter()
                 .any(|layer| layer.pixel_mask.is_some());
-        let path_schema = document.layers.iter().any(|layer| {
+        let path_schema = portable.layers.iter().any(|layer| {
             layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. })
         });
-        let paint_schema = document
+        let paint_schema = portable
             .layers
             .iter()
             .any(|layer| matches!(layer.kind, LayerKind::Paint { .. }));
-        let dissolve_schema = document.layers.iter().any(|layer| {
+        let dissolve_schema = portable.layers.iter().any(|layer| {
             layer.blend_mode == crate::BlendMode::Dissolve || layer.dissolve_seed != 0
         });
         let selection_schema =
-            document.version >= SELECTION_SNAPSHOT_VERSION || document.selection.is_some();
-        let effects_schema = document.version >= LAYER_EFFECTS_SNAPSHOT_VERSION
-            || document
+            portable.version >= SELECTION_SNAPSHOT_VERSION || portable.selection.is_some();
+        let effects_schema = portable.version >= LAYER_EFFECTS_SNAPSHOT_VERSION
+            || portable
                 .layers
                 .iter()
                 .any(|layer| !layer.style.is_empty() || layer.shape_fill.is_some());
-        let raster_pixel_mask_schema = document.layers.iter().any(|layer| {
+        let raster_pixel_mask_schema = portable.layers.iter().any(|layer| {
             matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some()
         });
         let snapshot_version = if raster_pixel_mask_schema {
