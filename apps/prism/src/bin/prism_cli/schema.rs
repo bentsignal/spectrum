@@ -103,7 +103,7 @@ pub(super) fn schema() -> Value {
         },
         "selection": {
             "rectangle": "selection rectangle <x> <y> <width> <height> uses integer document pixels and clips at canvas edges",
-            "magic_wand": "selection magic-wand <x> <y> [--tolerance <0..255>] [--noncontiguous] [--no-antialias] samples the exact CPU composite; tolerance is deterministic max-channel distance over premultiplied RGBA (hidden RGB at alpha 0 is ignored, alpha differences remain visible), and anti-aliasing adds one soft boundary pixel",
+            "magic_wand": "selection magic-wand <x> <y> [--tolerance <0..255>] [--noncontiguous] [--no-antialias] defaults tolerance to 20 and samples the exact CPU composite; tolerance is deterministic max-channel distance over premultiplied RGBA (hidden RGB at alpha 0 is ignored, alpha differences remain visible), and anti-aliasing adds one soft boundary pixel",
             "lasso": "selection lasso --point <x,y> --point <x,y> --point <x,y> [--mode <replace|add|subtract|intersect>] [--no-antialias] quantizes coordinates to 1/256 pixel and applies a deterministic even-odd polygon selection",
             "lasso_limits": {"input_points": prism_core::MAX_LASSO_INPUT_POINTS, "simplified_vertices": prism_core::MAX_LASSO_VERTICES, "raster_edge_tests": prism_core::MAX_LASSO_RASTER_EDGE_TESTS, "mask_pixels": prism_core::MAX_COLOR_SELECTION_PIXELS},
             "clear": "selection clear removes the persistent pixel selection",

@@ -5,16 +5,17 @@ const SELECTION_CONTRAST_STROKE_POINTS: f32 = 3.5;
 const SELECTION_DASH_POINTS: f32 = 4.0;
 const SELECTION_ANIMATION_POINTS_PER_SECOND: f32 = 24.0;
 const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(42);
-const MAX_CONTOUR_EDGES: usize = 65_536;
-const MAX_FALLBACK_MASK_EDGE: u32 = 1_024;
-// Match the conventional selection boundary at 50% coverage while retaining
-// the antialiased alpha plane itself unchanged for fill, crop, and persistence.
-const SELECTION_BOUNDARY_ALPHA: u8 = 128;
 
 pub(super) struct SelectionOverlay {
     tab_id: u64,
     selection: prism_core::Selection,
-    paths: std::sync::Arc<[Vec<Pos2>]>,
+    exact_paths: Option<std::sync::Arc<[prism_core::SelectionOutlinePath]>>,
+    view: Option<SelectionOverlayView>,
+}
+
+struct SelectionOverlayView {
+    key: prism_core::SelectionOutlineView,
+    paths: std::sync::Arc<[prism_core::SelectionOutlinePath]>,
 }
 
 pub(super) struct SelectionUiState {
@@ -94,155 +95,102 @@ fn can_crop_to_selection(
     selection.is_some_and(|selection| selection.bounds() != (0, 0, canvas_width, canvas_height))
 }
 
-fn rectangle_path(rect: Rect) -> Vec<Pos2> {
+fn outline_point(point: Pos2) -> prism_core::SelectionOutlinePoint {
+    prism_core::SelectionOutlinePoint::new(point.x, point.y)
+}
+
+fn rectangle_path(rect: Rect) -> prism_core::SelectionOutlinePath {
     vec![
-        rect.left_top(),
-        rect.right_top(),
-        rect.right_bottom(),
-        rect.left_bottom(),
-        rect.left_top(),
+        outline_point(rect.left_top()),
+        outline_point(rect.right_top()),
+        outline_point(rect.right_bottom()),
+        outline_point(rect.left_bottom()),
+        outline_point(rect.left_top()),
     ]
 }
 
 fn paint_selection_preview(ui: &egui::Ui, rect: Rect) {
     ui.painter().rect_filled(rect, 0.0, with_alpha(ACCENT, 24));
-    paint_marching_ants(ui, std::slice::from_ref(&rectangle_path(rect)));
+    paint_marching_ants(
+        ui,
+        std::slice::from_ref(&rectangle_path(rect)),
+        prism_core::SelectionOutlineTransform {
+            scale: 1.0,
+            offset: prism_core::SelectionOutlinePoint::new(0.0, 0.0),
+        },
+    );
 }
 
-fn paint_marching_ants(ui: &egui::Ui, paths: &[Vec<Pos2>]) {
+fn paint_marching_ants(
+    ui: &egui::Ui,
+    paths: &[prism_core::SelectionOutlinePath],
+    transform: prism_core::SelectionOutlineTransform,
+) {
     if paths.is_empty() {
         return;
     }
     ui.ctx().request_repaint_after(SELECTION_REPAINT_INTERVAL);
-    let phase = ui.input(|input| input.time as f32) * SELECTION_ANIMATION_POINTS_PER_SECOND;
+    let cycle = f64::from(SELECTION_DASH_POINTS * 2.0);
+    let phase = ui.input(|input| {
+        (input.time * f64::from(SELECTION_ANIMATION_POINTS_PER_SECOND)).rem_euclid(cycle) as f32
+    });
     let clip = ui.clip_rect().expand(SELECTION_CONTRAST_STROKE_POINTS);
+    let frame = prism_core::marching_ants_frame(
+        paths,
+        transform,
+        prism_core::SelectionOutlineRect::new(outline_point(clip.min), outline_point(clip.max)),
+        phase,
+        SELECTION_DASH_POINTS,
+    );
     let painter = ui.painter();
-    for path in paths {
-        let mut path_distance = 0.0;
-        for segment in path.windows(2) {
-            let start = segment[0];
-            let end = segment[1];
-            let delta = end - start;
-            let length = delta.length();
-            if length <= f32::EPSILON {
-                continue;
-            }
-            if let Some((clip_start, clip_end)) = clipped_segment_parameter(start, end, clip) {
-                let visible_start = start.lerp(end, clip_start);
-                let visible_end = start.lerp(end, clip_end);
-                painter.line_segment(
-                    [visible_start, visible_end],
-                    Stroke::new(
-                        SELECTION_CONTRAST_STROKE_POINTS,
-                        Color32::from_black_alpha(230),
-                    ),
-                );
-                paint_white_dashes(
-                    painter,
-                    VisibleSelectionSegment {
-                        start,
-                        end,
-                        path_distance,
-                        length,
-                        clip_start,
-                        clip_end,
-                    },
-                    phase,
-                );
-            }
-            path_distance += length;
-        }
+    for segment in frame.contrast {
+        painter.line_segment(
+            [
+                Pos2::new(segment.start.x, segment.start.y),
+                Pos2::new(segment.end.x, segment.end.y),
+            ],
+            Stroke::new(
+                SELECTION_CONTRAST_STROKE_POINTS,
+                Color32::from_black_alpha(230),
+            ),
+        );
     }
-}
-
-#[derive(Clone, Copy)]
-struct VisibleSelectionSegment {
-    start: Pos2,
-    end: Pos2,
-    path_distance: f32,
-    length: f32,
-    clip_start: f32,
-    clip_end: f32,
-}
-
-fn paint_white_dashes(painter: &egui::Painter, segment: VisibleSelectionSegment, phase: f32) {
-    let cycle = SELECTION_DASH_POINTS * 2.0;
-    let mut distance = segment.path_distance + segment.clip_start * segment.length;
-    let visible_end = segment.path_distance + segment.clip_end * segment.length;
-    while distance < visible_end {
-        let cycle_position = (distance + phase).rem_euclid(cycle);
-        let white = cycle_position < SELECTION_DASH_POINTS;
-        let run = if white {
-            SELECTION_DASH_POINTS - cycle_position
-        } else {
-            cycle - cycle_position
-        };
-        let next = (distance + run.max(0.01)).min(visible_end);
-        if white {
-            let start_t = ((distance - segment.path_distance) / segment.length).clamp(0.0, 1.0);
-            let end_t = ((next - segment.path_distance) / segment.length).clamp(0.0, 1.0);
-            painter.line_segment(
-                [
-                    segment.start.lerp(segment.end, start_t),
-                    segment.start.lerp(segment.end, end_t),
-                ],
-                Stroke::new(SELECTION_STROKE_POINTS, Color32::WHITE),
-            );
-        }
-        distance = next;
+    for segment in frame.light {
+        painter.line_segment(
+            [
+                Pos2::new(segment.start.x, segment.start.y),
+                Pos2::new(segment.end.x, segment.end.y),
+            ],
+            Stroke::new(SELECTION_STROKE_POINTS, Color32::WHITE),
+        );
     }
-}
-
-fn clipped_segment_parameter(start: Pos2, end: Pos2, clip: Rect) -> Option<(f32, f32)> {
-    let delta = end - start;
-    let mut lower = 0.0_f32;
-    let mut upper = 1.0_f32;
-    for (origin, direction, minimum, maximum) in [
-        (start.x, delta.x, clip.left(), clip.right()),
-        (start.y, delta.y, clip.top(), clip.bottom()),
-    ] {
-        if direction.abs() <= f32::EPSILON {
-            if origin < minimum || origin > maximum {
-                return None;
-            }
-            continue;
-        }
-        let first = (minimum - origin) / direction;
-        let second = (maximum - origin) / direction;
-        let (near, far) = if first <= second {
-            (first, second)
-        } else {
-            (second, first)
-        };
-        lower = lower.max(near);
-        upper = upper.min(far);
-        if lower > upper {
-            return None;
-        }
-    }
-    Some((lower.clamp(0.0, 1.0), upper.clamp(0.0, 1.0)))
 }
 
 pub(super) fn paint_selection_overlay(
     ui: &egui::Ui,
     geometry: CanvasGeometry,
     selection: &prism_core::Selection,
-    paths: Option<&[Vec<Pos2>]>,
+    paths: Option<&[prism_core::SelectionOutlinePath]>,
 ) {
-    let screen_paths = if selection.alpha().is_none() {
-        vec![rectangle_path(selection_screen_rect(geometry, selection))]
+    let rectangle;
+    let paths = if selection.alpha().is_none() {
+        rectangle = vec![rectangle_path(selection_screen_rect(geometry, selection))];
+        rectangle.as_slice()
     } else {
-        paths
-            .unwrap_or_default()
-            .iter()
-            .map(|path| {
-                path.iter()
-                    .map(|point| geometry.canvas_to_screen(*point))
-                    .collect()
-            })
-            .collect()
+        paths.unwrap_or_default()
     };
-    paint_marching_ants(ui, &screen_paths);
+    let transform = if selection.alpha().is_none() {
+        prism_core::SelectionOutlineTransform {
+            scale: 1.0,
+            offset: prism_core::SelectionOutlinePoint::new(0.0, 0.0),
+        }
+    } else {
+        prism_core::SelectionOutlineTransform {
+            scale: geometry.pixels_per_point,
+            offset: outline_point(geometry.canvas.min),
+        }
+    };
+    paint_marching_ants(ui, paths, transform);
 }
 
 pub(super) fn paint_selection_drag(
@@ -253,202 +201,33 @@ pub(super) fn paint_selection_drag(
     paint_selection_preview(ui, selection_screen_rect(geometry, selection));
 }
 
-#[derive(Clone, Copy, Debug)]
-struct BoundaryEdge {
-    start: (u32, u32),
-    end: (u32, u32),
-    direction: u8,
-}
-
-fn color_mask_paths(bounds: (u32, u32, u32, u32), alpha: &[u8]) -> std::sync::Arc<[Vec<Pos2>]> {
-    let (_, _, width, height) = bounds;
-    if width == 0 || height == 0 || alpha.len() != (u64::from(width) * u64::from(height)) as usize {
-        return std::sync::Arc::from([]);
-    }
-    if let Some(edges) = boundary_edges(width, height, |x, y| {
-        alpha[(u64::from(y) * u64::from(width) + u64::from(x)) as usize] >= SELECTION_BOUNDARY_ALPHA
-    }) {
-        return map_contours(trace_contours(edges), bounds, width, height);
-    }
-
-    let mut fallback_width = width.min(MAX_FALLBACK_MASK_EDGE);
-    let mut fallback_height = height.min(MAX_FALLBACK_MASK_EDGE);
-    loop {
-        let occupancy = aggregate_mask(width, height, alpha, fallback_width, fallback_height);
-        if let Some(edges) = boundary_edges(fallback_width, fallback_height, |x, y| {
-            occupancy[(u64::from(y) * u64::from(fallback_width) + u64::from(x)) as usize]
-        }) {
-            return map_contours(
-                trace_contours(edges),
-                bounds,
-                fallback_width,
-                fallback_height,
-            );
-        }
-        if fallback_width == 1 && fallback_height == 1 {
-            return std::sync::Arc::from([]);
-        }
-        fallback_width = fallback_width.div_ceil(2).max(1);
-        fallback_height = fallback_height.div_ceil(2).max(1);
-    }
-}
-
-fn boundary_edges(
-    width: u32,
-    height: u32,
-    selected: impl Fn(u32, u32) -> bool,
-) -> Option<Vec<BoundaryEdge>> {
-    let mut edges = Vec::new();
-    let mut push = |start, end, direction| {
-        if edges.len() >= MAX_CONTOUR_EDGES {
-            return false;
-        }
-        edges.push(BoundaryEdge {
-            start,
-            end,
-            direction,
-        });
-        true
-    };
-    for y in 0..height {
-        for x in 0..width {
-            if !selected(x, y) {
-                continue;
-            }
-            if y == 0 && !push((x, y), (x + 1, y), 0)
-                || y > 0 && !selected(x, y - 1) && !push((x, y), (x + 1, y), 0)
-                || x + 1 == width && !push((x + 1, y), (x + 1, y + 1), 1)
-                || x + 1 < width && !selected(x + 1, y) && !push((x + 1, y), (x + 1, y + 1), 1)
-                || y + 1 == height && !push((x + 1, y + 1), (x, y + 1), 2)
-                || y + 1 < height && !selected(x, y + 1) && !push((x + 1, y + 1), (x, y + 1), 2)
-                || x == 0 && !push((x, y + 1), (x, y), 3)
-                || x > 0 && !selected(x - 1, y) && !push((x, y + 1), (x, y), 3)
-            {
-                return None;
-            }
-        }
-    }
-    Some(edges)
-}
-
-fn trace_contours(edges: Vec<BoundaryEdge>) -> Vec<Vec<(u32, u32)>> {
-    let mut outgoing: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
-    for (index, edge) in edges.iter().enumerate() {
-        outgoing.entry(edge.start).or_default().push(index);
-    }
-    let mut visited = vec![false; edges.len()];
-    let mut contours = Vec::new();
-    for first in 0..edges.len() {
-        if visited[first] {
-            continue;
-        }
-        let start = edges[first].start;
-        let mut points = vec![start];
-        let mut current = first;
-        loop {
-            if visited[current] {
-                break;
-            }
-            visited[current] = true;
-            let edge = edges[current];
-            points.push(edge.end);
-            if edge.end == start {
-                break;
-            }
-            let Some(candidates) = outgoing.get(&edge.end) else {
-                break;
-            };
-            let Some(next) = candidates
-                .iter()
-                .copied()
-                .filter(|candidate| !visited[*candidate])
-                .min_by_key(|candidate| turn_rank(edge.direction, edges[*candidate].direction))
-            else {
-                break;
-            };
-            current = next;
-        }
-        let points = simplify_contour(points);
-        if points.len() >= 4 && points.first() == points.last() {
-            contours.push(points);
-        }
-    }
-    contours
-}
-
-fn turn_rank(previous: u8, next: u8) -> u8 {
-    match next.wrapping_sub(previous) % 4 {
-        1 => 0,
-        0 => 1,
-        3 => 2,
-        _ => 3,
-    }
-}
-
-fn simplify_contour(points: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
-    if points.len() < 4 {
-        return points;
-    }
-    let mut simplified = Vec::with_capacity(points.len());
-    simplified.push(points[0]);
-    for window in points.windows(3) {
-        let first = window[0];
-        let middle = window[1];
-        let last = window[2];
-        let collinear = (first.0 == middle.0 && middle.0 == last.0)
-            || (first.1 == middle.1 && middle.1 == last.1);
-        if !collinear {
-            simplified.push(middle);
-        }
-    }
-    simplified.push(*points.last().expect("contour has points"));
-    simplified
-}
-
-fn aggregate_mask(
-    width: u32,
-    height: u32,
-    alpha: &[u8],
-    output_width: u32,
-    output_height: u32,
-) -> Vec<bool> {
-    let mut occupancy = vec![false; (u64::from(output_width) * u64::from(output_height)) as usize];
-    for y in 0..height {
-        let output_y = (u64::from(y) * u64::from(output_height) / u64::from(height)) as u32;
-        for x in 0..width {
-            let source = (u64::from(y) * u64::from(width) + u64::from(x)) as usize;
-            if alpha[source] < SELECTION_BOUNDARY_ALPHA {
-                continue;
-            }
-            let output_x = (u64::from(x) * u64::from(output_width) / u64::from(width)) as u32;
-            let output =
-                (u64::from(output_y) * u64::from(output_width) + u64::from(output_x)) as usize;
-            occupancy[output] = true;
-        }
-    }
-    occupancy
-}
-
-fn map_contours(
-    contours: Vec<Vec<(u32, u32)>>,
+fn selection_outline_view(
+    geometry: CanvasGeometry,
+    clip: Rect,
     bounds: (u32, u32, u32, u32),
-    grid_width: u32,
-    grid_height: u32,
-) -> std::sync::Arc<[Vec<Pos2>]> {
-    contours
-        .into_iter()
-        .map(|contour| {
-            contour
-                .into_iter()
-                .map(|(x, y)| {
-                    Pos2::new(
-                        bounds.0 as f32 + x as f32 * bounds.2 as f32 / grid_width as f32,
-                        bounds.1 as f32 + y as f32 * bounds.3 as f32 / grid_height as f32,
-                    )
-                })
-                .collect()
-        })
-        .collect()
+) -> Option<prism_core::SelectionOutlineView> {
+    let clip = clip.intersect(geometry.canvas);
+    if !clip.is_positive() {
+        return None;
+    }
+    let min = geometry.screen_to_canvas(clip.min);
+    let max = geometry.screen_to_canvas(clip.max);
+    let local_left =
+        (min.x.floor() as i64 - i64::from(bounds.0) - 1).clamp(0, i64::from(bounds.2)) as u32;
+    let local_top =
+        (min.y.floor() as i64 - i64::from(bounds.1) - 1).clamp(0, i64::from(bounds.3)) as u32;
+    let local_right =
+        (max.x.ceil() as i64 - i64::from(bounds.0) + 1).clamp(0, i64::from(bounds.2)) as u32;
+    let local_bottom =
+        (max.y.ceil() as i64 - i64::from(bounds.1) + 1).clamp(0, i64::from(bounds.3)) as u32;
+    (local_right > local_left && local_bottom > local_top).then_some(
+        prism_core::SelectionOutlineView {
+            x: local_left,
+            y: local_top,
+            width: local_right - local_left,
+            height: local_bottom - local_top,
+        },
+    )
 }
 
 /*
@@ -456,24 +235,47 @@ fn map_contours(
  * from the current immutable selection and can be discarded at any time.
  */
 impl PrismApp {
-    pub(super) fn ensure_selection_overlay(&mut self) -> Option<std::sync::Arc<[Vec<Pos2>]>> {
+    pub(super) fn ensure_selection_overlay(
+        &mut self,
+        geometry: CanvasGeometry,
+        clip: Rect,
+    ) -> Option<std::sync::Arc<[prism_core::SelectionOutlinePath]>> {
         let selection = self.workspace.document.selection.as_ref()?.clone();
-        if self.selection_ui.overlay.as_ref().is_some_and(|overlay| {
+        let matches_cached_selection = self.selection_ui.overlay.as_ref().is_some_and(|overlay| {
             overlay.tab_id == self.active_tab_id && overlay.selection == selection
-        }) {
-            return self
-                .selection_ui
-                .overlay
-                .as_ref()
-                .map(|overlay| std::sync::Arc::clone(&overlay.paths));
+        });
+        if !matches_cached_selection {
+            let exact_paths = selection.alpha().map_or_else(
+                || Some(std::sync::Arc::from([])),
+                |alpha| match prism_core::selection_mask_outline(selection.bounds(), alpha) {
+                    prism_core::SelectionMaskOutline::Exact(paths) => Some(paths),
+                    prism_core::SelectionMaskOutline::Complex => None,
+                },
+            );
+            self.selection_ui.overlay = Some(SelectionOverlay {
+                tab_id: self.active_tab_id,
+                selection,
+                exact_paths,
+                view: None,
+            });
         }
-        let paths = selection.alpha().map_or_else(
-            || std::sync::Arc::from([]),
-            |alpha| color_mask_paths(selection.bounds(), alpha),
+        let overlay = self.selection_ui.overlay.as_mut()?;
+        if let Some(paths) = &overlay.exact_paths {
+            return Some(std::sync::Arc::clone(paths));
+        }
+        let key = selection_outline_view(geometry, clip, overlay.selection.bounds())?;
+        if let Some(view) = &overlay.view
+            && view.key == key
+        {
+            return Some(std::sync::Arc::clone(&view.paths));
+        }
+        let paths = prism_core::complex_selection_mask_outline(
+            overlay.selection.bounds(),
+            overlay.selection.alpha()?,
+            key,
         );
-        self.selection_ui.overlay = Some(SelectionOverlay {
-            tab_id: self.active_tab_id,
-            selection,
+        overlay.view = Some(SelectionOverlayView {
+            key,
             paths: std::sync::Arc::clone(&paths),
         });
         Some(paths)
@@ -638,62 +440,32 @@ mod tests {
     }
 
     #[test]
-    fn irregular_and_antialiased_masks_produce_exact_closed_contours() {
-        let alpha = [
-            0, 0, 0, 0, 0, 0, 255, 160, 0, 0, 0, 255, 255, 0, 0, 0, 0, 0, 0, 255,
-        ];
-        let paths = color_mask_paths((10, 20, 5, 4), &alpha);
-        assert_eq!(paths.len(), 2);
-        assert!(paths.iter().all(|path| path.first() == path.last()));
-        assert!(
-            paths
-                .iter()
-                .flatten()
-                .all(|point| point.x >= 10.0 && point.x <= 15.0)
+    fn complex_outline_view_tracks_the_visible_source_pixels_at_high_zoom() {
+        let geometry = CanvasGeometry {
+            viewport: Rect::from_min_max(Pos2::ZERO, Pos2::new(1_000.0, 800.0)),
+            canvas: Rect::from_min_size(
+                Pos2::new(100.0, 200.0),
+                Vec2::new(1_024.0, 1_024.0) * 16.0,
+            ),
+            pixels_per_point: 16.0,
+        };
+        assert_eq!(
+            selection_outline_view(
+                geometry,
+                Rect::from_min_max(Pos2::new(260.0, 360.0), Pos2::new(420.0, 520.0)),
+                (0, 0, 1_024, 1_024),
+            ),
+            Some(prism_core::SelectionOutlineView {
+                x: 9,
+                y: 9,
+                width: 12,
+                height: 12,
+            })
         );
-        assert!(
-            paths
-                .iter()
-                .flatten()
-                .all(|point| point.y >= 20.0 && point.y <= 24.0)
-        );
-    }
-
-    #[test]
-    fn contour_generation_is_bounded_for_a_pathological_large_mask() {
-        let mut alpha = vec![0; 1_024 * 1_024];
-        for y in 0..1_024 {
-            for x in 0..1_024 {
-                alpha[y * 1_024 + x] = if (x + y) % 2 == 0 { 255 } else { 0 };
-            }
-        }
-        let paths = color_mask_paths((0, 0, 1_024, 1_024), &alpha);
-        let vertices = paths.iter().map(Vec::len).sum::<usize>();
-        assert!(vertices <= MAX_CONTOUR_EDGES);
-        assert!(!paths.is_empty());
-    }
-
-    #[test]
-    fn contour_rejects_malformed_alpha_without_work() {
-        assert!(color_mask_paths((0, 0, 4, 4), &[255; 15]).is_empty());
     }
 
     #[test]
     fn default_magic_wand_tolerance_is_twenty() {
         assert_eq!(SelectionUiState::default().magic_wand_tolerance, 20);
-    }
-
-    #[test]
-    fn segment_clipping_bounds_offscreen_animation_work() {
-        let clip = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
-        let (start, end) =
-            clipped_segment_parameter(Pos2::new(-10_000.0, 50.0), Pos2::new(10_000.0, 50.0), clip)
-                .unwrap();
-        assert!((start - 0.5).abs() < 0.01);
-        assert!((end - 0.505).abs() < 0.01);
-        assert!(
-            clipped_segment_parameter(Pos2::new(-10.0, -5.0), Pos2::new(110.0, -5.0), clip,)
-                .is_none()
-        );
     }
 }

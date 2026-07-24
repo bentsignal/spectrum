@@ -90,7 +90,7 @@ impl PrismApp {
                         && !self.selection_ui.lasso_points.is_empty()
                         && self.selection_ui.lasso_gesture_mode
                             == Some(prism_core::SelectionCombineMode::Replace));
-                let selection_overlay = self.ensure_selection_overlay();
+                let selection_overlay = self.ensure_selection_overlay(geometry, ui.clip_rect());
                 if !replacing_marquee && let Some(selection) = &self.workspace.document.selection {
                     paint_selection_overlay(ui, geometry, selection, selection_overlay.as_deref());
                 }

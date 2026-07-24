@@ -28,6 +28,8 @@ mod paint;
 mod path;
 #[path = "benchmark/selection.rs"]
 mod selection;
+#[path = "benchmark/selection_outline.rs"]
+mod selection_outline;
 #[path = "benchmark/text_preview_frame.rs"]
 mod text_preview_frame;
 
@@ -168,6 +170,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let selection_fill = selection::measure_selection_fill()?;
     let magic_wand = selection::measure_magic_wand_bound()?;
     let lasso = selection::measure_lasso_bound()?;
+    let selection_outline = selection_outline::measure()?;
     let path = path::measure()?;
     let paint = paint::measure()?;
     let text_preview_frame = text_preview_frame::measure()?;
@@ -737,6 +740,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: lasso.elapsed_ms,
             budget_ms: 500.0,
             pass: lasso.elapsed_ms <= 500.0 && lasso.mask_pixels <= 192 * 192,
+        },
+        BenchmarkMetric {
+            name: "pathological_selection_contour_and_animated_frame",
+            median_ms: selection_outline.median_ms,
+            p95_ms: selection_outline.p95_ms,
+            budget_ms: 100.0,
+            pass: selection_outline.p95_ms <= 100.0,
         },
         BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
