@@ -406,7 +406,7 @@ impl PrismApp {
         let modal_open = self.has_modal_surface();
         self.terminal_session_rail(root);
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(INK).inner_margin(0))
+            .frame(egui::Frame::new().fill(TERMINAL_SURFACE).inner_margin(0))
             .show(root, |ui| {
                 let Some(session) = self.terminal.sessions.get_mut(self.terminal.active) else {
                     ui.centered_and_justified(|ui| {
@@ -417,7 +417,7 @@ impl PrismApp {
                 #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
                 if session.native {
                     let rect = ui.available_rect_before_wrap();
-                    ui.painter().rect_filled(rect, 0.0, INK);
+                    ui.painter().rect_filled(rect, 0.0, TERMINAL_SURFACE);
                     ui.allocate_rect(rect, Sense::hover());
                     let presentation = native_terminal::NativeSurfacePresentation::for_terminal(
                         rect,

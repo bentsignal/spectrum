@@ -489,7 +489,9 @@ impl PrismApp {
                     .monospace()
                     .color(MUTED),
                 );
-                if quiet_button(ui, "Choose folder…").clicked()
+                if secondary_button(ui, "Choose folder…")
+                    .on_hover_text("Select the destination folder")
+                    .clicked()
                     && let Some(destination) = rfd::FileDialog::new()
                         .set_directory(current.parent().unwrap_or_else(|| Path::new(".")))
                         .pick_folder()

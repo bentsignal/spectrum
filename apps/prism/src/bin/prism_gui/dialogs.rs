@@ -47,11 +47,15 @@ pub(super) fn modal_text_input(
     let mut output = if multiline {
         egui::TextEdit::multiline(text)
             .id(id)
+            .margin(egui::Margin::symmetric(
+                CONTROL_HORIZONTAL_PADDING,
+                CONTROL_VERTICAL_PADDING,
+            ))
             .desired_width(f32::INFINITY)
             .desired_rows(5)
             .show(ui)
     } else {
-        egui::TextEdit::singleline(text)
+        text_field(text)
             .id(id)
             .desired_width(f32::INFINITY)
             .show(ui)

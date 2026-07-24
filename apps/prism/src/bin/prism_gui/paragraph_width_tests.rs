@@ -113,17 +113,54 @@ fn paragraph_midpoints_are_zoom_invariant_and_exclusive_to_paragraph_text() {
 
 #[test]
 fn paragraph_cursor_tracks_the_transformed_local_x_axis() {
+    let geometry = CanvasGeometry {
+        viewport: Rect::from_min_size(Pos2::ZERO, Vec2::splat(1_000.0)),
+        canvas: Rect::from_min_size(Pos2::ZERO, Vec2::splat(1_000.0)),
+        pixels_per_point: 1.0,
+    };
     for handle in [ResizeHandle::ParagraphLeft, ResizeHandle::ParagraphRight] {
+        let layer = paragraph_layer(Transform::default(), 180.0);
+        let source = source_for(&layer);
         assert_eq!(
-            resize_cursor(handle, 0.0),
-            egui::CursorIcon::ResizeHorizontal
+            resize_cursor(geometry, &layer, Some(source), handle),
+            Some(egui::CursorIcon::ResizeHorizontal)
         );
-        assert_eq!(resize_cursor(handle, 45.0), egui::CursorIcon::ResizeNwSe);
+        let layer = paragraph_layer(
+            Transform {
+                rotation: 45.0,
+                ..Transform::default()
+            },
+            180.0,
+        );
+        let source = source_for(&layer);
         assert_eq!(
-            resize_cursor(handle, 90.0),
-            egui::CursorIcon::ResizeVertical
+            resize_cursor(geometry, &layer, Some(source), handle),
+            Some(egui::CursorIcon::ResizeNwSe)
         );
-        assert_eq!(resize_cursor(handle, 135.0), egui::CursorIcon::ResizeNeSw);
+        let layer = paragraph_layer(
+            Transform {
+                rotation: 90.0,
+                ..Transform::default()
+            },
+            180.0,
+        );
+        let source = source_for(&layer);
+        assert_eq!(
+            resize_cursor(geometry, &layer, Some(source), handle),
+            Some(egui::CursorIcon::ResizeVertical)
+        );
+        let layer = paragraph_layer(
+            Transform {
+                rotation: 135.0,
+                ..Transform::default()
+            },
+            180.0,
+        );
+        let source = source_for(&layer);
+        assert_eq!(
+            resize_cursor(geometry, &layer, Some(source), handle),
+            Some(egui::CursorIcon::ResizeNeSw)
+        );
     }
 }
 
