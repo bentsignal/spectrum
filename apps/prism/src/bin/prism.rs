@@ -83,7 +83,7 @@ enum CliCommand {
         #[arg(long, default_value_t = 0.0)]
         y: f32,
     },
-    /// Add editable text using Prism's bundled portable font.
+    /// Add editable text using Prism's bundled Ubuntu Light font.
     AddText {
         text: String,
         #[arg(long)]

@@ -29,6 +29,12 @@ pub use typography::{
     FontAsset, FontEmbeddingPermission, FontSlant, TextAlignment, TextEffects, TextTypography,
 };
 
+mod bundled_font;
+pub use bundled_font::{
+    BUNDLED_FONT, BundledFontProvenance, LEGACY_BUNDLED_FONT_ALIAS, bundled_font_provenance,
+    font_metadata_matches_query, is_bundled_font_family,
+};
+
 mod font_source;
 pub use font_source::{FontSourceSnapshot, VerifiedFontSource};
 

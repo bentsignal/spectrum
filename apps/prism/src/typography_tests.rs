@@ -270,7 +270,7 @@ fn source_snapshot_accepts_static_variable_and_cff_open_type_containers() {
 }
 
 #[test]
-fn font_source_accepts_license_restrictions_but_rejects_bitmap_only_embedding() {
+fn font_source_accepts_restricted_preview_and_bitmap_only_metadata_directly() {
     let directory = test_directory("embedding-restrictions");
     fs::create_dir_all(&directory).unwrap();
     let preview = directory.join("preview.ttf");
@@ -299,29 +299,32 @@ fn font_source_accepts_license_restrictions_but_rejects_bitmap_only_embedding() 
     let mut bitmap_only_bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
     set_fs_type(&mut bitmap_only_bytes, 0x0208);
     fs::write(&bitmap_only, bitmap_only_bytes).unwrap();
-    assert!(FontSourceSnapshot::read(&bitmap_only).is_err());
+    let snapshot = FontSourceSnapshot::read(&bitmap_only).unwrap();
+    assert_eq!(
+        snapshot.embedding_permission(),
+        FontEmbeddingPermission::Editable
+    );
+    assert!(!snapshot.subset_allowed());
     fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn preview_print_font_import_warns_and_reloads_without_losing_bytes_or_policy() {
+fn preview_print_font_import_is_direct_and_preserves_bytes_and_policy() {
     assert_font_permission_round_trip(
         "preview-print-round-trip",
         "Preview-Print.ttf",
         0x0104,
         FontEmbeddingPermission::PreviewAndPrint,
-        "preview/print",
     );
 }
 
 #[test]
-fn restricted_font_import_warns_renders_and_disables_subsetting_after_reload() {
+fn restricted_font_import_is_direct_renders_and_disables_subsetting_after_reload() {
     assert_font_permission_round_trip(
         "restricted-round-trip",
         "Restricted.ttf",
         0x0002,
         FontEmbeddingPermission::Restricted,
-        "restricted embedding",
     );
 }
 
@@ -364,7 +367,6 @@ fn assert_font_permission_round_trip(
     source_name: &str,
     fs_type: u16,
     expected_permission: FontEmbeddingPermission,
-    warning_fragment: &str,
 ) {
     let directory = test_directory(label);
     fs::create_dir_all(&directory).unwrap();
@@ -387,8 +389,7 @@ fn assert_font_permission_round_trip(
             source_name: None,
         })
         .unwrap();
-    assert_eq!(output.warnings.len(), 1);
-    assert!(output.warnings[0].contains(warning_fragment));
+    assert!(output.warnings.is_empty());
     let font_id = workspace.document.font_assets[0].id;
     assert_eq!(
         workspace.document.font_assets[0].embedding_permission,

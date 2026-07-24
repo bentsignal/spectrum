@@ -291,6 +291,48 @@ fn font_list_cli_accepts_an_optional_query() {
 }
 
 #[test]
+fn bundled_font_output_is_truthful_and_legacy_family_automation_remains_compatible() {
+    let mut workspace = Workspace::new(Document::new("Bundled font", 320, 200), None);
+    workspace
+        .execute(Command::AddText {
+            text: "Legacy automation".into(),
+            name: None,
+            font_size: 32.0,
+            color: [255; 4],
+            x: 0.0,
+            y: 0.0,
+        })
+        .unwrap();
+    let output = typography::font_list(&workspace.document, None);
+    assert_eq!(output["bundled"]["id"], serde_json::Value::Null);
+    assert_eq!(output["bundled"]["family"], "Ubuntu");
+    assert_eq!(output["bundled"]["style"], "Light");
+    assert_eq!(output["bundled"]["designed_by"], "Dalton Maag");
+    assert_eq!(output["bundled"]["license_name"], "Ubuntu Font Licence 1.0");
+    assert_eq!(
+        output["bundled"]["compatibility_aliases"][0],
+        "Spectrum Sans"
+    );
+    assert_ne!(output["bundled"]["family"], "Spectrum Sans");
+
+    let cli = Cli::try_parse_from([
+        "prism",
+        "--project",
+        "type.prism",
+        "typography",
+        "1",
+        "--family",
+        "Spectrum Sans",
+    ])
+    .unwrap();
+    let CliCommand::Typography(arguments) = cli.command else {
+        panic!("typography subcommand should parse");
+    };
+    let updated = typography::updated_typography(&workspace.document, &arguments).unwrap();
+    assert_eq!(updated.font_id, None);
+}
+
+#[test]
 fn font_usage_cli_accepts_an_optional_asset_filter() {
     let cli = Cli::try_parse_from([
         "prism",
@@ -435,7 +477,7 @@ fn font_source_output_proves_identity_without_mutating_the_document() {
 }
 
 #[test]
-fn restricted_font_source_output_is_advisory_and_never_subset_eligible() {
+fn restricted_font_source_output_is_contextual_and_never_subset_eligible() {
     let directory = temporary_project("restricted-font-source").with_extension("assets");
     std::fs::create_dir_all(&directory).unwrap();
     let source = directory.join("Restricted.ttf");
@@ -455,10 +497,10 @@ fn restricted_font_source_output_is_advisory_and_never_subset_eligible() {
     assert_eq!(output["portable_editable_embedding_verified"], false);
     assert_eq!(output["editable_embedding_verified"], false);
     assert!(
-        output["embedding_advisory"]
+        output["portability_note"]
             .as_str()
             .unwrap()
-            .contains("restricted embedding")
+            .contains("Restricted embedding")
     );
     assert_eq!(std::fs::read(&source).unwrap(), bytes);
     std::fs::remove_dir_all(directory).unwrap();
@@ -754,7 +796,9 @@ fn schema_keeps_guides_and_typography_commands_together() {
     assert!(schema["typography"]["embedding_metadata"].is_string());
     let embedding_policy = schema["typography"]["embedding_metadata"].as_str().unwrap();
     assert!(embedding_policy.contains("restricted"));
-    assert!(embedding_policy.contains("disable subsetting"));
+    assert!(embedding_policy.contains("import directly"));
+    assert!(embedding_policy.contains("optimized-copy limitations"));
+    assert!(embedding_policy.contains("original bytes remain immutable"));
     assert!(schema["typography"]["editable_default"].is_string());
     assert!(schema["typography"]["source_snapshot"].is_string());
     assert_eq!(

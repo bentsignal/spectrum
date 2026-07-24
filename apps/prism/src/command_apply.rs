@@ -163,25 +163,16 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
                 .iter()
                 .find(|existing| existing.content_hash == font.content_hash)
             {
-                let mut result = output(
+                return Ok(output(
                     "import_font",
                     &format!("font already embedded as asset {}", existing.id),
                     Vec::new(),
-                );
-                if let Some(advisory) = existing.embedding_permission.advisory() {
-                    result.warnings.push(advisory.to_owned());
-                }
-                return Ok(result);
+                ));
             }
             document.next_font_id += 1;
             let message = format!("embedded {} {} as font asset {id}", font.family, font.style);
-            let advisory = font.embedding_permission.advisory().map(str::to_owned);
             document.font_assets.push(font);
-            let mut result = output("import_font", &message, Vec::new());
-            if let Some(advisory) = advisory {
-                result.warnings.push(advisory);
-            }
-            Ok(result)
+            Ok(output("import_font", &message, Vec::new()))
         }
         Command::AddRectangle {
             name,

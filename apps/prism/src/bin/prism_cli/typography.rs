@@ -41,7 +41,7 @@ pub(super) struct TypographyArgs {
     /// Preferred style/subfamily when resolving --family.
     #[arg(long, requires = "family")]
     pub style: Option<String>,
-    /// Return to Prism's bundled portable font.
+    /// Return to Prism's bundled Ubuntu Light font.
     #[arg(long, conflicts_with_all = ["font_id", "family"])]
     pub bundled: bool,
     #[arg(long)]
@@ -80,12 +80,12 @@ pub(super) fn updated_typography(
         document.font_asset(id)?;
         updated.font_id = Some(id);
     } else if let Some(family) = &arguments.family {
-        updated.font_id = Some(resolve_face(
+        updated.font_id = resolve_face(
             document,
             family,
             arguments.weight,
             arguments.style.as_deref(),
-        )?);
+        )?;
     }
     if let Some(alignment) = arguments.align {
         updated.alignment = alignment.into();
@@ -131,7 +131,7 @@ pub(super) fn font_list(document: &Document, query: Option<String>) -> Value {
     json!({
         "ok": true,
         "action": "font_list",
-        "bundled": {"id": null, "family": "Spectrum Sans", "style": "Regular", "weight": 300},
+        "bundled": prism_core::bundled_font_provenance(),
         "fonts": fonts,
     })
 }
@@ -149,7 +149,7 @@ pub(super) fn font_usage(document: &Document, font_id: Option<u64>) -> Result<Va
         "editable_font_bytes_preserved": true,
         "limitations": [
             "does not inspect symbol or other non-Unicode cmaps",
-            "does not model shaping, renderer fallback, or legal license terms",
+            "does not model shaping or renderer fallback",
             "opening --session retains Prism's standard session-resume behavior"
         ],
         "fonts": fonts,
@@ -230,7 +230,6 @@ fn subset_plan_value(plan: prism_core::FontSubsetPlan) -> Result<Value> {
         "font_bytes_modified": false,
         "candidate_bytes_emitted": false,
         "storage_decision": "a history-preserving reduction requires a separate fresh-database compact-copy transaction; appending a subset cannot remove retained full-font assets",
-        "license_notice": "OpenType embedding metadata is a technical check, not a legal license conclusion",
         "plan": plan,
     }))
 }
@@ -251,7 +250,6 @@ fn font_source_value(
         "content_hash": content_hash,
         "source_bytes": source_bytes,
         "embedding_permission": font.embedding_permission,
-        "embedding_advisory": font.embedding_permission.advisory(),
         "embedding_metadata_allows_subsetting": subset_allowed,
         "local_editing_supported": true,
         "portable_editable_embedding_verified": font.embedding_permission.portable_editing_verified(),
@@ -259,7 +257,7 @@ fn font_source_value(
         "immutable_identity_verified": true,
         "font_bytes_modified": false,
         "mutates_project": false,
-        "license_notice": "OpenType embedding metadata is a technical check, not a legal license conclusion"
+        "portability_note": font.embedding_permission.advisory()
     })
 }
 
@@ -268,8 +266,14 @@ fn resolve_face(
     family: &str,
     weight: Option<u16>,
     style: Option<&str>,
-) -> Result<u64> {
+) -> Result<Option<u64>> {
     let family = family.trim();
+    if prism_core::is_bundled_font_family(family)
+        && style.is_none_or(|style| style.eq_ignore_ascii_case(prism_core::BUNDLED_FONT.style))
+        && weight.is_none_or(|weight| weight == prism_core::BUNDLED_FONT.weight)
+    {
+        return Ok(None);
+    }
     let mut candidates: Vec<_> = document
         .font_assets
         .iter()
@@ -280,7 +284,7 @@ fn resolve_face(
     candidates.sort_by_key(|font| font.weight.abs_diff(preferred_weight));
     candidates
         .first()
-        .map(|font| font.id)
+        .map(|font| Some(font.id))
         .with_context(|| format!("no embedded font face matches family {family:?}"))
 }
 
