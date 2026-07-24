@@ -401,3 +401,75 @@ fn stroke_padding_preserves_path_viewport_origin_and_rasterized_placement() {
     assert_eq!(after, before);
     std::fs::remove_file(asset.path).unwrap();
 }
+
+#[test]
+fn high_zoom_pen_stroke_uses_bounded_regions_with_exact_tile_seams_and_bounds() {
+    let geometry = PathGeometry::new(
+        2_048,
+        2_048,
+        false,
+        PathFillRule::EvenOdd,
+        vec![
+            PathAnchor::corner(0.0, 1_024.0),
+            PathAnchor::corner(2_048.0, 1_024.0),
+        ],
+    )
+    .unwrap();
+    let layer = Layer {
+        id: 1,
+        transform: Transform {
+            x: 512.0,
+            y: 512.0,
+            ..Transform::default()
+        },
+        stroke: ShapeStroke {
+            enabled: true,
+            width: 512.0,
+            color: [246, 91, 137, 255],
+        },
+        kind: LayerKind::Path {
+            geometry,
+            color: [0; 4],
+        },
+        ..Layer::default()
+    };
+    let bounds = path_source_bounds(&layer).unwrap();
+    assert_eq!(bounds.origin, [-257.0, -257.0]);
+    assert_eq!(bounds.size, [2_562.0, 2_562.0]);
+    let selection_bounds = layer_geometry(&layer).unwrap();
+    assert_eq!(selection_bounds.min, [255.0, 255.0]);
+    assert_eq!(selection_bounds.max, [2_817.0, 2_817.0]);
+
+    let mut document = Document::new("High zoom Pen", 4_096, 4_096);
+    document.background = [0; 4];
+    document.layers.push(layer);
+    for zoom in [4.0_f32, 8.0, 16.0] {
+        assert!(path_preview_requires_region(&document.layers[0], zoom).unwrap());
+        let union = RenderRegion {
+            x: (1_400.0 * zoom) as u32,
+            y: (1_480.0 * zoom) as u32,
+            width: 530,
+            height: 260,
+        };
+        let exact = render_document_region_scaled(&document, zoom, union)
+            .unwrap()
+            .to_rgba8();
+        assert!(exact.pixels().any(|pixel| pixel[3] > 0));
+        for (offset, width) in [(0, 265), (265, 265)] {
+            let region = RenderRegion {
+                x: union.x + offset,
+                y: union.y,
+                width,
+                height: union.height,
+            };
+            let tile = render_document_region_scaled(&document, zoom, region)
+                .unwrap()
+                .to_rgba8();
+            assert_eq!(
+                tile,
+                imageops::crop_imm(&exact, offset, 0, width, union.height).to_image(),
+                "{zoom}x path region changed across the viewport seam"
+            );
+        }
+    }
+}

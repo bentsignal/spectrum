@@ -83,6 +83,24 @@ pub fn interactive_shape_scale(layer: &Layer, zoom: f32) -> Result<[u32; 2]> {
     ])
 }
 
+/// Whether an interactive path preview must use the viewport-bounded compositor.
+///
+/// The cached per-layer path texture is intentionally a whole-source raster. At
+/// close zooms that raster can exceed the path renderer's bounded working area,
+/// even though the visible document region remains small. Callers use this
+/// predicate to keep the lower-resolution cached texture as a fallback while
+/// the exact tiled region compositor renders the visible pixels.
+pub fn path_preview_requires_region(layer: &Layer, zoom: f32) -> Result<bool> {
+    if !matches!(layer.kind, LayerKind::Path { .. }) {
+        return Ok(false);
+    }
+    let scale = interactive_shape_scale(layer, zoom)?;
+    let bounds =
+        crate::paths::path_source_bounds(layer).context("path layer has no source bounds")?;
+    let (width, height) = bounds.raster_dimensions([scale[0] as f32, scale[1] as f32])?;
+    Ok(u64::from(width) * u64::from(height) > crate::paths::MAX_PATH_RASTER_PIXELS)
+}
+
 pub fn shape_dimensions(layer: &Layer) -> Option<(u32, u32)> {
     match &layer.kind {
         LayerKind::Rectangle { width, height, .. } | LayerKind::Ellipse { width, height, .. } => {
