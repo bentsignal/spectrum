@@ -4,10 +4,125 @@ use anyhow::{Context, Result, bail};
 use prism_core::{
     Command, Document, LassoPath, LassoPoint, LayerKind, Selection, SelectionCombineMode, Workspace,
 };
+use spectrum_imaging::AdjustmentPatch;
 
 pub(super) struct SelectionFillSamples {
     pub(super) median_ms: f64,
     pub(super) p95_ms: f64,
+}
+
+pub(super) struct RasterDeleteSamples {
+    pub(super) median_ms: f64,
+    pub(super) p95_ms: f64,
+    pub(super) near_cap_ms: f64,
+}
+
+pub(super) fn measure_color_mask_raster_delete() -> Result<RasterDeleteSamples> {
+    const CANVAS_EDGE: u32 = 16_384;
+    const SOURCE_EDGE: u32 = 164;
+    let path = std::env::temp_dir().join(format!(
+        "prism-raster-delete-benchmark-{}.png",
+        std::process::id()
+    ));
+    image::RgbaImage::from_pixel(SOURCE_EDGE, SOURCE_EDGE, image::Rgba([80, 120, 220, 255]))
+        .save(&path)?;
+    let mut samples = Vec::with_capacity(17);
+    for _ in 0..17 {
+        let mut workspace = Workspace::new(
+            Document::new("Raster delete bound", CANVAS_EDGE, CANVAS_EDGE),
+            None,
+        );
+        workspace.execute(Command::AddRaster {
+            path: path.clone(),
+            name: None,
+            x: 0.0,
+            y: 0.0,
+        })?;
+        workspace.execute(Command::AdjustLayer {
+            id: 1,
+            patch: AdjustmentPatch {
+                straighten: Some(3.0),
+                ..Default::default()
+            },
+        })?;
+        workspace.execute(Command::SetSelection {
+            selection: Some(Selection::ColorMask {
+                x: 0,
+                y: 0,
+                width: SOURCE_EDGE,
+                height: SOURCE_EDGE,
+                alpha: vec![255; (SOURCE_EDGE * SOURCE_EDGE) as usize].into(),
+            }),
+        })?;
+        let started = Instant::now();
+        workspace.execute(Command::DeleteSelectedPixels { id: 1 })?;
+        samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+        let mask = workspace.document.layer(1)?.pixel_mask.as_ref().context(
+            "ColorMask raster delete benchmark did not create a source-space pixel mask",
+        )?;
+        if mask.alpha.len() != (SOURCE_EDGE * SOURCE_EDGE) as usize
+            || mask.alpha.iter().all(|alpha| *alpha != 0)
+        {
+            bail!("ColorMask raster delete benchmark produced the wrong source-space mask");
+        }
+    }
+    let _ = std::fs::remove_file(path);
+    samples.sort_by(f64::total_cmp);
+    let near_cap_ms = measure_near_cap_color_mask_delete()?;
+    Ok(RasterDeleteSamples {
+        median_ms: samples[samples.len() / 2],
+        p95_ms: samples[16],
+        near_cap_ms,
+    })
+}
+
+fn measure_near_cap_color_mask_delete() -> Result<f64> {
+    const EDGE: u32 = 4_080;
+    let path = std::env::temp_dir().join(format!(
+        "prism-near-cap-raster-delete-benchmark-{}.png",
+        std::process::id()
+    ));
+    image::RgbaImage::from_pixel(EDGE, EDGE, image::Rgba([80, 120, 220, 255])).save(&path)?;
+    let mut workspace = Workspace::new(
+        Document::new("Near-cap ColorMask raster delete", EDGE, EDGE),
+        None,
+    );
+    workspace.execute(Command::AddRaster {
+        path: path.clone(),
+        name: None,
+        x: 0.0,
+        y: 0.0,
+    })?;
+    workspace.execute(Command::AdjustLayer {
+        id: 1,
+        patch: AdjustmentPatch {
+            straighten: Some(1.0),
+            ..Default::default()
+        },
+    })?;
+    workspace.execute(Command::SetSelection {
+        selection: Some(Selection::ColorMask {
+            x: 0,
+            y: 0,
+            width: EDGE,
+            height: EDGE,
+            alpha: vec![255; (EDGE * EDGE) as usize].into(),
+        }),
+    })?;
+    let started = Instant::now();
+    workspace.execute(Command::DeleteSelectedPixels { id: 1 })?;
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let mask = workspace
+        .document
+        .layer(1)?
+        .pixel_mask
+        .as_ref()
+        .context("near-cap ColorMask delete did not create a source-space mask")?;
+    if mask.alpha.len() != (EDGE * EDGE) as usize || mask.alpha.iter().all(|alpha| *alpha != 0) {
+        bail!("near-cap ColorMask delete produced the wrong bounded mask");
+    }
+    let _ = std::fs::remove_file(path);
+    Ok(elapsed_ms)
 }
 
 pub(super) struct MagicWandSample {

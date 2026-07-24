@@ -12,6 +12,7 @@ pub(super) const SELECTION_SNAPSHOT_VERSION: u32 = 4;
 pub(super) const COLOR_SELECTION_SNAPSHOT_VERSION: u32 = 5;
 pub(super) const PATH_SNAPSHOT_VERSION: u32 = 6;
 pub(super) const PAINT_SNAPSHOT_VERSION: u32 = 7;
+pub(super) const RASTER_PIXEL_MASK_SNAPSHOT_VERSION: u32 = 8;
 pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
@@ -22,6 +23,7 @@ pub(super) const PATH_OPERATIONS_VERSION: u32 = 7;
 pub(super) const PAINT_OPERATIONS_VERSION: u32 = 8;
 pub(super) const LASSO_OPERATIONS_VERSION: u32 = 9;
 pub(super) const DOCUMENT_LIFECYCLE_OPERATIONS_VERSION: u32 = 10;
+pub(super) const RASTER_PIXEL_MASK_OPERATIONS_VERSION: u32 = 11;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -54,19 +56,29 @@ impl Compatibility for PrismCompatibility {
                     encoding.required_capabilities.is_empty()
                         || encoding.required_capabilities == [DEFLATE_CAPABILITY]
                 }
+                RASTER_PIXEL_MASK_SNAPSHOT_VERSION => {
+                    encoding.required_capabilities.is_empty()
+                        || encoding.required_capabilities == [DEFLATE_CAPABILITY]
+                }
                 _ => false,
             }
     }
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=DOCUMENT_LIFECYCLE_OPERATIONS_VERSION)
+            && (LEGACY_OPERATIONS_VERSION..=RASTER_PIXEL_MASK_OPERATIONS_VERSION)
                 .contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands
+        .iter()
+        .any(|command| matches!(command, Command::DeleteSelectedPixels { .. }))
+    {
+        return RASTER_PIXEL_MASK_OPERATIONS_VERSION;
+    }
     if commands
         .iter()
         .any(|command| matches!(command, Command::RenameDocument { .. }))
@@ -155,6 +167,8 @@ pub(super) fn downgrade_compatible_transfers(commands: &mut [Command]) {
             && transfer.layer.vector_mask.is_none()
             && !matches!(transfer.layer.kind, crate::LayerKind::Path { .. })
             && !matches!(transfer.layer.kind, crate::LayerKind::Paint { .. })
+            && !(matches!(transfer.layer.kind, crate::LayerKind::Raster { .. })
+                && transfer.layer.pixel_mask.is_some())
         {
             transfer.version = if transfer.layer.pixel_mask.is_some() {
                 3
@@ -200,6 +214,21 @@ mod tests {
         assert!(validate_operations_version(&commands, LASSO_OPERATIONS_VERSION).is_err());
         assert!(
             validate_operations_version(&commands, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION).is_ok()
+        );
+    }
+
+    #[test]
+    fn raster_pixel_deletion_requires_the_v11_operation_envelope() {
+        let commands = [Command::DeleteSelectedPixels { id: 7 }];
+        assert_eq!(
+            operations_version(&commands),
+            RASTER_PIXEL_MASK_OPERATIONS_VERSION
+        );
+        assert!(
+            validate_operations_version(&commands, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION).is_err()
+        );
+        assert!(
+            validate_operations_version(&commands, RASTER_PIXEL_MASK_OPERATIONS_VERSION).is_ok()
         );
     }
 
@@ -313,13 +342,13 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_advertises_operation_versions_one_through_ten() {
-        for version in LEGACY_OPERATIONS_VERSION..=DOCUMENT_LIFECYCLE_OPERATIONS_VERSION {
+    fn compatibility_advertises_operation_versions_one_through_eleven() {
+        for version in LEGACY_OPERATIONS_VERSION..=RASTER_PIXEL_MASK_OPERATIONS_VERSION {
             assert!(
                 PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
-        for version in [0, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION + 1] {
+        for version in [0, RASTER_PIXEL_MASK_OPERATIONS_VERSION + 1] {
             assert!(
                 !PrismCompatibility
                     .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))

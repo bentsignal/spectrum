@@ -14,7 +14,7 @@ pub use region_source::{
     validate_region_request,
 };
 pub use render::{
-    ExportFormat, PixelRegion, RegionRenderError, RenderOptions, adjusted_image_dimensions,
-    render_image, render_image_region_at_source_resolution,
+    AdjustedPixelSourceMapper, ExportFormat, PixelRegion, RegionRenderError, RenderOptions,
+    adjusted_image_dimensions, render_image, render_image_region_at_source_resolution,
     render_image_region_at_source_resolution_bounded,
 };

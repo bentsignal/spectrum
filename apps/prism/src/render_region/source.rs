@@ -75,12 +75,14 @@ pub(super) enum SourceDescriptor<'a> {
         path: &'a Path,
         dimensions: (u32, u32),
         adjustments: &'a spectrum_imaging::Adjustments,
+        pixel_mask: Option<&'a crate::PixelMask>,
         vector_mask: Option<&'a VectorMask>,
     },
     RasterProvider {
         source: ResolvedRasterSource,
         dimensions: (u32, u32),
         adjustments: &'a spectrum_imaging::Adjustments,
+        pixel_mask: Option<&'a crate::PixelMask>,
         vector_mask: Option<&'a VectorMask>,
     },
     Text {
@@ -131,6 +133,7 @@ impl<'a> SourceDescriptor<'a> {
                         dimensions,
                         source,
                         adjustments: &render_layer.adjustments,
+                        pixel_mask: render_layer.pixel_mask.as_ref(),
                         vector_mask: render_layer.vector_mask.as_ref(),
                     });
                 }
@@ -143,6 +146,7 @@ impl<'a> SourceDescriptor<'a> {
                     })?,
                     path,
                     adjustments: &render_layer.adjustments,
+                    pixel_mask: render_layer.pixel_mask.as_ref(),
                     vector_mask: render_layer.vector_mask.as_ref(),
                 })
             }
@@ -219,6 +223,7 @@ impl<'a> SourceDescriptor<'a> {
         if self.adjustments() == &spectrum_imaging::Adjustments::default() {
             let mut image = self.stage_base(adjusted_region, stats)?;
             let dimensions = self.base_dimensions();
+            self.apply_raster_pixel_mask(&mut image, dimensions, dimensions, adjusted_region)?;
             crate::paths::apply_vector_mask_to_image(
                 &mut image,
                 self.vector_mask(),
@@ -256,6 +261,7 @@ impl<'a> SourceDescriptor<'a> {
             Err(error) => return Err(anyhow::Error::new(error)),
         };
         let dimensions = self.dimensions()?;
+        self.apply_raster_pixel_mask(&mut image, base_dimensions, dimensions, adjusted_region)?;
         crate::paths::apply_vector_mask_to_image(
             &mut image,
             self.vector_mask(),
@@ -307,6 +313,29 @@ impl<'a> SourceDescriptor<'a> {
             | Self::Path { vector_mask, .. }
             | Self::Paint { vector_mask, .. } => *vector_mask,
         }
+    }
+
+    fn apply_raster_pixel_mask(
+        &self,
+        image: &mut RgbaImage,
+        source_dimensions: (u32, u32),
+        adjusted_dimensions: (u32, u32),
+        region: SourceRegion,
+    ) -> Result<()> {
+        let mask = match self {
+            Self::RasterPath { pixel_mask, .. } | Self::RasterProvider { pixel_mask, .. } => {
+                *pixel_mask
+            }
+            _ => None,
+        };
+        crate::pixel_masks::apply_adjusted_pixel_mask_region(
+            image,
+            mask,
+            source_dimensions,
+            self.adjustments(),
+            adjusted_dimensions,
+            (region.x, region.y),
+        )
     }
 
     fn stage_base(&self, region: SourceRegion, stats: &mut RegionRenderStats) -> Result<RgbaImage> {

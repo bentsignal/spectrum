@@ -1,7 +1,6 @@
 use std::{io::Write, path::PathBuf, time::Instant};
 
 use anyhow::{Result, bail};
-use clap::ValueEnum;
 use prism_core::{
     BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
     LayerStyle, RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment, TextEffects,
@@ -26,65 +25,13 @@ mod font_picker;
 mod paint;
 #[path = "benchmark/path.rs"]
 mod path;
+#[path = "benchmark/profile.rs"]
+mod profile;
 #[path = "benchmark/selection.rs"]
 mod selection;
 #[path = "benchmark/text_preview_frame.rs"]
 mod text_preview_frame;
-
-#[derive(Clone, Copy, Default, ValueEnum)]
-pub(super) enum BenchmarkProfile {
-    #[default]
-    Interactive,
-    HostedCi,
-}
-
-impl BenchmarkProfile {
-    pub(super) fn name(self) -> &'static str {
-        match self {
-            Self::Interactive => "interactive-workstation",
-            Self::HostedCi => "github-hosted-linux",
-        }
-    }
-
-    pub(super) fn gradient_shadow_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 500.0,
-            // The reviewed implementation measured 880.788 ms p95 on GitHub's
-            // shared Linux runner versus 222.508 ms locally. A 1,250 ms ceiling
-            // keeps 42% host-jitter headroom while the original 2,061.886 ms
-            // regression still fails decisively.
-            Self::HostedCi => 1_250.0,
-        }
-    }
-
-    pub(super) fn magic_wand_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 5_000.0,
-            Self::HostedCi => 15_000.0,
-        }
-    }
-
-    pub(super) fn path_raster_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 250.0,
-            Self::HostedCi => 750.0,
-        }
-    }
-
-    pub(super) fn path_edit_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 5.0,
-            Self::HostedCi => 15.0,
-        }
-    }
-
-    pub(super) fn paint_viewport_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 500.0,
-            Self::HostedCi => 1_500.0,
-        }
-    }
-}
+pub(super) use profile::BenchmarkProfile;
 
 #[derive(Serialize)]
 struct BenchmarkMetric {
@@ -167,6 +114,7 @@ fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
 pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value> {
     let selection_fill = selection::measure_selection_fill()?;
     let magic_wand = selection::measure_magic_wand_bound()?;
+    let raster_delete = selection::measure_color_mask_raster_delete()?;
     let lasso = selection::measure_lasso_bound()?;
     let path = path::measure()?;
     let paint = paint::measure()?;
@@ -730,6 +678,20 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: selection_fill.p95_ms,
             budget_ms: 5.0,
             pass: selection_fill.p95_ms <= 5.0,
+        },
+        BenchmarkMetric {
+            name: "16384_canvas_color_mask_raster_selection_delete",
+            median_ms: raster_delete.median_ms,
+            p95_ms: raster_delete.p95_ms,
+            budget_ms: profile.raster_delete_budget_ms(),
+            pass: raster_delete.p95_ms <= profile.raster_delete_budget_ms(),
+        },
+        BenchmarkMetric {
+            name: "near_cap_straightened_color_mask_raster_selection_delete",
+            median_ms: raster_delete.near_cap_ms,
+            p95_ms: raster_delete.near_cap_ms,
+            budget_ms: profile.near_cap_raster_delete_budget_ms(),
+            pass: raster_delete.near_cap_ms <= profile.near_cap_raster_delete_budget_ms(),
         },
         BenchmarkMetric {
             name: "16384_canvas_bounded_lasso_selection",

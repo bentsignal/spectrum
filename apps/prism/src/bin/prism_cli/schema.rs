@@ -34,7 +34,8 @@ pub(super) fn schema() -> Value {
             "path_operations_version": 7,
             "paint_operations_version": 8,
             "lasso_operations_version": 9,
-            "document_lifecycle_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "document_lifecycle_operations_version": 10,
+            "raster_pixel_mask_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "document_lifecycle": {
@@ -109,8 +110,9 @@ pub(super) fn schema() -> Value {
             "clear": "selection clear removes the persistent marquee",
             "crop": "selection crop atomically crops the canvas to the current marquee and clears the selection in one revision",
             "fill": "selection fill [--color <RRGGBBAA>] [--name <label>] creates one new editable solid layer honoring rectangular or soft color-selection alpha without changing source pixels",
+            "delete": "selection delete <layer> multiplies the active document-space selection into one raster layer pixel mask; originals remain immutable, the selection stays active, and empty, locked, non-raster, already-deleted, or non-overlapping targets fail without a revision",
             "combination": "replace uses the new lasso; add uses a+b-round(ab/255); subtract uses round(a*(255-b)/255); intersect uses round(ab/255)",
-            "history": "each completed marquee, lasso drag, magic wand click, clear, fill, or crop is one command and one durable revision"
+            "history": "each completed marquee, lasso drag, magic wand click, clear, fill, delete, or crop is one command and one durable revision"
         },
         "typography": {
             "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot and transactionally embeds those exact bytes as a content-addressed project asset; installable, editable, preview/print, and restricted embedding classes, including bitmap-only flags, import directly for local text, while malformed, unparseable, oversized, or unsafe sources fail closed; Windows final-handle proof rejects junction and 8.3 aliases unless the normalized handle path exactly matches",
@@ -164,10 +166,27 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "magic_wand_selection", "x": 120, "y": 80, "tolerance": 32, "contiguous": true, "antialias": true}),
         json!({"command": "lasso_selection", "points": [{"x": 30720, "y": 20480}, {"x": 153600, "y": 20480}, {"x": 30720, "y": 102400}], "mode": "replace", "antialias": true}),
         json!({"command": "fill_selection", "color": [93,216,199,255], "name": "Selection fill"}),
+        json!({"command": "delete_selected_pixels", "id": 1}),
         json!({"command": "crop_to_selection"}),
         json!({"command": "add_guide", "orientation": "vertical", "position": 960.0}),
         json!({"command": "move_guide", "id": 1, "position": 800.0}),
         json!({"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}}),
         json!({"command": "adjust_layer", "id": 1, "patch": {"exposure": 0.5, "contrast": 12.0}}),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn schema_advertises_raster_pixel_mask_protocol_v11() {
+        let schema = super::schema();
+        assert_eq!(
+            schema["command_protocol"]["raster_pixel_mask_operations_version"],
+            11
+        );
+        assert_eq!(
+            schema["command_protocol"]["supported_operation_versions"],
+            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+        );
+    }
 }

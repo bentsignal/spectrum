@@ -545,10 +545,19 @@ fn render_layer_preview_scaled_with_font_limits(
     decode_max_alloc: Option<u64>,
 ) -> Result<DynamicImage> {
     if matches!(layer.kind, LayerKind::Paint { .. }) {
-        return render_paint_preview_exact(layer, max_size);
+        return crate::render_preview::render_paint_preview_exact(layer, max_size);
     }
+    let mut base_layer;
+    let source_layer =
+        if matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some() {
+            base_layer = layer.clone();
+            base_layer.pixel_mask = None;
+            &base_layer
+        } else {
+            layer
+        };
     let image = render_layer_base_scaled_with_font_limits(
-        layer,
+        source_layer,
         max_size,
         shape_scale,
         font_asset,
@@ -557,6 +566,7 @@ fn render_layer_preview_scaled_with_font_limits(
     let mut image =
         render_image(image, layer.adjustments.clone(), RenderOptions::default()).to_rgba8();
     let (width, height) = image.dimensions();
+    crate::pixel_masks::apply_pixel_mask_to_adjusted_preview(layer, &mut image, max_size)?;
     crate::paths::apply_vector_mask_to_image(
         &mut image,
         layer.vector_mask.as_ref(),
@@ -566,38 +576,6 @@ fn render_layer_preview_scaled_with_font_limits(
         0,
     )?;
     Ok(DynamicImage::ImageRgba8(image))
-}
-
-fn render_paint_preview_exact(layer: &Layer, max_size: Option<u32>) -> Result<DynamicImage> {
-    let LayerKind::Paint { program } = &layer.kind else {
-        bail!("exact Paint preview requires a Paint layer");
-    };
-    let mut preview_layer = layer.clone();
-    preview_layer.visible = true;
-    preview_layer.opacity = 1.0;
-    preview_layer.blend_mode = crate::BlendMode::Normal;
-    preview_layer.transform = Transform::default();
-    preview_layer.style = crate::LayerStyle::default();
-    preview_layer.mask = crate::LayerMask::default();
-    preview_layer.clip_to_below = false;
-    let adjusted_dimensions = spectrum_imaging::adjusted_image_dimensions(
-        program.width,
-        program.height,
-        &layer.adjustments,
-    )
-    .context("Paint preview has invalid adjusted dimensions")?;
-    let mut document = Document::new(
-        "Paint preview",
-        adjusted_dimensions.0,
-        adjusted_dimensions.1,
-    );
-    document.background = [0; 4];
-    document.layers.push(preview_layer);
-    let longest = adjusted_dimensions.0.max(adjusted_dimensions.1) as f32;
-    let scale = max_size
-        .filter(|size| *size > 0)
-        .map_or(1.0, |size| (size as f32 / longest).min(1.0));
-    render_document_scaled(&document, scale)
 }
 
 /// Decodes or rasterizes a layer without development adjustments. Keeping this
@@ -642,9 +620,18 @@ fn render_layer_base_scaled_with_font_limits(
                 limits.max_alloc = Some(max_alloc);
                 reader.limits(limits);
             }
-            reader
+            let decoded = reader
                 .decode()
-                .with_context(|| format!("could not decode {}", path.display()))?
+                .with_context(|| format!("could not decode {}", path.display()))?;
+            let mut pixels = decoded.to_rgba8();
+            let dimensions = pixels.dimensions();
+            crate::pixel_masks::apply_pixel_mask_region(
+                &mut pixels,
+                layer.pixel_mask.as_ref(),
+                dimensions,
+                (0, 0),
+            )?;
+            DynamicImage::ImageRgba8(pixels)
         }
         LayerKind::Text {
             text,

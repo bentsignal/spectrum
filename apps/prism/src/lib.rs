@@ -96,8 +96,8 @@ pub use lasso::{
     combine_selections, lasso_selection,
 };
 
-pub const PRISM_VERSION: u32 = 7;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 10;
+pub const PRISM_VERSION: u32 = 8;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 11;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
@@ -114,6 +114,10 @@ pub use alignment::{
 
 mod selection;
 pub use selection::{MAX_COLOR_SELECTION_PIXELS, Selection, magic_wand_selection};
+
+mod pixel_masks;
+mod render_preview;
+mod selection_commands;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -552,13 +556,18 @@ impl Document {
                     );
                 }
                 let dimensions = match &layer.kind {
+                    LayerKind::Raster { path, .. } => {
+                        image::image_dimensions(path).with_context(|| {
+                            format!("could not inspect raster layer {}", path.display())
+                        })?
+                    }
                     LayerKind::Paint { program } => (program.width, program.height),
                     _ => shape_dimensions(layer)
-                        .context("only shape and Paint layers can carry a pixel mask")?,
+                        .context("only raster, shape, and Paint layers can carry a pixel mask")?,
                 };
                 if dimensions != (mask.width, mask.height) {
                     bail!(
-                        "layer {} pixel mask dimensions do not match its shape",
+                        "layer {} pixel mask dimensions do not match its source",
                         layer.id
                     );
                 }
@@ -781,6 +790,10 @@ mod effect_tests;
 #[cfg(test)]
 #[path = "selection_tests.rs"]
 mod selection_tests;
+
+#[cfg(test)]
+#[path = "pixel_mask_tests.rs"]
+mod pixel_mask_tests;
 
 #[cfg(test)]
 #[path = "path_tests.rs"]

@@ -180,6 +180,9 @@ pub enum Command {
         color: [u8; 4],
         name: Option<String>,
     },
+    DeleteSelectedPixels {
+        id: u64,
+    },
     MoveLayer {
         id: u64,
         index: usize,
