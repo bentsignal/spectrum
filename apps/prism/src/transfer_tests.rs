@@ -453,6 +453,103 @@ fn durable_raster_transfer_embeds_pixels_in_a_version_two_operation() {
 }
 
 #[test]
+fn durable_raster_pixel_mask_and_dissolve_transfer_uses_v7_v12_and_replays() {
+    let directory = test_directory("durable-raster-pixel-mask");
+    fs::create_dir_all(&directory).unwrap();
+    let source_path = directory.join("source.png");
+    let pixels = RgbaImage::from_pixel(4, 3, Rgba([12, 34, 56, 255]));
+    pixels.save(&source_path).unwrap();
+    let mut source = Workspace::new(Document::new("Source", 4, 3), None);
+    source
+        .execute(Command::AddRaster {
+            path: source_path.clone(),
+            name: Some("Masked pixels".into()),
+            x: 0.0,
+            y: 0.0,
+        })
+        .unwrap();
+    let source_id = source.document.selected.unwrap();
+    source.document.layer_mut(source_id).unwrap().pixel_mask = Some(PixelMask::new(
+        4,
+        3,
+        vec![255, 0, 255, 255, 128, 255, 0, 255, 255, 255, 255, 64],
+    ));
+    source.document.layer_mut(source_id).unwrap().blend_mode = BlendMode::Dissolve;
+    source.document.layer_mut(source_id).unwrap().dissolve_seed = 0x7654_3210;
+    let transfer = LayerTransfer::from_selected(&source.document).unwrap();
+    assert_eq!(
+        transfer.version,
+        crate::RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
+    );
+
+    let project_path = directory.join("destination.prism");
+    let mut destination = Workspace::create_durable(
+        Document::new("Destination", 4, 3),
+        &project_path,
+        test_actor(),
+        spectrum_revisions::SessionId::new(),
+    )
+    .unwrap();
+    destination
+        .execute(Command::InsertLayer {
+            transfer: Box::new(transfer),
+            index: None,
+        })
+        .unwrap();
+    destination.save(None).unwrap();
+    drop(destination);
+    fs::remove_file(&source_path).unwrap();
+
+    let connection = rusqlite::Connection::open(&project_path).unwrap();
+    let (operation_version, operation_bytes): (u32, Vec<u8>) = connection
+        .query_row(
+            "SELECT version, bytes FROM operation_payloads LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(operation_version, crate::PRISM_COMMAND_OPERATIONS_VERSION);
+    let commands: Vec<Command> = serde_json::from_slice(&operation_bytes).unwrap();
+    let Command::InsertLayer { transfer, .. } = &commands[0] else {
+        panic!("durable transfer should remain a layer insert");
+    };
+    assert_eq!(
+        transfer.version,
+        crate::RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
+    );
+    assert_eq!(transfer.layer.pixel_mask.as_ref().unwrap().alpha[1], 0);
+    drop(connection);
+
+    let loaded = Workspace::load_read_only(&project_path).unwrap();
+    assert_eq!(loaded.layers[0].pixel_mask.as_ref().unwrap().alpha[1], 0);
+    assert_eq!(loaded.layers[0].blend_mode, BlendMode::Dissolve);
+    assert_eq!(loaded.layers[0].dissolve_seed, 0x7654_3210);
+    let embedded_path = match &loaded.layers[0].kind {
+        LayerKind::Raster { path, .. } => path.clone(),
+        _ => panic!("replayed transfer should remain raster"),
+    };
+    assert_eq!(image::open(&embedded_path).unwrap().to_rgba8(), pixels);
+    drop(loaded);
+
+    let mut reopened = Workspace::open(&project_path).unwrap();
+    reopened.execute(Command::Undo).unwrap();
+    assert!(reopened.document.layers.is_empty());
+    reopened.execute(Command::Redo).unwrap();
+    assert_eq!(
+        reopened.document.layers[0]
+            .pixel_mask
+            .as_ref()
+            .unwrap()
+            .alpha[11],
+        64
+    );
+    assert_eq!(reopened.document.layers[0].blend_mode, BlendMode::Dissolve);
+    assert_eq!(reopened.document.layers[0].dissolve_seed, 0x7654_3210);
+    drop(reopened);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_text_transfer_embeds_font_bytes_and_replays_the_remapped_id() {
     let directory = test_directory("durable-font");
     fs::create_dir_all(&directory).unwrap();

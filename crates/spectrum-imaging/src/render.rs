@@ -7,7 +7,7 @@ use crate::{Adjustments, ColorGrading, HslAdjustments, ToneCurve};
 mod region;
 use region::apply_spot_removals;
 pub use region::{
-    PixelRegion, RegionRenderError, adjusted_image_dimensions,
+    AdjustedPixelSourceMapper, PixelRegion, RegionRenderError, adjusted_image_dimensions,
     render_image_region_at_source_resolution, render_image_region_at_source_resolution_bounded,
 };
 

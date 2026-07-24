@@ -14,7 +14,10 @@ use crate::{
 
 pub const LAYER_TRANSFER_FORMAT: &str = "spectrum.prism.layer";
 pub const PATH_LAYER_TRANSFER_VERSION: u32 = 4;
-pub const LAYER_TRANSFER_VERSION: u32 = 5;
+pub const PAINT_LAYER_TRANSFER_VERSION: u32 = 5;
+pub const DISSOLVE_LAYER_TRANSFER_VERSION: u32 = 6;
+pub const RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION: u32 = 7;
+pub const LAYER_TRANSFER_VERSION: u32 = RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION;
 const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
@@ -63,17 +66,22 @@ impl LayerTransfer {
             },
             _ => None,
         };
-        let version = if matches!(layer.kind, LayerKind::Paint { .. }) {
-            LAYER_TRANSFER_VERSION
-        } else if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. }) {
-            PATH_LAYER_TRANSFER_VERSION
-        } else if layer.pixel_mask.is_some() {
-            3
-        } else if !layer.style.is_empty() || layer.shape_fill.is_some() {
-            2
-        } else {
-            1
-        };
+        let version =
+            if matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some() {
+                RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
+            } else if layer.blend_mode == crate::BlendMode::Dissolve || layer.dissolve_seed != 0 {
+                DISSOLVE_LAYER_TRANSFER_VERSION
+            } else if matches!(layer.kind, LayerKind::Paint { .. }) {
+                PAINT_LAYER_TRANSFER_VERSION
+            } else if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. }) {
+                PATH_LAYER_TRANSFER_VERSION
+            } else if layer.pixel_mask.is_some() {
+                3
+            } else if !layer.style.is_empty() || layer.shape_fill.is_some() {
+                2
+            } else {
+                1
+            };
         Ok(Self {
             format: LAYER_TRANSFER_FORMAT.into(),
             version,
@@ -164,8 +172,22 @@ impl LayerTransfer {
         {
             bail!("Prism layer transfer versions before 4 cannot contain paths or vector masks");
         }
-        if self.version < 5 && matches!(self.layer.kind, LayerKind::Paint { .. }) {
+        if self.version < PAINT_LAYER_TRANSFER_VERSION
+            && matches!(self.layer.kind, LayerKind::Paint { .. })
+        {
             bail!("Prism layer transfer versions before 5 cannot contain Paint layers");
+        }
+        if self.version < DISSOLVE_LAYER_TRANSFER_VERSION
+            && (self.layer.blend_mode == crate::BlendMode::Dissolve
+                || self.layer.dissolve_seed != 0)
+        {
+            bail!("Prism layer transfer versions before 6 cannot contain Dissolve settings");
+        }
+        if self.version < RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
+            && matches!(self.layer.kind, LayerKind::Raster { .. })
+            && self.layer.pixel_mask.is_some()
+        {
+            bail!("Prism layer transfer versions before 7 cannot contain raster pixel masks");
         }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");
@@ -304,12 +326,14 @@ fn validate_pixel_mask(layer: &Layer) -> Result<()> {
         bail!("transferred pixel mask identity does not match its alpha");
     }
     let dimensions = match &layer.kind {
+        LayerKind::Raster { path, .. } => image::image_dimensions(path)
+            .with_context(|| format!("could not inspect raster layer {}", path.display()))?,
         LayerKind::Paint { program } => (program.width, program.height),
         _ => crate::shape_dimensions(layer)
-            .context("only shape and Paint layers can carry a pixel mask")?,
+            .context("only raster, shape, and Paint layers can carry a pixel mask")?,
     };
     if dimensions != (mask.width, mask.height) {
-        bail!("transferred pixel mask dimensions do not match its shape");
+        bail!("transferred pixel mask dimensions do not match its source");
     }
     Ok(())
 }

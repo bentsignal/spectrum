@@ -169,9 +169,23 @@ fn lumen_branding_is_wired_to_runtime_and_native_packages() {
     assert!(app.contains("with_icon(lumen_icon())"));
     assert!(app.contains("lumen-app-icon.png"));
     assert!(plist.contains("<string>Lumen.icns</string>"));
-    assert!(macos.contains("lumen-app-icon.png"));
+    assert!(plist.contains("<key>CFBundleIconName</key><string>Lumen</string>"));
+    assert!(macos.contains("assets/branding/Lumen.icon"));
     assert!(linux.contains("com.bentsignal.Lumen.png"));
     assert!(windows.contains("Lumen.png"));
+
+    let native_icon = repository.join("assets/branding/Lumen.icon");
+    let icon_source = fs::read_to_string(native_icon.join("icon.json")).unwrap();
+    let icon: serde_json::Value = serde_json::from_str(&icon_source).unwrap();
+    let source = fs::read(repository.join("assets/branding/lumen-violet-final-clean.png")).unwrap();
+    let embedded = fs::read(native_icon.join("Assets/lumen-violet-final-clean.png")).unwrap();
+    assert_eq!(source, embedded, "Icon Composer must preserve approved art");
+    assert_eq!(icon["supported-platforms"]["squares"], "shared");
+    let layers = icon["groups"][0]["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), 2);
+    assert_eq!(layers[0]["image-name"], "lumen-violet-final-clean.png");
+    assert_eq!(layers[1]["image-name"], "lumen-violet-mono.png");
+    assert!(icon["groups"][0].get("position").is_none());
 }
 
 #[test]

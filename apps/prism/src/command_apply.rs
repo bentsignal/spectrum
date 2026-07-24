@@ -710,44 +710,10 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             ))
         }
         Command::FillSelection { color, name } => {
-            let selection = document
-                .selection
-                .clone()
-                .context("create a rectangular selection before filling")?
-                .validated(document.width, document.height)?;
-            let (x, y, width, height) = selection.bounds();
-            let pixel_mask = selection
-                .shared_alpha()
-                .map(|alpha| PixelMask::new(width, height, alpha));
-            document.validate_projected_inline_mask_budget(
-                document.selection.as_ref(),
-                pixel_mask.as_ref().map_or(0, |mask| mask.alpha.len()),
-            )?;
-            let id = document.allocate_id();
-            document.layers.push(Layer {
-                id,
-                name: name.unwrap_or_else(|| "Fill".into()),
-                transform: Transform {
-                    x: x as f32,
-                    y: y as f32,
-                    ..Default::default()
-                },
-                kind: LayerKind::Rectangle {
-                    width,
-                    height,
-                    color,
-                    corner_radius: 0.0,
-                },
-                pixel_mask,
-                ..Default::default()
-            });
-            document.selected = Some(id);
-            document.validate_inline_mask_budget()?;
-            Ok(output(
-                "fill_selection",
-                "created nondestructive fill layer",
-                vec![id],
-            ))
+            crate::selection_commands::fill_selection(document, color, name)
+        }
+        Command::DeleteSelectedPixels { id } => {
+            crate::selection_commands::delete_selected_pixels(document, id)
         }
         Command::MoveLayer { id, index } => {
             let current = document
@@ -776,6 +742,14 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
         Command::SetBlendMode { id, blend_mode } => {
             document.layer_mut(id)?.blend_mode = blend_mode;
             Ok(output("set_blend_mode", "updated blend mode", vec![id]))
+        }
+        Command::SetDissolveSeed { id, seed } => {
+            document.layer_mut(id)?.dissolve_seed = seed;
+            Ok(output(
+                "set_dissolve_seed",
+                "updated dissolve seed",
+                vec![id],
+            ))
         }
         Command::SetTransform { id, transform } => {
             validate_transform(transform)?;
@@ -840,7 +814,8 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             Ok(output("adjust_layer", "adjusted layer", vec![id]))
         }
         Command::ResetLayerAdjustments { id } => {
-            document.layer_mut(id)?.adjustments = Adjustments::default();
+            let layer = document.layer_mut(id)?;
+            layer.adjustments = Adjustments::default();
             Ok(output(
                 "reset_layer_adjustments",
                 "reset layer adjustments",

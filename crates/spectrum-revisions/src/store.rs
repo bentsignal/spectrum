@@ -6,17 +6,22 @@ use rusqlite::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    Actor, ActorKind, Asset, AssetId, ChangeSetId, Encoding, NewProject, Payload, Preview,
-    ProjectId, ProjectInfo, ReplayPlan, ReplayStep, Revision, RevisionError, RevisionId,
-    RevisionResult, Session, SessionId, Track, TrackId,
+    Actor, Asset, AssetId, ChangeSetId, Encoding, NewProject, Payload, Preview, ProjectId,
+    ProjectInfo, ReplayPlan, ReplayStep, Revision, RevisionError, RevisionId, RevisionResult,
+    Session, SessionId, Track, TrackId,
     metadata::{StorageStateId, bump_generation, generation_in, state_id_in, write_meta},
     schema::{self, CONTAINER_FORMAT},
-    storage_io::{now_ms, sidecar_path, sync_if_present},
+    storage_io::now_ms,
     store_tracks::{
         default_track_id_in, insert_revision, insert_session_cursor, insert_track,
         most_recent_cursor_for_track_in, track_id,
     },
 };
+
+mod durability;
+mod rows;
+pub(crate) use rows::{actor_kind, revision_id, session_in};
+use rows::{project_info_in, require_revision_in, revision_from_row, revision_in, session_id};
 
 pub trait Compatibility {
     fn supports_snapshot(&self, encoding: &Encoding) -> bool;
@@ -26,6 +31,14 @@ pub trait Compatibility {
 pub struct RevisionStore {
     pub(crate) connection: Connection,
     path: PathBuf,
+    durability: WriteDurability,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriteDurability {
+    Standalone,
+    #[cfg(target_os = "linux")]
+    PublicationManaged,
 }
 
 pub(crate) struct StoreInspection {
@@ -43,6 +56,7 @@ impl RevisionStore {
         let mut store = Self {
             connection,
             path: path.to_owned(),
+            durability: WriteDurability::Standalone,
         };
         if store.meta("project_id")?.is_some() {
             return Err(RevisionError::AlreadyInitialized);
@@ -132,6 +146,10 @@ impl RevisionStore {
     }
 
     pub fn open(path: &Path) -> RevisionResult<Self> {
+        Self::open_with_durability(path, WriteDurability::Standalone)
+    }
+
+    fn open_with_durability(path: &Path, durability: WriteDurability) -> RevisionResult<Self> {
         let mut connection = Connection::open(path)?;
         schema::configure(&connection)?;
         schema::verify_header(&connection)?;
@@ -139,6 +157,7 @@ impl RevisionStore {
         let store = Self {
             connection,
             path: path.to_owned(),
+            durability,
         };
         if store.meta("project_id")?.is_none() {
             return Err(RevisionError::NotARevisionStore);
@@ -171,6 +190,7 @@ impl RevisionStore {
         let store = Self {
             connection,
             path: path.to_owned(),
+            durability: WriteDurability::Standalone,
         };
         if store.meta("project_id")?.is_none() {
             return Err(RevisionError::NotARevisionStore);
@@ -626,56 +646,6 @@ impl RevisionStore {
         Ok(())
     }
 
-    pub fn checkpoint(&self) -> RevisionResult<()> {
-        self.finish_write()
-    }
-
-    pub(crate) fn finish_write(&self) -> RevisionResult<()> {
-        self.connection
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
-        sync_if_present(&self.path)?;
-        sync_if_present(&sidecar_path(&self.path, "-wal"))?;
-        Ok(())
-    }
-
-    fn best_payload(
-        &self,
-        table: &str,
-        revision: RevisionId,
-        supports: impl Fn(&Encoding) -> bool,
-    ) -> RevisionResult<Option<Payload>> {
-        let sql = format!(
-            "SELECT family, version, capabilities_json, bytes, sha256
-             FROM {table} WHERE revision_id = ?1 ORDER BY version DESC, family"
-        );
-        let mut statement = self.connection.prepare(&sql)?;
-        let rows = statement.query_map([revision.as_bytes().as_slice()], |row| {
-            let family: String = row.get(0)?;
-            let version: u32 = row.get(1)?;
-            let capabilities_json: String = row.get(2)?;
-            let bytes: Vec<u8> = row.get(3)?;
-            let hash: Vec<u8> = row.get(4)?;
-            Ok((family, version, capabilities_json, bytes, hash))
-        })?;
-        for row in rows {
-            let (family, version, capabilities_json, bytes, hash) = row?;
-            if Sha256::digest(&bytes).as_slice() != hash {
-                return Err(RevisionError::Corrupt(format!(
-                    "payload hash mismatch in {table}"
-                )));
-            }
-            let encoding = Encoding {
-                family,
-                version,
-                required_capabilities: serde_json::from_str(&capabilities_json)?,
-            };
-            if supports(&encoding) {
-                return Ok(Some(Payload { encoding, bytes }));
-            }
-        }
-        Ok(None)
-    }
-
     fn require_revision(&self, id: RevisionId) -> RevisionResult<()> {
         require_revision_in(&self.connection, id)
     }
@@ -826,159 +796,4 @@ pub(crate) fn validate_assets(assets: &[Asset]) -> RevisionResult<()> {
         }
     }
     Ok(())
-}
-
-pub(crate) fn session_in(
-    connection: &Connection,
-    id: SessionId,
-) -> RevisionResult<Option<Session>> {
-    connection
-        .query_row(
-            "SELECT actor_id, actor_name, actor_kind, cursor_revision_id, updated_at_ms
-             FROM sessions WHERE id = ?1",
-            [id.as_bytes().as_slice()],
-            |row| {
-                let kind: String = row.get(2)?;
-                Ok(Session {
-                    id,
-                    actor: Actor {
-                        id: row.get(0)?,
-                        display_name: row.get(1)?,
-                        kind: actor_kind(&kind)?,
-                    },
-                    cursor: revision_id(row.get(3)?)?,
-                    updated_at_ms: row.get(4)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(Into::into)
-}
-
-fn revision_in(connection: &Connection, id: RevisionId) -> RevisionResult<Option<Revision>> {
-    connection
-        .query_row(
-            "SELECT id, track_id, change_set_id, parent_id, actor_id, actor_name, actor_kind, session_id,
-                    created_at_ms, application_version, label, command_count
-             FROM revisions WHERE id = ?1",
-            [id.as_bytes().as_slice()],
-            revision_from_row,
-        )
-        .optional()
-        .map_err(Into::into)
-}
-
-fn revision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Revision> {
-    let kind: String = row.get(6)?;
-    Ok(Revision {
-        id: revision_id(row.get(0)?)?,
-        track_id: track_id(row.get(1)?)?,
-        change_set_id: change_set_id(row.get(2)?)?,
-        parent_id: row
-            .get::<_, Option<Vec<u8>>>(3)?
-            .map(revision_id)
-            .transpose()?,
-        actor: Actor {
-            id: row.get(4)?,
-            display_name: row.get(5)?,
-            kind: actor_kind(&kind)?,
-        },
-        session_id: session_id(row.get(7)?)?,
-        created_at_ms: row.get(8)?,
-        application_version: row.get(9)?,
-        label: row.get(10)?,
-        command_count: row.get(11)?,
-    })
-}
-
-fn require_revision_in(connection: &Connection, id: RevisionId) -> RevisionResult<()> {
-    let exists: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM revisions WHERE id = ?1)",
-        [id.as_bytes().as_slice()],
-        |row| row.get(0),
-    )?;
-    if exists {
-        Ok(())
-    } else {
-        Err(RevisionError::MissingRevision(id))
-    }
-}
-
-fn project_info_in(connection: &Connection) -> RevisionResult<ProjectInfo> {
-    let required = |key: &str| -> RevisionResult<Vec<u8>> {
-        connection
-            .query_row(
-                "SELECT value FROM spectrum_meta WHERE key = ?1",
-                [key],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| RevisionError::Corrupt(format!("missing metadata key {key}")))
-    };
-    let project_id = ProjectId::from_bytes(array::<16>(&required("project_id")?, "project id")?);
-    let application_id = String::from_utf8(required("application_id")?)
-        .map_err(|_| RevisionError::Corrupt("application id is not UTF-8".into()))?;
-    let created_at_ms = String::from_utf8(required("created_at_ms")?)
-        .map_err(|_| RevisionError::Corrupt("creation time is not UTF-8".into()))?
-        .parse()
-        .map_err(|_| RevisionError::Corrupt("creation time is invalid".into()))?;
-    let root_revision =
-        RevisionId::from_bytes(array::<16>(&required("root_revision")?, "root revision")?);
-    let default_track_id = TrackId::from_bytes(array::<16>(
-        &required("default_track_id")?,
-        "default track id",
-    )?);
-    Ok(ProjectInfo {
-        project_id,
-        application_id,
-        created_at_ms,
-        container_format: schema::container_format(connection)?,
-        default_track_id,
-        root_revision,
-    })
-}
-
-pub(crate) fn actor_kind(value: &str) -> rusqlite::Result<ActorKind> {
-    ActorKind::parse(value).ok_or_else(|| conversion_error("invalid actor kind"))
-}
-
-pub(crate) fn revision_id(bytes: Vec<u8>) -> rusqlite::Result<RevisionId> {
-    Ok(RevisionId::from_bytes(sql_array::<16>(
-        bytes,
-        "revision id",
-    )?))
-}
-
-fn session_id(bytes: Vec<u8>) -> rusqlite::Result<SessionId> {
-    Ok(SessionId::from_bytes(sql_array::<16>(bytes, "session id")?))
-}
-
-fn change_set_id(bytes: Vec<u8>) -> rusqlite::Result<ChangeSetId> {
-    Ok(ChangeSetId::from_bytes(sql_array::<16>(
-        bytes,
-        "change set id",
-    )?))
-}
-
-fn sql_array<const N: usize>(bytes: Vec<u8>, label: &str) -> rusqlite::Result<[u8; N]> {
-    bytes
-        .try_into()
-        .map_err(|_| conversion_error(&format!("invalid {label}")))
-}
-
-fn array<const N: usize>(bytes: &[u8], label: &str) -> RevisionResult<[u8; N]> {
-    bytes
-        .try_into()
-        .map_err(|_| RevisionError::Corrupt(format!("invalid {label}")))
-}
-
-fn conversion_error(message: &str) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        0,
-        rusqlite::types::Type::Blob,
-        Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            message.to_owned(),
-        )),
-    )
 }

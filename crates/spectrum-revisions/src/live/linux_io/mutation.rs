@@ -35,11 +35,12 @@ impl<'a> PrivateMutation<'a> {
         // aliases and path replacements are rejected before the page-diff mutation.
         directory.validate(name, identity, true)?;
         maybe_inject_slot_hardlink(directory, name, point)?;
-        let gate = open_gate(directory, true)?;
+        let gate = open_gate(directory, false)?;
         ensure_missing(&gate, name)?;
         rename_between(&directory.descriptor, name, &gate, name)?;
-        directory.sync()?;
-        gate.sync_all()?;
+        // The gate is a live namespace seal, not durable publication state. Candidate data is
+        // synced before it can be exchanged, and the later intent marker sync orders the restored
+        // slot name. If the process dies earlier, recovery accepts either atomic rename state.
         let guard = Self {
             directory,
             gate,
@@ -89,8 +90,10 @@ impl<'a> PrivateMutation<'a> {
                     &self.directory.descriptor,
                     &self.name,
                 )?;
-                self.gate.sync_all()?;
-                self.directory.sync()?;
+                // The candidate fsync carries its exchange intent, and the cache-directory sync
+                // after exchange orders the restored target name. A crash may resurrect the
+                // source name too; recovery already validates that exact two-link residual and
+                // removes the gated alias.
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.directory.validate(&self.name, self.identity, true)?;
@@ -109,31 +112,53 @@ impl Drop for PrivateMutation<'_> {
 }
 
 pub(super) fn recover(directory: &PrivateDirectory) -> RevisionResult<()> {
-    let gate = match open_gate(directory, false) {
-        Ok(gate) => gate,
-        Err(RevisionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
+    let gate = open_gate(directory, true)?;
     let name = super::super::PUBLISH_MIRROR_FILE;
     let gated = match openat(&gate, name, false) {
         Ok(gated) => gated,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let identity = validated_identity(&gated, true)?;
-    if openat(&directory.descriptor, name, false).is_ok() {
-        return Err(RevisionError::Invalid(
-            "publication slot exists both inside and outside its mutation gate".into(),
-        ));
+    let identity = validated_identity(&gated, false)?;
+    if let Ok(restored) = openat(&directory.descriptor, name, false) {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let restored_identity = validated_identity(&restored, false)?;
+        if restored_identity != identity
+            || gated.metadata()?.nlink() != 2
+            || restored.metadata()?.nlink() != 2
+        {
+            return Err(RevisionError::Invalid(
+                "publication slot exists with different identities inside and outside its mutation gate"
+                    .into(),
+            ));
+        }
+        unlink_from(&gate, name)?;
+        gate.sync_all()?;
+        directory.sync()?;
+        return directory.validate(name, identity, true);
     }
+    validated_identity(&gated, true)?;
     rename_between(&gate, name, &directory.descriptor, name)?;
     gate.sync_all()?;
     directory.sync()?;
     directory.validate(name, identity, true)
 }
 
+fn unlink_from(directory: &File, name: &str) -> io::Result<()> {
+    let name = CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+    let removed = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+    if removed == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 fn open_gate(directory: &PrivateDirectory, create: bool) -> RevisionResult<File> {
     let name = CString::new(MUTATION_GATE).unwrap();
+    let mut created_gate = false;
     if create {
         let created = unsafe {
             libc::mkdirat(
@@ -142,7 +167,9 @@ fn open_gate(directory: &PrivateDirectory, create: bool) -> RevisionResult<File>
                 libc::S_IRWXU,
             )
         };
-        if created != 0 {
+        if created == 0 {
+            created_gate = true;
+        } else {
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::AlreadyExists {
                 return Err(error.into());
@@ -161,7 +188,10 @@ fn open_gate(directory: &PrivateDirectory, create: bool) -> RevisionResult<File>
     }
     let path_descriptor = unsafe { File::from_raw_fd(path_descriptor) };
     validate_gate(&path_descriptor)?;
-    restore_gate_permissions(&path_descriptor)?;
+    let permissions_need_repair = path_descriptor.metadata()?.permissions().mode() & 0o700 != 0o700;
+    if permissions_need_repair {
+        restore_gate_permissions(&path_descriptor)?;
+    }
     let descriptor = unsafe {
         libc::openat(
             directory.descriptor.as_raw_fd(),
@@ -174,6 +204,10 @@ fn open_gate(directory: &PrivateDirectory, create: bool) -> RevisionResult<File>
     }
     let descriptor = unsafe { File::from_raw_fd(descriptor) };
     validate_gate(&descriptor)?;
+    if created_gate || permissions_need_repair {
+        descriptor.sync_all()?;
+        directory.sync()?;
+    }
     Ok(descriptor)
 }
 

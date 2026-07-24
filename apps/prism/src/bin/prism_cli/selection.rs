@@ -23,7 +23,7 @@ enum SelectionAction {
     MagicWand {
         x: u32,
         y: u32,
-        #[arg(long, default_value_t = 32)]
+        #[arg(long, default_value_t = 20)]
         /// Max-channel distance in premultiplied RGBA (0 exact, 255 all colors).
         tolerance: u8,
         /// Match similar pixels across the whole canvas instead of one connected region.
@@ -55,6 +55,8 @@ enum SelectionAction {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Nondestructively hide selected pixels on one raster image layer.
+    Delete { layer: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -131,12 +133,30 @@ pub(super) fn command(arguments: SelectionArgs) -> Result<Command> {
             color: parse_color(&color)?,
             name,
         },
+        SelectionAction::Delete { layer } => Command::DeleteSelectedPixels { id: layer },
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct SelectionTestCli {
+        #[command(flatten)]
+        selection: SelectionArgs,
+    }
+
+    #[test]
+    fn omitted_magic_wand_tolerance_matches_the_gui_default() {
+        let parsed =
+            SelectionTestCli::try_parse_from(["selection-test", "magic-wand", "4", "5"]).unwrap();
+        assert!(matches!(
+            parsed.selection.action,
+            SelectionAction::MagicWand { tolerance: 20, .. }
+        ));
+    }
 
     #[test]
     fn selection_actions_map_to_the_public_command_protocol() {
@@ -154,6 +174,14 @@ mod tests {
             Command::SetSelection {
                 selection: Some(Selection::rectangle(4, 5, 20, 10))
             }
+        );
+
+        assert_eq!(
+            command(SelectionArgs {
+                action: SelectionAction::Delete { layer: 7 },
+            })
+            .unwrap(),
+            Command::DeleteSelectedPixels { id: 7 }
         );
 
         assert_eq!(

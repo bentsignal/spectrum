@@ -12,7 +12,8 @@ pub(super) fn schema() -> Value {
             "persistence": "each completed semantic action is an attributed durable revision",
             "batching": "run arrays commit atomically as one revision",
             "history": "immutable revision tree with session-specific cursors",
-            "assets": "embedded and content-addressed"
+            "assets": "embedded and content-addressed",
+            "optimized_copy": "prism --project <source.prism> optimized-copy --output <fresh.prism> rewrites one linear history with verified font subsets and exact per-revision snapshots; it rejects branches, active Undo cursors, unsupported fonts, non-reducing results, and every existing destination; the shareable fresh copy retains revision author/session attribution, resets every retained author session to the new tip, and intentionally omits non-author follower sessions and live collaboration records"
         },
         "agent_collaboration": {
             "transport": "CLI JSON; no vendor-specific integration required",
@@ -34,7 +35,9 @@ pub(super) fn schema() -> Value {
             "path_operations_version": 7,
             "paint_operations_version": 8,
             "lasso_operations_version": 9,
-            "document_lifecycle_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "document_lifecycle_operations_version": 10,
+            "dissolve_operations_version": 11,
+            "raster_pixel_mask_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "document_lifecycle": {
@@ -56,12 +59,26 @@ pub(super) fn schema() -> Value {
             "geometry": "alignment and snapping use actual rotated visual bounds in canvas coordinates"
         },
         "blend_modes": [
-            "normal", "darken", "multiply", "color_burn", "linear_burn", "darker_color",
+            "normal", "dissolve", "darken", "multiply", "color_burn", "linear_burn", "darker_color",
             "lighten", "screen", "color_dodge", "linear_dodge", "lighter_color", "overlay",
             "soft_light", "hard_light", "vivid_light", "linear_light", "pin_light", "hard_mix",
             "difference", "exclusion", "subtract", "divide", "hue", "saturation", "color",
             "luminosity"
         ],
+        "dissolve": {
+            "cli": "prism blend <layer> dissolve [--seed <u32>]",
+            "seed": "persisted per layer; defaults to zero and can be changed independently with set_dissolve_seed",
+            "sampling": "source/mask/clip UNORM8 and once-rounded layer-opacity UNORM16 are combined by rounded integer UNORM multiplication; an integer-only hash of seed and absolute scaled-document x/y turns coverage into present/absent pixels",
+            "kept_pixels": "effective alpha is the presence probability; present pixels composite fully opaque, matching conventional Dissolve semantics",
+            "parity": "export, tiled region rendering, and composite preview use the same core function"
+        },
+        "future_group_compositing": {
+            "status": "semantic contract only; groups are not yet a Prism layer type",
+            "default": "pass_through",
+            "isolated": "children composite onto a transparent intermediate, then group opacity and blend mode apply once to that result",
+            "pass_through": "children composite directly into the parent stack; group opacity scales each child effective opacity and the group has no independent blend operation",
+            "dissolve": "an isolated group hashes its own seed at the group boundary; a pass-through group does not introduce a Dissolve boundary"
+        },
         "layer_types": ["raster", "text", "rectangle", "ellipse", "path", "paint"],
         "paint": {
             "program_version": prism_core::BRUSH_PROGRAM_VERSION,
@@ -103,20 +120,21 @@ pub(super) fn schema() -> Value {
         },
         "selection": {
             "rectangle": "selection rectangle <x> <y> <width> <height> uses integer document pixels and clips at canvas edges",
-            "magic_wand": "selection magic-wand <x> <y> [--tolerance <0..255>] [--noncontiguous] [--no-antialias] samples the exact CPU composite; tolerance is deterministic max-channel distance over premultiplied RGBA (hidden RGB at alpha 0 is ignored, alpha differences remain visible), and anti-aliasing adds one soft boundary pixel",
+            "magic_wand": "selection magic-wand <x> <y> [--tolerance <0..255>] [--noncontiguous] [--no-antialias] defaults tolerance to 20 and samples the exact CPU composite; tolerance is deterministic max-channel distance over premultiplied RGBA (hidden RGB at alpha 0 is ignored, alpha differences remain visible), and anti-aliasing adds one soft boundary pixel",
             "lasso": "selection lasso --point <x,y> --point <x,y> --point <x,y> [--mode <replace|add|subtract|intersect>] [--no-antialias] quantizes coordinates to 1/256 pixel and applies a deterministic even-odd polygon selection",
             "lasso_limits": {"input_points": prism_core::MAX_LASSO_INPUT_POINTS, "simplified_vertices": prism_core::MAX_LASSO_VERTICES, "raster_edge_tests": prism_core::MAX_LASSO_RASTER_EDGE_TESTS, "mask_pixels": prism_core::MAX_COLOR_SELECTION_PIXELS},
-            "clear": "selection clear removes the persistent marquee",
-            "crop": "selection crop atomically crops the canvas to the current marquee and clears the selection in one revision",
+            "clear": "selection clear removes the persistent pixel selection",
+            "crop": "selection crop atomically crops the canvas to the current selection and clears it in one revision",
             "fill": "selection fill [--color <RRGGBBAA>] [--name <label>] creates one new editable solid layer honoring rectangular or soft color-selection alpha without changing source pixels",
+            "delete": "selection delete <layer> multiplies the active document-space selection into one raster layer pixel mask; originals remain immutable, the selection stays active, and empty, locked, non-raster, already-deleted, or non-overlapping targets fail without a revision",
             "combination": "replace uses the new lasso; add uses a+b-round(ab/255); subtract uses round(a*(255-b)/255); intersect uses round(ab/255)",
-            "history": "each completed marquee, lasso drag, magic wand click, clear, fill, or crop is one command and one durable revision"
+            "history": "each completed Selection-tool drag, lasso drag, magic wand click, clear, fill, delete, or crop is one command and one durable revision"
         },
         "typography": {
             "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot and transactionally embeds those exact bytes as a content-addressed project asset; installable, editable, preview/print, and restricted embedding classes, including bitmap-only flags, import directly for local text, while malformed, unparseable, oversized, or unsafe sources fail closed; Windows final-handle proof rejects junction and 8.3 aliases unless the normalized handle path exactly matches",
             "source_snapshot": "font-source <font-id> reads one full-font blob directly from an immutable SQLite view that ignores live caches and recovery sidecars, verifies its deterministic SHA-256 identity and embedding metadata, and reports proof without modifying the project; --session is rejected",
             "subset_plan": "font-subset-plan <font-id> immutably replays the current document, derives exact Unicode and per-line shaping requirements, runs the fail-closed in-process candidate in memory, and reports deterministic candidate identity/reduction or blockers without emitting bytes or modifying the project; --session is rejected",
-            "subset_storage_decision": "appending a subset cannot shrink a durable project because replayable history retains content-addressed full-font blobs; physical reduction requires a future fresh-database compact-copy transaction that rewrites all retained branches and copies only reachable assets",
+            "subset_storage_decision": "appending a subset cannot shrink a durable project because replayable history retains content-addressed full-font blobs; optimized-copy --output <fresh.prism> instead performs a fail-closed single-track linear-history rewrite, preserves an exact snapshot per revision, copies reachable assets only, and never overwrites a destination",
             "discovery": "font-list --query <text> searches embedded family and style metadata",
             "optimization_analysis": "font-usage [--font-id <id>] reports deterministic Unicode cmap subset-retention requirements, variation sequences, embedding metadata, provenance, and source size without changing font bytes; --session retains standard session-resume behavior",
             "optimization_limitations": "analysis excludes symbol and other non-Unicode cmaps, shaping, and renderer fallback",
@@ -132,7 +150,7 @@ pub(super) fn schema() -> Value {
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
-            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks with verified content identity; v4 preserves paths and reusable vector masks; v5 preserves bounded nondestructive Paint programs",
+            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
         "color": "RRGGBB or RRGGBBAA",
@@ -143,6 +161,7 @@ pub(super) fn schema() -> Value {
 fn command_examples() -> Vec<Value> {
     vec![
         json!({"command": "rename_document", "name": "Campaign"}),
+        json!({"command": "set_dissolve_seed", "id": 1, "seed": 305419896}),
         json!({"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0}),
         json!({"command": "import_font", "path": "/fonts/Inter-Regular.ttf"}),
         json!({"command": "set_text_typography", "id": 1, "typography": {"font_id": 1, "alignment": "center", "line_height": 1.3, "tracking": 2.0, "box_width": 480.0, "effects": {"outline_width": 1.0, "outline_color": [0,0,0,255], "shadow_offset_x": 4.0, "shadow_offset_y": 6.0, "shadow_color": [0,0,0,128]}}}),
@@ -164,10 +183,31 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "magic_wand_selection", "x": 120, "y": 80, "tolerance": 32, "contiguous": true, "antialias": true}),
         json!({"command": "lasso_selection", "points": [{"x": 30720, "y": 20480}, {"x": 153600, "y": 20480}, {"x": 30720, "y": 102400}], "mode": "replace", "antialias": true}),
         json!({"command": "fill_selection", "color": [93,216,199,255], "name": "Selection fill"}),
+        json!({"command": "delete_selected_pixels", "id": 1}),
         json!({"command": "crop_to_selection"}),
         json!({"command": "add_guide", "orientation": "vertical", "position": 960.0}),
         json!({"command": "move_guide", "id": 1, "position": 800.0}),
         json!({"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}}),
         json!({"command": "adjust_layer", "id": 1, "patch": {"exposure": 0.5, "contrast": 12.0}}),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn schema_advertises_dissolve_v11_and_raster_pixel_mask_v12() {
+        let schema = super::schema();
+        assert_eq!(
+            schema["command_protocol"]["dissolve_operations_version"],
+            11
+        );
+        assert_eq!(
+            schema["command_protocol"]["raster_pixel_mask_operations_version"],
+            12
+        );
+        assert_eq!(
+            schema["command_protocol"]["supported_operation_versions"],
+            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        );
+    }
 }

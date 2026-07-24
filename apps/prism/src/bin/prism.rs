@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
@@ -25,9 +25,15 @@ use alignment::{CliAlignment, GuideCommand};
 #[path = "prism_cli/benchmark.rs"]
 mod benchmark;
 use benchmark::{BenchmarkProfile, benchmark};
+#[path = "prism_cli/blend.rs"]
+mod blend;
+use blend::CliBlend;
 #[path = "prism_cli/effects.rs"]
 mod effects;
 use effects::{GradientArgs, ShadowArgs};
+#[path = "prism_cli/from_lumen.rs"]
+mod from_lumen;
+use from_lumen::from_lumen;
 #[path = "prism_cli/paths.rs"]
 mod paths;
 use paths::{PathArgs, PathCommand, VectorMaskArgs};
@@ -123,6 +129,11 @@ enum CliCommand {
     /// Prove an in-memory subset candidate and report why physical replacement is not yet safe.
     FontSubsetPlan {
         font_id: u64,
+    },
+    /// Create a smaller project by safely rewriting linear history with font subsets.
+    OptimizedCopy {
+        #[arg(long)]
+        output: PathBuf,
     },
     /// Update one text layer's font, paragraph metrics, and effects.
     Typography(TypographyArgs),
@@ -229,7 +240,7 @@ enum CliCommand {
     Select {
         id: Option<u64>,
     },
-    /// Create, clear, color-select, crop, or nondestructively fill pixels.
+    /// Create, clear, color-select, crop, fill, or nondestructively delete pixels.
     Selection(SelectionArgs),
     Reorder {
         id: u64,
@@ -250,6 +261,9 @@ enum CliCommand {
     Blend {
         id: u64,
         mode: CliBlend,
+        /// Stable 32-bit pattern seed for Dissolve.
+        #[arg(long)]
+        seed: Option<u32>,
     },
     Transform {
         id: u64,
@@ -386,69 +400,6 @@ enum CliCommand {
     },
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum CliBlend {
-    Normal,
-    Darken,
-    Multiply,
-    ColorBurn,
-    LinearBurn,
-    DarkerColor,
-    Lighten,
-    Screen,
-    ColorDodge,
-    LinearDodge,
-    LighterColor,
-    Overlay,
-    SoftLight,
-    HardLight,
-    VividLight,
-    LinearLight,
-    PinLight,
-    HardMix,
-    Difference,
-    Exclusion,
-    Subtract,
-    Divide,
-    Hue,
-    Saturation,
-    Color,
-    Luminosity,
-}
-
-impl From<CliBlend> for BlendMode {
-    fn from(value: CliBlend) -> Self {
-        match value {
-            CliBlend::Normal => Self::Normal,
-            CliBlend::Darken => Self::Darken,
-            CliBlend::Multiply => Self::Multiply,
-            CliBlend::ColorBurn => Self::ColorBurn,
-            CliBlend::LinearBurn => Self::LinearBurn,
-            CliBlend::DarkerColor => Self::DarkerColor,
-            CliBlend::Lighten => Self::Lighten,
-            CliBlend::Screen => Self::Screen,
-            CliBlend::ColorDodge => Self::ColorDodge,
-            CliBlend::LinearDodge => Self::LinearDodge,
-            CliBlend::LighterColor => Self::LighterColor,
-            CliBlend::Overlay => Self::Overlay,
-            CliBlend::SoftLight => Self::SoftLight,
-            CliBlend::HardLight => Self::HardLight,
-            CliBlend::VividLight => Self::VividLight,
-            CliBlend::LinearLight => Self::LinearLight,
-            CliBlend::PinLight => Self::PinLight,
-            CliBlend::HardMix => Self::HardMix,
-            CliBlend::Difference => Self::Difference,
-            CliBlend::Exclusion => Self::Exclusion,
-            CliBlend::Subtract => Self::Subtract,
-            CliBlend::Divide => Self::Divide,
-            CliBlend::Hue => Self::Hue,
-            CliBlend::Saturation => Self::Saturation,
-            CliBlend::Color => Self::Color,
-            CliBlend::Luminosity => Self::Luminosity,
-        }
-    }
-}
-
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(value) => {
@@ -499,6 +450,13 @@ fn run(cli: Cli) -> Result<Value> {
         }
         CliCommand::FontSubsetPlan { font_id } => {
             typography::font_subset_plan_command(&cli.project, cli.session, font_id)
+        }
+        CliCommand::OptimizedCopy { output } => {
+            if cli.session.is_some() {
+                bail!("optimized-copy does not accept --session");
+            }
+            let report = prism_core::create_optimized_font_copy(&cli.project, &output)?;
+            Ok(json!({"ok": true, "action": "optimized_copy", "report": report}))
         }
         CliCommand::LayerCopy(arguments) => {
             transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)
@@ -710,11 +668,16 @@ fn run(cli: Cli) -> Result<Value> {
                 CliCommand::Opacity { id, opacity } => {
                     vec![workspace.execute(Command::SetOpacity { id, opacity })?]
                 }
-                CliCommand::Blend { id, mode } => {
-                    vec![workspace.execute(Command::SetBlendMode {
-                        id,
-                        blend_mode: mode.into(),
-                    })?]
+                CliCommand::Blend { id, mode, seed } => {
+                    let blend_mode = BlendMode::from(mode);
+                    if seed.is_some() && blend_mode != BlendMode::Dissolve {
+                        bail!("--seed is only valid with the dissolve blend mode");
+                    }
+                    let mut commands = vec![Command::SetBlendMode { id, blend_mode }];
+                    if let Some(seed) = seed {
+                        commands.push(Command::SetDissolveSeed { id, seed });
+                    }
+                    workspace.execute_batch(commands)?
                 }
                 CliCommand::Transform {
                     id,
@@ -845,6 +808,7 @@ fn run(cli: Cli) -> Result<Value> {
                 | CliCommand::FontUsage { .. }
                 | CliCommand::FontSource { .. }
                 | CliCommand::FontSubsetPlan { .. }
+                | CliCommand::OptimizedCopy { .. }
                 | CliCommand::LayerCopy(..)
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }
@@ -879,48 +843,6 @@ fn cli_actor() -> Actor {
         display_name: "Prism CLI".into(),
         kind: ActorKind::Agent,
     }
-}
-
-fn from_lumen(catalog: &Path, photo_id: u64, output: &Path) -> Result<Value> {
-    let project = if LumenDurableCatalog::looks_durable(catalog)? {
-        LumenDurableCatalog::load_current(catalog)?
-    } else {
-        LumenProject::load(catalog)?
-    };
-    let photo = project.photo(photo_id)?;
-    let rendered = render_photo(photo, RenderOptions::default())?;
-    let session = SessionId::new();
-    let import_directory = std::env::temp_dir().join("spectrum-prism-imports");
-    std::fs::create_dir_all(&import_directory)?;
-    let asset = import_directory.join(format!("{session}.png"));
-    rendered.save(&asset)?;
-
-    let mut workspace = Workspace::new(
-        Document::new(
-            format!("{} — {}", project.name, photo.name),
-            rendered.width(),
-            rendered.height(),
-        ),
-        None,
-    );
-    workspace.document.background = [0, 0, 0, 0];
-    workspace.execute(Command::AddRaster {
-        path: asset.clone(),
-        name: Some(photo.name.clone()),
-        x: 0.0,
-        y: 0.0,
-    })?;
-    let durable = Workspace::create_durable(workspace.document, output, cli_actor(), session);
-    let _ = std::fs::remove_file(asset);
-    let mut workspace = durable?;
-    workspace.save(None)?;
-    Ok(json!({
-        "ok": true,
-        "action": "from_lumen",
-        "catalog": catalog,
-        "photo_id": photo_id,
-        "project": output
-    }))
 }
 
 fn parse_color(value: &str) -> Result<[u8; 4]> {

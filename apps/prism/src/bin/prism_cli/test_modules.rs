@@ -4,7 +4,11 @@ use super::*;
 mod document_lifecycle_tests;
 #[path = "lasso_tests.rs"]
 mod lasso_tests;
+#[path = "optimized_copy_tests.rs"]
+mod optimized_copy_tests;
 #[path = "paint_tests.rs"]
 mod paint_tests;
+#[path = "schema_tests.rs"]
+mod schema_tests;
 #[path = "tests.rs"]
 mod tests;

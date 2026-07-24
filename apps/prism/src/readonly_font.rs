@@ -8,6 +8,7 @@ use crate::{
     Transform, VerifiedFontSource, apply_command,
 };
 
+use super::validate_operations_version;
 use super::{APPLICATION_ID, AssetReference, PrismCompatibility, decode_snapshot};
 
 pub struct ReadOnlyFontSource {
@@ -69,6 +70,7 @@ fn load_font_document_read_only(path: &Path) -> Result<(RevisionStore, Document)
     for step in plan.steps {
         let commands: Vec<Command> = serde_json::from_slice(&step.operations.bytes)
             .context("invalid Prism operation batch")?;
+        validate_operations_version(&commands, step.operations.encoding.version)?;
         for command in commands {
             replay_command(&store, &mut document, command)?;
         }
@@ -77,7 +79,7 @@ fn load_font_document_read_only(path: &Path) -> Result<(RevisionStore, Document)
     Ok((store, document))
 }
 
-fn hydrate_read_only_legacy_font_permissions(
+pub(super) fn hydrate_read_only_legacy_font_permissions(
     store: &RevisionStore,
     document: &mut Document,
 ) -> Result<()> {
@@ -92,7 +94,11 @@ fn hydrate_read_only_legacy_font_permissions(
     Ok(())
 }
 
-fn replay_command(store: &RevisionStore, document: &mut Document, command: Command) -> Result<()> {
+pub(super) fn replay_command(
+    store: &RevisionStore,
+    document: &mut Document,
+    command: Command,
+) -> Result<()> {
     match command {
         Command::ImportFont { path, source_name } => {
             replay_font_import(store, document, &path, source_name.as_deref())

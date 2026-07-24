@@ -81,6 +81,24 @@ fn route_application_shortcut(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeleteShortcutAction {
+    DeleteSelectedPixels(u64),
+    ConfirmLayerDeletion(Option<u64>),
+    MissingRasterTarget,
+}
+
+fn delete_shortcut_action(
+    pixel_selection_active: bool,
+    selected_layer: Option<u64>,
+) -> DeleteShortcutAction {
+    match (pixel_selection_active, selected_layer) {
+        (true, Some(id)) => DeleteShortcutAction::DeleteSelectedPixels(id),
+        (true, None) => DeleteShortcutAction::MissingRasterTarget,
+        (false, selected) => DeleteShortcutAction::ConfirmLayerDeletion(selected),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GlobalShortcut {
     ToolsAndActions,
     JumpToObject,
@@ -345,7 +363,29 @@ impl PrismApp {
         if context.input(|input| {
             input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace)
         }) {
-            self.delete_confirmation = self.workspace.document.selected;
+            match delete_shortcut_action(
+                self.workspace.document.selection.is_some(),
+                self.workspace.document.selected,
+            ) {
+                DeleteShortcutAction::DeleteSelectedPixels(id) => {
+                    self.execute(Command::DeleteSelectedPixels { id });
+                }
+                DeleteShortcutAction::MissingRasterTarget => {
+                    self.status =
+                        "Select a raster image layer before deleting selected pixels".into();
+                    self.status_error = true;
+                }
+                DeleteShortcutAction::ConfirmLayerDeletion(selected) => {
+                    self.delete_confirmation = selected;
+                }
+            }
+        }
+        if self.brush_color_picker_open()
+            && context
+                .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.cancel_brush_color_picker(context);
+            return;
         }
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.cancel_pen();
@@ -550,6 +590,26 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn delete_and_backspace_prioritize_pixel_selection_over_layer_deletion() {
+        assert_eq!(
+            delete_shortcut_action(true, Some(41)),
+            DeleteShortcutAction::DeleteSelectedPixels(41)
+        );
+        assert_eq!(
+            delete_shortcut_action(true, None),
+            DeleteShortcutAction::MissingRasterTarget
+        );
+        assert_eq!(
+            delete_shortcut_action(false, Some(41)),
+            DeleteShortcutAction::ConfirmLayerDeletion(Some(41))
+        );
+        assert_eq!(
+            delete_shortcut_action(false, None),
+            DeleteShortcutAction::ConfirmLayerDeletion(None)
+        );
     }
 
     #[test]

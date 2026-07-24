@@ -351,43 +351,7 @@ impl PrismApp {
                     }
                     if matches!(self.tool, Tool::Brush | Tool::Eraser) {
                         ui.separator();
-                        ui.menu_button(
-                            format!("Brush Settings · {:.0}px", self.brush.size),
-                            |ui| {
-                                ui.set_min_width(240.0);
-                                ui.add(
-                                    egui::Slider::new(&mut self.brush.size, 1.0..=512.0)
-                                        .text("Size")
-                                        .logarithmic(true),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut self.brush.hardness, 0.0..=1.0)
-                                        .text("Hardness"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut self.brush.opacity, 0.0..=1.0)
-                                        .text("Opacity"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut self.brush.spacing, 0.01..=1.0)
-                                        .text("Spacing"),
-                                );
-                                if self.tool == Tool::Brush {
-                                    let mut color = Color32::from_rgba_unmultiplied(
-                                        self.brush.color[0],
-                                        self.brush.color[1],
-                                        self.brush.color[2],
-                                        self.brush.color[3],
-                                    );
-                                    ui.horizontal(|ui| {
-                                        ui.label("Color");
-                                        if ui.color_edit_button_srgba(&mut color).changed() {
-                                            self.brush.color = color.to_array();
-                                        }
-                                    });
-                                }
-                            },
-                        );
+                        self.brush_settings_control(ui);
                     }
                 });
             });

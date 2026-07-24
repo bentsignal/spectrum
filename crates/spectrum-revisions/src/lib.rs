@@ -15,18 +15,21 @@ mod identity;
 mod live;
 mod metadata;
 mod model;
+mod publish;
 mod schema;
 mod storage_io;
 mod store;
+mod store_payloads;
 mod store_tracks;
 
 pub use error::{RevisionError, RevisionResult};
 pub use id::{AssetId, ChangeSetId, ProjectId, RevisionId, SessionId, TrackId};
 pub use identity::local_session_id;
-pub use live::{LiveRevisionStore, PublishStats, PublishStrategy};
+pub use live::{LiveRevisionStore, PublishStats, PublishStrategy, PublishTimings};
 pub use model::{
     Actor, ActorKind, AppendRevision, Asset, Collaboration, CollaborationMode, CollaborationStatus,
     CollaborationSync, Encoding, NewProject, NewTrack, Payload, Preview, ProjectInfo, ReplayPlan,
     ReplayStep, Revision, Session, Track,
 };
+pub use publish::publish_noreplace;
 pub use store::{Compatibility, RevisionStore};

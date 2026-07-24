@@ -281,6 +281,46 @@ pub fn adjusted_image_dimensions(
     Some((geometry.output_width, geometry.output_height))
 }
 
+/// Reusable mapping from adjusted output pixels to original source samples.
+///
+/// Constructing it once amortizes adjustment sanitization and geometry setup
+/// across bounded image-space loops.
+#[derive(Clone, Copy)]
+pub struct AdjustedPixelSourceMapper {
+    geometry: AdjustedGeometry,
+}
+
+impl AdjustedPixelSourceMapper {
+    pub fn new(source_width: u32, source_height: u32, adjustments: &Adjustments) -> Option<Self> {
+        if source_width == 0 || source_height == 0 {
+            return None;
+        }
+        let adjustments = adjustments.clone().sanitized();
+        Some(Self {
+            geometry: AdjustedGeometry::new(source_width, source_height, &adjustments),
+        })
+    }
+
+    pub fn adjusted_dimensions(self) -> (u32, u32) {
+        (self.geometry.output_width, self.geometry.output_height)
+    }
+
+    /// Visits the source pixels sampled for one adjusted output pixel.
+    pub fn visit_source_samples(
+        self,
+        adjusted_x: u32,
+        adjusted_y: u32,
+        visit: impl FnMut(u32, u32),
+    ) -> bool {
+        if adjusted_x >= self.geometry.output_width || adjusted_y >= self.geometry.output_height {
+            return false;
+        }
+        self.geometry
+            .visit_source_samples(adjusted_x, adjusted_y, visit);
+        true
+    }
+}
+
 #[derive(Clone, Copy)]
 struct AdjustedGeometry {
     source_width: u32,
