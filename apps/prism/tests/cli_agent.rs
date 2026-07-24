@@ -309,6 +309,89 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
     let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
     assert_eq!(listed["document"]["layers"][0]["blend_mode"], "vivid_light");
     assert_eq!(listed["document"]["layers"][0]["clip_to_below"], true);
+    let dissolve = run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "blend",
+        "1",
+        "dissolve",
+        "--seed",
+        "305419896",
+    ]);
+    assert_eq!(dissolve["results"][0]["action"], "set_blend_mode");
+    assert_eq!(dissolve["results"][1]["action"], "set_dissolve_seed");
+    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    assert_eq!(listed["document"]["layers"][0]["blend_mode"], "dissolve");
+    assert_eq!(listed["document"]["layers"][0]["dissolve_seed"], 305419896);
+    run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "blend",
+        "1",
+        "normal",
+    ]);
+    let dissolve_without_seed = run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "blend",
+        "1",
+        "dissolve",
+    ]);
+    assert_eq!(
+        dissolve_without_seed["results"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        dissolve_without_seed["results"][0]["action"],
+        "set_blend_mode"
+    );
+    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    assert_eq!(listed["document"]["layers"][0]["blend_mode"], "dissolve");
+    assert_eq!(listed["document"]["layers"][0]["dissolve_seed"], 305419896);
+    let revisions_before_seed_update = Workspace::open(&project)
+        .unwrap()
+        .history()
+        .unwrap()
+        .unwrap()
+        .revisions
+        .len();
+    let dissolve_with_new_seed = run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "blend",
+        "1",
+        "dissolve",
+        "--seed",
+        "2271560481",
+    ]);
+    assert_eq!(
+        dissolve_with_new_seed["results"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        dissolve_with_new_seed["results"][0]["action"],
+        "set_blend_mode"
+    );
+    assert_eq!(
+        dissolve_with_new_seed["results"][1]["action"],
+        "set_dissolve_seed"
+    );
+    let revisions_after_seed_update = Workspace::open(&project)
+        .unwrap()
+        .history()
+        .unwrap()
+        .unwrap()
+        .revisions
+        .len();
+    assert_eq!(
+        revisions_after_seed_update,
+        revisions_before_seed_update + 1
+    );
+    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    assert_eq!(
+        listed["document"]["layers"][0]["dissolve_seed"],
+        2271560481u64
+    );
     std::fs::remove_dir_all(directory).unwrap();
 }
 

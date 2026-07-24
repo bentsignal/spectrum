@@ -20,6 +20,10 @@ use raster_fixture::PreparedRasterFixture;
 #[path = "benchmark/temporary_font.rs"]
 mod temporary_font;
 use temporary_font::TemporaryFont;
+#[path = "benchmark/adjusted_vector.rs"]
+mod adjusted_vector;
+#[path = "benchmark/dissolve_preview.rs"]
+mod dissolve_preview;
 #[path = "benchmark/font_picker.rs"]
 mod font_picker;
 #[path = "benchmark/paint.rs"]
@@ -28,6 +32,8 @@ mod paint;
 mod path;
 #[path = "benchmark/selection.rs"]
 mod selection;
+#[path = "benchmark/selection_outline.rs"]
+mod selection_outline;
 #[path = "benchmark/text_preview_frame.rs"]
 mod text_preview_frame;
 
@@ -168,10 +174,14 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let selection_fill = selection::measure_selection_fill()?;
     let magic_wand = selection::measure_magic_wand_bound()?;
     let lasso = selection::measure_lasso_bound()?;
+    let selection_outline = selection_outline::measure()?;
     let path = path::measure()?;
     let paint = paint::measure()?;
     let text_preview_frame = text_preview_frame::measure()?;
     let font_picker = font_picker::measure();
+    let dissolve_preview = dissolve_preview::measure()?;
+    let dissolve_preview_budget =
+        dissolve_preview::budget_ms(matches!(profile, BenchmarkProfile::HostedCi));
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -571,21 +581,6 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             ..Layer::default()
         },
     ];
-    let mut adjusted_vector_sources = vector_sources.clone();
-    adjusted_vector_sources.layers[0].adjustments = Adjustments {
-        exposure: 0.25,
-        vignette: -16.0,
-        noise_reduction: 12.0,
-        sharpening: 9.0,
-        straighten: 3.0,
-        ..Default::default()
-    };
-    adjusted_vector_sources.layers[1].adjustments = Adjustments {
-        contrast: 10.0,
-        rotation: 90,
-        straighten: -2.5,
-        ..Default::default()
-    };
     let vector_region = RenderRegion {
         x: 72_000,
         y: 72_000,
@@ -593,8 +588,6 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         height: 360,
     };
     let vector_staging_budget = bounded_staging_budget(&vector_sources, 8.0, vector_region)?;
-    let adjusted_vector_staging_budget =
-        bounded_staging_budget(&adjusted_vector_sources, 8.0, vector_region)?;
     let mut vector_source_samples = Vec::new();
     for _ in 0..5 {
         let started = Instant::now();
@@ -615,21 +608,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         }
         vector_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    let mut adjusted_vector_source_samples = Vec::new();
-    for _ in 0..5 {
-        let started = Instant::now();
-        let (rendered, stats) =
-            render_document_region_scaled_with_stats(&adjusted_vector_sources, 8.0, vector_region)?;
-        if (rendered.width(), rendered.height()) != (vector_region.width, vector_region.height)
-            || stats.adjusted_staging_pixels == 0
-            || stats.max_source_staging_pixels > adjusted_vector_staging_budget
-            || stats.max_adjusted_staging_pixels > adjusted_vector_staging_budget
-            || stats.transformed_surface_pixels != 0
-        {
-            bail!("adjusted vector viewport compositor violated its allocation contract");
-        }
-        adjusted_vector_source_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
-    }
+    let mut adjusted_vector = adjusted_vector::measure(&vector_sources, vector_region)?;
     // Cold TIFF decode/publication is setup work and intentionally excluded
     // from the warm viewport samples below.
     let (cached_raster_source, cached_raster_cold_prepare) =
@@ -711,7 +690,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let (adjusted_bounded_source_median, adjusted_bounded_source_p95) =
         sample_summary(&mut adjusted_bounded_source_samples);
     let (adjusted_vector_source_median, adjusted_vector_source_p95) =
-        sample_summary(&mut adjusted_vector_source_samples);
+        sample_summary(&mut adjusted_vector.samples);
     let (cached_spot_median, cached_spot_p95) = sample_summary(&mut cached_spot_samples);
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = [
@@ -739,6 +718,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: lasso.elapsed_ms <= 500.0 && lasso.mask_pixels <= 192 * 192,
         },
         BenchmarkMetric {
+            name: "pathological_selection_contour_and_animated_frame",
+            median_ms: selection_outline.median_ms,
+            p95_ms: selection_outline.p95_ms,
+            budget_ms: 100.0,
+            pass: selection_outline.p95_ms <= 100.0,
+        },
+        BenchmarkMetric {
             name: "flat_shape_adjustment_preview",
             median_ms: shape_median,
             p95_ms: shape_p95,
@@ -758,6 +744,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: text_interaction_p95,
             budget_ms: 1.0,
             pass: text_interaction_p95 <= 1.0,
+        },
+        BenchmarkMetric {
+            name: "seeded_dissolve_direct_transform_composite",
+            median_ms: dissolve_preview.median_ms,
+            p95_ms: dissolve_preview.p95_ms,
+            budget_ms: dissolve_preview_budget,
+            pass: dissolve_preview.p95_ms <= dissolve_preview_budget,
         },
         BenchmarkMetric {
             name: "gui_long_text_cold_face_cached_preview_frame",
@@ -911,7 +904,8 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         "setup": {
             "cached_raster_cold_prepare_ms": cached_raster_cold_prepare.as_secs_f64() * 1_000.0,
             "cached_raster_samples": "warm file-backed provider reads",
-            "paint_max_source_staging_pixels": paint.max_source_staging_pixels
+            "paint_max_source_staging_pixels": paint.max_source_staging_pixels,
+            "adjusted_vector_max_shadow_alpha_tile_pixels": adjusted_vector.max_shadow_alpha_tile_pixels
         },
         "metrics": metrics
     }))
