@@ -121,9 +121,9 @@ impl PrismApp {
                 let search_width = (ui.available_width() - 50.0).max(120.0);
                 let search = ui.add_sized(
                     [search_width, CONTROL_HEIGHT],
-                    egui::TextEdit::singleline(&mut self.composition_query)
+                    text_field(&mut self.composition_query)
                         .hint_text("Jump to object…")
-                        .vertical_align(egui::Align::Center),
+                        .desired_width(search_width),
                 );
                 let _ = command_shortcut(ui, shortcuts::GlobalShortcut::JumpToObject.label());
                 search

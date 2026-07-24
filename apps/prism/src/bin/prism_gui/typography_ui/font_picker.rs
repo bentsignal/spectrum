@@ -336,11 +336,11 @@ impl PrismApp {
         typography_section_label(ui, "TYPEFACE");
         ui.horizontal(|ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut self.font_query)
+                compact_text_field(&mut self.font_query)
                     .hint_text("Search family, style, or weight")
                     .desired_width(158.0),
             );
-            if ui.small_button("Import…").clicked()
+            if compact_secondary_button(ui, "Import…").clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .add_filter("OpenType font", &["ttf", "otf"])
                     .pick_file()
