@@ -237,16 +237,17 @@ pub(super) fn resize_screen_axis(
 
     let corners = rotated_layer_corners(layer, source_geometry)?
         .map(|point| geometry.canvas_to_screen(point));
-    let (corner, first_neighbor, second_neighbor) = match handle {
-        ResizeHandle::TopLeft => (0, 1, 3),
-        ResizeHandle::TopRight => (1, 0, 2),
-        ResizeHandle::BottomRight => (2, 1, 3),
-        ResizeHandle::BottomLeft => (3, 0, 2),
+    let (corner, opposite) = match handle {
+        ResizeHandle::TopLeft => (0, 2),
+        ResizeHandle::TopRight => (1, 3),
+        ResizeHandle::BottomRight => (2, 0),
+        ResizeHandle::BottomLeft => (3, 1),
         ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight => unreachable!(),
     };
-    let first = nonzero_axis(corners[corner] - corners[first_neighbor])?;
-    let second = nonzero_axis(corners[corner] - corners[second_neighbor])?;
-    nonzero_axis(first + second)
+    // Corner resizing preserves aspect ratio by default and keeps the opposite
+    // transformed corner fixed. Its actual constrained movement therefore
+    // follows this handle-to-anchor diagonal, not the corner's edge bisector.
+    nonzero_axis(corners[corner] - corners[opposite])
 }
 
 fn nonzero_axis(axis: Vec2) -> Option<Vec2> {

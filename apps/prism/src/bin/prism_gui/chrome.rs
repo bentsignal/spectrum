@@ -674,21 +674,17 @@ fn shortcut_button_shortcut_rect(rect: Rect) -> Rect {
 }
 
 fn shortcut_action_button(ui: &mut egui::Ui, size: Vec2, label: &str, key: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let visuals = if response.is_pointer_button_down_on() {
-        &ui.style().visuals.widgets.active
-    } else if response.hovered() {
-        &ui.style().visuals.widgets.hovered
+    let shortcut = if cfg!(target_os = "macos") {
+        format!("Command-{key}")
     } else {
-        &ui.style().visuals.widgets.inactive
+        format!("Control-{key}")
     };
-    ui.painter().rect(
-        rect,
-        RADIUS,
-        visuals.bg_fill,
-        visuals.bg_stroke,
-        egui::StrokeKind::Inside,
+    let accessible_label = format!("{label}, {shortcut}");
+    let response = ui.add_sized(
+        size,
+        egui::Button::new(RichText::new(accessible_label).color(Color32::TRANSPARENT)),
     );
+    let rect = response.rect;
     ui.painter().text(
         Pos2::new(rect.left() + 10.0, rect.center().y),
         Align2::LEFT_CENTER,
@@ -934,5 +930,66 @@ mod tests {
         assert_eq!(shortcut.center().y, control.center().y);
         assert_eq!(shortcut.height(), 20.0);
         assert_eq!(control.height(), CONTROL_HEIGHT);
+    }
+
+    #[test]
+    fn shortcut_action_is_an_accessible_keyboard_button() {
+        use egui::accesskit::{Action, Role};
+
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut semantics = None;
+        let _ = context.run_ui(
+            egui::RawInput {
+                focused: true,
+                ..Default::default()
+            },
+            |ui| {
+                let response =
+                    shortcut_action_button(ui, WORKBENCH_ACTION_SIZE, "Tools & Actions", "P");
+                assert!(response.sense.senses_click());
+                assert!(response.sense.is_focusable());
+                response.request_focus();
+                semantics = context.accesskit_node_builder(response.id, |node| {
+                    (
+                        node.role(),
+                        node.label().map(str::to_owned),
+                        node.supports_action(Action::Click),
+                        node.supports_action(Action::Focus),
+                    )
+                });
+            },
+        );
+        assert_eq!(
+            semantics,
+            Some((
+                Role::Button,
+                Some(if cfg!(target_os = "macos") {
+                    "Tools & Actions, Command-P".to_owned()
+                } else {
+                    "Tools & Actions, Control-P".to_owned()
+                }),
+                true,
+                true,
+            ))
+        );
+
+        let mut input = egui::RawInput {
+            focused: true,
+            ..Default::default()
+        };
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: Some(egui::Key::Enter),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut keyboard_clicked = false;
+        let _ = context.run_ui(input, |ui| {
+            keyboard_clicked =
+                shortcut_action_button(ui, WORKBENCH_ACTION_SIZE, "Tools & Actions", "P").clicked();
+        });
+        assert!(keyboard_clicked);
     }
 }
