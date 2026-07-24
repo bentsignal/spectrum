@@ -15,6 +15,8 @@ use source::{
     SampleSource, SourceDescriptor, SourceRegion, sample_triangle_resize,
     sample_triangle_resize_alpha, source_sample_bounds,
 };
+mod shadow_tile;
+use shadow_tile::ShadowAlphaTile;
 
 #[derive(Debug)]
 pub(crate) struct SourceStagingBudgetExceeded;
@@ -173,6 +175,7 @@ pub(crate) fn composite_bounded_source_region(
             ShadowAlphaTile::bounded(&source, &geometry, base_layer, intersection, shadow);
         if let Some(tile) = &alpha_tile {
             let pixels = tile.pixel_count();
+            stats.shadow_source_samples = stats.shadow_source_samples.saturating_add(pixels);
             stats.shadow_alpha_tile_pixels = stats.shadow_alpha_tile_pixels.saturating_add(pixels);
             stats.shadow_alpha_tile_bytes = stats.shadow_alpha_tile_bytes.saturating_add(pixels);
             stats.max_shadow_alpha_tile_pixels = stats.max_shadow_alpha_tile_pixels.max(pixels);
@@ -198,6 +201,16 @@ pub(crate) fn composite_bounded_source_region(
                         } else {
                             crate::effects::DROP_SHADOW_KERNEL_TAPS
                         });
+                if alpha_tile.is_none() {
+                    stats.shadow_source_samples =
+                        stats
+                            .shadow_source_samples
+                            .saturating_add(if shadow.blur_radius < 0.5 {
+                                1
+                            } else {
+                                crate::effects::DROP_SHADOW_KERNEL_TAPS
+                            });
+                }
                 composite_style_pixel(
                     canvas,
                     colored_shadow_pixel(shadow, alpha),
@@ -246,101 +259,45 @@ pub(crate) fn composite_bounded_source_region(
     Ok(true)
 }
 
-/// Alpha samples needed by one visible shadow region, never the full layer.
-///
-/// The fixed shadow kernel revisits most coordinates across neighboring output
-/// pixels. Materializing this one-byte bounded tile preserves the exact alpha
-/// oracle while evaluating procedural geometry and masks only once per unique
-/// coordinate. Oversized tiles fall back to direct sampling.
-struct ShadowAlphaTile {
+#[derive(Clone, Copy)]
+struct ShadowAlphaBounds {
     left: i64,
     top: i64,
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
+    right: i64,
+    bottom: i64,
 }
 
-impl ShadowAlphaTile {
-    fn pixel_count(&self) -> u64 {
-        u64::from(self.width) * u64::from(self.height)
+impl ShadowAlphaBounds {
+    fn pixel_count(self) -> u64 {
+        (self.right - self.left) as u64 * (self.bottom - self.top) as u64
     }
+}
 
-    fn bounded(
-        source: &SampleSource<'_>,
-        geometry: &SamplingGeometry,
-        layer: &Layer,
-        intersection: CanvasIntersection,
-        shadow: crate::DropShadow,
-    ) -> Option<Self> {
-        if !source.supports_unstaged_alpha_tile() {
-            return None;
-        }
-        let center_left = intersection.left - geometry.origin_x - shadow.offset_x.round() as i64;
-        let center_top = intersection.top - geometry.origin_y - shadow.offset_y.round() as i64;
-        let center_right = intersection.right - geometry.origin_x - shadow.offset_x.round() as i64;
-        let center_bottom =
-            intersection.bottom - geometry.origin_y - shadow.offset_y.round() as i64;
-        let (offset_left, offset_top, offset_right, offset_bottom) =
-            shadow_kernel_bounds(shadow.blur_radius);
-        let left = (center_left + offset_left).max(0);
-        let top = (center_top + offset_top).max(0);
-        let right = (center_right + offset_right)
-            .min(i64::from(geometry.output_width))
-            .max(left);
-        let bottom = (center_bottom + offset_bottom)
-            .min(i64::from(geometry.output_height))
-            .max(top);
-        let width = u32::try_from(right - left).ok()?;
-        let height = u32::try_from(bottom - top).ok()?;
-        let pixel_count = u64::from(width) * u64::from(height);
-        if pixel_count > MAX_SOURCE_STAGING_PIXELS {
-            return None;
-        }
-        let mut pixels = Vec::new();
-        pixels.try_reserve_exact(pixel_count as usize).ok()?;
-        for y in top..bottom {
-            for x in left..right {
-                pixels.push(sample_output_alpha(source, geometry, layer, x, y));
-            }
-        }
-        Some(Self {
-            left,
-            top,
-            width,
-            height,
-            pixels,
-        })
-    }
-
-    #[inline]
-    fn alpha(&self, x: i64, y: i64) -> u8 {
-        let local_x = x - self.left;
-        let local_y = y - self.top;
-        if local_x < 0
-            || local_y < 0
-            || local_x >= i64::from(self.width)
-            || local_y >= i64::from(self.height)
-        {
-            return 0;
-        }
-        self.pixels[local_y as usize * self.width as usize + local_x as usize]
-    }
-
-    #[inline]
-    fn filtered_alpha(&self, center_x: i64, center_y: i64, radius: f32) -> u8 {
-        if radius < 0.5 {
-            return self.alpha(center_x, center_y);
-        }
-        let mut weighted_alpha = 0_u32;
-        let mut total_weight = 0_u32;
-        for (unit_x, unit_y, weight) in DROP_SHADOW_KERNEL {
-            let x = center_x + (unit_x * radius).round() as i64;
-            let y = center_y + (unit_y * radius).round() as i64;
-            weighted_alpha += u32::from(self.alpha(x, y)) * weight;
-            total_weight += weight;
-        }
-        (weighted_alpha / total_weight) as u8
-    }
+fn shadow_alpha_bounds(
+    geometry: &SamplingGeometry,
+    intersection: CanvasIntersection,
+    shadow: crate::DropShadow,
+) -> Option<ShadowAlphaBounds> {
+    let center_left = intersection.left - geometry.origin_x - shadow.offset_x.round() as i64;
+    let center_top = intersection.top - geometry.origin_y - shadow.offset_y.round() as i64;
+    let center_right = intersection.right - geometry.origin_x - shadow.offset_x.round() as i64;
+    let center_bottom = intersection.bottom - geometry.origin_y - shadow.offset_y.round() as i64;
+    let (offset_left, offset_top, offset_right, offset_bottom) =
+        shadow_kernel_bounds(shadow.blur_radius);
+    let left = (center_left + offset_left).max(0);
+    let top = (center_top + offset_top).max(0);
+    let right = (center_right + offset_right)
+        .min(i64::from(geometry.output_width))
+        .max(left);
+    let bottom = (center_bottom + offset_bottom)
+        .min(i64::from(geometry.output_height))
+        .max(top);
+    (right > left && bottom > top).then_some(ShadowAlphaBounds {
+        left,
+        top,
+        right,
+        bottom,
+    })
 }
 
 fn shadow_kernel_bounds(radius: f32) -> (i64, i64, i64, i64) {
@@ -612,6 +569,17 @@ fn required_shadow_source_region(
     intersection: CanvasIntersection,
     shadow: crate::DropShadow,
 ) -> Option<SourceRegion> {
+    if let Some(bounds) = shadow_alpha_bounds(geometry, intersection, shadow)
+        && bounds.pixel_count() <= MAX_SOURCE_STAGING_PIXELS
+    {
+        let tile_intersection = CanvasIntersection {
+            left: geometry.origin_x + bounds.left,
+            top: geometry.origin_y + bounds.top,
+            right: geometry.origin_x + bounds.right,
+            bottom: geometry.origin_y + bounds.bottom,
+        };
+        return required_source_region(geometry, tile_intersection);
+    }
     let mut bounds: Option<(u32, u32, u32, u32)> = None;
     for canvas_y in intersection.top..intersection.bottom {
         for canvas_x in intersection.left..intersection.right {

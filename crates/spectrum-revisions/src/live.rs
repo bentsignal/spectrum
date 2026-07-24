@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use fs2::FileExt;
@@ -13,19 +14,38 @@ use crate::{
     metadata::StorageStateId, storage_io::sidecar_path,
 };
 
+mod capabilities;
+#[cfg(target_os = "linux")]
+mod fault;
 #[cfg(target_os = "linux")]
 mod linux_io;
+mod metrics;
+#[cfg(all(test, target_os = "linux"))]
+mod mutation_tests;
+mod no_replace;
+mod recovery;
+#[cfg(all(test, target_os = "linux"))]
+mod recovery_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod tail_tests;
 #[cfg(test)]
 mod tests;
+use capabilities::PublishCapabilities;
 #[cfg(target_os = "linux")]
-use linux_io::write_ready_marker;
+use fault::*;
 #[cfg(target_os = "linux")]
 use linux_io::{
-    ExchangeIntent, PrivateDirectory, PublishBase, catch_up_after_bulk, open_unnamed,
-    prepare_reusable_slot, publish_unnamed, recover_exchange, recover_full_copy,
-    remove_private_file, seed_incremental_mirror, update_candidate_slot, validate_publish_base,
-    write_full_copy_intent, write_publication_marker,
+    ExchangeIntent, PrivateDirectory, PublishBase, WorkingRecoveryInstall, catch_up_after_bulk,
+    exchange_proof_matches, open_unnamed, prepare_reusable_slot, publication_marker_bytes_match,
+    publish_unnamed, publish_unnamed_no_replace, read_publication_marker,
+    read_working_recovery_marker, recover_exchange, recover_full_copy, remove_private_file,
+    seed_incremental_mirror, update_candidate_slot, validate_publish_base,
+    working_recovery_marker_bytes_match, working_recovery_poison_present, write_full_copy_intent,
+    write_publication_marker, write_working_recovery_marker,
 };
+use metrics::elapsed_us;
+pub use metrics::{PublishStats, PublishStrategy, PublishTimings};
+use no_replace::rename_no_replace;
 
 const STORE_FILE: &str = "live.sqlite";
 const LOCK_FILE: &str = "publish.lock";
@@ -40,72 +60,15 @@ const PUBLISH_CURRENT_FILE: &str = "published-current.ready";
 #[cfg(target_os = "linux")]
 const PUBLISH_FULL_COPY_INTENT_FILE: &str = "published-copy.intent";
 #[cfg(target_os = "linux")]
+const PUBLISH_WORKING_RECOVERY_FILE: &str = "working-recovery.ready";
+#[cfg(target_os = "linux")]
+const PUBLISH_WORKING_POISON_FILE: &str = "working-recovery.poison";
+#[cfg(target_os = "linux")]
 const LEGACY_PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
 #[cfg(target_os = "linux")]
 const WRITE_BLOCK_BYTES: usize = 4 * 1024;
 #[cfg(target_os = "linux")]
 const BULK_CHANGE_CATCH_UP_BYTES: u64 = 1024 * 1024;
-
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PublishFault {
-    SlotSealed,
-    CandidateSynced,
-    IntentCreated,
-    PreExchangeValidated,
-    Exchanged,
-    SlotWritable,
-    MarkerCreated,
-    IntentRemoved,
-    LinkedSlotUnlinked,
-    FullCopyPublished,
-    SeedMirrorCreated,
-}
-
-#[cfg(all(test, target_os = "linux"))]
-#[derive(Clone, Copy)]
-enum CrashMode {
-    Exit,
-    Abort,
-    Kill,
-}
-
-#[cfg(all(test, target_os = "linux"))]
-thread_local! {
-    static PUBLISH_FAULT: Cell<Option<PublishFault>> = const { Cell::new(None) };
-    static PUBLISH_CRASH_MODE: Cell<Option<CrashMode>> = const { Cell::new(None) };
-    static PUBLISH_HARDLINK_ALIAS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum PublishStrategy {
-    #[default]
-    None,
-    FullCopy,
-    PageDiffExchange,
-}
-
-impl PublishStrategy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::FullCopy => "full-copy",
-            Self::PageDiffExchange => "page-diff-exchange",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PublishStats {
-    pub incremental: bool,
-    pub reflink_unavailable: bool,
-    pub strategy: PublishStrategy,
-    pub scanned_bytes: u64,
-    /// Bytes whose contents differ from the previous checkpoint.
-    pub changed_bytes: u64,
-    /// File-data bytes physically submitted by publication. Reflink-only publication writes zero.
-    pub written_bytes: u64,
-}
 
 /// A live SQLite working store whose user-facing project is always a single checkpointed file.
 ///
@@ -120,7 +83,10 @@ pub struct LiveRevisionStore {
     published_state_id: Cell<Option<StorageStateId>>,
     temps_cleaned: Cell<bool>,
     pending_publish_error: RefCell<Option<String>>,
+    publication_poisoned: Cell<bool>,
+    initial_publish_pending: Cell<bool>,
     last_publish_stats: Cell<PublishStats>,
+    publish_capabilities: PublishCapabilities,
 }
 
 impl LiveRevisionStore {
@@ -130,7 +96,7 @@ impl LiveRevisionStore {
         project: NewProject,
     ) -> RevisionResult<(Self, ProjectInfo)> {
         let canonical_path = absolute_path(canonical_path)?;
-        if canonical_path.exists() && canonical_path.metadata()?.len() > 0 {
+        if canonical_path.exists() {
             return Err(RevisionError::Invalid(format!(
                 "refusing to replace existing project {}",
                 canonical_path.display()
@@ -162,6 +128,9 @@ impl LiveRevisionStore {
         }
         fs::rename(&staging, &project_directory)?;
         let working_path = project_directory.join(STORE_FILE);
+        #[cfg(target_os = "linux")]
+        let store = RevisionStore::open_publication_managed(&working_path)?;
+        #[cfg(not(target_os = "linux"))]
         let store = RevisionStore::open(&working_path)?;
         let live = Self {
             store,
@@ -172,123 +141,13 @@ impl LiveRevisionStore {
             published_state_id: Cell::new(None),
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
+            publication_poisoned: Cell::new(false),
+            initial_publish_pending: Cell::new(true),
             last_publish_stats: Cell::new(PublishStats::default()),
+            publish_capabilities: PublishCapabilities::default(),
         };
         live.publish()?;
         Ok((live, info))
-    }
-
-    pub fn open(canonical_path: &Path, cache_root: &Path) -> RevisionResult<Self> {
-        let canonical_path = absolute_path(canonical_path)?;
-        let canonical = if !sidecar_path(&canonical_path, "-wal").exists()
-            && !sidecar_path(&canonical_path, "-shm").exists()
-        {
-            RevisionStore::inspect(&canonical_path).ok()
-        } else {
-            None
-        };
-        let canonical = if let Some(canonical) = canonical {
-            canonical
-        } else {
-            #[cfg(target_os = "linux")]
-            {
-                let _canonical_lock = lock_directory(
-                    canonical_path
-                        .parent()
-                        .filter(|parent| !parent.as_os_str().is_empty())
-                        .unwrap_or_else(|| Path::new(".")),
-                )?;
-                prepare_canonical_copy(&canonical_path, cache_root)?
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                recover_legacy_sidecars(&canonical_path)?;
-                // Container migrations happen against the portable file first. Incremented
-                // storage generation then invalidates an older live cache before it can diverge.
-                let canonical_store = RevisionStore::open(&canonical_path)?;
-                canonical_store.checkpoint()?;
-                drop(canonical_store);
-                RevisionStore::inspect(&canonical_path)
-            }?
-        };
-        create_private_dir_all(cache_root)?;
-        let project_directory = cache_root.join(canonical.info.project_id.to_string());
-        create_private_dir_all(&project_directory)?;
-        let working_path = project_directory.join(STORE_FILE);
-        let lock_path = project_directory.join(LOCK_FILE);
-        #[cfg(target_os = "linux")]
-        let lock = lock_private(&lock_path)?;
-        #[cfg(not(target_os = "linux"))]
-        let lock = lock(&lock_path)?;
-        if working_path.exists() {
-            let working_store = RevisionStore::open(&working_path)?;
-            working_store.checkpoint()?;
-            let working_info = working_store.project_info()?;
-            let working_generation = working_store.generation()?;
-            let working_state_id = working_store.state_id()?;
-            drop(working_store);
-            if working_info.project_id != canonical.info.project_id {
-                return Err(RevisionError::Corrupt(
-                    "live cache belongs to a different project".into(),
-                ));
-            }
-            let canonical_is_different_peer = canonical.generation == working_generation
-                && canonical.state_id.is_some()
-                && working_state_id.is_some()
-                && canonical.state_id != working_state_id;
-            if canonical.generation > working_generation || canonical_is_different_peer {
-                if sidecar_path(&working_path, "-shm").exists() {
-                    return Err(RevisionError::Invalid(
-                        "project changed elsewhere while its live cache is in use".into(),
-                    ));
-                }
-                remove_sidecars(&working_path)?;
-                replace_with_copy(&canonical_path, &working_path)?;
-            }
-        } else {
-            replace_with_copy(&canonical_path, &working_path)?;
-        }
-        drop(lock);
-
-        let store = RevisionStore::open(&working_path)?;
-        let live = Self {
-            store,
-            canonical_path,
-            working_path,
-            lock_path,
-            published_generation: Cell::new(canonical.generation),
-            published_state_id: Cell::new(canonical.state_id),
-            temps_cleaned: Cell::new(false),
-            pending_publish_error: RefCell::new(None),
-            last_publish_stats: Cell::new(PublishStats::default()),
-        };
-        #[cfg(target_os = "linux")]
-        {
-            let _cache_lock = lock_private(&live.lock_path)?;
-            let _canonical_lock = lock_directory(
-                live.canonical_path
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .unwrap_or_else(|| Path::new(".")),
-            )?;
-            let cache_directory = live
-                .lock_path
-                .parent()
-                .expect("publish lock always has a cache directory");
-            recover_exchange(
-                &PrivateDirectory::open(cache_directory)?,
-                &live.canonical_path,
-                cache_directory,
-            )?;
-            recover_full_copy(
-                &PrivateDirectory::open(cache_directory)?,
-                &live.canonical_path,
-            )?;
-        }
-        if live.store.generation()? > canonical.generation {
-            live.publish()?;
-        }
-        Ok(live)
     }
 
     pub fn store(&self) -> &RevisionStore {
@@ -299,23 +158,49 @@ impl LiveRevisionStore {
         &mut self,
         mutation: impl FnOnce(&mut RevisionStore) -> RevisionResult<T>,
     ) -> RevisionResult<T> {
+        self.require_publishable()?;
+        #[cfg(not(target_os = "linux"))]
+        if self.pending_publish_error.borrow().is_some() {
+            self.publish()?;
+        }
         #[cfg(target_os = "linux")]
         let _cache_lock = lock_private(&self.lock_path)?;
+        #[cfg(target_os = "linux")]
+        self.publish_recovered_working_locked()?;
+        let core_started = Instant::now();
         let result = mutation(&mut self.store)?;
+        let core_write_us = elapsed_us(core_started.elapsed());
         #[cfg(target_os = "linux")]
         let published = self.publish_current_locked();
         #[cfg(not(target_os = "linux"))]
         let published = self.publish_current();
         match published {
-            Ok(()) => self.pending_publish_error.replace(None),
-            Err(error) => self.pending_publish_error.replace(Some(error.to_string())),
+            Ok(()) => {
+                let mut stats = self.last_publish_stats.get();
+                stats.timings.core_write_us = core_write_us;
+                self.last_publish_stats.set(stats);
+                self.pending_publish_error.replace(None)
+            }
+            Err(error) => match self.preserved_publish_failure(&error) {
+                Ok(message) => self.pending_publish_error.replace(Some(message)),
+                Err(recovery_error) => {
+                    let message =
+                        format!("{error}; could not preserve failed publication: {recovery_error}");
+                    self.pending_publish_error.replace(Some(message.clone()));
+                    self.publication_poisoned.set(true);
+                    return Err(RevisionError::Invalid(message));
+                }
+            },
         };
         Ok(result)
     }
 
     pub fn publish(&self) -> RevisionResult<()> {
+        self.require_publishable()?;
         #[cfg(target_os = "linux")]
         let _cache_lock = lock_private(&self.lock_path)?;
+        #[cfg(target_os = "linux")]
+        self.publish_recovered_working_locked()?;
         self.store.checkpoint()?;
         #[cfg(target_os = "linux")]
         let published = self.publish_current_locked();
@@ -327,7 +212,17 @@ impl LiveRevisionStore {
                 Ok(())
             }
             Err(error) => {
-                self.pending_publish_error.replace(Some(error.to_string()));
+                match self.preserved_publish_failure(&error) {
+                    Ok(message) => self.pending_publish_error.replace(Some(message)),
+                    Err(recovery_error) => {
+                        let message = format!(
+                            "{error}; could not preserve failed publication: {recovery_error}"
+                        );
+                        self.pending_publish_error.replace(Some(message.clone()));
+                        self.publication_poisoned.set(true);
+                        return Err(RevisionError::Invalid(message));
+                    }
+                };
                 Err(error)
             }
         }
@@ -354,6 +249,16 @@ impl LiveRevisionStore {
         let working_generation = self.store.generation()?;
         if self.canonical_path.is_file() && self.published_generation.get() >= working_generation {
             self.last_publish_stats.set(PublishStats::default());
+            #[cfg(target_os = "linux")]
+            remove_private_file(
+                &PrivateDirectory::open(
+                    self.lock_path
+                        .parent()
+                        .expect("publish lock always has a cache directory"),
+                )?,
+                PUBLISH_WORKING_RECOVERY_FILE,
+            )?;
+            self.initial_publish_pending.set(false);
             return Ok(());
         }
         let stats = publish_checkpoint(
@@ -362,13 +267,25 @@ impl LiveRevisionStore {
             self.lock_path
                 .parent()
                 .expect("publish lock always has a cache directory"),
+            &self.publish_capabilities,
             self.published_generation.get(),
             self.published_state_id.get(),
+            self.initial_publish_pending.get(),
         )?;
         self.last_publish_stats.set(stats);
         self.published_generation.set(working_generation);
         self.published_state_id
             .set(RevisionStore::inspect(&self.working_path)?.state_id);
+        #[cfg(target_os = "linux")]
+        remove_private_file(
+            &PrivateDirectory::open(
+                self.lock_path
+                    .parent()
+                    .expect("publish lock always has a cache directory"),
+            )?,
+            PUBLISH_WORKING_RECOVERY_FILE,
+        )?;
+        self.initial_publish_pending.set(false);
         Ok(())
     }
 
@@ -386,6 +303,18 @@ impl LiveRevisionStore {
 
     pub fn last_publish_stats(&self) -> PublishStats {
         self.last_publish_stats.get()
+    }
+
+    fn require_publishable(&self) -> RevisionResult<()> {
+        if self.publication_poisoned.get() {
+            return Err(RevisionError::Invalid(
+                self.pending_publish_error
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| "live publication state is poisoned".into()),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -444,7 +373,7 @@ fn prepare_canonical_copy(
     let staging = cache_root.join(format!(".canonical-prepare-{}.sqlite", SessionId::new()));
     let prepared = (|| {
         RevisionStore::snapshot_for_migration(canonical_path, &staging)?;
-        atomic_publish(&staging, canonical_path)?;
+        atomic_publish(&staging, canonical_path, false)?;
         sync_parent(canonical_path)?;
         RevisionStore::inspect(canonical_path)
     })();
@@ -482,7 +411,9 @@ fn lock_private(path: &Path) -> RevisionResult<File> {
     let parent = path
         .parent()
         .ok_or_else(|| RevisionError::Invalid("publish lock has no private directory".into()))?;
-    let directory = PrivateDirectory::open(parent)?;
+    // Opening the lock descriptor must not repair the mutation namespace: another
+    // publisher may hold this same lock with its candidate sealed inside the gate.
+    let directory = PrivateDirectory::open_unrecovered(parent)?;
     let lock = match directory.create_file(LOCK_FILE) {
         Ok(lock) => lock,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -491,10 +422,17 @@ fn lock_private(path: &Path) -> RevisionResult<File> {
         Err(error) => return Err(error.into()),
     };
     let identity = validated_identity(&lock, true)?;
-    lock.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    maybe_private_lock_hardlink(path)?;
+    use std::os::unix::fs::PermissionsExt as _;
+    if lock.metadata()?.permissions().mode() & 0o777 != 0o600 {
+        return Err(RevisionError::Invalid(
+            "publish lock must have private owner-only permissions".into(),
+        ));
+    }
     directory.validate(LOCK_FILE, identity, true)?;
     lock.lock_exclusive()?;
     directory.validate(LOCK_FILE, identity, true)?;
+    directory.recover_mutation()?;
     Ok(lock)
 }
 
@@ -522,7 +460,11 @@ fn replace_with_copy(source: &Path, destination: &Path) -> RevisionResult<()> {
     Ok(())
 }
 
-fn atomic_publish(source: &Path, destination: &Path) -> RevisionResult<()> {
+fn atomic_publish(
+    source: &Path,
+    destination: &Path,
+    initial_no_replace: bool,
+) -> RevisionResult<()> {
     if let Some(parent) = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -544,15 +486,23 @@ fn atomic_publish(source: &Path, destination: &Path) -> RevisionResult<()> {
                 .map(|metadata| metadata.permissions())?;
             candidate.set_permissions(permissions)?;
             candidate.sync_all()?;
-            publish_unnamed(candidate, destination)?;
+            if initial_no_replace {
+                publish_unnamed_no_replace(candidate, destination)?;
+            } else {
+                publish_unnamed(candidate, destination)?;
+            }
             return Ok(());
         }
     }
 
-    atomic_publish_named(source, destination)
+    atomic_publish_named(source, destination, initial_no_replace)
 }
 
-fn atomic_publish_named(source: &Path, destination: &Path) -> RevisionResult<()> {
+fn atomic_publish_named(
+    source: &Path,
+    destination: &Path,
+    initial_no_replace: bool,
+) -> RevisionResult<()> {
     let temporary = temporary_path(destination);
     let permissions = destination
         .metadata()
@@ -563,7 +513,11 @@ fn atomic_publish_named(source: &Path, destination: &Path) -> RevisionResult<()>
             fs::set_permissions(&temporary, permissions)?;
         }
         File::open(&temporary)?.sync_all()?;
-        fs::rename(&temporary, destination)
+        if initial_no_replace {
+            rename_no_replace(&temporary, destination)
+        } else {
+            fs::rename(&temporary, destination)
+        }
     }) {
         let _ = fs::remove_file(&temporary);
         return Err(error.into());
@@ -575,11 +529,14 @@ fn publish_checkpoint(
     source: &Path,
     destination: &Path,
     _cache_directory: &Path,
+    _publish_capabilities: &PublishCapabilities,
     _expected_generation: u64,
     _expected_state_id: Option<StorageStateId>,
+    initial_publish: bool,
 ) -> RevisionResult<PublishStats> {
     #[cfg(target_os = "linux")]
     {
+        let preparation_started = Instant::now();
         let source_inspection = RevisionStore::inspect(source)?;
         let directory = PrivateDirectory::open(_cache_directory)?;
         recover_exchange(&directory, destination, _cache_directory)?;
@@ -602,15 +559,18 @@ fn publish_checkpoint(
             )?;
             return Ok(PublishStats::default());
         }
+        let preparation_us = elapsed_us(preparation_started.elapsed());
         let (incremental, mut reflink_unavailable) = incremental_publish(
             source,
             destination,
             _cache_directory,
+            _publish_capabilities,
             &base,
             source_inspection.generation,
             source_inspection.state_id,
         )?;
-        if let Some(stats) = incremental {
+        if let Some(mut stats) = incremental {
+            stats.timings.preparation_us = preparation_us;
             return Ok(stats);
         }
         reflink_unavailable |= open_unnamed(_cache_directory).is_err();
@@ -621,7 +581,10 @@ fn publish_checkpoint(
             source_inspection.generation,
             source_inspection.state_id,
         )?;
-        atomic_publish(source, destination)?;
+        if initial_publish {
+            maybe_initial_publish_race(destination)?;
+        }
+        atomic_publish(source, destination, initial_publish)?;
         sync_parent(destination)?;
         maybe_publish_fault(PublishFault::FullCopyPublished)?;
         write_publication_marker(
@@ -644,11 +607,15 @@ fn publish_checkpoint(
             scanned_bytes: written_bytes,
             changed_bytes: written_bytes,
             written_bytes,
+            timings: PublishTimings {
+                preparation_us,
+                ..PublishTimings::default()
+            },
         })
     }
 
     #[cfg(not(target_os = "linux"))]
-    atomic_publish(source, destination)?;
+    atomic_publish(source, destination, initial_publish)?;
     #[cfg(not(target_os = "linux"))]
     let written_bytes = source.metadata()?.len();
     #[cfg(not(target_os = "linux"))]
@@ -659,6 +626,7 @@ fn publish_checkpoint(
         scanned_bytes: written_bytes,
         changed_bytes: written_bytes,
         written_bytes,
+        timings: PublishTimings::default(),
     })
 }
 
@@ -674,10 +642,12 @@ fn incremental_publish(
     source: &Path,
     destination: &Path,
     cache_directory: &Path,
+    publish_capabilities: &PublishCapabilities,
     base: &PublishBase,
     source_generation: u64,
     source_state_id: Option<StorageStateId>,
 ) -> RevisionResult<(Option<PublishStats>, bool)> {
+    let candidate_started = Instant::now();
     let (Some(_), Some(canonical_identity), Some(canonical_permissions)) = (
         base.canonical.as_ref(),
         base.identity,
@@ -701,9 +671,13 @@ fn incremental_publish(
     if destination.metadata()?.dev() != directory.device()? {
         return Ok((None, false));
     }
-    if !directory.exchange_supported()? {
+    let exchange_probe_started = Instant::now();
+    let exchange_supported =
+        publish_capabilities.exchange_supported(|| directory.exchange_supported())?;
+    if !exchange_supported {
         return Ok((None, false));
     }
+    let exchange_probe_us = elapsed_us(exchange_probe_started.elapsed());
     let mirror_file = match directory.open_file(PUBLISH_MIRROR_FILE, true) {
         Ok(file) => file,
         Err(_) => return Ok((None, false)),
@@ -713,15 +687,6 @@ fn incremental_publish(
         return Ok((None, false));
     }
     remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
-    let mut stats = update_candidate_slot(
-        &directory,
-        source,
-        &mirror_file,
-        mirror_identity,
-        canonical_permissions,
-    )?;
-    maybe_publish_fault(PublishFault::CandidateSynced)?;
-
     let intent = ExchangeIntent {
         canonical_identity,
         candidate_identity: mirror_identity,
@@ -730,11 +695,28 @@ fn incremental_publish(
         target_generation: source_generation,
         target_state_id: source_state_id,
     };
-    directory.write_marker(PUBLISH_EXCHANGE_INTENT_FILE, &intent.encode())?;
+    let Some(mut stats) = update_candidate_slot(
+        &directory,
+        source,
+        &mirror_file,
+        mirror_identity,
+        canonical_permissions,
+        intent,
+    )?
+    else {
+        return Ok((None, false));
+    };
+    stats.timings.exchange_probe_us = exchange_probe_us;
+    stats.timings.candidate_us = elapsed_us(candidate_started.elapsed());
+    maybe_publish_fault(PublishFault::CandidateSynced)?;
+
+    let intent_started = Instant::now();
     maybe_publish_fault(PublishFault::IntentCreated)?;
     directory.validate(PUBLISH_MIRROR_FILE, mirror_identity, true)?;
     validate_named_identity(destination, canonical_identity, false)?;
+    stats.timings.intent_us = elapsed_us(intent_started.elapsed());
     maybe_publish_fault(PublishFault::PreExchangeValidated)?;
+    let exchange_started = Instant::now();
     let old_slot_private = match directory.exchange(
         PUBLISH_MIRROR_FILE,
         mirror_identity,
@@ -742,20 +724,18 @@ fn incremental_publish(
         canonical_identity,
     )? {
         linux_io::ExchangeOutcome::CanonicalLinked => {
-            remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
             return Ok((None, false));
         }
         linux_io::ExchangeOutcome::Exchanged { old_slot_private } => old_slot_private,
     };
+    stats.timings.exchange_us = elapsed_us(exchange_started.elapsed());
     maybe_publish_fault(PublishFault::Exchanged)?;
-    write_publication_marker(&directory, source_generation, source_state_id)?;
-
     if !old_slot_private {
+        let cleanup_started = Instant::now();
         remove_private_file(&directory, PUBLISH_MIRROR_FILE)?;
         maybe_publish_fault(PublishFault::LinkedSlotUnlinked)?;
         remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
-        remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
-        directory.sync()?;
+        stats.timings.intent_cleanup_us = elapsed_us(cleanup_started.elapsed());
         stats.incremental = true;
         stats.strategy = PublishStrategy::PageDiffExchange;
         return Ok((Some(stats), false));
@@ -765,19 +745,21 @@ fn incremental_publish(
         .canonical
         .as_ref()
         .expect("incremental publication requires a canonical descriptor");
+    let slot_started = Instant::now();
     prepare_reusable_slot(
         &directory,
         PUBLISH_MIRROR_FILE,
         old_canonical,
         canonical_identity,
     )?;
+    stats.timings.slot_prepare_us = elapsed_us(slot_started.elapsed());
     maybe_publish_fault(PublishFault::SlotWritable)?;
-    write_ready_marker(&directory, base.generation, base.state_id)?;
     maybe_publish_fault(PublishFault::MarkerCreated)?;
-    remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
-    directory.sync()?;
+    let cleanup_started = Instant::now();
+    stats.timings.intent_cleanup_us = elapsed_us(cleanup_started.elapsed());
     maybe_publish_fault(PublishFault::IntentRemoved)?;
 
+    let catch_up_started = Instant::now();
     stats = catch_up_after_bulk(
         &directory,
         source,
@@ -785,6 +767,7 @@ fn incremental_publish(
         source_generation,
         source_state_id,
     )?;
+    stats.timings.catch_up_us = elapsed_us(catch_up_started.elapsed());
 
     stats.incremental = true;
     stats.strategy = PublishStrategy::PageDiffExchange;
@@ -853,41 +836,6 @@ fn validate_named_identity(
         ));
     }
     Ok(())
-}
-
-#[cfg(all(test, target_os = "linux"))]
-fn maybe_publish_fault(point: PublishFault) -> RevisionResult<()> {
-    if PUBLISH_FAULT.get() == Some(point) {
-        if let Some(mode) = PUBLISH_CRASH_MODE.get() {
-            match mode {
-                CrashMode::Exit => unsafe { libc::_exit(86) },
-                CrashMode::Abort => std::process::abort(),
-                CrashMode::Kill => unsafe {
-                    libc::raise(libc::SIGKILL);
-                    libc::_exit(87);
-                },
-            }
-        }
-        return Err(RevisionError::Invalid(format!(
-            "injected publication fault at {point:?}"
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(all(not(test), target_os = "linux"))]
-fn maybe_publish_fault(_point: PublishFault) -> RevisionResult<()> {
-    Ok(())
-}
-
-#[cfg(all(test, target_os = "linux"))]
-fn maybe_seed_fault() -> RevisionResult<()> {
-    maybe_publish_fault(PublishFault::SeedMirrorCreated)
-}
-
-#[cfg(all(not(test), target_os = "linux"))]
-fn maybe_seed_fault() -> RevisionResult<()> {
-    maybe_publish_fault(PublishFault::SeedMirrorCreated)
 }
 
 #[cfg(target_os = "linux")]

@@ -1,5 +1,5 @@
 use super::*;
-use spectrum_revisions::{Actor, ActorKind};
+use spectrum_revisions::{Actor, ActorKind, PublishTimings};
 
 pub(super) fn benchmark(
     strict: bool,
@@ -71,6 +71,7 @@ pub(super) fn benchmark(
         let mut publication_bytes = Vec::with_capacity(COMMAND_SAMPLES);
         let mut publication_changed_bytes = Vec::with_capacity(COMMAND_SAMPLES);
         let mut publication_strategies = Vec::with_capacity(COMMAND_SAMPLES);
+        let mut publication_timings = Vec::with_capacity(COMMAND_SAMPLES);
         let mut incremental_publications = 0_usize;
         let mut reflink_unavailable_samples = 0_usize;
         let mut full_copy_publications = 0_usize;
@@ -98,6 +99,7 @@ pub(super) fn benchmark(
                 publication_bytes.push(stats.written_bytes);
                 publication_changed_bytes.push(stats.changed_bytes);
                 publication_strategies.push(stats.strategy.as_str());
+                publication_timings.push(stats.timings);
             }
             command_samples.push(started.elapsed());
             workspace = invocation;
@@ -186,6 +188,24 @@ pub(super) fn benchmark(
                 && p95_written_bytes <= MAX_INCREMENTAL_P95_BYTES
                 && p95_written_bytes.saturating_mul(100)
                     <= project_bytes.saturating_mul(MAX_INCREMENTAL_PROJECT_PERCENT));
+        let publication_phase_samples: Vec<_> = publication_timings
+            .iter()
+            .map(|timings| {
+                json!({
+                    "core_write": timings.core_write_us,
+                    "preparation": timings.preparation_us,
+                    "exchange_probe": timings.exchange_probe_us,
+                    "candidate": timings.candidate_us,
+                    "intent": timings.intent_us,
+                    "exchange": timings.exchange_us,
+                    "current_marker": timings.current_marker_us,
+                    "slot_prepare": timings.slot_prepare_us,
+                    "ready_marker": timings.ready_marker_us,
+                    "intent_cleanup": timings.intent_cleanup_us,
+                    "catch_up": timings.catch_up_us,
+                })
+            })
+            .collect();
         command["publication"] = json!({
             "incremental_samples": incremental_publications,
             "required_incremental_samples": COMMAND_SAMPLES,
@@ -203,6 +223,20 @@ pub(super) fn benchmark(
             "written_bytes_samples": publication_bytes,
             "p95_changed_bytes": percentile_u64(&publication_changed_bytes, 0.95),
             "changed_bytes_samples": publication_changed_bytes,
+            "phase_samples_us": publication_phase_samples,
+            "phase_distributions_ms": {
+                "core_write": publish_timing_distribution(&publication_timings, |value| value.core_write_us),
+                "preparation": publish_timing_distribution(&publication_timings, |value| value.preparation_us),
+                "exchange_probe": publish_timing_distribution(&publication_timings, |value| value.exchange_probe_us),
+                "candidate": publish_timing_distribution(&publication_timings, |value| value.candidate_us),
+                "intent": publish_timing_distribution(&publication_timings, |value| value.intent_us),
+                "exchange": publish_timing_distribution(&publication_timings, |value| value.exchange_us),
+                "current_marker": publish_timing_distribution(&publication_timings, |value| value.current_marker_us),
+                "slot_prepare": publish_timing_distribution(&publication_timings, |value| value.slot_prepare_us),
+                "ready_marker": publish_timing_distribution(&publication_timings, |value| value.ready_marker_us),
+                "intent_cleanup": publish_timing_distribution(&publication_timings, |value| value.intent_cleanup_us),
+                "catch_up": publish_timing_distribution(&publication_timings, |value| value.catch_up_us),
+            },
             "absolute_budget_bytes": MAX_INCREMENTAL_P95_BYTES,
             "project_percent_budget": MAX_INCREMENTAL_PROJECT_PERCENT,
             "embedded_project_bytes": project_bytes,
@@ -648,6 +682,17 @@ fn latency_distribution(samples: &[Duration]) -> serde_json::Value {
         "median_ms": rounded(percentile(&milliseconds, 0.5)),
         "p95_ms": rounded(percentile(&milliseconds, 0.95)),
     })
+}
+
+fn publish_timing_distribution(
+    samples: &[PublishTimings],
+    phase: impl Fn(&PublishTimings) -> u64,
+) -> serde_json::Value {
+    let durations: Vec<_> = samples
+        .iter()
+        .map(|sample| Duration::from_micros(phase(sample)))
+        .collect();
+    latency_distribution(&durations)
 }
 
 fn percentile_u64(sorted: &[u64], quantile: f64) -> u64 {

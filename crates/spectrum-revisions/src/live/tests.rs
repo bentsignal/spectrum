@@ -10,9 +10,8 @@ use std::{
 };
 
 use super::linux_io::{
-    ExchangeIntent, SlotMutationPoint, apply_checkpoint_delta, clear_slot_hardlink_race,
-    inspect_named_checkpoint, publication_marker_matches, ready_marker_matches,
-    set_slot_hardlink_race, update_private_slot,
+    ExchangeIntent, apply_checkpoint_delta, inspect_named_checkpoint, publication_marker_matches,
+    ready_marker_matches, write_ready_marker,
 };
 use super::*;
 use crate::{Actor, ActorKind, Asset, Payload};
@@ -154,6 +153,89 @@ fn exchange_intent_decoder_rejects_noncanonical_and_impossible_records() {
             .target_generation,
         8
     );
+    let mut legacy = intent.encode();
+    legacy[..8].copy_from_slice(b"SPXCHG01");
+    legacy.truncate(90);
+    assert_eq!(ExchangeIntent::decode(&legacy).unwrap(), intent);
+}
+
+#[test]
+fn legacy_named_exchange_intent_recovers_a_pre_exchange_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    let canonical = root.path().join("canonical.lumen");
+    let cache = root.path().join("cache");
+    fs::create_dir(&cache).unwrap();
+    let private = private_directory(&cache);
+    let (canonical_store, _) = RevisionStore::create(
+        &canonical,
+        NewProject {
+            application_id: "spectrum.named-intent-migration".into(),
+            application_version: "1.0.0".into(),
+            actor: Actor {
+                id: "named-intent-migration".into(),
+                display_name: "Named intent migration".into(),
+                kind: ActorKind::System,
+            },
+            session_id: SessionId::new(),
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![Payload::new(
+                crate::Encoding::new("test.snapshot", 1),
+                b"root".to_vec(),
+            )],
+            assets: Vec::new(),
+        },
+    )
+    .unwrap();
+    drop(canonical_store);
+    let candidate_source = root.path().join("candidate.lumen");
+    fs::copy(&canonical, &candidate_source).unwrap();
+    let mut candidate_store = RevisionStore::open(&candidate_source).unwrap();
+    candidate_store
+        .put_asset("application/x-migration", b"candidate")
+        .unwrap();
+    candidate_store.checkpoint().unwrap();
+    drop(candidate_store);
+
+    let mirror_path = cache.join(PUBLISH_MIRROR_FILE);
+    fs::copy(&canonical, &mirror_path).unwrap();
+    fs::set_permissions(&mirror_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let mirror = open_nofollow(&mirror_path, true).unwrap();
+    let canonical_descriptor = open_nofollow(&canonical, false).unwrap();
+    let canonical_identity = validated_identity(&canonical_descriptor, false).unwrap();
+    let candidate_identity = validated_identity(&mirror, true).unwrap();
+    apply_checkpoint_delta(&candidate_source, &mirror).unwrap();
+    mirror.sync_all().unwrap();
+    let base = RevisionStore::inspect(&canonical).unwrap();
+    let target = RevisionStore::inspect(&candidate_source).unwrap();
+    let intent = ExchangeIntent {
+        canonical_identity,
+        candidate_identity,
+        generation: base.generation,
+        state_id: base.state_id,
+        target_generation: target.generation,
+        target_state_id: target.state_id,
+    };
+    let mut legacy = intent.encode();
+    legacy[..8].copy_from_slice(b"SPXCHG01");
+    legacy.truncate(90);
+    private
+        .write_marker(PUBLISH_EXCHANGE_INTENT_FILE, &legacy)
+        .unwrap();
+
+    recover_exchange(&private, &canonical, &cache).unwrap();
+
+    assert!(!cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    assert!(publication_marker_matches(
+        &private,
+        base.generation,
+        base.state_id
+    ));
+    assert_eq!(
+        RevisionStore::inspect(&mirror_path).unwrap().generation,
+        target.generation
+    );
 }
 
 #[test]
@@ -205,117 +287,6 @@ fn linked_private_slot_is_rejected_before_delta_or_exchange() {
     assert!(validated_identity(&descriptor, true).is_err());
     assert_eq!(fs::read(&external).unwrap(), b"old mirror bytes");
     assert_eq!(fs::read(&mirror).unwrap(), b"old mirror bytes");
-}
-
-#[test]
-fn slot_races_after_validation_fail_before_candidate_or_bulk_mutation() {
-    for point in [
-        SlotMutationPoint::CandidateDelta,
-        SlotMutationPoint::BulkCatchUp,
-    ] {
-        let root = tempfile::tempdir().unwrap();
-        let cache = root.path().join("cache");
-        fs::create_dir(&cache).unwrap();
-        let private = private_directory(&cache);
-        let source = root.path().join("source");
-        let mirror_path = cache.join(PUBLISH_MIRROR_FILE);
-        let alias = root.path().join(format!("alias-{point:?}"));
-        fs::write(&source, vec![0x88; WRITE_BLOCK_BYTES * 2]).unwrap();
-        fs::write(&mirror_path, vec![0x33; WRITE_BLOCK_BYTES * 2]).unwrap();
-        fs::set_permissions(&mirror_path, fs::Permissions::from_mode(0o600)).unwrap();
-        let mirror = open_nofollow(&mirror_path, true).unwrap();
-        let identity = validated_identity(&mirror, true).unwrap();
-        let original_bytes = fs::read(&mirror_path).unwrap();
-        let original_mode = mirror.metadata().unwrap().permissions().mode();
-
-        set_slot_hardlink_race(point, alias.clone());
-        let permissions =
-            (point == SlotMutationPoint::CandidateDelta).then(|| fs::Permissions::from_mode(0o640));
-        assert!(
-            update_private_slot(
-                &private,
-                PUBLISH_MIRROR_FILE,
-                &source,
-                &mirror,
-                identity,
-                permissions,
-                point,
-            )
-            .is_err()
-        );
-        clear_slot_hardlink_race();
-
-        assert_eq!(fs::read(&alias).unwrap(), original_bytes);
-        assert_eq!(
-            alias.metadata().unwrap().permissions().mode(),
-            original_mode
-        );
-        assert_eq!(
-            cache.metadata().unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-    }
-}
-
-#[test]
-fn slot_race_after_validation_fails_before_permission_repair() {
-    let root = tempfile::tempdir().unwrap();
-    let cache = root.path().join("cache");
-    fs::create_dir(&cache).unwrap();
-    let private = private_directory(&cache);
-    let mirror_path = cache.join(PUBLISH_MIRROR_FILE);
-    let alias = root.path().join("permission-alias");
-    fs::write(&mirror_path, b"immutable old slot").unwrap();
-    fs::set_permissions(&mirror_path, fs::Permissions::from_mode(0o400)).unwrap();
-    let mirror = open_nofollow(&mirror_path, false).unwrap();
-    let identity = validated_identity(&mirror, true).unwrap();
-    let original_bytes = fs::read(&mirror_path).unwrap();
-    let original_mode = mirror.metadata().unwrap().permissions().mode();
-
-    set_slot_hardlink_race(SlotMutationPoint::PermissionRepair, alias.clone());
-    assert!(prepare_reusable_slot(&private, PUBLISH_MIRROR_FILE, &mirror, identity).is_err());
-    clear_slot_hardlink_race();
-
-    assert_eq!(fs::read(&alias).unwrap(), original_bytes);
-    assert_eq!(
-        alias.metadata().unwrap().permissions().mode(),
-        original_mode
-    );
-    assert_eq!(
-        cache.metadata().unwrap().permissions().mode() & 0o777,
-        0o700
-    );
-}
-
-#[test]
-fn reopening_restores_a_slot_stranded_inside_the_sealed_mutation_gate() {
-    let root = tempfile::tempdir().unwrap();
-    let cache = root.path().join("cache");
-    fs::create_dir(&cache).unwrap();
-    let private = private_directory(&cache);
-    let mirror_path = cache.join(PUBLISH_MIRROR_FILE);
-    fs::write(&mirror_path, b"stranded slot").unwrap();
-    let mirror = open_nofollow(&mirror_path, true).unwrap();
-    let identity = validated_identity(&mirror, true).unwrap();
-
-    let guard = private
-        .begin_mutation(
-            PUBLISH_MIRROR_FILE,
-            &mirror,
-            identity,
-            SlotMutationPoint::CandidateDelta,
-        )
-        .unwrap();
-    std::mem::forget(guard);
-    assert!(!mirror_path.exists());
-    fs::write(cache.join("root-stays-reachable"), b"reachable").unwrap();
-    drop(private);
-
-    let recovered = PrivateDirectory::open(&cache).unwrap();
-    recovered
-        .validate(PUBLISH_MIRROR_FILE, identity, true)
-        .unwrap();
-    assert_eq!(fs::read(&mirror_path).unwrap(), b"stranded slot");
 }
 
 #[test]
@@ -586,7 +557,8 @@ fn hardlink_created_at_exchange_is_discarded_from_private_recovery_without_alias
     assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
     assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
     assert_eq!(alias.metadata().unwrap().nlink(), 2);
-    assert!(project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    let published = RevisionStore::inspect(&canonical).unwrap();
+    assert!(exchange_proof_matches(&canonical, published.generation, published.state_id).unwrap());
     live.publish().unwrap();
     assert!(live.pending_publish_error().is_none());
     assert_eq!(live.last_publish_stats(), PublishStats::default());
@@ -665,7 +637,8 @@ fn child_crash_after_linked_slot_unlink_recovers_without_the_slot() {
         .unwrap();
     assert_eq!(status.signal(), Some(libc::SIGKILL));
     assert!(RevisionStore::inspect(&canonical).unwrap().generation > base_generation);
-    assert!(project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    let published = RevisionStore::inspect(&canonical).unwrap();
+    assert!(exchange_proof_matches(&canonical, published.generation, published.state_id).unwrap());
     assert!(!project_cache.join(PUBLISH_MIRROR_FILE).exists());
     assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
     assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
@@ -744,10 +717,52 @@ fn publication_crash_child() {
         other => panic!("unknown crash mode {other}"),
     };
     let mut live = LiveRevisionStore::open(Path::new(&canonical), Path::new(&cache)).unwrap();
-    PUBLISH_FAULT.set(Some(fault));
-    PUBLISH_CRASH_MODE.set(Some(mode));
-    live.mutate(|store| store.put_asset("application/x-crash-child", b"survives abrupt death"))
+    if let Ok(opened) = std::env::var("SPECTRUM_CRASH_OPEN_SENTINEL") {
+        fs::write(opened, b"store open").unwrap();
+    }
+    if let Ok(continue_sentinel) = std::env::var("SPECTRUM_CRASH_WAIT_FOR") {
+        for _ in 0..1_000 {
+            if Path::new(&continue_sentinel).exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            Path::new(&continue_sentinel).exists(),
+            "timed out waiting to continue crash child"
+        );
+    }
+    let prime_handled_failure = std::env::var("SPECTRUM_CRASH_PRIME_HANDLED_FAILURE").is_ok();
+    if prime_handled_failure {
+        PUBLISH_FAULT.set(Some(PublishFault::CandidateSynced));
+        live.mutate(|store| {
+            store.put_asset(
+                "application/x-durable-prefix",
+                b"acknowledged before the next mutation",
+            )
+        })
         .unwrap();
+        assert!(live.pending_publish_error().is_some());
+        PUBLISH_FAULT.set(None);
+    }
+    PUBLISH_CRASH_MODE.set(Some(mode));
+    let arm_after_mutation =
+        prime_handled_failure || std::env::var("SPECTRUM_CRASH_ARM_AFTER_MUTATION").is_ok();
+    if arm_after_mutation {
+        live.mutate(|store| {
+            let result = store.put_asset("application/x-crash-child", b"survives abrupt death");
+            if let Ok(sentinel) = std::env::var("SPECTRUM_CRASH_TAIL_SENTINEL") {
+                fs::write(sentinel, b"tail mutation committed").unwrap();
+            }
+            PUBLISH_FAULT.set(Some(fault));
+            result
+        })
+        .unwrap();
+    } else {
+        PUBLISH_FAULT.set(Some(fault));
+        live.mutate(|store| store.put_asset("application/x-crash-child", b"survives abrupt death"))
+            .unwrap();
+    }
     panic!("publication fault {fault:?} did not terminate the child");
 }
 
@@ -835,27 +850,23 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
             exchanged,
             "{fault:?} left an unexpected canonical generation"
         );
-        let intent_expected = matches!(
-            fault,
-            PublishFault::IntentCreated
-                | PublishFault::PreExchangeValidated
-                | PublishFault::Exchanged
-                | PublishFault::SlotWritable
-                | PublishFault::MarkerCreated
-        );
-        assert_eq!(
-            project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists(),
-            intent_expected,
-            "{fault:?} left an unexpected intent residual"
-        );
-        assert_eq!(
-            project_cache.join(PUBLISH_MIRROR_READY_FILE).exists(),
-            matches!(
-                fault,
-                PublishFault::MarkerCreated | PublishFault::IntentRemoved
-            ),
-            "{fault:?} left an unexpected ready residual"
-        );
+        assert!(!project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+        assert!(!project_cache.join(PUBLISH_MIRROR_READY_FILE).exists());
+        let proof_path = if exchanged {
+            &canonical
+        } else {
+            &project_cache.join(PUBLISH_MIRROR_FILE)
+        };
+        let proof_expected = !matches!(fault, PublishFault::SlotSealed);
+        if proof_path.exists() {
+            let inspection = RevisionStore::inspect(proof_path).unwrap();
+            assert_eq!(
+                exchange_proof_matches(proof_path, inspection.generation, inspection.state_id)
+                    .unwrap(),
+                proof_expected,
+                "{fault:?} left an unexpected inode-bound proof"
+            );
+        }
 
         let child_asset = Asset::new(
             "application/x-crash-child",
@@ -883,11 +894,14 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
             survivor_inspection.generation
         );
         assert_eq!(canonical_inspection.state_id, survivor_inspection.state_id);
-        assert!(publication_marker_matches(
-            &PrivateDirectory::open(&project_cache).unwrap(),
-            canonical_inspection.generation,
-            canonical_inspection.state_id,
-        ));
+        assert!(
+            exchange_proof_matches(
+                &canonical,
+                canonical_inspection.generation,
+                canonical_inspection.state_id,
+            )
+            .unwrap()
+        );
         drop(survivor);
 
         let verified =
@@ -911,6 +925,13 @@ fn fault_name(fault: PublishFault) -> &'static str {
         PublishFault::LinkedSlotUnlinked => "linked-slot-unlinked",
         PublishFault::FullCopyPublished => "full-copy-published",
         PublishFault::SeedMirrorCreated => "seed-mirror-created",
+        PublishFault::WorkingPoisonRenamed => "working-poison-renamed",
+        PublishFault::WorkingPoisonSynced => "working-poison-synced",
+        PublishFault::WorkingRecoveryMarkerRenamed => "working-recovery-marker-renamed",
+        PublishFault::WorkingRecoveryMarkerSynced => "working-recovery-marker-synced",
+        PublishFault::WorkingRecoveryMarkerInstall => "working-recovery-marker-install",
+        PublishFault::WorkingPoisonRemoved => "working-poison-removed",
+        PublishFault::WorkingPoisonRemovalSynced => "working-poison-removal-synced",
     }
 }
 
@@ -927,6 +948,13 @@ fn parse_fault(name: &str) -> PublishFault {
         "linked-slot-unlinked" => PublishFault::LinkedSlotUnlinked,
         "full-copy-published" => PublishFault::FullCopyPublished,
         "seed-mirror-created" => PublishFault::SeedMirrorCreated,
+        "working-poison-renamed" => PublishFault::WorkingPoisonRenamed,
+        "working-poison-synced" => PublishFault::WorkingPoisonSynced,
+        "working-recovery-marker-renamed" => PublishFault::WorkingRecoveryMarkerRenamed,
+        "working-recovery-marker-synced" => PublishFault::WorkingRecoveryMarkerSynced,
+        "working-recovery-marker-install" => PublishFault::WorkingRecoveryMarkerInstall,
+        "working-poison-removed" => PublishFault::WorkingPoisonRemoved,
+        "working-poison-removal-synced" => PublishFault::WorkingPoisonRemovalSynced,
         other => panic!("unknown publication fault {other}"),
     }
 }
