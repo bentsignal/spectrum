@@ -1,7 +1,6 @@
-use std::{io::Write, path::PathBuf, time::Instant};
+use std::time::Instant;
 
 use anyhow::{Result, bail};
-use clap::ValueEnum;
 use prism_core::{
     BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
     LayerStyle, RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment, TextEffects,
@@ -10,7 +9,6 @@ use prism_core::{
     render_document_region_scaled_with_stats, render_layer_base_scaled,
     render_layer_base_scaled_with_font, render_solid_color,
 };
-use serde::Serialize;
 use serde_json::{Value, json};
 use spectrum_imaging::Adjustments;
 
@@ -28,79 +26,12 @@ mod paint;
 mod path;
 #[path = "benchmark/selection.rs"]
 mod selection;
+#[path = "benchmark/support.rs"]
+mod support;
 #[path = "benchmark/text_preview_frame.rs"]
 mod text_preview_frame;
-
-#[derive(Clone, Copy, Default, ValueEnum)]
-pub(super) enum BenchmarkProfile {
-    #[default]
-    Interactive,
-    HostedCi,
-}
-
-impl BenchmarkProfile {
-    pub(super) fn name(self) -> &'static str {
-        match self {
-            Self::Interactive => "interactive-workstation",
-            Self::HostedCi => "github-hosted-linux",
-        }
-    }
-
-    pub(super) fn gradient_shadow_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 500.0,
-            // The reviewed implementation measured 880.788 ms p95 on GitHub's
-            // shared Linux runner versus 222.508 ms locally. A 1,250 ms ceiling
-            // keeps 42% host-jitter headroom while the original 2,061.886 ms
-            // regression still fails decisively.
-            Self::HostedCi => 1_250.0,
-        }
-    }
-
-    pub(super) fn magic_wand_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 5_000.0,
-            Self::HostedCi => 15_000.0,
-        }
-    }
-
-    pub(super) fn path_raster_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 250.0,
-            Self::HostedCi => 750.0,
-        }
-    }
-
-    pub(super) fn path_edit_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 5.0,
-            Self::HostedCi => 15.0,
-        }
-    }
-
-    pub(super) fn paint_viewport_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 500.0,
-            Self::HostedCi => 1_500.0,
-        }
-    }
-
-    pub(super) fn brush_drag_preview_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 5.0,
-            Self::HostedCi => 15.0,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct BenchmarkMetric {
-    name: &'static str,
-    median_ms: f64,
-    p95_ms: f64,
-    budget_ms: f64,
-    pass: bool,
-}
+pub(crate) use support::BenchmarkProfile;
+use support::{BenchmarkMetric, TemporaryRaster, sample_summary};
 
 // spectrum-imaging expands adjusted regions by four source pixels for denoise
 // and two more for sharpening.
@@ -929,47 +860,6 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         },
         "metrics": metrics
     }))
-}
-
-struct TemporaryRaster {
-    path: PathBuf,
-}
-
-impl TemporaryRaster {
-    fn new(width: u32, height: u32) -> Result<Self> {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("prism-benchmark-{stamp}.png"));
-        let file = std::fs::File::create(&path)?;
-        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
-        encoder.set_color(png::ColorType::Grayscale);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header()?;
-        let mut stream = writer.stream_writer()?;
-        let mut row = vec![0; width as usize];
-        for y in 0..height {
-            for (x, pixel) in row.iter_mut().enumerate() {
-                *pixel = ((x as u32 * 17 + y * 31) % 256) as u8;
-            }
-            stream.write_all(&row)?;
-        }
-        stream.finish()?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for TemporaryRaster {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-fn sample_summary(samples: &mut [f64]) -> (f64, f64) {
-    samples.sort_by(f64::total_cmp);
-    let median = samples[samples.len() / 2];
-    let p95_index = ((samples.len() as f64 * 0.95).ceil() as usize).saturating_sub(1);
-    (median, samples[p95_index.min(samples.len() - 1)])
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ pub(super) struct BrushState {
     next_gesture_id: u64,
     color_draft: Option<[u8; 4]>,
     color_picker_open: bool,
+    committing_preview: bool,
 }
 
 struct BrushGesture {
@@ -42,8 +43,37 @@ impl BrushState {
             next_gesture_id: 1,
             color_draft: None,
             color_picker_open: false,
+            committing_preview: false,
         }
     }
+
+    fn clear_transient_preview(&mut self) {
+        self.gesture = None;
+        self.preview = None;
+        self.preview_key = None;
+        self.settling_layer_id = None;
+        self.committing_preview = false;
+    }
+
+    fn discard_for_document_mutation(&mut self) -> bool {
+        if self.committing_preview
+            || (self.gesture.is_none()
+                && self.preview.is_none()
+                && self.preview_key.is_none()
+                && self.settling_layer_id.is_none())
+        {
+            return false;
+        }
+        self.clear_transient_preview();
+        true
+    }
+}
+
+pub(super) fn brush_display_document<'a>(
+    brush: &'a BrushState,
+    durable: &'a Document,
+) -> &'a Document {
+    brush.preview.as_ref().unwrap_or(durable)
 }
 
 impl PrismApp {
@@ -99,11 +129,14 @@ impl PrismApp {
     }
 
     pub(super) fn cancel_brush(&mut self) {
-        self.brush.gesture = None;
-        self.brush.preview = None;
-        self.brush.preview_key = None;
-        self.brush.settling_layer_id = None;
+        self.brush.clear_transient_preview();
         self.composite_preview.reset();
+    }
+
+    pub(super) fn clear_brush_for_document_mutation(&mut self) {
+        if self.brush.discard_for_document_mutation() {
+            self.composite_preview.reset();
+        }
     }
 
     pub(super) fn brush_preview_key(&self) -> Option<ProgressiveBrushPreview> {
@@ -364,10 +397,13 @@ impl PrismApp {
             .gesture
             .as_ref()
             .map(|gesture| gesture.target_layer_id);
-        self.brush.gesture = None;
         match command {
             Ok(command) => {
-                if self.execute(command) {
+                self.brush.committing_preview = true;
+                let committed = self.execute(command);
+                self.brush.committing_preview = false;
+                self.brush.gesture = None;
+                if committed {
                     self.brush.settling_layer_id = target_layer_id;
                 } else {
                     self.cancel_brush();
@@ -590,5 +626,41 @@ mod tests {
             Some(BrushColorAction::Cancel)
         );
         assert_eq!(brush_color_action(false, false, false), None);
+    }
+
+    #[test]
+    fn undo_before_visual_completion_discards_the_retained_preview_immediately() {
+        let durable = Document::new("Durable state", 100, 80);
+        let mut preview = durable.clone();
+        preview.layers.push(Layer {
+            id: 1,
+            ..Layer::default()
+        });
+        preview.next_id = 2;
+        let mut brush = BrushState::configured();
+        brush.preview = Some(preview);
+        brush.preview_key = Some(ProgressiveBrushPreview {
+            gesture_id: 7,
+            target_layer_id: 1,
+            sample_count: 1,
+            mode: prism_core::BrushMode::Paint,
+        });
+        brush.settling_layer_id = Some(1);
+        assert_eq!(brush_display_document(&brush, &durable).layers.len(), 1);
+
+        assert!(brush.discard_for_document_mutation());
+        assert!(std::ptr::eq(
+            brush_display_document(&brush, &durable),
+            &durable
+        ));
+        assert!(brush.preview_key.is_none());
+        assert!(brush.settling_layer_id.is_none());
+
+        brush.preview = Some(durable.clone());
+        brush.committing_preview = true;
+        assert!(!brush.discard_for_document_mutation());
+        brush.committing_preview = false;
+        assert!(brush.discard_for_document_mutation());
+        assert!(brush.preview.is_none());
     }
 }

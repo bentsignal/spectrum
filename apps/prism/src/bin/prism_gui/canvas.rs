@@ -1,3 +1,4 @@
+use super::brush_tool::brush_display_document;
 use super::*;
 
 const MIN_PARAGRAPH_TEXT_SCREEN_POINTS: f32 = 3.0;
@@ -37,11 +38,8 @@ impl PrismApp {
                 self.ensure_layer_visuals(ui.ctx(), display_scale);
                 self.settle_brush_preview_if_ready(display_scale);
                 let direct_manipulation = direct_manipulation_preview(self.drag);
-                let preview_document = self
-                    .brush
-                    .preview
-                    .as_ref()
-                    .unwrap_or(&self.workspace.document);
+                let preview_document =
+                    brush_display_document(&self.brush, &self.workspace.document);
                 let region_path_preview = preview_document.layers.iter().any(|layer| {
                     layer.visible
                         && prism_core::path_preview_requires_region(layer, display_scale)
