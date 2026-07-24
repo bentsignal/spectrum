@@ -15,6 +15,9 @@ pub(super) struct Measurement {
 }
 
 pub(super) fn budget_ms(hosted_ci: bool) -> f64 {
+    // The hosted profile runs the identical 2x render/conversion workload. Its
+    // 2.5x ceiling only absorbs shared-runner CPU scheduling variance; the
+    // 100 ms interactive gate remains the product-performance requirement.
     if hosted_ci { 250.0 } else { 100.0 }
 }
 
