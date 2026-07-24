@@ -57,6 +57,9 @@ impl LiveRevisionStore {
             #[cfg(target_os = "linux")]
             let publication_marker = read_publication_marker(&private_directory)?;
             #[cfg(target_os = "linux")]
+            let canonical_exchange_proof =
+                exchange_proof_matches(&canonical_path, canonical.generation, canonical.state_id)?;
+            #[cfg(target_os = "linux")]
             let mut remove_stale_publication_marker = false;
             let working = (|| {
                 #[cfg(target_os = "linux")]
@@ -106,8 +109,8 @@ impl LiveRevisionStore {
                                     working_state_id,
                                 )
                             });
-                        let publication_matches_canonical =
-                            publication_marker.as_deref().is_some_and(|marker| {
+                        let publication_matches_canonical = canonical_exchange_proof
+                            || publication_marker.as_deref().is_some_and(|marker| {
                                 publication_marker_bytes_match(
                                     marker,
                                     canonical.generation,
@@ -315,6 +318,18 @@ impl LiveRevisionStore {
             && self.published_state_id.get() == state_id;
         let published_predecessor_generation = self.published_generation.get();
         let published_predecessor_state_id = self.published_state_id.get();
+        let canonical_exchange_proof = exchange_proof_matches(
+            &self.canonical_path,
+            published_predecessor_generation,
+            published_predecessor_state_id,
+        )?;
+        if canonical_exchange_proof {
+            return if published_here {
+                Ok(())
+            } else {
+                self.publish_recovered_current()
+            };
+        }
         match read_publication_marker(&directory)? {
             Some(marker) if publication_marker_bytes_match(&marker, generation, state_id) => {
                 if published_here {

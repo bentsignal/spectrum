@@ -11,7 +11,7 @@ use std::{
 
 use super::linux_io::{
     ExchangeIntent, apply_checkpoint_delta, inspect_named_checkpoint, publication_marker_matches,
-    ready_marker_matches,
+    ready_marker_matches, write_ready_marker,
 };
 use super::*;
 use crate::{Actor, ActorKind, Asset, Payload};
@@ -152,6 +152,89 @@ fn exchange_intent_decoder_rejects_noncanonical_and_impossible_records() {
             .unwrap()
             .target_generation,
         8
+    );
+    let mut legacy = intent.encode();
+    legacy[..8].copy_from_slice(b"SPXCHG01");
+    legacy.truncate(90);
+    assert_eq!(ExchangeIntent::decode(&legacy).unwrap(), intent);
+}
+
+#[test]
+fn legacy_named_exchange_intent_recovers_a_pre_exchange_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    let canonical = root.path().join("canonical.lumen");
+    let cache = root.path().join("cache");
+    fs::create_dir(&cache).unwrap();
+    let private = private_directory(&cache);
+    let (canonical_store, _) = RevisionStore::create(
+        &canonical,
+        NewProject {
+            application_id: "spectrum.named-intent-migration".into(),
+            application_version: "1.0.0".into(),
+            actor: Actor {
+                id: "named-intent-migration".into(),
+                display_name: "Named intent migration".into(),
+                kind: ActorKind::System,
+            },
+            session_id: SessionId::new(),
+            root_label: Some("Created".into()),
+            track_kind: "test.document".into(),
+            track_label: "Document".into(),
+            initial_snapshots: vec![Payload::new(
+                crate::Encoding::new("test.snapshot", 1),
+                b"root".to_vec(),
+            )],
+            assets: Vec::new(),
+        },
+    )
+    .unwrap();
+    drop(canonical_store);
+    let candidate_source = root.path().join("candidate.lumen");
+    fs::copy(&canonical, &candidate_source).unwrap();
+    let mut candidate_store = RevisionStore::open(&candidate_source).unwrap();
+    candidate_store
+        .put_asset("application/x-migration", b"candidate")
+        .unwrap();
+    candidate_store.checkpoint().unwrap();
+    drop(candidate_store);
+
+    let mirror_path = cache.join(PUBLISH_MIRROR_FILE);
+    fs::copy(&canonical, &mirror_path).unwrap();
+    fs::set_permissions(&mirror_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let mirror = open_nofollow(&mirror_path, true).unwrap();
+    let canonical_descriptor = open_nofollow(&canonical, false).unwrap();
+    let canonical_identity = validated_identity(&canonical_descriptor, false).unwrap();
+    let candidate_identity = validated_identity(&mirror, true).unwrap();
+    apply_checkpoint_delta(&candidate_source, &mirror).unwrap();
+    mirror.sync_all().unwrap();
+    let base = RevisionStore::inspect(&canonical).unwrap();
+    let target = RevisionStore::inspect(&candidate_source).unwrap();
+    let intent = ExchangeIntent {
+        canonical_identity,
+        candidate_identity,
+        generation: base.generation,
+        state_id: base.state_id,
+        target_generation: target.generation,
+        target_state_id: target.state_id,
+    };
+    let mut legacy = intent.encode();
+    legacy[..8].copy_from_slice(b"SPXCHG01");
+    legacy.truncate(90);
+    private
+        .write_marker(PUBLISH_EXCHANGE_INTENT_FILE, &legacy)
+        .unwrap();
+
+    recover_exchange(&private, &canonical, &cache).unwrap();
+
+    assert!(!cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    assert!(publication_marker_matches(
+        &private,
+        base.generation,
+        base.state_id
+    ));
+    assert_eq!(
+        RevisionStore::inspect(&mirror_path).unwrap().generation,
+        target.generation
     );
 }
 
@@ -474,7 +557,8 @@ fn hardlink_created_at_exchange_is_discarded_from_private_recovery_without_alias
     assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
     assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
     assert_eq!(alias.metadata().unwrap().nlink(), 2);
-    assert!(project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    let published = RevisionStore::inspect(&canonical).unwrap();
+    assert!(exchange_proof_matches(&canonical, published.generation, published.state_id).unwrap());
     live.publish().unwrap();
     assert!(live.pending_publish_error().is_none());
     assert_eq!(live.last_publish_stats(), PublishStats::default());
@@ -553,7 +637,8 @@ fn child_crash_after_linked_slot_unlink_recovers_without_the_slot() {
         .unwrap();
     assert_eq!(status.signal(), Some(libc::SIGKILL));
     assert!(RevisionStore::inspect(&canonical).unwrap().generation > base_generation);
-    assert!(project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+    let published = RevisionStore::inspect(&canonical).unwrap();
+    assert!(exchange_proof_matches(&canonical, published.generation, published.state_id).unwrap());
     assert!(!project_cache.join(PUBLISH_MIRROR_FILE).exists());
     assert_eq!(fs::read(&alias).unwrap(), alias_bytes);
     assert_eq!(alias.metadata().unwrap().permissions().mode(), alias_mode);
@@ -765,27 +850,23 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
             exchanged,
             "{fault:?} left an unexpected canonical generation"
         );
-        let intent_expected = matches!(
-            fault,
-            PublishFault::IntentCreated
-                | PublishFault::PreExchangeValidated
-                | PublishFault::Exchanged
-                | PublishFault::SlotWritable
-                | PublishFault::MarkerCreated
-        );
-        assert_eq!(
-            project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists(),
-            intent_expected,
-            "{fault:?} left an unexpected intent residual"
-        );
-        assert_eq!(
-            project_cache.join(PUBLISH_MIRROR_READY_FILE).exists(),
-            matches!(
-                fault,
-                PublishFault::MarkerCreated | PublishFault::IntentRemoved
-            ),
-            "{fault:?} left an unexpected ready residual"
-        );
+        assert!(!project_cache.join(PUBLISH_EXCHANGE_INTENT_FILE).exists());
+        assert!(!project_cache.join(PUBLISH_MIRROR_READY_FILE).exists());
+        let proof_path = if exchanged {
+            &canonical
+        } else {
+            &project_cache.join(PUBLISH_MIRROR_FILE)
+        };
+        let proof_expected = !matches!(fault, PublishFault::SlotSealed);
+        if proof_path.exists() {
+            let inspection = RevisionStore::inspect(proof_path).unwrap();
+            assert_eq!(
+                exchange_proof_matches(proof_path, inspection.generation, inspection.state_id)
+                    .unwrap(),
+                proof_expected,
+                "{fault:?} left an unexpected inode-bound proof"
+            );
+        }
 
         let child_asset = Asset::new(
             "application/x-crash-child",
@@ -813,11 +894,14 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
             survivor_inspection.generation
         );
         assert_eq!(canonical_inspection.state_id, survivor_inspection.state_id);
-        assert!(publication_marker_matches(
-            &PrivateDirectory::open(&project_cache).unwrap(),
-            canonical_inspection.generation,
-            canonical_inspection.state_id,
-        ));
+        assert!(
+            exchange_proof_matches(
+                &canonical,
+                canonical_inspection.generation,
+                canonical_inspection.state_id,
+            )
+            .unwrap()
+        );
         drop(survivor);
 
         let verified =

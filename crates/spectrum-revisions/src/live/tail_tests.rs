@@ -114,7 +114,10 @@ fn intent_removed_abrupt_death_recovers_exact_committed_state() {
         }
 
         assert!(RevisionStore::inspect(&canonical).unwrap().generation > base_generation);
-        assert!(project_cache.join(PUBLISH_MIRROR_READY_FILE).exists());
+        let published = RevisionStore::inspect(&canonical).unwrap();
+        assert!(
+            exchange_proof_matches(&canonical, published.generation, published.state_id).unwrap()
+        );
 
         let child_asset = Asset::new(
             "application/x-crash-child",

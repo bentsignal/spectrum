@@ -5,7 +5,8 @@ use std::{
 };
 
 use super::{
-    PrivateDirectory, publication_marker_matches, remove_private_file, write_publication_marker,
+    PrivateDirectory, exchange_proof_matches, publication_marker_matches, remove_private_file,
+    write_publication_marker,
 };
 use crate::live::{
     FileIdentity, RevisionError, RevisionResult, RevisionStore, StorageStateId, file_identity,
@@ -202,11 +203,11 @@ pub(in crate::live) fn validate_publish_base(
         inspection.generation == source_generation && inspection.state_id == source_state_id;
     let shared_cache_advanced = inspection.generation > expected_generation
         && inspection.generation < source_generation
-        && publication_marker_matches(
+        && (publication_marker_matches(
             &PrivateDirectory::open(cache_directory)?,
             inspection.generation,
             inspection.state_id,
-        );
+        ) || exchange_proof_matches(destination, inspection.generation, inspection.state_id)?);
     if !expected_matches && !already_published && !shared_cache_advanced {
         return Err(RevisionError::Invalid(format!(
             "project publication conflict: expected generation {expected_generation}, found {}",

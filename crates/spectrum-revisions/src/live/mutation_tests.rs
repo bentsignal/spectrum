@@ -1,5 +1,6 @@
 use std::{
     fs,
+    os::fd::AsRawFd as _,
     os::unix::fs::{FileExt as _, PermissionsExt as _},
     process::Command,
     time::{Duration, Instant},
@@ -157,6 +158,7 @@ fn slot_races_after_validation_fail_before_candidate_or_bulk_mutation() {
                 identity,
                 permissions,
                 point,
+                None,
             )
             .is_err()
         );
@@ -166,6 +168,23 @@ fn slot_races_after_validation_fail_before_candidate_or_bulk_mutation() {
         assert_eq!(
             alias.metadata().unwrap().permissions().mode(),
             original_mode
+        );
+        let alias_descriptor = open_nofollow(&alias, false).unwrap();
+        let exchange_xattr = c"user.spectrum.exchange-intent-v2";
+        assert_eq!(
+            unsafe {
+                libc::fgetxattr(
+                    alias_descriptor.as_raw_fd(),
+                    exchange_xattr.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ENODATA)
         );
         assert_eq!(
             cache.metadata().unwrap().permissions().mode() & 0o777,

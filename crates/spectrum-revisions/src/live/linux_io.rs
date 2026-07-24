@@ -18,9 +18,13 @@ use super::{
 };
 
 const RENAME_EXCHANGE: libc::c_uint = 2;
+mod inode_exchange;
 mod markers;
 mod mutation;
 mod publication;
+pub(super) use inode_exchange::{
+    exchange_proof_matches, recover_inode_exchange, write_exchange_intent,
+};
 pub(super) use markers::{
     WorkingRecoveryInstall, publication_marker_bytes_match, publication_marker_matches,
     read_publication_marker, read_working_recovery_marker, working_recovery_marker_bytes_match,
@@ -311,8 +315,17 @@ impl PrivateDirectory {
         if exchanged != 0 {
             return Err(io::Error::last_os_error().into());
         }
-        parent_descriptor.sync_all()?;
-        self.sync()?;
+        std::thread::scope(|scope| -> RevisionResult<()> {
+            let parent_sync = scope.spawn(|| parent_descriptor.sync_all());
+            let cache_sync = scope.spawn(|| self.sync());
+            parent_sync.join().map_err(|_| {
+                RevisionError::Invalid("canonical directory sync panicked".into())
+            })??;
+            cache_sync
+                .join()
+                .map_err(|_| RevisionError::Invalid("cache directory sync panicked".into()))??;
+            Ok(())
+        })?;
         let published =
             super::openat_nofollow(&parent_descriptor, destination_name.as_c_str(), false)?;
         if validated_identity(&published, false)? != source_identity {
@@ -418,7 +431,7 @@ fn maybe_inject_slot_hardlink(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ExchangeIntent {
     pub(super) canonical_identity: FileIdentity,
     pub(super) candidate_identity: FileIdentity,
@@ -429,8 +442,12 @@ pub(super) struct ExchangeIntent {
 }
 
 impl ExchangeIntent {
-    const MAGIC: [u8; 8] = *b"SPXCHG01";
-    const ENCODED_LEN: usize = 8 + 6 * 8 + 2 * (1 + 16);
+    const LEGACY_MAGIC: [u8; 8] = *b"SPXCHG01";
+    const MAGIC: [u8; 8] = *b"SPXCHG02";
+    const PAYLOAD_LEN: usize = 6 * 8 + 2 * (1 + 16);
+    const CHECKSUM_LEN: usize = 16;
+    const LEGACY_ENCODED_LEN: usize = 8 + Self::PAYLOAD_LEN;
+    const ENCODED_LEN: usize = Self::LEGACY_ENCODED_LEN + Self::CHECKSUM_LEN;
 
     pub(super) fn encode(self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(Self::ENCODED_LEN);
@@ -449,18 +466,33 @@ impl ExchangeIntent {
         bytes.extend(self.state_id.unwrap_or([0; 16]));
         bytes.push(u8::from(self.target_state_id.is_some()));
         bytes.extend(self.target_state_id.unwrap_or([0; 16]));
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(&bytes);
+        bytes.extend(&digest[..Self::CHECKSUM_LEN]);
         bytes
     }
 
     pub(super) fn decode(bytes: &[u8]) -> RevisionResult<Self> {
-        if bytes.len() != Self::ENCODED_LEN || bytes[..8] != Self::MAGIC {
+        let payload = if bytes.len() == Self::ENCODED_LEN && bytes[..8] == Self::MAGIC {
+            use sha2::Digest as _;
+            let checksum_at = Self::LEGACY_ENCODED_LEN;
+            let digest = sha2::Sha256::digest(&bytes[..checksum_at]);
+            if bytes[checksum_at..] != digest[..Self::CHECKSUM_LEN] {
+                return Err(RevisionError::Corrupt(
+                    "publication exchange intent checksum mismatch".into(),
+                ));
+            }
+            &bytes[..checksum_at]
+        } else if bytes.len() == Self::LEGACY_ENCODED_LEN && bytes[..8] == Self::LEGACY_MAGIC {
+            bytes
+        } else {
             return Err(RevisionError::Corrupt(
                 "invalid publication exchange intent".into(),
             ));
-        }
+        };
         let mut offset = 8;
         let mut next_u64 = || {
-            let value = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            let value = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
             offset += 8;
             value
         };
@@ -474,9 +506,9 @@ impl ExchangeIntent {
         };
         let generation = next_u64();
         let target_generation = next_u64();
-        let present = bytes[offset];
+        let present = payload[offset];
         offset += 1;
-        let state_bytes: [u8; 16] = bytes[offset..offset + 16].try_into().unwrap();
+        let state_bytes: [u8; 16] = payload[offset..offset + 16].try_into().unwrap();
         let state_id = match present {
             0 if state_bytes == [0; 16] => None,
             0 => {
@@ -492,9 +524,9 @@ impl ExchangeIntent {
             }
         };
         offset += 16;
-        let target_present = bytes[offset];
+        let target_present = payload[offset];
         offset += 1;
-        let target_state_bytes: [u8; 16] = bytes[offset..offset + 16].try_into().unwrap();
+        let target_state_bytes: [u8; 16] = payload[offset..offset + 16].try_into().unwrap();
         let target_state_id = match target_present {
             0 if target_state_bytes == [0; 16] => None,
             0 => {
@@ -559,7 +591,9 @@ pub(super) fn recover_exchange(
 ) -> RevisionResult<()> {
     let intent = match directory.read_marker(super::PUBLISH_EXCHANGE_INTENT_FILE) {
         Ok(bytes) => ExchangeIntent::decode(&bytes)?,
-        Err(RevisionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(RevisionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return recover_inode_exchange(directory, destination, cache_directory);
+        }
         Err(error) => return Err(error),
     };
     let canonical = super::open_nofollow(destination, false)?;
@@ -670,7 +704,6 @@ pub(super) fn prepare_reusable_slot(
     if descriptor.metadata()?.mode() & 0o200 == 0 {
         descriptor.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    descriptor.sync_all()?;
     validated_identity(descriptor, true)?;
     mutation.finish(name, identity)
 }
@@ -737,7 +770,8 @@ pub(super) fn update_private_slot(
     identity: FileIdentity,
     permissions: Option<fs::Permissions>,
     point: SlotMutationPoint,
-) -> RevisionResult<PublishStats> {
+    exchange_intent: Option<ExchangeIntent>,
+) -> RevisionResult<Option<PublishStats>> {
     let source = super::open_nofollow(source, false)?;
     validated_identity(&source, false)?;
     let mutation = directory.begin_mutation(name, mirror, identity, point)?;
@@ -745,10 +779,16 @@ pub(super) fn update_private_slot(
     if let Some(permissions) = permissions {
         mirror.set_permissions(permissions)?;
     }
+    if let Some(intent) = exchange_intent {
+        if !write_exchange_intent(mirror, intent)? {
+            mutation.finish(name, identity)?;
+            return Ok(None);
+        }
+    }
     mirror.sync_all()?;
     validated_identity(mirror, true)?;
     mutation.finish(name, identity)?;
-    Ok(stats)
+    Ok(Some(stats))
 }
 
 pub(super) fn update_candidate_slot(
@@ -757,7 +797,8 @@ pub(super) fn update_candidate_slot(
     mirror: &File,
     identity: FileIdentity,
     permissions: fs::Permissions,
-) -> RevisionResult<PublishStats> {
+    intent: ExchangeIntent,
+) -> RevisionResult<Option<PublishStats>> {
     update_private_slot(
         directory,
         super::PUBLISH_MIRROR_FILE,
@@ -766,6 +807,7 @@ pub(super) fn update_candidate_slot(
         identity,
         Some(permissions),
         SlotMutationPoint::CandidateDelta,
+        Some(intent),
     )
 }
 
@@ -791,7 +833,9 @@ pub(super) fn catch_up_after_bulk(
         identity,
         None,
         SlotMutationPoint::BulkCatchUp,
-    )?;
+        None,
+    )?
+    .expect("bulk catch-up does not install an exchange intent");
     write_ready_marker(directory, generation, state_id)?;
     stats.scanned_bytes = stats.scanned_bytes.saturating_add(catch_up.scanned_bytes);
     stats.changed_bytes = stats.changed_bytes.saturating_add(catch_up.changed_bytes);

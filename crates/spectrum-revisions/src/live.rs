@@ -34,13 +34,11 @@ use capabilities::PublishCapabilities;
 #[cfg(target_os = "linux")]
 use fault::*;
 #[cfg(target_os = "linux")]
-use linux_io::write_ready_marker;
-#[cfg(target_os = "linux")]
 use linux_io::{
     ExchangeIntent, PrivateDirectory, PublishBase, WorkingRecoveryInstall, catch_up_after_bulk,
-    open_unnamed, prepare_reusable_slot, publication_marker_bytes_match, publish_unnamed,
-    publish_unnamed_no_replace, read_publication_marker, read_working_recovery_marker,
-    recover_exchange, recover_full_copy, remove_private_file, remove_private_file_lazy,
+    exchange_proof_matches, open_unnamed, prepare_reusable_slot, publication_marker_bytes_match,
+    publish_unnamed, publish_unnamed_no_replace, read_publication_marker,
+    read_working_recovery_marker, recover_exchange, recover_full_copy, remove_private_file,
     seed_incremental_mirror, update_candidate_slot, validate_publish_base,
     working_recovery_marker_bytes_match, working_recovery_poison_present, write_full_copy_intent,
     write_publication_marker, write_working_recovery_marker,
@@ -689,18 +687,6 @@ fn incremental_publish(
         return Ok((None, false));
     }
     remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
-    let mut stats = update_candidate_slot(
-        &directory,
-        source,
-        &mirror_file,
-        mirror_identity,
-        canonical_permissions,
-    )?;
-    stats.timings.exchange_probe_us = exchange_probe_us;
-    stats.timings.candidate_us = elapsed_us(candidate_started.elapsed());
-    maybe_publish_fault(PublishFault::CandidateSynced)?;
-
-    let intent_started = Instant::now();
     let intent = ExchangeIntent {
         canonical_identity,
         candidate_identity: mirror_identity,
@@ -709,7 +695,22 @@ fn incremental_publish(
         target_generation: source_generation,
         target_state_id: source_state_id,
     };
-    directory.write_marker(PUBLISH_EXCHANGE_INTENT_FILE, &intent.encode())?;
+    let Some(mut stats) = update_candidate_slot(
+        &directory,
+        source,
+        &mirror_file,
+        mirror_identity,
+        canonical_permissions,
+        intent,
+    )?
+    else {
+        return Ok((None, false));
+    };
+    stats.timings.exchange_probe_us = exchange_probe_us;
+    stats.timings.candidate_us = elapsed_us(candidate_started.elapsed());
+    maybe_publish_fault(PublishFault::CandidateSynced)?;
+
+    let intent_started = Instant::now();
     maybe_publish_fault(PublishFault::IntentCreated)?;
     directory.validate(PUBLISH_MIRROR_FILE, mirror_identity, true)?;
     validate_named_identity(destination, canonical_identity, false)?;
@@ -723,23 +724,17 @@ fn incremental_publish(
         canonical_identity,
     )? {
         linux_io::ExchangeOutcome::CanonicalLinked => {
-            remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
             return Ok((None, false));
         }
         linux_io::ExchangeOutcome::Exchanged { old_slot_private } => old_slot_private,
     };
     stats.timings.exchange_us = elapsed_us(exchange_started.elapsed());
     maybe_publish_fault(PublishFault::Exchanged)?;
-    let marker_started = Instant::now();
-    write_publication_marker(&directory, source_generation, source_state_id)?;
-    stats.timings.current_marker_us = elapsed_us(marker_started.elapsed());
-
     if !old_slot_private {
         let cleanup_started = Instant::now();
         remove_private_file(&directory, PUBLISH_MIRROR_FILE)?;
         maybe_publish_fault(PublishFault::LinkedSlotUnlinked)?;
         remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
-        remove_private_file_lazy(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
         stats.timings.intent_cleanup_us = elapsed_us(cleanup_started.elapsed());
         stats.incremental = true;
         stats.strategy = PublishStrategy::PageDiffExchange;
@@ -759,12 +754,8 @@ fn incremental_publish(
     )?;
     stats.timings.slot_prepare_us = elapsed_us(slot_started.elapsed());
     maybe_publish_fault(PublishFault::SlotWritable)?;
-    let ready_started = Instant::now();
-    write_ready_marker(&directory, base.generation, base.state_id)?;
-    stats.timings.ready_marker_us = elapsed_us(ready_started.elapsed());
     maybe_publish_fault(PublishFault::MarkerCreated)?;
     let cleanup_started = Instant::now();
-    remove_private_file_lazy(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
     stats.timings.intent_cleanup_us = elapsed_us(cleanup_started.elapsed());
     maybe_publish_fault(PublishFault::IntentRemoved)?;
 

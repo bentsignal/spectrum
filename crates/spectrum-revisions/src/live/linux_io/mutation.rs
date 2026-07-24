@@ -90,9 +90,10 @@ impl<'a> PrivateMutation<'a> {
                     &self.directory.descriptor,
                     &self.name,
                 )?;
-                // Sync the source directory now. The next durable intent or ready-marker cache
-                // directory sync orders the target name before it can become publication state.
-                self.gate.sync_all()?;
+                // The candidate fsync carries its exchange intent, and the cache-directory sync
+                // after exchange orders the restored target name. A crash may resurrect the
+                // source name too; recovery already validates that exact two-link residual and
+                // removes the gated alias.
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.directory.validate(&self.name, self.identity, true)?;
