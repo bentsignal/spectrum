@@ -3,6 +3,8 @@
 pub(super) enum NativeMenuAction {
     NewDocument = 44_001,
     OpenDocument,
+    CloseDocument,
+    RenameDocument,
     MoveProject,
     Export,
     Undo,
@@ -20,9 +22,11 @@ pub(super) enum NativeMenuAction {
 }
 
 impl NativeMenuAction {
-    pub(super) const ALL: [Self; 16] = [
+    pub(super) const ALL: [Self; 18] = [
         Self::NewDocument,
         Self::OpenDocument,
+        Self::CloseDocument,
+        Self::RenameDocument,
         Self::MoveProject,
         Self::Export,
         Self::Undo,
@@ -114,7 +118,7 @@ const fn action_spec(
     }
 }
 
-pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 16] = [
+pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 18] = [
     action_spec(
         NativeMenuSection::File,
         "New Document",
@@ -131,10 +135,24 @@ pub(super) const ACTION_MENU_ITEMS: [ActionMenuItemSpec; 16] = [
     ),
     action_spec(
         NativeMenuSection::File,
+        "Close Document",
+        NativeMenuAction::CloseDocument,
+        Some(ActionKeyEquivalent::command("w")),
+        false,
+    ),
+    action_spec(
+        NativeMenuSection::File,
+        "Rename Document…",
+        NativeMenuAction::RenameDocument,
+        None,
+        true,
+    ),
+    action_spec(
+        NativeMenuSection::File,
         "Move Project…",
         NativeMenuAction::MoveProject,
         None,
-        true,
+        false,
     ),
     action_spec(
         NativeMenuSection::File,
@@ -262,6 +280,22 @@ mod tests {
         assert_eq!(export.section, NativeMenuSection::File);
         assert_eq!(export.title, "Export…");
         assert_eq!(export.equivalent, Some(ActionKeyEquivalent::command("e")));
+    }
+
+    #[test]
+    fn document_lifecycle_actions_use_standard_file_menu_placement() {
+        let close = ACTION_MENU_ITEMS
+            .iter()
+            .find(|spec| spec.action == NativeMenuAction::CloseDocument)
+            .unwrap();
+        let rename = ACTION_MENU_ITEMS
+            .iter()
+            .find(|spec| spec.action == NativeMenuAction::RenameDocument)
+            .unwrap();
+        assert_eq!(close.section, NativeMenuSection::File);
+        assert_eq!(close.equivalent, Some(ActionKeyEquivalent::command("w")));
+        assert_eq!(rename.section, NativeMenuSection::File);
+        assert_eq!(rename.title, "Rename Document…");
     }
 
     #[test]

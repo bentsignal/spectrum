@@ -138,7 +138,21 @@ impl PrismApp {
                             self.open_project_dialog();
                             ui.close();
                         }
+                        if ui
+                            .button(format!(
+                                "Close document  {}",
+                                shortcuts::SHORTCUT_LABELS.close_document
+                            ))
+                            .clicked()
+                        {
+                            self.close_active_tab();
+                            ui.close();
+                        }
                         ui.separator();
+                        if ui.button("Rename document…").clicked() {
+                            self.begin_rename_document();
+                            ui.close();
+                        }
                         if ui.button("Move project…").clicked() {
                             self.begin_move_project();
                             ui.close();

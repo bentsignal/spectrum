@@ -8,6 +8,27 @@ fn colors_accept_rgb_and_rgba() {
 }
 
 #[test]
+fn rename_document_cli_changes_metadata_without_changing_the_project_path() {
+    let project = temporary_project("rename-document");
+    let project_arg = project.to_str().unwrap();
+    for arguments in [
+        vec!["init", "Original", "--width", "80", "--height", "60"],
+        vec!["rename-document", "Campaign"],
+    ] {
+        let mut cli = vec!["prism", "--project", project_arg];
+        cli.extend(arguments);
+        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+    }
+    assert_eq!(
+        Workspace::load_read_only(&project).unwrap().name,
+        "Campaign"
+    );
+    assert!(project.exists());
+    assert!(!project.with_file_name("Campaign.prism").exists());
+    std::fs::remove_file(project).unwrap();
+}
+
+#[test]
 fn path_and_vector_mask_cli_surfaces_mutate_durable_projects_end_to_end() {
     let project = temporary_project("path-vector-mask");
     let open_path = project.with_extension("open-path.json");
@@ -715,13 +736,14 @@ fn schema_keeps_guides_and_typography_commands_together() {
         "add_paint_layer_with_stroke",
         "add_brush_stroke",
         "lasso_selection",
+        "rename_document",
     ] {
         assert!(examples.iter().any(|example| example["command"] == command));
     }
     assert!(schema["alignment"].is_object());
     assert_eq!(
         schema["command_protocol"]["supported_operation_versions"],
-        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9])
+        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     );
     assert_eq!(
         schema["command_protocol"]["selection_operations_version"],
@@ -736,6 +758,10 @@ fn schema_keeps_guides_and_typography_commands_together() {
         6
     );
     assert_eq!(schema["command_protocol"]["path_operations_version"], 7);
+    assert_eq!(
+        schema["command_protocol"]["document_lifecycle_operations_version"],
+        10
+    );
     assert_eq!(schema["paths"]["geometry_version"], 1);
     assert_eq!(schema["layer_transfer"]["version"], 5);
     assert!(schema["gui_interactions"]["brush"].is_string());
