@@ -354,6 +354,12 @@ impl Workspace {
             .and_then(DurableCatalog::pending_publish_error)
     }
 
+    pub fn last_publish_stats(&self) -> Option<spectrum_revisions::PublishStats> {
+        self.durable
+            .as_ref()
+            .map(DurableCatalog::last_publish_stats)
+    }
+
     pub fn can_undo(&self) -> bool {
         self.durable.as_ref().map_or_else(
             || !self.undo.is_empty(),

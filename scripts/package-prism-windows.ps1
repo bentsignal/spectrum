@@ -13,6 +13,9 @@ try {
     Copy-Item -LiteralPath (Join-Path $repoRoot "target/release/prism-gui.exe") -Destination $destination
     Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination $destination
     Copy-Item -LiteralPath (Join-Path $repoRoot "THIRD_PARTY.md") -Destination $destination
+    Copy-Item -LiteralPath `
+        (Join-Path $repoRoot "packaging/prism/licenses/UBUNTU-FONT-LICENCE-1.0.txt") `
+        -Destination $destination
     Copy-Item -LiteralPath (Join-Path $repoRoot "assets/branding/prism-app-icon.png") `
         -Destination (Join-Path $destination "Prism.png")
     $manifest = Join-Path $repoRoot "packaging/prism/windows/prism.manifest"

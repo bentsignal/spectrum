@@ -87,7 +87,7 @@ enum CliCommand {
         #[arg(long, default_value_t = 0.0)]
         y: f32,
     },
-    /// Add editable text using Prism's bundled portable font.
+    /// Add editable text using Prism's bundled Ubuntu Light font.
     AddText {
         text: String,
         #[arg(long)]
@@ -938,11 +938,5 @@ fn parse_color(value: &str) -> Result<[u8; 4]> {
 }
 
 #[cfg(test)]
-#[path = "prism_cli/lasso_tests.rs"]
-mod lasso_tests;
-#[cfg(test)]
-#[path = "prism_cli/paint_tests.rs"]
-mod paint_tests;
-#[cfg(test)]
-#[path = "prism_cli/tests.rs"]
-mod tests;
+#[path = "prism_cli/test_modules.rs"]
+mod test_modules;
