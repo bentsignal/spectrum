@@ -14,11 +14,15 @@ use crate::{
     metadata::StorageStateId, storage_io::sidecar_path,
 };
 
+mod capabilities;
 #[cfg(target_os = "linux")]
 mod linux_io;
 mod metrics;
+#[cfg(all(test, target_os = "linux"))]
+mod tail_tests;
 #[cfg(test)]
 mod tests;
+use capabilities::PublishCapabilities;
 #[cfg(target_os = "linux")]
 use linux_io::write_ready_marker;
 #[cfg(target_os = "linux")]
@@ -95,6 +99,7 @@ pub struct LiveRevisionStore {
     temps_cleaned: Cell<bool>,
     pending_publish_error: RefCell<Option<String>>,
     last_publish_stats: Cell<PublishStats>,
+    publish_capabilities: PublishCapabilities,
 }
 
 impl LiveRevisionStore {
@@ -147,6 +152,7 @@ impl LiveRevisionStore {
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
             last_publish_stats: Cell::new(PublishStats::default()),
+            publish_capabilities: PublishCapabilities::default(),
         };
         live.publish()?;
         Ok((live, info))
@@ -235,6 +241,7 @@ impl LiveRevisionStore {
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
             last_publish_stats: Cell::new(PublishStats::default()),
+            publish_capabilities: PublishCapabilities::default(),
         };
         #[cfg(target_os = "linux")]
         {
@@ -343,6 +350,7 @@ impl LiveRevisionStore {
             self.lock_path
                 .parent()
                 .expect("publish lock always has a cache directory"),
+            &self.publish_capabilities,
             self.published_generation.get(),
             self.published_state_id.get(),
         )?;
@@ -556,6 +564,7 @@ fn publish_checkpoint(
     source: &Path,
     destination: &Path,
     _cache_directory: &Path,
+    _publish_capabilities: &PublishCapabilities,
     _expected_generation: u64,
     _expected_state_id: Option<StorageStateId>,
 ) -> RevisionResult<PublishStats> {
@@ -589,6 +598,7 @@ fn publish_checkpoint(
             source,
             destination,
             _cache_directory,
+            _publish_capabilities,
             &base,
             source_inspection.generation,
             source_inspection.state_id,
@@ -663,6 +673,7 @@ fn incremental_publish(
     source: &Path,
     destination: &Path,
     cache_directory: &Path,
+    publish_capabilities: &PublishCapabilities,
     base: &PublishBase,
     source_generation: u64,
     source_state_id: Option<StorageStateId>,
@@ -692,7 +703,9 @@ fn incremental_publish(
         return Ok((None, false));
     }
     let exchange_probe_started = Instant::now();
-    if !directory.exchange_supported()? {
+    let exchange_supported =
+        publish_capabilities.exchange_supported(|| directory.exchange_supported())?;
+    if !exchange_supported {
         return Ok((None, false));
     }
     let exchange_probe_us = elapsed_us(exchange_probe_started.elapsed());
@@ -756,7 +769,6 @@ fn incremental_publish(
         maybe_publish_fault(PublishFault::LinkedSlotUnlinked)?;
         remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
         remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
-        directory.sync()?;
         stats.timings.intent_cleanup_us = elapsed_us(cleanup_started.elapsed());
         stats.incremental = true;
         stats.strategy = PublishStrategy::PageDiffExchange;
@@ -782,7 +794,6 @@ fn incremental_publish(
     maybe_publish_fault(PublishFault::MarkerCreated)?;
     let cleanup_started = Instant::now();
     remove_private_file(&directory, PUBLISH_EXCHANGE_INTENT_FILE)?;
-    directory.sync()?;
     stats.timings.intent_cleanup_us = elapsed_us(cleanup_started.elapsed());
     maybe_publish_fault(PublishFault::IntentRemoved)?;
 
