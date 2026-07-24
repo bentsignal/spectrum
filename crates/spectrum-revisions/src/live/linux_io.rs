@@ -18,8 +18,17 @@ use super::{
 };
 
 const RENAME_EXCHANGE: libc::c_uint = 2;
+mod markers;
 mod mutation;
 mod publication;
+pub(super) use markers::{
+    WorkingRecoveryInstall, publication_marker_bytes_match, publication_marker_matches,
+    read_publication_marker, read_working_recovery_marker, working_recovery_marker_bytes_match,
+    working_recovery_poison_present, write_publication_marker, write_ready_marker,
+    write_working_recovery_marker,
+};
+#[cfg(test)]
+pub(super) use markers::{ready_marker_matches, working_recovery_marker_matches};
 pub(super) use publication::{
     PublishBase, recover_full_copy, validate_publish_base, write_full_copy_intent,
 };
@@ -171,6 +180,15 @@ impl PrivateDirectory {
     }
 
     pub(super) fn write_marker(&self, name: &str, bytes: &[u8]) -> RevisionResult<()> {
+        self.write_marker_with_boundaries(name, bytes, None)
+    }
+
+    fn write_marker_with_boundaries(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        faults: Option<(super::PublishFault, super::PublishFault)>,
+    ) -> RevisionResult<()> {
         let temporary = format!(".{name}-{}.tmp", SessionId::new());
         let result = (|| -> RevisionResult<()> {
             let mut marker = self.create_file(&temporary)?;
@@ -179,7 +197,14 @@ impl PrivateDirectory {
             let identity = validated_identity(&marker, true)?;
             self.validate(&temporary, identity, true)?;
             self.rename(&temporary, name)?;
-            self.sync()
+            if let Some((renamed, _)) = faults {
+                super::maybe_recovery_fault(renamed)?;
+            }
+            self.sync()?;
+            if let Some((_, synced)) = faults {
+                super::maybe_recovery_fault(synced)?;
+            }
+            Ok(())
         })();
         if result.is_err() {
             let _ = self.remove(&temporary);
@@ -886,83 +911,4 @@ pub(super) fn stage_unnamed(descriptor: File, destination: &Path) -> RevisionRes
 
 pub(super) fn publish_unnamed(descriptor: File, destination: &Path) -> RevisionResult<()> {
     stage_unnamed(descriptor, destination)?.publish(destination)
-}
-
-fn marker_bytes(generation: u64, state_id: Option<StorageStateId>) -> Vec<u8> {
-    let mut marker = generation.to_string();
-    marker.push(':');
-    match state_id {
-        Some(state_id) => {
-            for byte in state_id {
-                use std::fmt::Write as _;
-                write!(&mut marker, "{byte:02x}").expect("writing to a string cannot fail");
-            }
-        }
-        None => marker.push('-'),
-    }
-    marker.into_bytes()
-}
-
-#[cfg(test)]
-pub(super) fn ready_marker_matches(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> bool {
-    directory
-        .read_marker(super::PUBLISH_MIRROR_READY_FILE)
-        .is_ok_and(|bytes| bytes == marker_bytes(generation, state_id))
-}
-
-pub(super) fn write_ready_marker(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> RevisionResult<()> {
-    directory.write_marker(
-        super::PUBLISH_MIRROR_READY_FILE,
-        &marker_bytes(generation, state_id),
-    )
-}
-
-pub(super) fn publication_marker_matches(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> bool {
-    directory
-        .read_marker(super::PUBLISH_CURRENT_FILE)
-        .is_ok_and(|bytes| bytes == marker_bytes(generation, state_id))
-}
-
-pub(super) fn write_publication_marker(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> RevisionResult<()> {
-    directory.write_marker(
-        super::PUBLISH_CURRENT_FILE,
-        &marker_bytes(generation, state_id),
-    )
-}
-
-pub(super) fn working_recovery_marker_matches(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> bool {
-    directory
-        .read_marker(super::PUBLISH_WORKING_RECOVERY_FILE)
-        .is_ok_and(|bytes| bytes == marker_bytes(generation, state_id))
-}
-
-pub(super) fn write_working_recovery_marker(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> RevisionResult<()> {
-    directory.write_marker(
-        super::PUBLISH_WORKING_RECOVERY_FILE,
-        &marker_bytes(generation, state_id),
-    )
 }

@@ -632,6 +632,21 @@ fn publication_crash_child() {
         other => panic!("unknown crash mode {other}"),
     };
     let mut live = LiveRevisionStore::open(Path::new(&canonical), Path::new(&cache)).unwrap();
+    if let Ok(opened) = std::env::var("SPECTRUM_CRASH_OPEN_SENTINEL") {
+        fs::write(opened, b"store open").unwrap();
+    }
+    if let Ok(continue_sentinel) = std::env::var("SPECTRUM_CRASH_WAIT_FOR") {
+        for _ in 0..1_000 {
+            if Path::new(&continue_sentinel).exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            Path::new(&continue_sentinel).exists(),
+            "timed out waiting to continue crash child"
+        );
+    }
     let prime_handled_failure = std::env::var("SPECTRUM_CRASH_PRIME_HANDLED_FAILURE").is_ok();
     if prime_handled_failure {
         PUBLISH_FAULT.set(Some(PublishFault::CandidateSynced));
@@ -646,14 +661,14 @@ fn publication_crash_child() {
         PUBLISH_FAULT.set(None);
     }
     PUBLISH_CRASH_MODE.set(Some(mode));
-    if prime_handled_failure {
+    let arm_after_mutation =
+        prime_handled_failure || std::env::var("SPECTRUM_CRASH_ARM_AFTER_MUTATION").is_ok();
+    if arm_after_mutation {
         live.mutate(|store| {
             let result = store.put_asset("application/x-crash-child", b"survives abrupt death");
-            fs::write(
-                std::env::var("SPECTRUM_CRASH_TAIL_SENTINEL").unwrap(),
-                b"tail mutation committed",
-            )
-            .unwrap();
+            if let Ok(sentinel) = std::env::var("SPECTRUM_CRASH_TAIL_SENTINEL") {
+                fs::write(sentinel, b"tail mutation committed").unwrap();
+            }
             PUBLISH_FAULT.set(Some(fault));
             result
         })
@@ -826,6 +841,12 @@ fn fault_name(fault: PublishFault) -> &'static str {
         PublishFault::LinkedSlotUnlinked => "linked-slot-unlinked",
         PublishFault::FullCopyPublished => "full-copy-published",
         PublishFault::SeedMirrorCreated => "seed-mirror-created",
+        PublishFault::WorkingPoisonRenamed => "working-poison-renamed",
+        PublishFault::WorkingPoisonSynced => "working-poison-synced",
+        PublishFault::WorkingRecoveryMarkerRenamed => "working-recovery-marker-renamed",
+        PublishFault::WorkingRecoveryMarkerSynced => "working-recovery-marker-synced",
+        PublishFault::WorkingPoisonRemoved => "working-poison-removed",
+        PublishFault::WorkingPoisonRemovalSynced => "working-poison-removal-synced",
     }
 }
 
@@ -842,6 +863,12 @@ fn parse_fault(name: &str) -> PublishFault {
         "linked-slot-unlinked" => PublishFault::LinkedSlotUnlinked,
         "full-copy-published" => PublishFault::FullCopyPublished,
         "seed-mirror-created" => PublishFault::SeedMirrorCreated,
+        "working-poison-renamed" => PublishFault::WorkingPoisonRenamed,
+        "working-poison-synced" => PublishFault::WorkingPoisonSynced,
+        "working-recovery-marker-renamed" => PublishFault::WorkingRecoveryMarkerRenamed,
+        "working-recovery-marker-synced" => PublishFault::WorkingRecoveryMarkerSynced,
+        "working-poison-removed" => PublishFault::WorkingPoisonRemoved,
+        "working-poison-removal-synced" => PublishFault::WorkingPoisonRemovalSynced,
         other => panic!("unknown publication fault {other}"),
     }
 }

@@ -16,6 +16,8 @@ use crate::{
 
 mod capabilities;
 #[cfg(target_os = "linux")]
+mod fault;
+#[cfg(target_os = "linux")]
 mod linux_io;
 mod metrics;
 #[cfg(all(test, target_os = "linux"))]
@@ -29,14 +31,17 @@ mod tail_tests;
 mod tests;
 use capabilities::PublishCapabilities;
 #[cfg(target_os = "linux")]
+use fault::*;
+#[cfg(target_os = "linux")]
 use linux_io::write_ready_marker;
 #[cfg(target_os = "linux")]
 use linux_io::{
-    ExchangeIntent, PrivateDirectory, PublishBase, catch_up_after_bulk, open_unnamed,
-    prepare_reusable_slot, publish_unnamed, recover_exchange, recover_full_copy,
+    ExchangeIntent, PrivateDirectory, PublishBase, WorkingRecoveryInstall, catch_up_after_bulk,
+    open_unnamed, prepare_reusable_slot, publication_marker_bytes_match, publish_unnamed,
+    read_publication_marker, read_working_recovery_marker, recover_exchange, recover_full_copy,
     remove_private_file, remove_private_file_lazy, seed_incremental_mirror, update_candidate_slot,
-    validate_publish_base, working_recovery_marker_matches, write_full_copy_intent,
-    write_publication_marker, write_working_recovery_marker,
+    validate_publish_base, working_recovery_marker_bytes_match, working_recovery_poison_present,
+    write_full_copy_intent, write_publication_marker, write_working_recovery_marker,
 };
 use metrics::elapsed_us;
 pub use metrics::{PublishStats, PublishStrategy, PublishTimings};
@@ -56,42 +61,13 @@ const PUBLISH_FULL_COPY_INTENT_FILE: &str = "published-copy.intent";
 #[cfg(target_os = "linux")]
 const PUBLISH_WORKING_RECOVERY_FILE: &str = "working-recovery.ready";
 #[cfg(target_os = "linux")]
+const PUBLISH_WORKING_POISON_FILE: &str = "working-recovery.poison";
+#[cfg(target_os = "linux")]
 const LEGACY_PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
 #[cfg(target_os = "linux")]
 const WRITE_BLOCK_BYTES: usize = 4 * 1024;
 #[cfg(target_os = "linux")]
 const BULK_CHANGE_CATCH_UP_BYTES: u64 = 1024 * 1024;
-
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PublishFault {
-    SlotSealed,
-    CandidateSynced,
-    IntentCreated,
-    PreExchangeValidated,
-    Exchanged,
-    SlotWritable,
-    MarkerCreated,
-    IntentRemoved,
-    LinkedSlotUnlinked,
-    FullCopyPublished,
-    SeedMirrorCreated,
-}
-
-#[cfg(all(test, target_os = "linux"))]
-#[derive(Clone, Copy)]
-enum CrashMode {
-    Exit,
-    Abort,
-    Kill,
-}
-
-#[cfg(all(test, target_os = "linux"))]
-thread_local! {
-    static PUBLISH_FAULT: Cell<Option<PublishFault>> = const { Cell::new(None) };
-    static PUBLISH_CRASH_MODE: Cell<Option<CrashMode>> = const { Cell::new(None) };
-    static PUBLISH_HARDLINK_ALIAS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
 
 /// A live SQLite working store whose user-facing project is always a single checkpointed file.
 ///
@@ -106,6 +82,7 @@ pub struct LiveRevisionStore {
     published_state_id: Cell<Option<StorageStateId>>,
     temps_cleaned: Cell<bool>,
     pending_publish_error: RefCell<Option<String>>,
+    publication_poisoned: Cell<bool>,
     last_publish_stats: Cell<PublishStats>,
     publish_capabilities: PublishCapabilities,
 }
@@ -162,6 +139,7 @@ impl LiveRevisionStore {
             published_state_id: Cell::new(None),
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
+            publication_poisoned: Cell::new(false),
             last_publish_stats: Cell::new(PublishStats::default()),
             publish_capabilities: PublishCapabilities::default(),
         };
@@ -177,11 +155,15 @@ impl LiveRevisionStore {
         &mut self,
         mutation: impl FnOnce(&mut RevisionStore) -> RevisionResult<T>,
     ) -> RevisionResult<T> {
+        self.require_publishable()?;
+        #[cfg(not(target_os = "linux"))]
         if self.pending_publish_error.borrow().is_some() {
             self.publish()?;
         }
         #[cfg(target_os = "linux")]
         let _cache_lock = lock_private(&self.lock_path)?;
+        #[cfg(target_os = "linux")]
+        self.publish_recovered_working_locked()?;
         let core_started = Instant::now();
         let result = mutation(&mut self.store)?;
         let core_write_us = elapsed_us(core_started.elapsed());
@@ -202,6 +184,7 @@ impl LiveRevisionStore {
                     let message =
                         format!("{error}; could not preserve failed publication: {recovery_error}");
                     self.pending_publish_error.replace(Some(message.clone()));
+                    self.publication_poisoned.set(true);
                     return Err(RevisionError::Invalid(message));
                 }
             },
@@ -210,8 +193,11 @@ impl LiveRevisionStore {
     }
 
     pub fn publish(&self) -> RevisionResult<()> {
+        self.require_publishable()?;
         #[cfg(target_os = "linux")]
         let _cache_lock = lock_private(&self.lock_path)?;
+        #[cfg(target_os = "linux")]
+        self.publish_recovered_working_locked()?;
         self.store.checkpoint()?;
         #[cfg(target_os = "linux")]
         let published = self.publish_current_locked();
@@ -230,6 +216,7 @@ impl LiveRevisionStore {
                             "{error}; could not preserve failed publication: {recovery_error}"
                         );
                         self.pending_publish_error.replace(Some(message.clone()));
+                        self.publication_poisoned.set(true);
                         return Err(RevisionError::Invalid(message));
                     }
                 };
@@ -260,7 +247,7 @@ impl LiveRevisionStore {
         if self.canonical_path.is_file() && self.published_generation.get() >= working_generation {
             self.last_publish_stats.set(PublishStats::default());
             #[cfg(target_os = "linux")]
-            remove_private_file_lazy(
+            remove_private_file(
                 &PrivateDirectory::open(
                     self.lock_path
                         .parent()
@@ -285,7 +272,7 @@ impl LiveRevisionStore {
         self.published_state_id
             .set(RevisionStore::inspect(&self.working_path)?.state_id);
         #[cfg(target_os = "linux")]
-        remove_private_file_lazy(
+        remove_private_file(
             &PrivateDirectory::open(
                 self.lock_path
                     .parent()
@@ -310,6 +297,18 @@ impl LiveRevisionStore {
 
     pub fn last_publish_stats(&self) -> PublishStats {
         self.last_publish_stats.get()
+    }
+
+    fn require_publishable(&self) -> RevisionResult<()> {
+        if self.publication_poisoned.get() {
+            return Err(RevisionError::Invalid(
+                self.pending_publish_error
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| "live publication state is poisoned".into()),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -809,41 +808,6 @@ fn validate_named_identity(
         ));
     }
     Ok(())
-}
-
-#[cfg(all(test, target_os = "linux"))]
-fn maybe_publish_fault(point: PublishFault) -> RevisionResult<()> {
-    if PUBLISH_FAULT.get() == Some(point) {
-        if let Some(mode) = PUBLISH_CRASH_MODE.get() {
-            match mode {
-                CrashMode::Exit => unsafe { libc::_exit(86) },
-                CrashMode::Abort => std::process::abort(),
-                CrashMode::Kill => unsafe {
-                    libc::raise(libc::SIGKILL);
-                    libc::_exit(87);
-                },
-            }
-        }
-        return Err(RevisionError::Invalid(format!(
-            "injected publication fault at {point:?}"
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(all(not(test), target_os = "linux"))]
-fn maybe_publish_fault(_point: PublishFault) -> RevisionResult<()> {
-    Ok(())
-}
-
-#[cfg(all(test, target_os = "linux"))]
-fn maybe_seed_fault() -> RevisionResult<()> {
-    maybe_publish_fault(PublishFault::SeedMirrorCreated)
-}
-
-#[cfg(all(not(test), target_os = "linux"))]
-fn maybe_seed_fault() -> RevisionResult<()> {
-    maybe_publish_fault(PublishFault::SeedMirrorCreated)
 }
 
 #[cfg(target_os = "linux")]

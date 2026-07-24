@@ -219,7 +219,7 @@ fn same_cache_publishers_rebase_and_explicit_retry_converges() {
 }
 
 #[test]
-fn newer_live_cache_recovers_a_stale_published_copy() {
+fn exact_published_marker_recovers_a_stale_published_copy() {
     let mut fixture = Fixture::new();
     let stale = fixture.directory.path().join("stale.prism");
     fs::copy(&fixture.canonical, &stale).unwrap();
@@ -234,6 +234,30 @@ fn newer_live_cache_recovers_a_stale_published_copy() {
     let separate_cache = fixture.directory.path().join("verified-cache");
     let verified = LiveRevisionStore::open(&fixture.canonical, &separate_cache).unwrap();
     assert!(verified.store().revision(latest).unwrap().is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unmarked_newer_live_cache_is_discarded_for_the_canonical_copy() {
+    let mut fixture = Fixture::new();
+    let stale = fixture.directory.path().join("stale.prism");
+    fs::copy(&fixture.canonical, &stale).unwrap();
+    let project_id = fixture.live.store().project_info().unwrap().project_id;
+    let unmarked = fixture.append(fixture.human_session, fixture.root, "Unmarked");
+    let project_cache = fixture.cache.join(project_id.to_string());
+    for marker in ["working-recovery.ready", "published-current.ready"] {
+        match fs::remove_file(project_cache.join(marker)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("could not remove {marker}: {error}"),
+        }
+    }
+    drop(fixture.live);
+
+    fs::copy(&stale, &fixture.canonical).unwrap();
+    let recovered = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
+    assert!(recovered.store().revision(unmarked).unwrap().is_none());
+    assert_eq!(recovered.store().generation().unwrap(), 1);
 }
 
 #[test]

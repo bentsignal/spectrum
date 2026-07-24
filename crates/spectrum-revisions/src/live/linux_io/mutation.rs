@@ -90,8 +90,9 @@ impl<'a> PrivateMutation<'a> {
                     &self.directory.descriptor,
                     &self.name,
                 )?;
-                // The next durable intent or ready-marker directory sync orders this restoration.
-                // Error paths may leave either rename state after a crash; recover() handles both.
+                // Sync the source directory now. The next durable intent or ready-marker cache
+                // directory sync orders the target name before it can become publication state.
+                self.gate.sync_all()?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.directory.validate(&self.name, self.identity, true)?;
@@ -117,16 +118,41 @@ pub(super) fn recover(directory: &PrivateDirectory) -> RevisionResult<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let identity = validated_identity(&gated, true)?;
-    if openat(&directory.descriptor, name, false).is_ok() {
-        return Err(RevisionError::Invalid(
-            "publication slot exists both inside and outside its mutation gate".into(),
-        ));
+    let identity = validated_identity(&gated, false)?;
+    if let Ok(restored) = openat(&directory.descriptor, name, false) {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let restored_identity = validated_identity(&restored, false)?;
+        if restored_identity != identity
+            || gated.metadata()?.nlink() != 2
+            || restored.metadata()?.nlink() != 2
+        {
+            return Err(RevisionError::Invalid(
+                "publication slot exists with different identities inside and outside its mutation gate"
+                    .into(),
+            ));
+        }
+        unlink_from(&gate, name)?;
+        gate.sync_all()?;
+        directory.sync()?;
+        return directory.validate(name, identity, true);
     }
+    validated_identity(&gated, true)?;
     rename_between(&gate, name, &directory.descriptor, name)?;
     gate.sync_all()?;
     directory.sync()?;
     directory.validate(name, identity, true)
+}
+
+fn unlink_from(directory: &File, name: &str) -> io::Result<()> {
+    let name = CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
+    let removed = unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) };
+    if removed == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 fn open_gate(directory: &PrivateDirectory, create: bool) -> RevisionResult<File> {

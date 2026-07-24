@@ -43,7 +43,21 @@ impl LiveRevisionStore {
         let lock = lock_private(&lock_path)?;
         #[cfg(not(target_os = "linux"))]
         let lock = lock(&lock_path)?;
+        #[cfg(target_os = "linux")]
+        let private_directory = PrivateDirectory::open(&project_directory)?;
+        #[cfg(target_os = "linux")]
+        if working_recovery_poison_present(&private_directory)? {
+            return Err(RevisionError::Invalid(
+                "live cache contains an unacknowledged publication failure".into(),
+            ));
+        }
         if working_path.exists() {
+            #[cfg(target_os = "linux")]
+            let working_recovery_marker = read_working_recovery_marker(&private_directory)?;
+            #[cfg(target_os = "linux")]
+            let publication_marker = read_publication_marker(&private_directory)?;
+            #[cfg(target_os = "linux")]
+            let mut remove_stale_publication_marker = false;
             let working = (|| {
                 #[cfg(target_os = "linux")]
                 let working_store = RevisionStore::open_publication_managed(&working_path)?;
@@ -68,23 +82,67 @@ impl LiveRevisionStore {
                     let exact = working_generation == canonical.generation
                         && working_state_id == canonical.state_id;
                     #[cfg(target_os = "linux")]
-                    let recoverable_newer = working_generation > canonical.generation
-                        && working_recovery_marker_matches(
-                            &PrivateDirectory::open(&project_directory)?,
-                            working_generation,
-                            working_state_id,
-                        );
+                    let recoverable_newer = {
+                        let recovery_matches =
+                            working_recovery_marker.as_deref().is_none_or(|marker| {
+                                working_recovery_marker_bytes_match(
+                                    marker,
+                                    working_generation,
+                                    working_state_id,
+                                )
+                            });
+                        let publication_matches =
+                            publication_marker.as_deref().is_none_or(|marker| {
+                                publication_marker_bytes_match(
+                                    marker,
+                                    working_generation,
+                                    working_state_id,
+                                )
+                            });
+                        if !recovery_matches || !publication_matches {
+                            return Err(RevisionError::Invalid(
+                                "live cache has a publication marker that does not match its \
+                                 working state"
+                                    .into(),
+                            ));
+                        }
+                        let has_recovery_marker = working_recovery_marker.is_some();
+                        let has_publication_marker = publication_marker.is_some();
+                        let recoverable = working_generation > canonical.generation
+                            && (has_recovery_marker || has_publication_marker);
+                        if !exact && !recoverable && has_recovery_marker {
+                            return Err(RevisionError::Invalid(
+                                "live cache has an unresolved working recovery marker".into(),
+                            ));
+                        }
+                        remove_stale_publication_marker =
+                            !exact && !recoverable && has_publication_marker;
+                        recoverable
+                    };
                     #[cfg(not(target_os = "linux"))]
                     let recoverable_newer = working_generation > canonical.generation;
                     exact || recoverable_newer
                 }
-                Err(_) => false,
+                Err(_error) => {
+                    #[cfg(target_os = "linux")]
+                    if working_recovery_marker.is_some() || publication_marker.is_some() {
+                        return Err(RevisionError::Invalid(format!(
+                            "live cache cannot be validated against its publication marker: \
+                             {_error}"
+                        )));
+                    }
+                    false
+                }
             };
             if !keep_working {
                 if sidecar_path(&working_path, "-shm").exists() {
                     return Err(RevisionError::Invalid(
                         "project changed elsewhere while its live cache is in use".into(),
                     ));
+                }
+                #[cfg(target_os = "linux")]
+                if remove_stale_publication_marker {
+                    remove_private_file(&private_directory, PUBLISH_CURRENT_FILE)?;
                 }
                 remove_sidecars(&working_path)?;
                 replace_with_copy(&canonical_path, &working_path)?;
@@ -107,6 +165,7 @@ impl LiveRevisionStore {
             published_state_id: Cell::new(canonical.state_id),
             temps_cleaned: Cell::new(false),
             pending_publish_error: RefCell::new(None),
+            publication_poisoned: Cell::new(false),
             last_publish_stats: Cell::new(PublishStats::default()),
             publish_capabilities: PublishCapabilities::default(),
         };
@@ -147,7 +206,7 @@ impl LiveRevisionStore {
         self.store.make_checkpoint_durable()?;
         let generation = self.store.generation()?;
         let state_id = self.store.state_id()?;
-        write_working_recovery_marker(
+        let installed = write_working_recovery_marker(
             &PrivateDirectory::open(
                 self.lock_path
                     .parent()
@@ -156,7 +215,12 @@ impl LiveRevisionStore {
             generation,
             state_id,
         )?;
-        Ok(error.to_string())
+        Ok(match installed {
+            WorkingRecoveryInstall::Clean => error.to_string(),
+            WorkingRecoveryInstall::PoisonCleanupPending(cleanup_error) => format!(
+                "{error}; recovery marker is durable but poison cleanup is pending: {cleanup_error}"
+            ),
+        })
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -165,5 +229,67 @@ impl LiveRevisionStore {
         error: &RevisionError,
     ) -> RevisionResult<String> {
         Ok(error.to_string())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn publish_recovered_working_locked(&self) -> RevisionResult<()> {
+        let directory = PrivateDirectory::open(
+            self.lock_path
+                .parent()
+                .expect("publish lock always has a cache directory"),
+        )?;
+        let poisoned = working_recovery_poison_present(&directory)?;
+        let generation = self.store.generation()?;
+        let state_id = self.store.state_id()?;
+        if let Some(marker) = read_working_recovery_marker(&directory)? {
+            if !working_recovery_marker_bytes_match(&marker, generation, state_id) {
+                return Err(RevisionError::Invalid(
+                    "working recovery marker is malformed or does not match the live cache".into(),
+                ));
+            }
+            if poisoned {
+                if self.pending_publish_error.borrow().is_none() {
+                    return Err(RevisionError::Invalid(
+                        "live cache contains an unacknowledged publication failure".into(),
+                    ));
+                }
+                remove_private_file(&directory, PUBLISH_WORKING_POISON_FILE)?;
+            }
+            return self.publish_recovered_current();
+        }
+        if poisoned {
+            return Err(RevisionError::Invalid(
+                "live cache contains an unacknowledged publication failure".into(),
+            ));
+        }
+        let published_here = self.published_generation.get() == generation
+            && self.published_state_id.get() == state_id;
+        match read_publication_marker(&directory)? {
+            Some(marker) if !publication_marker_bytes_match(&marker, generation, state_id) => {
+                Err(RevisionError::Invalid(
+                    "publication marker is malformed or does not match the live cache".into(),
+                ))
+            }
+            Some(_) if published_here => Ok(()),
+            Some(_) => self.publish_recovered_current(),
+            None if published_here => Ok(()),
+            None => Err(RevisionError::Invalid(
+                "live cache advanced beyond its last durable publication marker".into(),
+            )),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn publish_recovered_current(&self) -> RevisionResult<()> {
+        match self.publish_current_locked() {
+            Ok(()) => {
+                self.pending_publish_error.replace(None);
+                Ok(())
+            }
+            Err(error) => {
+                self.pending_publish_error.replace(Some(error.to_string()));
+                Err(error)
+            }
+        }
     }
 }

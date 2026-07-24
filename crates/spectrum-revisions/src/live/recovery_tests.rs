@@ -26,6 +26,207 @@ fn project(application_id: &str) -> NewProject {
 }
 
 #[test]
+fn recovery_protocol_crash_child() {
+    let Ok(canonical) = std::env::var("SPECTRUM_RECOVERY_CRASH_CANONICAL") else {
+        return;
+    };
+    let cache = std::env::var("SPECTRUM_RECOVERY_CRASH_CACHE").unwrap();
+    let fault = match std::env::var("SPECTRUM_RECOVERY_CRASH_FAULT")
+        .unwrap()
+        .as_str()
+    {
+        "poison-synced" => PublishFault::WorkingPoisonSynced,
+        "marker-synced" => PublishFault::WorkingRecoveryMarkerSynced,
+        "poison-removed" => PublishFault::WorkingPoisonRemoved,
+        other => panic!("unknown recovery crash fault {other}"),
+    };
+    let mut live = LiveRevisionStore::open(
+        std::path::Path::new(&canonical),
+        std::path::Path::new(&cache),
+    )
+    .unwrap();
+    PUBLISH_FAULT.set(Some(PublishFault::CandidateSynced));
+    RECOVERY_FAULT.set(Some(fault));
+    RECOVERY_CRASH_MODE.set(Some(CrashMode::Kill));
+    live.mutate(|store| {
+        store.put_asset(
+            "application/x-recovery-crash",
+            b"recovery protocol residual",
+        )
+    })
+    .unwrap();
+    panic!("recovery fault {fault:?} did not terminate the child");
+}
+
+#[test]
+fn real_process_death_leaves_each_recovery_protocol_boundary_fail_closed_or_exact() {
+    for (fault, poison_expected, marker_expected, reopen_fails) in [
+        ("poison-synced", true, false, true),
+        ("marker-synced", true, true, true),
+        ("poison-removed", false, true, false),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().join("project.lumen");
+        let cache = directory.path().join("cache");
+        let (live, info) = LiveRevisionStore::create(
+            &canonical,
+            &cache,
+            project(&format!("spectrum.recovery-crash-{fault}")),
+        )
+        .unwrap();
+        let base = RevisionStore::inspect(&canonical).unwrap();
+        let project_cache = cache.join(info.project_id.to_string());
+        drop(live);
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .arg("recovery_protocol_crash_child")
+            .arg("--nocapture")
+            .env("SPECTRUM_RECOVERY_CRASH_CANONICAL", &canonical)
+            .env("SPECTRUM_RECOVERY_CRASH_CACHE", &cache)
+            .env("SPECTRUM_RECOVERY_CRASH_FAULT", fault)
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL), "{fault}");
+        assert_eq!(
+            project_cache.join(PUBLISH_WORKING_POISON_FILE).exists(),
+            poison_expected,
+            "{fault}"
+        );
+        assert_eq!(
+            project_cache.join(PUBLISH_WORKING_RECOVERY_FILE).exists(),
+            marker_expected,
+            "{fault}"
+        );
+        assert_eq!(
+            RevisionStore::inspect(&canonical).unwrap().generation,
+            base.generation,
+            "{fault}"
+        );
+        assert!(
+            RevisionStore::inspect(&project_cache.join(STORE_FILE))
+                .unwrap()
+                .generation
+                > base.generation,
+            "{fault}"
+        );
+
+        let reopened = LiveRevisionStore::open(&canonical, &cache);
+        assert_eq!(reopened.is_err(), reopen_fails, "{fault}");
+        if let Ok(reopened) = reopened {
+            let recovered = Asset::new(
+                "application/x-recovery-crash",
+                b"recovery protocol residual".to_vec(),
+            );
+            assert!(reopened.store().asset(recovered.id).unwrap().is_some());
+            assert_eq!(
+                RevisionStore::inspect(&canonical).unwrap().generation,
+                reopened.store().generation().unwrap()
+            );
+            assert!(!project_cache.join(PUBLISH_WORKING_RECOVERY_FILE).exists());
+        }
+    }
+}
+
+#[test]
+fn open_preserves_higher_working_state_when_any_publication_marker_is_bad() {
+    for (marker_name, marker_bytes) in [
+        (PUBLISH_CURRENT_FILE, b"1:-".as_slice()),
+        (
+            PUBLISH_WORKING_RECOVERY_FILE,
+            b"not-a-valid-recovery-marker".as_slice(),
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().join("project.lumen");
+        let stale = directory.path().join("stale.lumen");
+        let cache = directory.path().join("cache");
+        let (mut live, info) = LiveRevisionStore::create(
+            &canonical,
+            &cache,
+            project(&format!("spectrum.bad-marker-{marker_name}")),
+        )
+        .unwrap();
+        std::fs::copy(&canonical, &stale).unwrap();
+        live.mutate(|store| store.put_asset("application/x-bad-marker", marker_name.as_bytes()))
+            .unwrap();
+        let working_path = live.working_path().to_owned();
+        let project_cache = cache.join(info.project_id.to_string());
+        drop(live);
+
+        std::fs::write(project_cache.join(marker_name), marker_bytes).unwrap();
+        std::fs::copy(&stale, &canonical).unwrap();
+        let before_bytes = std::fs::read(&working_path).unwrap();
+        let before = RevisionStore::inspect(&working_path).unwrap();
+
+        assert!(LiveRevisionStore::open(&canonical, &cache).is_err());
+        assert_eq!(std::fs::read(&working_path).unwrap(), before_bytes);
+        let after = RevisionStore::inspect(&working_path).unwrap();
+        assert_eq!(after.generation, before.generation);
+        assert_eq!(after.state_id, before.state_id);
+    }
+}
+
+#[test]
+fn working_marker_cleanup_crash_child() {
+    let Ok(canonical) = std::env::var("SPECTRUM_CLEANUP_CRASH_CANONICAL") else {
+        return;
+    };
+    let cache = std::env::var("SPECTRUM_CLEANUP_CRASH_CACHE").unwrap();
+    let mut live = LiveRevisionStore::open(
+        std::path::Path::new(&canonical),
+        std::path::Path::new(&cache),
+    )
+    .unwrap();
+    PUBLISH_FAULT.set(Some(PublishFault::CandidateSynced));
+    live.mutate(|store| {
+        store.put_asset(
+            "application/x-cleanup-crash",
+            b"published before abrupt death",
+        )
+    })
+    .unwrap();
+    PUBLISH_FAULT.set(None);
+    live.publish().unwrap();
+    unsafe {
+        libc::raise(libc::SIGKILL);
+        libc::_exit(87);
+    }
+}
+
+#[test]
+fn published_recovery_durably_removes_the_working_marker_before_process_death() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    let (live, info) = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        project("spectrum.working-marker-cleanup"),
+    )
+    .unwrap();
+    let project_cache = cache.join(info.project_id.to_string());
+    drop(live);
+
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("working_marker_cleanup_crash_child")
+        .arg("--nocapture")
+        .env("SPECTRUM_CLEANUP_CRASH_CANONICAL", &canonical)
+        .env("SPECTRUM_CLEANUP_CRASH_CACHE", &cache)
+        .status()
+        .unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    assert!(!project_cache.join(PUBLISH_WORKING_RECOVERY_FILE).exists());
+
+    let recovered = Asset::new(
+        "application/x-cleanup-crash",
+        b"published before abrupt death".to_vec(),
+    );
+    let reopened = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    assert!(reopened.store().asset(recovered.id).unwrap().is_some());
+    assert!(!project_cache.join(PUBLISH_WORKING_RECOVERY_FILE).exists());
+}
+
+#[test]
 fn failed_publication_marks_exact_working_state_for_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let canonical = directory.path().join("project.lumen");
@@ -190,6 +391,86 @@ fn pending_recovery_is_published_before_the_next_mutation_can_overwrite_it() {
 }
 
 #[test]
+fn shared_lock_publishes_another_store_recovery_before_entering_the_next_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    let (mut first, _) = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        project("spectrum.cross-store-prefix-recovery"),
+    )
+    .unwrap();
+    let base_generation = first.store().generation().unwrap();
+    let second_opened = directory.path().join("second-opened");
+    let allow_second = directory.path().join("allow-second");
+    let second_mutated = directory.path().join("second-mutated");
+    let mut second = Command::new(std::env::current_exe().unwrap())
+        .arg("publication_crash_child")
+        .arg("--nocapture")
+        .env("SPECTRUM_CRASH_CANONICAL", &canonical)
+        .env("SPECTRUM_CRASH_CACHE", &cache)
+        .env("SPECTRUM_CRASH_OPEN_SENTINEL", &second_opened)
+        .env("SPECTRUM_CRASH_WAIT_FOR", &allow_second)
+        .env("SPECTRUM_CRASH_ARM_AFTER_MUTATION", "1")
+        .env("SPECTRUM_CRASH_TAIL_SENTINEL", &second_mutated)
+        .env("SPECTRUM_CRASH_FAULT", "candidate-synced")
+        .env("SPECTRUM_CRASH_MODE", "kill")
+        .spawn()
+        .unwrap();
+    for _ in 0..1_000 {
+        if second_opened.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(second_opened.exists(), "second store did not open");
+
+    PUBLISH_FAULT.set(Some(PublishFault::CandidateSynced));
+    first
+        .mutate(|store| {
+            store.put_asset(
+                "application/x-cross-store-prefix",
+                b"acknowledged by first store",
+            )
+        })
+        .unwrap();
+    PUBLISH_FAULT.set(None);
+    assert!(first.pending_publish_error().is_some());
+    fs::write(&allow_second, b"continue").unwrap();
+
+    let status = second.wait().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    assert!(
+        second_mutated.exists(),
+        "second mutation closure never ran after recovery publication"
+    );
+    assert_eq!(
+        RevisionStore::inspect(&canonical).unwrap().generation,
+        base_generation + 1
+    );
+    drop(first);
+
+    let prefix = Asset::new(
+        "application/x-cross-store-prefix",
+        b"acknowledged by first store".to_vec(),
+    );
+    let discarded_tail = Asset::new(
+        "application/x-crash-child",
+        b"survives abrupt death".to_vec(),
+    );
+    let recovered = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    assert!(recovered.store().asset(prefix.id).unwrap().is_some());
+    assert!(
+        recovered
+            .store()
+            .asset(discarded_tail.id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn mutate_reports_failure_when_working_recovery_marker_cannot_be_written() {
     let directory = tempfile::tempdir().unwrap();
     let canonical = directory.path().join("project.lumen");
@@ -200,6 +481,7 @@ fn mutate_reports_failure_when_working_recovery_marker_cannot_be_written() {
         project("spectrum.failed-recovery-marker"),
     )
     .unwrap();
+    let base_generation = live.store().generation().unwrap();
     let project_cache = cache.join(info.project_id.to_string());
     let blocked_marker = project_cache.join(PUBLISH_WORKING_RECOVERY_FILE);
     std::fs::create_dir(&blocked_marker).unwrap();
@@ -222,6 +504,100 @@ fn mutate_reports_failure_when_working_recovery_marker_cannot_be_written() {
     );
 
     std::fs::remove_dir(&blocked_marker).unwrap();
-    live.publish().unwrap();
-    assert!(live.pending_publish_error().is_none());
+    assert!(live.publish().is_err());
+    let mut retry_ran = false;
+    assert!(
+        live.mutate(|_| {
+            retry_ran = true;
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(!retry_ran, "a poisoned store entered a retry closure");
+    drop(live);
+    assert!(LiveRevisionStore::open(&canonical, &cache).is_err());
+
+    let retry_cache = directory.path().join("retry-cache");
+    let mut retry = LiveRevisionStore::open(&canonical, &retry_cache).unwrap();
+    retry
+        .mutate(|store| store.put_asset("application/x-unacknowledged", b"retried exactly once"))
+        .unwrap();
+    assert_eq!(
+        RevisionStore::inspect(&canonical).unwrap().generation,
+        base_generation + 1
+    );
+}
+
+#[test]
+fn recovery_protocol_faults_never_turn_an_ordinary_error_into_a_later_publication() {
+    let poison_faults = [
+        PublishFault::WorkingPoisonRenamed,
+        PublishFault::WorkingPoisonSynced,
+        PublishFault::WorkingRecoveryMarkerRenamed,
+        PublishFault::WorkingRecoveryMarkerSynced,
+    ];
+    for fault in poison_faults {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().join("project.lumen");
+        let cache = directory.path().join("cache");
+        let (mut live, info) = LiveRevisionStore::create(
+            &canonical,
+            &cache,
+            project(&format!("spectrum.recovery-boundary-{fault:?}")),
+        )
+        .unwrap();
+        let base_generation = live.store().generation().unwrap();
+        let project_cache = cache.join(info.project_id.to_string());
+
+        PUBLISH_FAULT.set(Some(PublishFault::CandidateSynced));
+        RECOVERY_FAULT.set(Some(fault));
+        let error = live
+            .mutate(|store| store.put_asset("application/x-boundary", b"must not publish"))
+            .unwrap_err();
+        PUBLISH_FAULT.set(None);
+        RECOVERY_FAULT.set(None);
+
+        assert!(
+            error
+                .to_string()
+                .contains("could not preserve failed publication")
+        );
+        assert!(project_cache.join(PUBLISH_WORKING_POISON_FILE).exists());
+        assert!(live.publish().is_err());
+        drop(live);
+        assert!(LiveRevisionStore::open(&canonical, &cache).is_err());
+        assert_eq!(
+            RevisionStore::inspect(&canonical).unwrap().generation,
+            base_generation
+        );
+    }
+}
+
+#[test]
+fn poison_cleanup_ambiguity_is_acknowledged_as_pending_not_returned_as_retryable_error() {
+    for fault in [
+        PublishFault::WorkingPoisonRemoved,
+        PublishFault::WorkingPoisonRemovalSynced,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().join("project.lumen");
+        let cache = directory.path().join("cache");
+        let (mut live, _) = LiveRevisionStore::create(
+            &canonical,
+            &cache,
+            project(&format!("spectrum.cleanup-boundary-{fault:?}")),
+        )
+        .unwrap();
+
+        PUBLISH_FAULT.set(Some(PublishFault::CandidateSynced));
+        RECOVERY_FAULT.set(Some(fault));
+        live.mutate(|store| store.put_asset("application/x-boundary", b"acknowledged pending"))
+            .unwrap();
+        PUBLISH_FAULT.set(None);
+        RECOVERY_FAULT.set(None);
+
+        assert!(live.pending_publish_error().is_some());
+        live.publish().unwrap();
+        assert!(live.pending_publish_error().is_none());
+    }
 }
