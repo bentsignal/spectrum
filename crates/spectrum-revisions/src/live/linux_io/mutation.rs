@@ -14,14 +14,12 @@ use super::{
 };
 
 const MUTATION_GATE: &str = ".published-mutation-gate";
-const MUTATION_CANDIDATE: &str = ".published-mutation-candidate";
 
 pub(crate) struct PrivateMutation<'a> {
     directory: &'a PrivateDirectory,
     gate: File,
     name: String,
-    original_identity: FileIdentity,
-    candidate: Option<File>,
+    identity: FileIdentity,
     restored: bool,
 }
 
@@ -32,86 +30,39 @@ impl<'a> PrivateMutation<'a> {
         descriptor: &File,
         identity: FileIdentity,
         point: SlotMutationPoint,
-    ) -> RevisionResult<Option<Self>> {
+    ) -> RevisionResult<Self> {
+        // Supported publishers cooperate through the private cache lock. Pre-existing
+        // aliases and path replacements are rejected before the page-diff mutation.
         directory.validate(name, identity, true)?;
+        maybe_inject_slot_hardlink(directory, name, point)?;
         let gate = open_gate(directory, true)?;
         ensure_missing(&gate, name)?;
-        ensure_missing(&directory.descriptor, MUTATION_CANDIDATE)?;
         rename_between(&directory.descriptor, name, &gate, name)?;
         directory.sync()?;
         gate.sync_all()?;
-        let mut guard = Self {
+        let guard = Self {
             directory,
             gate,
             name: name.into(),
-            original_identity: identity,
-            candidate: None,
+            identity,
             restored: false,
         };
         guard
             .gate
             .set_permissions(fs::Permissions::from_mode(0o0))?;
         validated_identity(descriptor, true)?;
-        maybe_inject_slot_hardlink(descriptor, point)?;
-        let candidate = match directory.clone_unnamed(descriptor) {
-            Ok(candidate) => candidate,
-            Err(_) => return Ok(None),
-        };
-        validate_unnamed(&candidate)?;
-        guard.candidate = Some(candidate);
         super::super::maybe_publish_fault(super::super::PublishFault::SlotSealed)?;
-        Ok(Some(guard))
+        Ok(guard)
     }
 
-    pub(super) fn candidate(&self) -> &File {
-        self.candidate
-            .as_ref()
-            .expect("successful private mutation has an anonymous candidate")
-    }
-
-    pub(super) fn finish(mut self, name: &str) -> RevisionResult<FileIdentity> {
-        if name != self.name {
+    pub(super) fn finish(mut self, name: &str, identity: FileIdentity) -> RevisionResult<()> {
+        if name != self.name || identity != self.identity {
             return Err(RevisionError::Invalid(
-                "private mutation guard name changed".into(),
+                "private mutation guard identity changed".into(),
             ));
         }
-        let candidate = self
-            .candidate
-            .as_ref()
-            .expect("successful private mutation has an anonymous candidate");
-        let candidate_identity = validate_unnamed(candidate)?;
-        link_unnamed(candidate, &self.directory.descriptor, MUTATION_CANDIDATE)?;
-        self.directory.sync()?;
-        self.directory
-            .validate(MUTATION_CANDIDATE, candidate_identity, true)?;
         self.restore()?;
-        if let Err(error) = self.directory.validate(name, self.original_identity, true) {
-            let _ = self.directory.remove(MUTATION_CANDIDATE);
-            let _ = self.directory.sync();
-            return Err(error);
-        }
-        exchange(
-            &self.directory.descriptor,
-            name,
-            &self.directory.descriptor,
-            MUTATION_CANDIDATE,
-        )?;
-        self.directory.sync()?;
-        if let Err(error) = self.directory.validate(name, candidate_identity, true) {
-            let _ = exchange(
-                &self.directory.descriptor,
-                name,
-                &self.directory.descriptor,
-                MUTATION_CANDIDATE,
-            );
-            let _ = self.directory.sync();
-            let _ = self.directory.remove(MUTATION_CANDIDATE);
-            let _ = self.directory.sync();
-            return Err(error);
-        }
-        self.directory.remove(MUTATION_CANDIDATE)?;
-        self.directory.sync()?;
-        Ok(candidate_identity)
+        self.directory.validate(name, identity, true)
     }
 
     fn restore(&mut self) -> RevisionResult<()> {
@@ -122,7 +73,7 @@ impl<'a> PrivateMutation<'a> {
             .set_permissions(fs::Permissions::from_mode(0o700))?;
         match openat(&self.gate, &self.name, false) {
             Ok(file) => {
-                if validated_identity(&file, false)? != self.original_identity {
+                if validated_identity(&file, false)? != self.identity {
                     return Err(RevisionError::Invalid(
                         "mutation gate contains a replaced publication slot".into(),
                     ));
@@ -142,8 +93,7 @@ impl<'a> PrivateMutation<'a> {
                 self.directory.sync()?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                self.directory
-                    .validate(&self.name, self.original_identity, false)?;
+                self.directory.validate(&self.name, self.identity, true)?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -159,89 +109,27 @@ impl Drop for PrivateMutation<'_> {
 }
 
 pub(super) fn recover(directory: &PrivateDirectory) -> RevisionResult<()> {
-    match open_gate(directory, false) {
-        Ok(gate) => {
-            let name = super::super::PUBLISH_MIRROR_FILE;
-            match openat(&gate, name, false) {
-                Ok(gated) => {
-                    let identity = validated_identity(&gated, true)?;
-                    if openat(&directory.descriptor, name, false).is_ok() {
-                        return Err(RevisionError::Invalid(
-                            "publication slot exists both inside and outside its mutation gate"
-                                .into(),
-                        ));
-                    }
-                    rename_between(&gate, name, &directory.descriptor, name)?;
-                    gate.sync_all()?;
-                    directory.sync()?;
-                    directory.validate(name, identity, true)?;
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Err(RevisionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {}
+    let gate = match open_gate(directory, false) {
+        Ok(gate) => gate,
+        Err(RevisionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
-    }
-    match directory.remove(MUTATION_CANDIDATE) {
-        Ok(()) => directory.sync(),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn validate_unnamed(descriptor: &File) -> RevisionResult<FileIdentity> {
-    let metadata = descriptor.metadata()?;
-    use std::os::unix::fs::MetadataExt as _;
-    if !metadata.file_type().is_file() || metadata.nlink() != 0 {
+    };
+    let name = super::super::PUBLISH_MIRROR_FILE;
+    let gated = match openat(&gate, name, false) {
+        Ok(gated) => gated,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let identity = validated_identity(&gated, true)?;
+    if openat(&directory.descriptor, name, false).is_ok() {
         return Err(RevisionError::Invalid(
-            "publication mutation candidate must remain an unnamed regular inode".into(),
+            "publication slot exists both inside and outside its mutation gate".into(),
         ));
     }
-    Ok(FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
-}
-
-pub(super) fn link_unnamed(descriptor: &File, directory: &File, name: &str) -> io::Result<()> {
-    let name = CString::new(name)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))?;
-    let linked = unsafe {
-        libc::linkat(
-            descriptor.as_raw_fd(),
-            c"".as_ptr(),
-            directory.as_raw_fd(),
-            name.as_ptr(),
-            libc::AT_EMPTY_PATH,
-        )
-    };
-    if linked == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    if !matches!(
-        error.raw_os_error(),
-        Some(libc::EPERM) | Some(libc::ENOENT) | Some(libc::EINVAL)
-    ) {
-        return Err(error);
-    }
-    let descriptor_path =
-        CString::new(format!("/proc/self/fd/{}", descriptor.as_raw_fd())).unwrap();
-    let linked = unsafe {
-        libc::linkat(
-            libc::AT_FDCWD,
-            descriptor_path.as_ptr(),
-            directory.as_raw_fd(),
-            name.as_ptr(),
-            libc::AT_SYMLINK_FOLLOW,
-        )
-    };
-    if linked == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
+    rename_between(&gate, name, &directory.descriptor, name)?;
+    gate.sync_all()?;
+    directory.sync()?;
+    directory.validate(name, identity, true)
 }
 
 fn open_gate(directory: &PrivateDirectory, create: bool) -> RevisionResult<File> {
@@ -370,29 +258,6 @@ fn rename_between(
         )
     };
     if renamed == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-fn exchange(source_dir: &File, source: &str, target_dir: &File, target: &str) -> io::Result<()> {
-    fn name(value: &str) -> io::Result<CString> {
-        CString::new(value)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name contains NUL"))
-    }
-    let source = name(source)?;
-    let target = name(target)?;
-    let exchanged = unsafe {
-        libc::renameat2(
-            source_dir.as_raw_fd(),
-            source.as_ptr(),
-            target_dir.as_raw_fd(),
-            target.as_ptr(),
-            super::RENAME_EXCHANGE,
-        )
-    };
-    if exchanged == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())

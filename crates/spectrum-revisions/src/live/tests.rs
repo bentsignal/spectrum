@@ -1,16 +1,17 @@
 #![cfg(target_os = "linux")]
 
-use std::os::unix::process::ExitStatusExt;
 use std::{
     fs::{self, File, OpenOptions},
-    os::unix::fs::{FileExt, MetadataExt, PermissionsExt, symlink},
-    path::PathBuf,
+    os::unix::{
+        fs::{FileExt, MetadataExt, PermissionsExt, symlink},
+        process::ExitStatusExt,
+    },
     process::Command,
 };
 
 use super::linux_io::{
-    SlotMutationPoint, apply_checkpoint_delta, clear_slot_hardlink_race, ready_marker_matches,
-    set_slot_hardlink_race, update_private_slot,
+    ExchangeIntent, SlotMutationPoint, apply_checkpoint_delta, clear_slot_hardlink_race,
+    inspect_named_checkpoint, ready_marker_matches, set_slot_hardlink_race, update_private_slot,
 };
 use super::*;
 use crate::{Actor, ActorKind, Asset, Payload};
@@ -117,6 +118,80 @@ fn descriptor_validation_rejects_symlinks_hardlinks_and_replacements() {
 }
 
 #[test]
+fn exchange_intent_decoder_rejects_noncanonical_and_impossible_records() {
+    let intent = ExchangeIntent {
+        canonical_identity: FileIdentity {
+            device: 1,
+            inode: 2,
+        },
+        candidate_identity: FileIdentity {
+            device: 1,
+            inode: 3,
+        },
+        generation: 7,
+        state_id: None,
+        target_generation: 8,
+        target_state_id: None,
+    };
+    let mut absent_state_with_payload = intent.encode();
+    absent_state_with_payload[57] = 1;
+    assert!(ExchangeIntent::decode(&absent_state_with_payload).is_err());
+    let mut absent_target_with_payload = intent.encode();
+    absent_target_with_payload[74] = 1;
+    assert!(ExchangeIntent::decode(&absent_target_with_payload).is_err());
+
+    let mut equal_identities = intent;
+    equal_identities.candidate_identity = equal_identities.canonical_identity;
+    assert!(ExchangeIntent::decode(&equal_identities.encode()).is_err());
+
+    let mut nonadvancing = intent;
+    nonadvancing.target_generation = nonadvancing.generation;
+    assert!(ExchangeIntent::decode(&nonadvancing.encode()).is_err());
+    assert_eq!(
+        ExchangeIntent::decode(&intent.encode())
+            .unwrap()
+            .target_generation,
+        8
+    );
+}
+
+#[test]
+fn recovery_inspection_rejects_an_ordinary_path_replacement() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("canonical.prism");
+    let replacement = directory.path().join("replacement.prism");
+    let project = |application_id: &str| NewProject {
+        application_id: application_id.into(),
+        application_version: "1.0.0".into(),
+        actor: Actor {
+            id: format!("{application_id}:actor"),
+            display_name: "Recovery test".into(),
+            kind: ActorKind::System,
+        },
+        session_id: SessionId::new(),
+        root_label: Some("Created".into()),
+        track_kind: "test.document".into(),
+        track_label: "Document".into(),
+        initial_snapshots: vec![Payload::new(
+            crate::Encoding::new("test.snapshot", 1),
+            b"root".to_vec(),
+        )],
+        assets: Vec::new(),
+    };
+    let (original, _) =
+        RevisionStore::create(&canonical, project("spectrum.recovery-original")).unwrap();
+    drop(original);
+    let (replacement_store, _) =
+        RevisionStore::create(&replacement, project("spectrum.recovery-replacement")).unwrap();
+    drop(replacement_store);
+    let held = open_nofollow(&canonical, false).unwrap();
+    let identity = validated_identity(&held, false).unwrap();
+
+    fs::rename(&replacement, &canonical).unwrap();
+    assert!(inspect_named_checkpoint(&canonical, &held, identity, false).is_err());
+}
+
+#[test]
 fn linked_private_slot_is_rejected_before_delta_or_exchange() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("source");
@@ -155,7 +230,7 @@ fn slot_races_after_validation_fail_before_candidate_or_bulk_mutation() {
         set_slot_hardlink_race(point, alias.clone());
         let permissions =
             (point == SlotMutationPoint::CandidateDelta).then(|| fs::Permissions::from_mode(0o640));
-        assert!(!matches!(
+        assert!(
             update_private_slot(
                 &private,
                 PUBLISH_MIRROR_FILE,
@@ -164,9 +239,9 @@ fn slot_races_after_validation_fail_before_candidate_or_bulk_mutation() {
                 identity,
                 permissions,
                 point,
-            ),
-            Ok(Some(_))
-        ));
+            )
+            .is_err()
+        );
         clear_slot_hardlink_race();
 
         assert_eq!(fs::read(&alias).unwrap(), original_bytes);
@@ -229,8 +304,7 @@ fn reopening_restores_a_slot_stranded_inside_the_sealed_mutation_gate() {
             identity,
             SlotMutationPoint::CandidateDelta,
         )
-        .unwrap()
-        .expect("test filesystem supports anonymous reflink clones");
+        .unwrap();
     std::mem::forget(guard);
     assert!(!mirror_path.exists());
     fs::write(cache.join("root-stays-reachable"), b"reachable").unwrap();
@@ -715,18 +789,6 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
             ),
             _ => unreachable!(),
         }
-        if fault == PublishFault::SlotSealed {
-            let gate = project_cache.join(".published-mutation-gate");
-            fs::set_permissions(&gate, fs::Permissions::from_mode(0o700)).unwrap();
-            assert!(
-                gate.join(PUBLISH_MIRROR_FILE).is_file(),
-                "SlotSealed must leave the original slot gated for recovery"
-            );
-            assert!(
-                !project_cache.join(PUBLISH_MIRROR_FILE).exists(),
-                "SlotSealed must not expose the unfinished anonymous candidate"
-            );
-        }
         let exchanged = matches!(
             fault,
             PublishFault::Exchanged
@@ -775,13 +837,6 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
         recovered
             .mutate(|store| store.put_asset("application/x-followup", followup.as_bytes()))
             .unwrap();
-        if fault == PublishFault::SlotSealed {
-            assert_eq!(
-                recovered.last_publish_stats().strategy,
-                PublishStrategy::PageDiffExchange,
-                "gated SlotSealed recovery must preserve incremental publication"
-            );
-        }
         drop(recovered);
 
         let verified =
@@ -832,11 +887,11 @@ fn failed_seed_never_marks_a_partial_mirror_ready() {
     fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(&destination, vec![0x33; 64 * 1024]).unwrap();
     PUBLISH_FAULT.set(Some(PublishFault::SeedMirrorCreated));
-    let _ = seed_incremental_mirror(&destination, &cache, 1, Some([0x44; 16]));
+    seed_incremental_mirror(&destination, &cache, 1, Some([0x44; 16]));
     PUBLISH_FAULT.set(None);
     assert!(!cache.join(PUBLISH_MIRROR_READY_FILE).exists());
     assert!(!cache.join(PUBLISH_MIRROR_FILE).exists());
-    let _ = seed_incremental_mirror(&destination, &cache, 1, Some([0x44; 16]));
+    seed_incremental_mirror(&destination, &cache, 1, Some([0x44; 16]));
     let private = PrivateDirectory::open(&cache).unwrap();
     assert!(ready_marker_matches(&private, 1, Some([0x44; 16])));
     assert_eq!(

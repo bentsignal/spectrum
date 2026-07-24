@@ -199,16 +199,6 @@ impl RevisionStore {
         })
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn inspect_file(file: &std::fs::File) -> RevisionResult<StoreInspection> {
-        use std::os::fd::AsRawFd as _;
-
-        // Reopening the held descriptor through procfs binds SQLite to that inode.
-        // `open_read_only` adds immutable URI mode, so SQLite neither consults
-        // sidecars nor redirects through the original publication pathname.
-        Self::inspect(Path::new(&format!("/proc/self/fd/{}", file.as_raw_fd())))
-    }
-
     /// Take a SQLite-consistent snapshot, including any committed WAL frames, into a private
     /// writable file and migrate that copy to the current container format.
     #[cfg(target_os = "linux")]
