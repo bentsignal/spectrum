@@ -774,14 +774,15 @@ pub(super) fn update_private_slot(
     validated_identity(&source, false)?;
     let mutation = directory.begin_mutation(name, mirror, identity, update.point)?;
     let stats = apply_checkpoint_delta_from(&source, mirror)?;
-    if let Some(permissions) = update.permissions {
-        mirror.set_permissions(permissions)?;
-    }
+    // Install proof before final mode (fsetxattr EACCES); one fsync seals delta, proof, and mode.
     if let Some(intent) = update.exchange_intent
         && !write_exchange_intent(mirror, intent)?
     {
         mutation.finish(name, identity)?;
         return Ok(None);
+    }
+    if let Some(permissions) = update.permissions {
+        mirror.set_permissions(permissions)?;
     }
     mirror.sync_all()?;
     validated_identity(mirror, true)?;

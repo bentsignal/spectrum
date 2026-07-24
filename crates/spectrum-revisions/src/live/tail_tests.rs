@@ -201,25 +201,30 @@ fn corrupted_private_predecessor_is_reconstructed_before_exchange() {
         fs::read(live.working_path()).unwrap()
     );
 
-    fs::copy(&stale, &mirror).unwrap();
-    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o400)).unwrap();
-    live.mutate(|store| store.put_asset("application/x-third", b"third"))
-        .unwrap();
+    for (mode, media_type, bytes) in [
+        (0o400, "application/x-third", b"third".as_slice()),
+        (0o444, "application/x-fourth", b"fourth".as_slice()),
+    ] {
+        fs::copy(&stale, &mirror).unwrap();
+        fs::set_permissions(&canonical, fs::Permissions::from_mode(mode)).unwrap();
+        live.mutate(|store| store.put_asset(media_type, bytes))
+            .unwrap();
 
-    let pending_error = live.pending_publish_error();
-    assert!(
-        pending_error.is_none(),
-        "stale read-only slot publication failed: {pending_error:?}"
-    );
-    assert!(live.last_publish_stats().incremental);
-    assert_eq!(canonical.metadata().unwrap().mode() & 0o777, 0o400);
-    let published = RevisionStore::inspect(&canonical).unwrap();
-    assert_eq!(published.generation, live.store().generation().unwrap());
-    assert_eq!(published.state_id, live.store().state_id().unwrap());
-    assert_eq!(
-        fs::read(&canonical).unwrap(),
-        fs::read(live.working_path()).unwrap()
-    );
+        let pending_error = live.pending_publish_error();
+        assert!(
+            pending_error.is_none(),
+            "stale read-only slot publication failed: {pending_error:?}"
+        );
+        assert!(live.last_publish_stats().incremental);
+        assert_eq!(canonical.metadata().unwrap().mode() & 0o777, mode);
+        let published = RevisionStore::inspect(&canonical).unwrap();
+        assert_eq!(published.generation, live.store().generation().unwrap());
+        assert_eq!(published.state_id, live.store().state_id().unwrap());
+        assert_eq!(
+            fs::read(&canonical).unwrap(),
+            fs::read(live.working_path()).unwrap()
+        );
+    }
 }
 
 #[test]
