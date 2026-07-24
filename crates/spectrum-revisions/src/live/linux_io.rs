@@ -303,18 +303,18 @@ impl PrivateDirectory {
     }
 
     pub(super) fn exchange_supported(&self) -> RevisionResult<bool> {
+        // Probe entries are randomized scratch, never publication or recovery state. Namespace
+        // success is sufficient to detect rename support, so durability barriers do not belong here.
         let first_name = format!(".exchange-probe-a-{}", SessionId::new());
         let second_name = format!(".exchange-probe-b-{}", SessionId::new());
-        let first = self.create_file(&first_name)?;
-        let second = match self.create_file(&second_name) {
+        let _first = self.create_file(&first_name)?;
+        let _second = match self.create_file(&second_name) {
             Ok(second) => second,
             Err(error) => {
                 let _ = self.remove(&first_name);
                 return Err(error.into());
             }
         };
-        first.sync_all()?;
-        second.sync_all()?;
         let first_name_c = CString::new(first_name.as_str()).unwrap();
         let second_name_c = CString::new(second_name.as_str()).unwrap();
         let result = unsafe {
@@ -329,7 +329,6 @@ impl PrivateDirectory {
         let error = io::Error::last_os_error();
         let _ = self.remove(&first_name);
         let _ = self.remove(&second_name);
-        self.sync()?;
         if result == 0 {
             Ok(true)
         } else if error.raw_os_error().is_some_and(|code| {

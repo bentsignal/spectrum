@@ -51,6 +51,37 @@ fn exchange_capability_is_probed_once_per_live_store() {
 }
 
 #[test]
+fn abandoned_exchange_probe_entries_are_ignored_by_recovery() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    let (live, info) =
+        LiveRevisionStore::create(&canonical, &cache, project("spectrum.probe-residual")).unwrap();
+    let project_cache = cache.join(info.project_id.to_string());
+    let first_residual = project_cache.join(".exchange-probe-a-abandoned");
+    let second_residual = project_cache.join(".exchange-probe-b-abandoned");
+    fs::write(&first_residual, b"not publication state").unwrap();
+    fs::write(&second_residual, b"not publication state").unwrap();
+    drop(live);
+
+    let mut reopened = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    reopened
+        .mutate(|store| store.put_asset("application/x-after-residual", b"committed"))
+        .unwrap();
+
+    assert!(reopened.pending_publish_error().is_none());
+    assert_eq!(fs::read(first_residual).unwrap(), b"not publication state");
+    assert_eq!(fs::read(second_residual).unwrap(), b"not publication state");
+    assert!(
+        RevisionStore::open_read_only(&canonical)
+            .unwrap()
+            .asset(Asset::new("application/x-after-residual", b"committed".to_vec()).id)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
 fn intent_removed_is_durable_across_real_process_death_modes() {
     for mode in ["exit", "abort", "kill"] {
         let directory = tempfile::tempdir().unwrap();
