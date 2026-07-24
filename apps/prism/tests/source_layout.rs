@@ -245,17 +245,29 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
     assert!(windows.contains("Prism.png"));
 
     let native_icon = repository.join("assets/branding/Prism.icon");
-    let icon = fs::read_to_string(native_icon.join("icon.json")).unwrap();
+    let icon_source = fs::read_to_string(native_icon.join("icon.json")).unwrap();
+    let icon: serde_json::Value = serde_json::from_str(&icon_source).unwrap();
     let source = fs::read(repository.join("assets/branding/cropped-prism.png")).unwrap();
     let embedded = fs::read(native_icon.join("Assets/cropped-prism.png")).unwrap();
     assert_eq!(
         source, embedded,
         "Icon Composer must preserve the approved crop"
     );
-    assert!(icon.contains("\"squares\" : \"shared\""));
-    assert!(icon.contains("\"image-name\" : \"cropped-prism.png\""));
-    assert!(icon.contains("\"scale\" : 2.56"));
-    assert!(icon.contains("\"translation-in-points\""));
+    assert_eq!(icon["supported-platforms"]["squares"], "shared");
+    let group = &icon["groups"][0];
+    assert!(
+        group.get("position").is_none(),
+        "Prism scale belongs on each 400-pixel artwork layer, never the group"
+    );
+    let layers = group["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), 2);
+    assert_eq!(layers[0]["image-name"], "cropped-prism.png");
+    assert_eq!(layers[1]["image-name"], "prism-mono.png");
+    assert!(
+        layers
+            .iter()
+            .all(|layer| layer["position"]["scale"] == 2.56)
+    );
 }
 
 #[cfg(target_os = "macos")]
