@@ -18,6 +18,7 @@ use super::{
 };
 
 const RENAME_EXCHANGE: libc::c_uint = 2;
+const FICLONE_IOCTL: libc::c_ulong = 0x4004_9409;
 mod mutation;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +32,8 @@ pub(super) enum SlotMutationPoint {
 thread_local! {
     static SLOT_HARDLINK_RACE: RefCell<Option<(SlotMutationPoint, PathBuf)>> =
         const { RefCell::new(None) };
+    static SLOT_HARDLINK_CHILD_RACE: RefCell<Option<(SlotMutationPoint, PathBuf, PathBuf)>> =
+        const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -41,6 +44,16 @@ pub(super) fn set_slot_hardlink_race(point: SlotMutationPoint, alias: PathBuf) {
 #[cfg(test)]
 pub(super) fn clear_slot_hardlink_race() {
     SLOT_HARDLINK_RACE.with(|hook| hook.replace(None));
+    SLOT_HARDLINK_CHILD_RACE.with(|hook| hook.replace(None));
+}
+
+#[cfg(test)]
+pub(super) fn set_slot_hardlink_child_race(
+    point: SlotMutationPoint,
+    release: PathBuf,
+    alias: PathBuf,
+) {
+    SLOT_HARDLINK_CHILD_RACE.with(|hook| hook.replace(Some((point, release, alias))));
 }
 
 #[cfg(test)]
@@ -64,14 +77,10 @@ pub(super) enum ExchangeOutcome {
 
 pub(super) struct PrivateDirectory {
     descriptor: File,
-    #[cfg(test)]
-    path: PathBuf,
 }
 
 impl PrivateDirectory {
     pub(super) fn open(path: &Path) -> RevisionResult<Self> {
-        #[cfg(test)]
-        let path_buf = path.to_path_buf();
         let path = CString::new(path.as_os_str().as_bytes())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory contains NUL"))?;
         let descriptor = unsafe {
@@ -95,11 +104,7 @@ impl PrivateDirectory {
                     .into(),
             ));
         }
-        let directory = Self {
-            descriptor,
-            #[cfg(test)]
-            path: path_buf,
-        };
+        let directory = Self { descriptor };
         mutation::recover(&directory)?;
         Ok(directory)
     }
@@ -133,6 +138,33 @@ impl PrivateDirectory {
         } else {
             Ok(unsafe { File::from_raw_fd(descriptor) })
         }
+    }
+
+    pub(super) fn clone_unnamed(&self, source: &File) -> io::Result<File> {
+        let descriptor = unsafe {
+            libc::openat(
+                self.descriptor.as_raw_fd(),
+                c".".as_ptr(),
+                libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if descriptor < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let candidate = unsafe { File::from_raw_fd(descriptor) };
+        let cloned =
+            unsafe { libc::ioctl(candidate.as_raw_fd(), FICLONE_IOCTL, source.as_raw_fd()) };
+        if cloned == 0 {
+            Ok(candidate)
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn link_unnamed_for_test(&self, descriptor: &File, name: &str) -> io::Result<()> {
+        mutation::link_unnamed(descriptor, &self.descriptor, name)
     }
 
     pub(super) fn validate(
@@ -348,17 +380,34 @@ impl PrivateDirectory {
         descriptor: &File,
         identity: FileIdentity,
         point: SlotMutationPoint,
-    ) -> RevisionResult<mutation::PrivateMutation<'_>> {
+    ) -> RevisionResult<Option<mutation::PrivateMutation<'_>>> {
         mutation::PrivateMutation::begin(self, name, descriptor, identity, point)
     }
 }
 
 #[cfg(test)]
-fn maybe_inject_slot_hardlink(
-    directory: &PrivateDirectory,
-    name: &str,
-    point: SlotMutationPoint,
-) -> RevisionResult<()> {
+fn maybe_inject_slot_hardlink(descriptor: &File, point: SlotMutationPoint) -> RevisionResult<()> {
+    let child_race = SLOT_HARDLINK_CHILD_RACE.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        match hook.as_ref() {
+            Some((configured, _, _)) if *configured == point => hook.take(),
+            _ => None,
+        }
+    });
+    if let Some((_, release, alias)) = child_race {
+        fs::write(release, b"link now")?;
+        let started = std::time::Instant::now();
+        while !alias.exists() {
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "hardlink race child did not create its alias",
+                )
+                .into());
+            }
+            std::thread::yield_now();
+        }
+    }
     let alias = SLOT_HARDLINK_RACE.with(|hook| {
         let mut hook = hook.borrow_mut();
         match hook.as_ref() {
@@ -367,17 +416,27 @@ fn maybe_inject_slot_hardlink(
         }
     });
     if let Some(alias) = alias {
-        fs::hard_link(directory.path.join(name), alias)?;
+        let source = CString::new(format!("/proc/self/fd/{}", descriptor.as_raw_fd())).unwrap();
+        let alias = CString::new(alias.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "alias contains NUL"))?;
+        let linked = unsafe {
+            libc::linkat(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                alias.as_ptr(),
+                libc::AT_SYMLINK_FOLLOW,
+            )
+        };
+        if linked != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
     }
     Ok(())
 }
 
 #[cfg(not(test))]
-fn maybe_inject_slot_hardlink(
-    _directory: &PrivateDirectory,
-    _name: &str,
-    _point: SlotMutationPoint,
-) -> RevisionResult<()> {
+fn maybe_inject_slot_hardlink(_descriptor: &File, _point: SlotMutationPoint) -> RevisionResult<()> {
     Ok(())
 }
 
@@ -415,7 +474,7 @@ impl ExchangeIntent {
         bytes
     }
 
-    fn decode(bytes: &[u8]) -> RevisionResult<Self> {
+    pub(super) fn decode(bytes: &[u8]) -> RevisionResult<Self> {
         if bytes.len() != Self::ENCODED_LEN || bytes[..8] != Self::MAGIC {
             return Err(RevisionError::Corrupt(
                 "invalid publication exchange intent".into(),
@@ -439,9 +498,15 @@ impl ExchangeIntent {
         let target_generation = next_u64();
         let present = bytes[offset];
         offset += 1;
+        let state_bytes: [u8; 16] = bytes[offset..offset + 16].try_into().unwrap();
         let state_id = match present {
-            0 => None,
-            1 => Some(bytes[offset..offset + 16].try_into().unwrap()),
+            0 if state_bytes == [0; 16] => None,
+            0 => {
+                return Err(RevisionError::Corrupt(
+                    "absent publication state has a non-canonical payload".into(),
+                ));
+            }
+            1 => Some(state_bytes),
             _ => {
                 return Err(RevisionError::Corrupt(
                     "invalid publication exchange state marker".into(),
@@ -451,30 +516,47 @@ impl ExchangeIntent {
         offset += 16;
         let target_present = bytes[offset];
         offset += 1;
+        let target_state_bytes: [u8; 16] = bytes[offset..offset + 16].try_into().unwrap();
         let target_state_id = match target_present {
-            0 => None,
-            1 => Some(bytes[offset..offset + 16].try_into().unwrap()),
+            0 if target_state_bytes == [0; 16] => None,
+            0 => {
+                return Err(RevisionError::Corrupt(
+                    "absent publication target state has a non-canonical payload".into(),
+                ));
+            }
+            1 => Some(target_state_bytes),
             _ => {
                 return Err(RevisionError::Corrupt(
                     "invalid publication target state marker".into(),
                 ));
             }
         };
-        Ok(Self {
+        let decoded = Self {
             canonical_identity,
             candidate_identity,
             generation,
             state_id,
             target_generation,
             target_state_id,
-        })
+        };
+        if decoded.canonical_identity == decoded.candidate_identity {
+            return Err(RevisionError::Corrupt(
+                "publication exchange identities must be distinct".into(),
+            ));
+        }
+        if decoded.target_generation <= decoded.generation {
+            return Err(RevisionError::Corrupt(
+                "publication exchange generation must advance".into(),
+            ));
+        }
+        Ok(decoded)
     }
 }
 
 pub(super) fn recover_exchange(
     directory: &PrivateDirectory,
     destination: &Path,
-    cache_directory: &Path,
+    _cache_directory: &Path,
 ) -> RevisionResult<()> {
     let intent = match directory.read_marker(super::PUBLISH_EXCHANGE_INTENT_FILE) {
         Ok(bytes) => ExchangeIntent::decode(&bytes)?,
@@ -483,7 +565,7 @@ pub(super) fn recover_exchange(
     };
     let canonical = super::open_nofollow(destination, false)?;
     let canonical_identity = validated_identity(&canonical, false)?;
-    let canonical_inspection = RevisionStore::inspect(destination)?;
+    let canonical_inspection = RevisionStore::inspect_file(&canonical)?;
     validate_named_identity(destination, canonical_identity, false)?;
     let slot = match directory.open_file(super::PUBLISH_MIRROR_FILE, false) {
         Ok(slot) => slot,
@@ -506,8 +588,7 @@ pub(super) fn recover_exchange(
     let slot_identity = validated_identity(&slot, false)?;
     use std::os::unix::fs::MetadataExt as _;
     let slot_private = slot.metadata()?.nlink() == 1;
-    let slot_path = cache_directory.join(super::PUBLISH_MIRROR_FILE);
-    let slot_inspection = RevisionStore::inspect(&slot_path)?;
+    let slot_inspection = RevisionStore::inspect_file(&slot)?;
     directory.validate(super::PUBLISH_MIRROR_FILE, slot_identity, false)?;
     if canonical_identity == intent.candidate_identity
         && slot_identity == intent.canonical_identity
@@ -565,20 +646,21 @@ pub(super) fn prepare_reusable_slot(
     descriptor: &File,
     identity: FileIdentity,
 ) -> RevisionResult<()> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let mutation = directory.begin_mutation(
+    let Some(mutation) = directory.begin_mutation(
         name,
         descriptor,
         identity,
         SlotMutationPoint::PermissionRepair,
-    )?;
-    if descriptor.metadata()?.mode() & 0o200 == 0 {
-        descriptor.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    descriptor.sync_all()?;
-    validated_identity(descriptor, true)?;
-    mutation.finish(name, identity)
+    )?
+    else {
+        return directory.validate(name, identity, true);
+    };
+    mutation
+        .candidate()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    mutation.candidate().sync_all()?;
+    mutation.finish(name)?;
+    Ok(())
 }
 
 fn apply_checkpoint_delta_from(source: &File, mirror: &File) -> RevisionResult<PublishStats> {
@@ -642,18 +724,19 @@ pub(super) fn update_private_slot(
     identity: FileIdentity,
     permissions: Option<fs::Permissions>,
     point: SlotMutationPoint,
-) -> RevisionResult<PublishStats> {
+) -> RevisionResult<Option<(PublishStats, FileIdentity)>> {
     let source = super::open_nofollow(source, false)?;
     validated_identity(&source, false)?;
-    let mutation = directory.begin_mutation(name, mirror, identity, point)?;
-    let stats = apply_checkpoint_delta_from(&source, mirror)?;
+    let Some(mutation) = directory.begin_mutation(name, mirror, identity, point)? else {
+        return Ok(None);
+    };
+    let stats = apply_checkpoint_delta_from(&source, mutation.candidate())?;
     if let Some(permissions) = permissions {
-        mirror.set_permissions(permissions)?;
+        mutation.candidate().set_permissions(permissions)?;
     }
-    mirror.sync_all()?;
-    validated_identity(mirror, true)?;
-    mutation.finish(name, identity)?;
-    Ok(stats)
+    mutation.candidate().sync_all()?;
+    let identity = mutation.finish(name)?;
+    Ok(Some((stats, identity)))
 }
 
 pub(super) fn update_candidate_slot(
@@ -662,7 +745,7 @@ pub(super) fn update_candidate_slot(
     mirror: &File,
     identity: FileIdentity,
     permissions: fs::Permissions,
-) -> RevisionResult<PublishStats> {
+) -> RevisionResult<Option<(PublishStats, FileIdentity)>> {
     update_private_slot(
         directory,
         super::PUBLISH_MIRROR_FILE,
@@ -686,9 +769,9 @@ pub(super) fn catch_up_after_bulk(
     {
         return Ok(stats);
     }
-    let slot = directory.open_file(super::PUBLISH_MIRROR_FILE, true)?;
+    let slot = directory.open_file(super::PUBLISH_MIRROR_FILE, false)?;
     let identity = validated_identity(&slot, true)?;
-    let catch_up = update_private_slot(
+    let Some((catch_up, _)) = update_private_slot(
         directory,
         super::PUBLISH_MIRROR_FILE,
         source,
@@ -696,7 +779,10 @@ pub(super) fn catch_up_after_bulk(
         identity,
         None,
         SlotMutationPoint::BulkCatchUp,
-    )?;
+    )?
+    else {
+        return Ok(stats);
+    };
     write_ready_marker(directory, generation, state_id)?;
     stats.scanned_bytes = stats.scanned_bytes.saturating_add(catch_up.scanned_bytes);
     stats.changed_bytes = stats.changed_bytes.saturating_add(catch_up.changed_bytes);
@@ -709,9 +795,9 @@ pub(super) fn seed_incremental_mirror(
     cache_directory: &Path,
     generation: u64,
     state_id: Option<StorageStateId>,
-) {
+) -> bool {
     let Ok(directory) = PrivateDirectory::open(cache_directory) else {
-        return;
+        return false;
     };
     use std::os::unix::fs::MetadataExt as _;
     let same_device = match (destination.metadata(), directory.device()) {
@@ -719,7 +805,7 @@ pub(super) fn seed_incremental_mirror(
         _ => false,
     };
     if !same_device {
-        return;
+        return false;
     }
     let _ = remove_private_file(&directory, super::PUBLISH_MIRROR_READY_FILE);
     let _ = remove_private_file(&directory, super::PUBLISH_EXCHANGE_INTENT_FILE);
@@ -746,6 +832,7 @@ pub(super) fn seed_incremental_mirror(
         let _ = directory.remove(super::PUBLISH_MIRROR_READY_FILE);
         let _ = directory.sync();
     }
+    seeded.is_ok()
 }
 
 pub(super) struct StagedFile {

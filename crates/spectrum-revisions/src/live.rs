@@ -15,6 +15,8 @@ use crate::{
 
 #[cfg(target_os = "linux")]
 mod linux_io;
+#[cfg(all(test, target_os = "linux"))]
+mod security_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(target_os = "linux")]
@@ -95,16 +97,11 @@ pub struct PublishStats {
     pub reflink_unavailable: bool,
     pub strategy: PublishStrategy,
     pub scanned_bytes: u64,
-    /// Bytes whose contents differ from the previous checkpoint.
     pub changed_bytes: u64,
-    /// File-data bytes physically submitted by publication. Reflink-only publication writes zero.
     pub written_bytes: u64,
 }
 
-/// A live SQLite working store whose user-facing project is always a single checkpointed file.
-///
-/// WAL and shared-memory files stay in the app-owned cache directory. After every mutation the
-/// checkpointed main database is atomically published to `canonical_path`.
+/// A live SQLite cache that atomically publishes one checkpointed project file after each change.
 pub struct LiveRevisionStore {
     store: RevisionStore,
     canonical_path: PathBuf,
@@ -197,8 +194,7 @@ impl LiveRevisionStore {
             #[cfg(not(target_os = "linux"))]
             {
                 recover_legacy_sidecars(&canonical_path)?;
-                // Container migrations happen against the portable file first. Incremented
-                // storage generation then invalidates an older live cache before it can diverge.
+                // Migrating the portable file first invalidates an older live cache.
                 let canonical_store = RevisionStore::open(&canonical_path)?;
                 canonical_store.checkpoint()?;
                 drop(canonical_store);
@@ -594,12 +590,13 @@ fn publish_checkpoint(
         atomic_publish(source, destination)?;
         sync_parent(destination)?;
         let written_bytes = source.metadata()?.len();
-        seed_incremental_mirror(
+        let mirror_seeded = seed_incremental_mirror(
             destination,
             _cache_directory,
             source_inspection.generation,
             source_inspection.state_id,
         );
+        let written_bytes = written_bytes.saturating_mul(1 + u64::from(mirror_seeded));
         Ok(PublishStats {
             incremental: false,
             reflink_unavailable,
@@ -736,7 +733,7 @@ fn incremental_publish(
     if !directory.exchange_supported()? {
         return Ok((None, false));
     }
-    let mirror_file = match directory.open_file(PUBLISH_MIRROR_FILE, true) {
+    let mirror_file = match directory.open_file(PUBLISH_MIRROR_FILE, false) {
         Ok(file) => file,
         Err(_) => return Ok((None, false)),
     };
@@ -745,18 +742,21 @@ fn incremental_publish(
         return Ok((None, false));
     }
     remove_private_file(&directory, PUBLISH_MIRROR_READY_FILE)?;
-    let mut stats = update_candidate_slot(
+    let Some((mut stats, candidate_identity)) = update_candidate_slot(
         &directory,
         source,
         &mirror_file,
         mirror_identity,
         canonical_permissions,
-    )?;
+    )?
+    else {
+        return Ok((None, true));
+    };
     maybe_publish_fault(PublishFault::CandidateSynced)?;
 
     let intent = ExchangeIntent {
         canonical_identity,
-        candidate_identity: mirror_identity,
+        candidate_identity,
         generation: base.generation,
         state_id: base.state_id,
         target_generation: source_generation,
@@ -764,12 +764,12 @@ fn incremental_publish(
     };
     directory.write_marker(PUBLISH_EXCHANGE_INTENT_FILE, &intent.encode())?;
     maybe_publish_fault(PublishFault::IntentCreated)?;
-    directory.validate(PUBLISH_MIRROR_FILE, mirror_identity, true)?;
+    directory.validate(PUBLISH_MIRROR_FILE, candidate_identity, true)?;
     validate_named_identity(destination, canonical_identity, false)?;
     maybe_publish_fault(PublishFault::PreExchangeValidated)?;
     let old_slot_private = match directory.exchange(
         PUBLISH_MIRROR_FILE,
-        mirror_identity,
+        candidate_identity,
         destination,
         canonical_identity,
     )? {

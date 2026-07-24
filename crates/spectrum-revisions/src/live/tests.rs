@@ -1,11 +1,10 @@
 #![cfg(target_os = "linux")]
 
+use std::os::unix::process::ExitStatusExt;
 use std::{
     fs::{self, File, OpenOptions},
-    os::unix::{
-        fs::{FileExt, MetadataExt, PermissionsExt, symlink},
-        process::ExitStatusExt,
-    },
+    os::unix::fs::{FileExt, MetadataExt, PermissionsExt, symlink},
+    path::PathBuf,
     process::Command,
 };
 
@@ -156,7 +155,7 @@ fn slot_races_after_validation_fail_before_candidate_or_bulk_mutation() {
         set_slot_hardlink_race(point, alias.clone());
         let permissions =
             (point == SlotMutationPoint::CandidateDelta).then(|| fs::Permissions::from_mode(0o640));
-        assert!(
+        assert!(!matches!(
             update_private_slot(
                 &private,
                 PUBLISH_MIRROR_FILE,
@@ -165,9 +164,9 @@ fn slot_races_after_validation_fail_before_candidate_or_bulk_mutation() {
                 identity,
                 permissions,
                 point,
-            )
-            .is_err()
-        );
+            ),
+            Ok(Some(_))
+        ));
         clear_slot_hardlink_race();
 
         assert_eq!(fs::read(&alias).unwrap(), original_bytes);
@@ -230,7 +229,8 @@ fn reopening_restores_a_slot_stranded_inside_the_sealed_mutation_gate() {
             identity,
             SlotMutationPoint::CandidateDelta,
         )
-        .unwrap();
+        .unwrap()
+        .expect("test filesystem supports anonymous reflink clones");
     std::mem::forget(guard);
     assert!(!mirror_path.exists());
     fs::write(cache.join("root-stays-reachable"), b"reachable").unwrap();
@@ -715,6 +715,18 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
             ),
             _ => unreachable!(),
         }
+        if fault == PublishFault::SlotSealed {
+            let gate = project_cache.join(".published-mutation-gate");
+            fs::set_permissions(&gate, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(
+                gate.join(PUBLISH_MIRROR_FILE).is_file(),
+                "SlotSealed must leave the original slot gated for recovery"
+            );
+            assert!(
+                !project_cache.join(PUBLISH_MIRROR_FILE).exists(),
+                "SlotSealed must not expose the unfinished anonymous candidate"
+            );
+        }
         let exchanged = matches!(
             fault,
             PublishFault::Exchanged
@@ -763,6 +775,13 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
         recovered
             .mutate(|store| store.put_asset("application/x-followup", followup.as_bytes()))
             .unwrap();
+        if fault == PublishFault::SlotSealed {
+            assert_eq!(
+                recovered.last_publish_stats().strategy,
+                PublishStrategy::PageDiffExchange,
+                "gated SlotSealed recovery must preserve incremental publication"
+            );
+        }
         drop(recovered);
 
         let verified =
@@ -813,11 +832,11 @@ fn failed_seed_never_marks_a_partial_mirror_ready() {
     fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(&destination, vec![0x33; 64 * 1024]).unwrap();
     PUBLISH_FAULT.set(Some(PublishFault::SeedMirrorCreated));
-    seed_incremental_mirror(&destination, &cache, 1, Some([0x44; 16]));
+    let _ = seed_incremental_mirror(&destination, &cache, 1, Some([0x44; 16]));
     PUBLISH_FAULT.set(None);
     assert!(!cache.join(PUBLISH_MIRROR_READY_FILE).exists());
     assert!(!cache.join(PUBLISH_MIRROR_FILE).exists());
-    seed_incremental_mirror(&destination, &cache, 1, Some([0x44; 16]));
+    let _ = seed_incremental_mirror(&destination, &cache, 1, Some([0x44; 16]));
     let private = PrivateDirectory::open(&cache).unwrap();
     assert!(ready_marker_matches(&private, 1, Some([0x44; 16])));
     assert_eq!(
