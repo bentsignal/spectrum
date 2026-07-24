@@ -43,19 +43,32 @@ impl PrismApp {
                     .preview
                     .as_ref()
                     .unwrap_or(&self.workspace.document);
+                let exact_direct_composite =
+                    direct_manipulation_requires_immediate_composite(preview_document, self.drag);
                 if (self.brush.preview.is_some()
                     || document_requires_composite_preview(preview_document))
-                    && !direct_manipulation
+                    && (!direct_manipulation || exact_direct_composite)
                 {
                     let raster_sources = self.raster_sources.snapshot();
-                    let frame = match self.composite_preview.ensure(
-                        ui.ctx(),
-                        self.active_tab_id,
-                        preview_document,
-                        geometry,
-                        ui.ctx().pixels_per_point(),
-                        raster_sources,
-                    ) {
+                    let frame = match if exact_direct_composite {
+                        self.composite_preview.ensure_immediate(
+                            ui.ctx(),
+                            self.active_tab_id,
+                            preview_document,
+                            geometry,
+                            ui.ctx().pixels_per_point(),
+                            raster_sources,
+                        )
+                    } else {
+                        self.composite_preview.ensure(
+                            ui.ctx(),
+                            self.active_tab_id,
+                            preview_document,
+                            geometry,
+                            ui.ctx().pixels_per_point(),
+                            raster_sources,
+                        )
+                    } {
                         Ok(frame) => {
                             self.preview_error = None;
                             frame
@@ -67,6 +80,10 @@ impl PrismApp {
                     };
                     if let Some(frame) = frame.as_ref() {
                         paint_composite_preview(ui, geometry, Some(frame));
+                    } else if exact_direct_composite {
+                        // A missing exact Dissolve surface must never fall back to an
+                        // ordinary translucent per-layer texture.
+                        paint_composite_preview(ui, geometry, None);
                     } else {
                         // Never put a stale composited surface behind a current transform. The
                         // cached per-layer visuals are an immediate GPU-transformed preview while
@@ -747,6 +764,13 @@ fn direct_manipulation_preview(drag: Option<DragState>) -> bool {
     })
 }
 
+fn direct_manipulation_requires_immediate_composite(
+    document: &Document,
+    drag: Option<DragState>,
+) -> bool {
+    direct_manipulation_preview(drag) && document_requires_immediate_direct_preview(document)
+}
+
 #[cfg(test)]
 mod direct_manipulation_tests {
     use super::*;
@@ -788,6 +812,38 @@ mod direct_manipulation_tests {
             None
         ))));
         assert!(!direct_manipulation_preview(None));
+    }
+
+    #[test]
+    fn dissolve_transform_gestures_select_the_exact_immediate_compositor() {
+        let mut document = Document::new("Direct Dissolve", 64, 48);
+        document.layers.push(Layer {
+            blend_mode: BlendMode::Dissolve,
+            opacity: 0.5,
+            ..Layer::default()
+        });
+        for action in [
+            DragAction::Move,
+            DragAction::Rotate,
+            DragAction::Resize(ResizeHandle::BottomRight),
+        ] {
+            assert!(direct_manipulation_requires_immediate_composite(
+                &document,
+                Some(drag(action, Some(7)))
+            ));
+        }
+
+        document.layers[0].visible = false;
+        assert!(!direct_manipulation_requires_immediate_composite(
+            &document,
+            Some(drag(DragAction::Move, Some(7)))
+        ));
+        document.layers[0].visible = true;
+        document.layers[0].blend_mode = BlendMode::Normal;
+        assert!(!direct_manipulation_requires_immediate_composite(
+            &document,
+            Some(drag(DragAction::Move, Some(7)))
+        ));
     }
 }
 
