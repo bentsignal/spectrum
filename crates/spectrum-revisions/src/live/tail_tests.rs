@@ -1,6 +1,9 @@
 use std::{
     fs,
-    os::unix::{fs::MetadataExt as _, process::ExitStatusExt},
+    os::unix::{
+        fs::{MetadataExt as _, PermissionsExt as _},
+        process::ExitStatusExt,
+    },
     process::Command,
 };
 
@@ -175,10 +178,12 @@ fn equal_generation_returned_copy_wins_over_stale_local_proof() {
 fn corrupted_private_predecessor_is_reconstructed_before_exchange() {
     let directory = tempfile::tempdir().unwrap();
     let canonical = directory.path().join("project.lumen");
+    let stale = directory.path().join("stale.lumen");
     let cache = directory.path().join("cache");
     let (mut live, info) =
         LiveRevisionStore::create(&canonical, &cache, project("spectrum.corrupt-predecessor"))
             .unwrap();
+    fs::copy(&canonical, &stale).unwrap();
     live.mutate(|store| store.put_asset("application/x-first", b"first"))
         .unwrap();
     let project_cache = cache.join(info.project_id.to_string());
@@ -195,6 +200,74 @@ fn corrupted_private_predecessor_is_reconstructed_before_exchange() {
         fs::read(&canonical).unwrap(),
         fs::read(live.working_path()).unwrap()
     );
+
+    fs::copy(&stale, &mirror).unwrap();
+    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o400)).unwrap();
+    live.mutate(|store| store.put_asset("application/x-third", b"third"))
+        .unwrap();
+
+    assert!(live.pending_publish_error().is_none());
+    assert!(live.last_publish_stats().incremental);
+    assert_eq!(canonical.metadata().unwrap().mode() & 0o777, 0o400);
+    let published = RevisionStore::inspect(&canonical).unwrap();
+    assert_eq!(published.generation, live.store().generation().unwrap());
+    assert_eq!(published.state_id, live.store().state_id().unwrap());
+    assert_eq!(
+        fs::read(&canonical).unwrap(),
+        fs::read(live.working_path()).unwrap()
+    );
+}
+
+#[test]
+fn valid_future_private_slot_is_rejected_without_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let future = directory.path().join("future.lumen");
+    let cache = directory.path().join("cache");
+    let future_cache = directory.path().join("future-cache");
+    let (mut live, info) =
+        LiveRevisionStore::create(&canonical, &cache, project("spectrum.future-slot")).unwrap();
+    live.mutate(|store| store.put_asset("application/x-first", b"first"))
+        .unwrap();
+    let published = RevisionStore::inspect(&canonical).unwrap();
+    assert!(exchange_proof_matches(&canonical, published.generation, published.state_id).unwrap());
+    fs::copy(&canonical, &future).unwrap();
+
+    let mut future_live = LiveRevisionStore::open(&future, &future_cache).unwrap();
+    future_live
+        .mutate(|store| store.put_asset("application/x-second", b"second"))
+        .unwrap();
+    future_live
+        .mutate(|store| store.put_asset("application/x-third", b"third"))
+        .unwrap();
+    drop(future_live);
+    let future_inspection = RevisionStore::inspect(&future).unwrap();
+    assert!(future_inspection.generation > published.generation);
+
+    let project_cache = cache.join(info.project_id.to_string());
+    let mirror = project_cache.join(PUBLISH_MIRROR_FILE);
+    let mirror_inode = mirror.metadata().unwrap().ino();
+    fs::copy(&future, &mirror).unwrap();
+    assert_eq!(mirror.metadata().unwrap().ino(), mirror_inode);
+    let mirror_bytes = fs::read(&mirror).unwrap();
+    let canonical_bytes = fs::read(&canonical).unwrap();
+    drop(live);
+
+    let error = recover_exchange(
+        &PrivateDirectory::open(&project_cache).unwrap(),
+        &canonical,
+        &project_cache,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        RevisionError::Invalid(message)
+            if message
+                == "committed inode-bound publication slot is newer than its canonical target"
+    ));
+    assert_eq!(mirror.metadata().unwrap().ino(), mirror_inode);
+    assert_eq!(fs::read(&mirror).unwrap(), mirror_bytes);
+    assert_eq!(fs::read(&canonical).unwrap(), canonical_bytes);
 }
 
 #[test]

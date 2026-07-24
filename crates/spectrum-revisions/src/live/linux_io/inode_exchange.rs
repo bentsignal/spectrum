@@ -224,9 +224,14 @@ pub(in crate::live) fn recover_inode_exchange(
                 && slot_inspection.state_id == intent.state_id;
             let caught_up = slot_inspection.generation == intent.target_generation
                 && slot_inspection.state_id == intent.target_state_id;
-            if !predecessor && !caught_up {
+            // The exact committed canonical proof and exact predecessor inode
+            // identity above are the authority boundary: only here may valid
+            // older slot bytes be treated as non-authorizing reusable scratch.
+            let stale_non_authorizing =
+                slot_inspection.generation <= canonical_inspection.generation;
+            if !predecessor && !caught_up && !stale_non_authorizing {
                 return Err(RevisionError::Invalid(
-                    "committed inode-bound publication slot matches neither predecessor nor target"
+                    "committed inode-bound publication slot is newer than its canonical target"
                         .into(),
                 ));
             }
