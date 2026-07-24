@@ -84,6 +84,13 @@ impl BenchmarkProfile {
             Self::HostedCi => 1_500.0,
         }
     }
+
+    pub(super) fn brush_drag_preview_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 5.0,
+            Self::HostedCi => 15.0,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -809,7 +816,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: scaled_shape_p95 <= 16.0,
         },
         BenchmarkMetric {
-            name: "16x_256_anchor_cubic_path_raster",
+            name: "16x_256_anchor_cubic_path_viewport",
             median_ms: path.raster_median_ms,
             p95_ms: path.raster_p95_ms,
             budget_ms: profile.path_raster_budget_ms(),
@@ -828,6 +835,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: paint.p95_ms,
             budget_ms: profile.paint_viewport_budget_ms(),
             pass: paint.p95_ms <= profile.paint_viewport_budget_ms(),
+        },
+        BenchmarkMetric {
+            name: "16k_live_brush_drag_preview_command",
+            median_ms: paint.drag_preview_median_ms,
+            p95_ms: paint.drag_preview_p95_ms,
+            budget_ms: profile.brush_drag_preview_budget_ms(),
+            pass: paint.drag_preview_p95_ms <= profile.brush_drag_preview_budget_ms(),
         },
         BenchmarkMetric {
             name: "portable_typography_effect_raster",

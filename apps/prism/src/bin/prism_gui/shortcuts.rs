@@ -347,6 +347,13 @@ impl PrismApp {
         }) {
             self.delete_confirmation = self.workspace.document.selected;
         }
+        if self.brush_color_picker_open()
+            && context
+                .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.cancel_brush_color_picker(context);
+            return;
+        }
         if context.input(|input| input.key_pressed(egui::Key::Escape)) {
             self.cancel_pen();
             self.cancel_brush();

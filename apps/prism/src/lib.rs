@@ -70,8 +70,8 @@ pub use workspace::Workspace;
 
 mod shapes;
 pub use shapes::{
-    RasterizedShapeAsset, interactive_shape_scale, rasterize_shape_asset,
-    recommended_rasterization_scale, shape_dimensions,
+    RasterizedShapeAsset, interactive_shape_scale, path_preview_requires_region,
+    rasterize_shape_asset, recommended_rasterization_scale, shape_dimensions,
 };
 
 mod paths;

@@ -109,7 +109,7 @@ pub(super) fn text_source_geometry(
 }
 
 pub(super) struct LayerVisualEntry {
-    key: LayerVisualKey,
+    pub(super) key: LayerVisualKey,
     visual: LayerVisual,
     shadow_mask: Option<TextureHandle>,
     source_geometry: LayerSourceGeometry,
@@ -350,6 +350,13 @@ impl PrismApp {
             .map(|layer| effective_font_preview_layer(layer, font_preview_layer.as_ref()))
             .filter(|layer| layer.visible)
         {
+            if prism_core::path_preview_requires_region(layer, display_scale).unwrap_or(false) {
+                // Keep any lower-resolution texture as an immediate fallback. The canvas routes
+                // this layer through the exact visible-region compositor, so scheduling the
+                // whole high-zoom source here would only repeat the bounded-area failure.
+                self.layer_render_pending.remove(&layer.id);
+                continue;
+            }
             let source_geometry = self.text_source_geometries.get(layer.id).copied();
             let scheduling = self.text_source_geometries.schedule_layer(
                 layer,

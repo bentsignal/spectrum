@@ -10,10 +10,17 @@ pub(super) struct BrushState {
     pub color: [u8; 4],
     gesture: Option<BrushGesture>,
     pub preview: Option<Document>,
+    preview_key: Option<ProgressiveBrushPreview>,
+    settling_layer_id: Option<u64>,
+    next_gesture_id: u64,
+    color_draft: Option<[u8; 4]>,
+    color_picker_open: bool,
 }
 
 struct BrushGesture {
     layer_id: Option<u64>,
+    target_layer_id: u64,
+    gesture_id: u64,
     viewport: (u32, u32),
     transform: Transform,
     samples: Vec<prism_core::BrushSample>,
@@ -30,11 +37,27 @@ impl BrushState {
             color: [255; 4],
             gesture: None,
             preview: None,
+            preview_key: None,
+            settling_layer_id: None,
+            next_gesture_id: 1,
+            color_draft: None,
+            color_picker_open: false,
         }
     }
 }
 
 impl PrismApp {
+    pub(super) fn layer_visual_is_current(&self, id: u64, display_scale: f32) -> bool {
+        let Ok(layer) = self.workspace.document.layer(id) else {
+            return false;
+        };
+        !self.layer_visual_dirty.contains(&id)
+            && self
+                .layer_visuals
+                .get(&id)
+                .is_some_and(|entry| entry.key == LayerVisualKey::new(layer, display_scale))
+    }
+
     pub(super) fn brush_canvas_interaction(
         &mut self,
         ui: &mut egui::Ui,
@@ -78,7 +101,139 @@ impl PrismApp {
     pub(super) fn cancel_brush(&mut self) {
         self.brush.gesture = None;
         self.brush.preview = None;
+        self.brush.preview_key = None;
+        self.brush.settling_layer_id = None;
         self.composite_preview.reset();
+    }
+
+    pub(super) fn brush_preview_key(&self) -> Option<ProgressiveBrushPreview> {
+        self.brush.preview_key
+    }
+
+    pub(super) fn settle_brush_preview_if_ready(&mut self, display_scale: f32) {
+        let Some(id) = self.brush.settling_layer_id else {
+            return;
+        };
+        if self.layer_visual_is_current(id, display_scale) {
+            self.brush.preview = None;
+            self.brush.preview_key = None;
+            self.brush.settling_layer_id = None;
+            self.composite_preview.reset();
+        }
+    }
+
+    pub(super) fn brush_settings_control(&mut self, ui: &mut egui::Ui) {
+        let popup_id = ui.make_persistent_id("brush-settings-popup");
+        let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+        let button = ui.add(
+            egui::Button::new(format!("Brush Settings · {:.0}px", self.brush.size)).selected(open),
+        );
+        let popup = egui::Popup::menu(&button)
+            .id(popup_id)
+            .close_behavior(brush_popup_close_behavior())
+            .width(260.0)
+            .show(|ui| self.brush_settings_contents(ui));
+        if popup.is_none() {
+            self.brush.color_draft = None;
+            self.brush.color_picker_open = false;
+        }
+    }
+
+    pub(super) fn cancel_brush_color_picker(&mut self, _context: &egui::Context) -> bool {
+        if !self.brush.color_picker_open {
+            return false;
+        }
+        self.brush.color_draft = None;
+        self.brush.color_picker_open = false;
+        true
+    }
+
+    pub(super) fn brush_color_picker_open(&self) -> bool {
+        self.brush.color_picker_open
+    }
+
+    fn brush_settings_contents(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_width(240.0);
+        ui.add(
+            egui::Slider::new(&mut self.brush.size, 1.0..=512.0)
+                .text("Size")
+                .logarithmic(true),
+        );
+        ui.add(egui::Slider::new(&mut self.brush.hardness, 0.0..=1.0).text("Hardness"));
+        ui.add(egui::Slider::new(&mut self.brush.opacity, 0.0..=1.0).text("Opacity"));
+        ui.add(egui::Slider::new(&mut self.brush.spacing, 0.01..=1.0).text("Spacing"));
+        if self.tool != Tool::Brush {
+            return;
+        }
+
+        let committed = Color32::from_rgba_unmultiplied(
+            self.brush.color[0],
+            self.brush.color[1],
+            self.brush.color[2],
+            self.brush.color[3],
+        );
+        let button = ui.horizontal(|ui| {
+            ui.label("Color");
+            ui.add(
+                egui::Button::new("Fill")
+                    .fill(committed)
+                    .stroke(Stroke::new(1.0, TEXT))
+                    .selected(self.brush.color_picker_open),
+            )
+        });
+        if button.inner.clicked() {
+            if self.brush.color_picker_open {
+                self.brush.color_draft = None;
+                self.brush.color_picker_open = false;
+            } else {
+                self.brush.color_draft = Some(self.brush.color);
+                self.brush.color_picker_open = true;
+            }
+        }
+        if self.brush.color_picker_open {
+            let action = egui::Frame::group(ui.style())
+                .show(ui, |ui| {
+                    ui.set_min_width(280.0);
+                    let draft = self.brush.color_draft.get_or_insert(self.brush.color);
+                    let mut color =
+                        Color32::from_rgba_unmultiplied(draft[0], draft[1], draft[2], draft[3]);
+                    egui::color_picker::color_picker_color32(
+                        ui,
+                        &mut color,
+                        egui::color_picker::Alpha::OnlyBlend,
+                    );
+                    *draft = color.to_array();
+                    ui.separator();
+                    let keyboard_cancel = ui.input_mut(|input| {
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                    });
+                    let mut cancel_clicked = false;
+                    let mut apply_clicked = false;
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            cancel_clicked = true;
+                        }
+                        if ui.button("Apply").clicked() {
+                            apply_clicked = true;
+                        }
+                    });
+                    brush_color_action(cancel_clicked, apply_clicked, keyboard_cancel)
+                })
+                .inner;
+            if let Some(action) = action {
+                match action {
+                    BrushColorAction::Apply => {
+                        if let Some(color) = self.brush.color_draft.take() {
+                            self.brush.color = color;
+                        }
+                    }
+                    BrushColorAction::Cancel => {
+                        self.brush.color_draft = None;
+                    }
+                }
+                self.brush.color_picker_open = false;
+            }
+        }
     }
 
     fn begin_brush_gesture(&mut self, canvas: Pos2) {
@@ -125,8 +280,16 @@ impl PrismApp {
             self.status_error = true;
             return;
         }
+        self.brush.preview = None;
+        self.brush.preview_key = None;
+        self.brush.settling_layer_id = None;
+        self.composite_preview.reset();
+        let gesture_id = self.brush.next_gesture_id;
+        self.brush.next_gesture_id = self.brush.next_gesture_id.wrapping_add(1).max(1);
         self.brush.gesture = Some(BrushGesture {
             layer_id,
+            target_layer_id: layer_id.unwrap_or(self.workspace.document.next_id),
+            gesture_id,
             viewport,
             transform,
             samples: vec![brush_sample(local)],
@@ -177,8 +340,18 @@ impl PrismApp {
         };
         match prism_core::preview_paint_command(&self.workspace.document, command) {
             Ok(preview) => {
+                let gesture = self.brush.gesture.as_ref().expect("Brush gesture exists");
+                self.brush.preview_key = Some(ProgressiveBrushPreview {
+                    gesture_id: gesture.gesture_id,
+                    target_layer_id: gesture.target_layer_id,
+                    sample_count: gesture.samples.len(),
+                    mode: if self.tool == Tool::Eraser {
+                        prism_core::BrushMode::Erase
+                    } else {
+                        prism_core::BrushMode::Paint
+                    },
+                });
                 self.brush.preview = Some(preview);
-                self.composite_preview.reset();
             }
             Err(error) => self.brush_error(error),
         }
@@ -186,20 +359,54 @@ impl PrismApp {
 
     fn finish_brush_gesture(&mut self) {
         let command = self.current_brush_command();
+        let target_layer_id = self
+            .brush
+            .gesture
+            .as_ref()
+            .map(|gesture| gesture.target_layer_id);
         self.brush.gesture = None;
-        self.brush.preview = None;
-        self.composite_preview.reset();
         match command {
             Ok(command) => {
-                self.execute(command);
+                if self.execute(command) {
+                    self.brush.settling_layer_id = target_layer_id;
+                } else {
+                    self.cancel_brush();
+                }
             }
-            Err(error) => self.brush_error(error),
+            Err(error) => {
+                self.cancel_brush();
+                self.brush_error(error);
+            }
         }
     }
 
     fn brush_error(&mut self, error: anyhow::Error) {
         self.status = format!("{error:#}");
         self.status_error = true;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BrushColorAction {
+    Apply,
+    Cancel,
+}
+
+fn brush_popup_close_behavior() -> egui::PopupCloseBehavior {
+    egui::PopupCloseBehavior::CloseOnClickOutside
+}
+
+fn brush_color_action(
+    cancel_clicked: bool,
+    apply_clicked: bool,
+    escape_pressed: bool,
+) -> Option<BrushColorAction> {
+    if cancel_clicked || escape_pressed {
+        Some(BrushColorAction::Cancel)
+    } else if apply_clicked {
+        Some(BrushColorAction::Apply)
+    } else {
+        None
     }
 }
 
@@ -302,6 +509,8 @@ mod tests {
     fn gesture(layer_id: Option<u64>) -> BrushGesture {
         BrushGesture {
             layer_id,
+            target_layer_id: layer_id.unwrap_or(1),
+            gesture_id: 7,
             viewport: (100, 80),
             transform: Transform::default(),
             samples: vec![brush_sample(Pos2::new(12.5, 14.5))],
@@ -360,5 +569,26 @@ mod tests {
             brush_command(Tool::Eraser, &brush, &gesture(Some(9))).unwrap(),
             Command::AddBrushStroke { id: 9, .. }
         ));
+    }
+
+    #[test]
+    fn expanded_color_picker_keeps_settings_open_and_maps_pointer_and_keyboard_actions() {
+        assert_eq!(
+            brush_popup_close_behavior(),
+            egui::PopupCloseBehavior::CloseOnClickOutside
+        );
+        assert_eq!(
+            brush_color_action(false, true, false),
+            Some(BrushColorAction::Apply)
+        );
+        assert_eq!(
+            brush_color_action(true, false, false),
+            Some(BrushColorAction::Cancel)
+        );
+        assert_eq!(
+            brush_color_action(false, false, true),
+            Some(BrushColorAction::Cancel)
+        );
+        assert_eq!(brush_color_action(false, false, false), None);
     }
 }

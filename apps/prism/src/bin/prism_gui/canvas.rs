@@ -33,28 +33,37 @@ impl PrismApp {
                 // needed. In particular, the first resize frame must reuse the existing layer
                 // texture instead of dispatching settled-resolution work for the pre-drag
                 // transform and immediately invalidating it.
-                self.ensure_layer_visuals(
-                    ui.ctx(),
-                    geometry.pixels_per_point * ui.ctx().pixels_per_point(),
-                );
+                let display_scale = geometry.pixels_per_point * ui.ctx().pixels_per_point();
+                self.ensure_layer_visuals(ui.ctx(), display_scale);
+                self.settle_brush_preview_if_ready(display_scale);
                 let direct_manipulation = direct_manipulation_preview(self.drag);
                 let preview_document = self
                     .brush
                     .preview
                     .as_ref()
                     .unwrap_or(&self.workspace.document);
+                let region_path_preview = preview_document.layers.iter().any(|layer| {
+                    layer.visible
+                        && prism_core::path_preview_requires_region(layer, display_scale)
+                            .unwrap_or(false)
+                });
                 if (self.brush.preview.is_some()
+                    || region_path_preview
                     || document_requires_composite_preview(preview_document))
                     && !direct_manipulation
                 {
                     let raster_sources = self.raster_sources.snapshot();
+                    let progressive_brush = self.brush_preview_key();
                     let frame = match self.composite_preview.ensure(
                         ui.ctx(),
-                        self.active_tab_id,
-                        preview_document,
-                        geometry,
-                        ui.ctx().pixels_per_point(),
-                        raster_sources,
+                        CompositePreviewRequest {
+                            tab_id: self.active_tab_id,
+                            document: preview_document,
+                            geometry,
+                            physical_pixels_per_point: ui.ctx().pixels_per_point(),
+                            raster_sources,
+                            progressive_brush,
+                        },
                     ) {
                         Ok(frame) => {
                             self.preview_error = None;
