@@ -1,8 +1,8 @@
 use std::fs;
 
 use prism_core::{
-    BlendMode, Command, Document, LayerTransfer, RenderRegion, Workspace, render_document,
-    render_document_region_scaled,
+    BlendMode, BrushProgram, Command, Document, Layer, LayerKind, LayerTransfer, RenderRegion,
+    Transform, Workspace, render_document, render_document_region_scaled,
 };
 use serde::Deserialize;
 use spectrum_revisions::{Actor, ActorKind, RevisionId, SessionId};
@@ -36,6 +36,89 @@ fn seeded_dissolve_matches_the_reviewed_visual_fixture_and_region_crop() {
         viewport,
         image::imageops::crop_imm(&rendered, region.x, region.y, region.width, region.height)
             .to_image()
+    );
+}
+
+#[test]
+fn seeded_dissolve_is_stable_across_the_output_tile_seam() {
+    let mut document = Document::new("Dissolve tile seam", 518, 1);
+    document.background = [12, 18, 24, 255];
+    document.layers = vec![
+        Layer {
+            id: 1,
+            name: "Empty paint tile trigger".into(),
+            kind: LayerKind::Paint {
+                program: BrushProgram::new(518, 1).unwrap(),
+            },
+            ..Layer::default()
+        },
+        Layer {
+            id: 2,
+            name: "Dissolve".into(),
+            opacity: 0.5,
+            blend_mode: BlendMode::Dissolve,
+            dissolve_seed: 0x1234_5678,
+            kind: LayerKind::Rectangle {
+                width: 518,
+                height: 1,
+                color: [230, 80, 150, 255],
+                corner_radius: 0.0,
+            },
+            ..Layer::default()
+        },
+    ];
+    let seam = RenderRegion {
+        x: 510,
+        y: 0,
+        width: 8,
+        height: 1,
+    };
+    let rendered = render_document(&document, None).unwrap().to_rgba8();
+    let seam_render = render_document_region_scaled(&document, 1.0, seam)
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(
+        seam_render,
+        image::imageops::crop_imm(&rendered, seam.x, seam.y, seam.width, seam.height).to_image()
+    );
+    assert_eq!(
+        seam_render.as_raw(),
+        &[
+            12, 18, 24, 255, 230, 80, 150, 255, 12, 18, 24, 255, 230, 80, 150, 255, 230, 80, 150,
+            255, 230, 80, 150, 255, 12, 18, 24, 255, 230, 80, 150, 255,
+        ]
+    );
+}
+
+#[test]
+fn kept_dissolve_pixels_are_opaque_over_a_transparent_background() {
+    let mut document = Document::new("Dissolve transparent alpha", 8, 10);
+    document.background = [0; 4];
+    document.layers.push(Layer {
+        id: 1,
+        opacity: 0.5,
+        blend_mode: BlendMode::Dissolve,
+        dissolve_seed: 0x1234_5678,
+        transform: Transform {
+            y: 9.0,
+            ..Transform::default()
+        },
+        kind: LayerKind::Rectangle {
+            width: 8,
+            height: 1,
+            color: [35, 145, 225, 255],
+            corner_radius: 0.0,
+        },
+        ..Layer::default()
+    });
+    let rendered = render_document(&document, None).unwrap().to_rgba8();
+    let row = image::imageops::crop_imm(&rendered, 0, 9, 8, 1).to_image();
+    assert_eq!(
+        row.as_raw(),
+        &[
+            35, 145, 225, 255, 35, 145, 225, 255, 0, 0, 0, 0, 35, 145, 225, 255, 35, 145, 225, 255,
+            35, 145, 225, 255, 0, 0, 0, 0, 35, 145, 225, 255,
+        ]
     );
 }
 
