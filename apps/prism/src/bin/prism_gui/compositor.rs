@@ -801,6 +801,8 @@ mod tests {
         let mut document = Document::new("Parity", 100, 100);
         document.layers.push(Layer::default());
         assert!(!document_requires_composite_preview(&document));
+        document.layers[0].blend_mode = BlendMode::Dissolve;
+        assert!(document_requires_composite_preview(&document));
         document.layers[0].blend_mode = BlendMode::Color;
         assert!(document_requires_composite_preview(&document));
         document.layers[0].blend_mode = BlendMode::Normal;

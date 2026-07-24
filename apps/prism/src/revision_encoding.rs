@@ -12,6 +12,7 @@ pub(super) const SELECTION_SNAPSHOT_VERSION: u32 = 4;
 pub(super) const COLOR_SELECTION_SNAPSHOT_VERSION: u32 = 5;
 pub(super) const PATH_SNAPSHOT_VERSION: u32 = 6;
 pub(super) const PAINT_SNAPSHOT_VERSION: u32 = 7;
+pub(super) const DISSOLVE_SNAPSHOT_VERSION: u32 = 8;
 pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
@@ -22,6 +23,7 @@ pub(super) const PATH_OPERATIONS_VERSION: u32 = 7;
 pub(super) const PAINT_OPERATIONS_VERSION: u32 = 8;
 pub(super) const LASSO_OPERATIONS_VERSION: u32 = 9;
 pub(super) const DOCUMENT_LIFECYCLE_OPERATIONS_VERSION: u32 = 10;
+pub(super) const DISSOLVE_OPERATIONS_VERSION: u32 = 11;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -54,19 +56,40 @@ impl Compatibility for PrismCompatibility {
                     encoding.required_capabilities.is_empty()
                         || encoding.required_capabilities == [DEFLATE_CAPABILITY]
                 }
+                DISSOLVE_SNAPSHOT_VERSION => {
+                    encoding.required_capabilities.is_empty()
+                        || encoding.required_capabilities == [DEFLATE_CAPABILITY]
+                }
                 _ => false,
             }
     }
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=DOCUMENT_LIFECYCLE_OPERATIONS_VERSION)
-                .contains(&encoding.version)
+            && (LEGACY_OPERATIONS_VERSION..=DISSOLVE_OPERATIONS_VERSION).contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands.iter().any(|command| {
+        matches!(
+            command,
+            Command::SetDissolveSeed { .. }
+                | Command::SetBlendMode {
+                    blend_mode: crate::BlendMode::Dissolve,
+                    ..
+                }
+        ) || matches!(
+            command,
+            Command::InsertLayer { transfer, .. }
+                if transfer.version >= crate::DISSOLVE_LAYER_TRANSFER_VERSION
+                    || transfer.layer.blend_mode == crate::BlendMode::Dissolve
+                    || transfer.layer.dissolve_seed != 0
+        )
+    }) {
+        return DISSOLVE_OPERATIONS_VERSION;
+    }
     if commands
         .iter()
         .any(|command| matches!(command, Command::RenameDocument { .. }))
@@ -155,6 +178,8 @@ pub(super) fn downgrade_compatible_transfers(commands: &mut [Command]) {
             && transfer.layer.vector_mask.is_none()
             && !matches!(transfer.layer.kind, crate::LayerKind::Path { .. })
             && !matches!(transfer.layer.kind, crate::LayerKind::Paint { .. })
+            && transfer.layer.blend_mode != crate::BlendMode::Dissolve
+            && transfer.layer.dissolve_seed == 0
         {
             transfer.version = if transfer.layer.pixel_mask.is_some() {
                 3
@@ -313,13 +338,13 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_advertises_operation_versions_one_through_ten() {
-        for version in LEGACY_OPERATIONS_VERSION..=DOCUMENT_LIFECYCLE_OPERATIONS_VERSION {
+    fn compatibility_advertises_operation_versions_one_through_eleven() {
+        for version in LEGACY_OPERATIONS_VERSION..=DISSOLVE_OPERATIONS_VERSION {
             assert!(
                 PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
-        for version in [0, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION + 1] {
+        for version in [0, DISSOLVE_OPERATIONS_VERSION + 1] {
             assert!(
                 !PrismCompatibility
                     .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
@@ -393,7 +418,7 @@ mod tests {
             transfer: Box::new(transfer.clone()),
             index: None,
         }];
-        assert_eq!(operations_version(&compatible), PAINT_OPERATIONS_VERSION);
+        assert_eq!(operations_version(&compatible), DISSOLVE_OPERATIONS_VERSION);
         assert!(
             validate_operations_version(&compatible, LAYER_TRANSFER_OPERATIONS_VERSION).is_err()
         );
@@ -429,7 +454,7 @@ mod tests {
 
         let transfer = LayerTransfer {
             format: LAYER_TRANSFER_FORMAT.into(),
-            version: LAYER_TRANSFER_VERSION,
+            version: crate::PAINT_LAYER_TRANSFER_VERSION,
             layer: Layer {
                 kind: crate::LayerKind::Paint { program },
                 ..Layer::default()
@@ -442,5 +467,31 @@ mod tests {
         }];
         downgrade_compatible_transfers(&mut commands);
         assert_eq!(operations_version(&commands), PAINT_OPERATIONS_VERSION);
+    }
+
+    #[test]
+    fn dissolve_commands_require_v11() {
+        for command in [
+            Command::SetBlendMode {
+                id: 1,
+                blend_mode: crate::BlendMode::Dissolve,
+            },
+            Command::SetDissolveSeed {
+                id: 1,
+                seed: 0x1234_5678,
+            },
+        ] {
+            assert_eq!(
+                operations_version(std::slice::from_ref(&command)),
+                DISSOLVE_OPERATIONS_VERSION
+            );
+            assert!(
+                validate_operations_version(
+                    std::slice::from_ref(&command),
+                    DOCUMENT_LIFECYCLE_OPERATIONS_VERSION
+                )
+                .is_err()
+            );
+        }
     }
 }

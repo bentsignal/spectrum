@@ -237,6 +237,8 @@ pub(crate) fn composite_bounded_source_region(
                     clip,
                     canvas_x as u32 - region.x,
                     canvas_y as u32 - region.y,
+                    canvas_x as u32,
+                    canvas_y as u32,
                 );
             }
         }

@@ -309,6 +309,20 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
     let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
     assert_eq!(listed["document"]["layers"][0]["blend_mode"], "vivid_light");
     assert_eq!(listed["document"]["layers"][0]["clip_to_below"], true);
+    let dissolve = run_prism(&[
+        "--project",
+        project.to_str().unwrap(),
+        "blend",
+        "1",
+        "dissolve",
+        "--seed",
+        "305419896",
+    ]);
+    assert_eq!(dissolve["results"][0]["action"], "set_blend_mode");
+    assert_eq!(dissolve["results"][1]["action"], "set_dissolve_seed");
+    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    assert_eq!(listed["document"]["layers"][0]["blend_mode"], "dissolve");
+    assert_eq!(listed["document"]["layers"][0]["dissolve_seed"], 305419896);
     std::fs::remove_dir_all(directory).unwrap();
 }
 

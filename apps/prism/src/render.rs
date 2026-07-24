@@ -782,6 +782,8 @@ fn composite_layer_region(
                 clip,
                 x,
                 y,
+                canvas_x as u32,
+                canvas_y as u32,
             );
         }
     }
@@ -800,18 +802,33 @@ pub(crate) fn composite_pixel(
     clip: Option<&RgbaImage>,
     x: u32,
     y: u32,
+    document_x: u32,
+    document_y: u32,
 ) {
     let mask_alpha = if layer_mask_allows(layer, source_x, source_y, source_width, source_height) {
-        1.0
+        255
     } else {
-        0.0
+        0
     };
     let clip_alpha = if layer.clip_to_below {
-        clip.map_or(0.0, |image| image.get_pixel(x, y)[3] as f32 / 255.0)
+        clip.map_or(0, |image| image.get_pixel(x, y)[3])
     } else {
-        1.0
+        255
     };
-    let alpha = source_pixel[3] as f32 / 255.0 * layer.opacity * mask_alpha * clip_alpha;
+    let alpha = if layer.blend_mode == crate::BlendMode::Dissolve {
+        let coverage =
+            crate::dissolve_coverage(source_pixel[3], layer.opacity, mask_alpha, clip_alpha);
+        if crate::dissolve_pixel_present(layer.dissolve_seed, document_x, document_y, coverage) {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        source_pixel[3] as f32 / 255.0
+            * layer.opacity
+            * (mask_alpha as f32 / 255.0)
+            * (clip_alpha as f32 / 255.0)
+    };
     if alpha <= 0.0 {
         return;
     }

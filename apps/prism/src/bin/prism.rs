@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
@@ -25,6 +25,9 @@ use alignment::{CliAlignment, GuideCommand};
 #[path = "prism_cli/benchmark.rs"]
 mod benchmark;
 use benchmark::{BenchmarkProfile, benchmark};
+#[path = "prism_cli/blend.rs"]
+mod blend;
+use blend::CliBlend;
 #[path = "prism_cli/effects.rs"]
 mod effects;
 use effects::{GradientArgs, ShadowArgs};
@@ -250,6 +253,9 @@ enum CliCommand {
     Blend {
         id: u64,
         mode: CliBlend,
+        /// Stable 32-bit pattern seed for Dissolve.
+        #[arg(long)]
+        seed: Option<u32>,
     },
     Transform {
         id: u64,
@@ -384,69 +390,6 @@ enum CliCommand {
         #[arg(long, value_enum, default_value_t = BenchmarkProfile::Interactive)]
         profile: BenchmarkProfile,
     },
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum CliBlend {
-    Normal,
-    Darken,
-    Multiply,
-    ColorBurn,
-    LinearBurn,
-    DarkerColor,
-    Lighten,
-    Screen,
-    ColorDodge,
-    LinearDodge,
-    LighterColor,
-    Overlay,
-    SoftLight,
-    HardLight,
-    VividLight,
-    LinearLight,
-    PinLight,
-    HardMix,
-    Difference,
-    Exclusion,
-    Subtract,
-    Divide,
-    Hue,
-    Saturation,
-    Color,
-    Luminosity,
-}
-
-impl From<CliBlend> for BlendMode {
-    fn from(value: CliBlend) -> Self {
-        match value {
-            CliBlend::Normal => Self::Normal,
-            CliBlend::Darken => Self::Darken,
-            CliBlend::Multiply => Self::Multiply,
-            CliBlend::ColorBurn => Self::ColorBurn,
-            CliBlend::LinearBurn => Self::LinearBurn,
-            CliBlend::DarkerColor => Self::DarkerColor,
-            CliBlend::Lighten => Self::Lighten,
-            CliBlend::Screen => Self::Screen,
-            CliBlend::ColorDodge => Self::ColorDodge,
-            CliBlend::LinearDodge => Self::LinearDodge,
-            CliBlend::LighterColor => Self::LighterColor,
-            CliBlend::Overlay => Self::Overlay,
-            CliBlend::SoftLight => Self::SoftLight,
-            CliBlend::HardLight => Self::HardLight,
-            CliBlend::VividLight => Self::VividLight,
-            CliBlend::LinearLight => Self::LinearLight,
-            CliBlend::PinLight => Self::PinLight,
-            CliBlend::HardMix => Self::HardMix,
-            CliBlend::Difference => Self::Difference,
-            CliBlend::Exclusion => Self::Exclusion,
-            CliBlend::Subtract => Self::Subtract,
-            CliBlend::Divide => Self::Divide,
-            CliBlend::Hue => Self::Hue,
-            CliBlend::Saturation => Self::Saturation,
-            CliBlend::Color => Self::Color,
-            CliBlend::Luminosity => Self::Luminosity,
-        }
-    }
 }
 
 fn main() -> ExitCode {
@@ -710,11 +653,19 @@ fn run(cli: Cli) -> Result<Value> {
                 CliCommand::Opacity { id, opacity } => {
                     vec![workspace.execute(Command::SetOpacity { id, opacity })?]
                 }
-                CliCommand::Blend { id, mode } => {
-                    vec![workspace.execute(Command::SetBlendMode {
-                        id,
-                        blend_mode: mode.into(),
-                    })?]
+                CliCommand::Blend { id, mode, seed } => {
+                    let blend_mode = BlendMode::from(mode);
+                    if seed.is_some() && blend_mode != BlendMode::Dissolve {
+                        bail!("--seed is only valid with the dissolve blend mode");
+                    }
+                    let mut commands = vec![Command::SetBlendMode { id, blend_mode }];
+                    if blend_mode == BlendMode::Dissolve {
+                        commands.push(Command::SetDissolveSeed {
+                            id,
+                            seed: seed.unwrap_or(0),
+                        });
+                    }
+                    workspace.execute_batch(commands)?
                 }
                 CliCommand::Transform {
                     id,
