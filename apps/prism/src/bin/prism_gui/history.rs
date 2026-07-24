@@ -240,6 +240,7 @@ impl PrismApp {
                 self.history.mark_stale();
                 self.refresh_history(true);
                 if changed {
+                    self.finish_durable_revision_advance();
                     self.sync_active_raster_sources();
                     self.reset_canvas_cache();
                     self.status = "Moved to an existing revision".into();

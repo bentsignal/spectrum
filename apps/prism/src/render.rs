@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
+use image::{DynamicImage, GenericImageView, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
 use crate::{
@@ -521,7 +521,7 @@ fn render_layer_preview_scaled_with_font_limits(
     decode_max_alloc: Option<u64>,
 ) -> Result<DynamicImage> {
     if matches!(layer.kind, LayerKind::Paint { .. }) {
-        return render_paint_preview_exact(layer, max_size);
+        return crate::render_preview::render_paint_preview_exact(layer, max_size);
     }
     let image = render_layer_base_scaled_with_font_limits(
         layer,
@@ -530,9 +530,32 @@ fn render_layer_preview_scaled_with_font_limits(
         font_asset,
         decode_max_alloc,
     )?;
+    render_layer_preview_from_base(layer, image, max_size)
+}
+
+/// Applies one layer's development and masks to an unadjusted cached base.
+///
+/// The base is bounded before geometry so interactive workers use the same
+/// resize, adjustment, and source-mask order as core previews and exports.
+pub fn render_layer_preview_from_base(
+    layer: &Layer,
+    mut image: DynamicImage,
+    max_size: Option<u32>,
+) -> Result<DynamicImage> {
+    if let Some(max_size) =
+        max_size.filter(|size| *size > 0 && (image.width() > *size || image.height() > *size))
+    {
+        image = image.resize(max_size, max_size, FilterType::Triangle);
+    }
+    let preview_source_dimensions = image.dimensions();
     let mut image =
         render_image(image, layer.adjustments.clone(), RenderOptions::default()).to_rgba8();
     let (width, height) = image.dimensions();
+    crate::pixel_masks::apply_pixel_mask_to_adjusted_preview(
+        layer,
+        &mut image,
+        preview_source_dimensions,
+    )?;
     crate::paths::apply_vector_mask_to_image(
         &mut image,
         layer.vector_mask.as_ref(),
@@ -544,40 +567,10 @@ fn render_layer_preview_scaled_with_font_limits(
     Ok(DynamicImage::ImageRgba8(image))
 }
 
-fn render_paint_preview_exact(layer: &Layer, max_size: Option<u32>) -> Result<DynamicImage> {
-    let LayerKind::Paint { program } = &layer.kind else {
-        bail!("exact Paint preview requires a Paint layer");
-    };
-    let mut preview_layer = layer.clone();
-    preview_layer.visible = true;
-    preview_layer.opacity = 1.0;
-    preview_layer.blend_mode = crate::BlendMode::Normal;
-    preview_layer.transform = Transform::default();
-    preview_layer.style = crate::LayerStyle::default();
-    preview_layer.mask = crate::LayerMask::default();
-    preview_layer.clip_to_below = false;
-    let adjusted_dimensions = spectrum_imaging::adjusted_image_dimensions(
-        program.width,
-        program.height,
-        &layer.adjustments,
-    )
-    .context("Paint preview has invalid adjusted dimensions")?;
-    let mut document = Document::new(
-        "Paint preview",
-        adjusted_dimensions.0,
-        adjusted_dimensions.1,
-    );
-    document.background = [0; 4];
-    document.layers.push(preview_layer);
-    let longest = adjusted_dimensions.0.max(adjusted_dimensions.1) as f32;
-    let scale = max_size
-        .filter(|size| *size > 0)
-        .map_or(1.0, |size| (size as f32 / longest).min(1.0));
-    render_document_scaled(&document, scale)
-}
-
-/// Decodes or rasterizes a layer without development adjustments. Keeping this
-/// result cached avoids repeatedly decoding large linked images during sliders.
+/// Decodes or rasterizes a layer without development adjustments or raster
+/// pixel masks. Keeping this result cached avoids repeatedly decoding large
+/// linked images during sliders and lets masks follow the exact adjustment
+/// geometry independently.
 pub fn render_layer_base(layer: &Layer, max_size: Option<u32>) -> Result<DynamicImage> {
     render_layer_base_scaled(layer, max_size, [1.0; 2])
 }
@@ -618,9 +611,16 @@ fn render_layer_base_scaled_with_font_limits(
                 limits.max_alloc = Some(max_alloc);
                 reader.limits(limits);
             }
-            reader
+            let decoded = reader
                 .decode()
-                .with_context(|| format!("could not decode {}", path.display()))?
+                .with_context(|| format!("could not decode {}", path.display()))?;
+            if let Some(mask) = layer.pixel_mask.as_ref() {
+                crate::pixel_masks::validate_pixel_mask_source_dimensions(
+                    mask,
+                    decoded.dimensions(),
+                )?;
+            }
+            DynamicImage::ImageRgba8(decoded.to_rgba8())
         }
         LayerKind::Text {
             text,

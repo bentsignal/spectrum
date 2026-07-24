@@ -55,6 +55,8 @@ enum SelectionAction {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Nondestructively hide selected pixels on one raster image layer.
+    Delete { layer: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -131,6 +133,7 @@ pub(super) fn command(arguments: SelectionArgs) -> Result<Command> {
             color: parse_color(&color)?,
             name,
         },
+        SelectionAction::Delete { layer } => Command::DeleteSelectedPixels { id: layer },
     })
 }
 
@@ -171,6 +174,14 @@ mod tests {
             Command::SetSelection {
                 selection: Some(Selection::rectangle(4, 5, 20, 10))
             }
+        );
+
+        assert_eq!(
+            command(SelectionArgs {
+                action: SelectionAction::Delete { layer: 7 },
+            })
+            .unwrap(),
+            Command::DeleteSelectedPixels { id: 7 }
         );
 
         assert_eq!(

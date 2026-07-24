@@ -659,3 +659,42 @@ fn spot_repair_rings_respect_the_adjusted_staging_limit_before_source_reads() {
     assert!(matches!(error, RegionRenderError::ExceedsStagingPixelLimit));
     assert!(!called.get());
 }
+
+#[test]
+fn adjusted_pixel_source_mapping_matches_rotated_flipped_and_cropped_rendering() {
+    let source = RgbaImage::from_fn(5, 4, |x, y| {
+        Rgba([(x * 31) as u8, (y * 47) as u8, (x + y * 5) as u8, 255])
+    });
+    let adjustments = Adjustments {
+        rotation: 90,
+        flip_horizontal: true,
+        crop: Some(CropRect {
+            x: 0.2,
+            y: 0.25,
+            width: 0.6,
+            height: 0.5,
+        }),
+        ..Default::default()
+    };
+    let rendered = render_image(
+        DynamicImage::ImageRgba8(source.clone()),
+        adjustments.clone(),
+        RenderOptions::default(),
+    )
+    .into_rgba8();
+    let mapper =
+        AdjustedPixelSourceMapper::new(source.width(), source.height(), &adjustments).unwrap();
+    assert_eq!(
+        mapper.adjusted_dimensions(),
+        (rendered.width(), rendered.height())
+    );
+    for (x, y, pixel) in rendered.enumerate_pixels() {
+        let mut samples = Vec::new();
+        assert!(mapper.visit_source_samples(x, y, |sample_x, sample_y| {
+            samples.push((sample_x, sample_y));
+        }));
+        assert_eq!(samples.len(), 1);
+        assert_eq!(*pixel, *source.get_pixel(samples[0].0, samples[0].1));
+    }
+    assert!(!mapper.visit_source_samples(rendered.width(), 0, |_, _| unreachable!()));
+}

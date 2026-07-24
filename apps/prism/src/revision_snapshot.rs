@@ -87,7 +87,12 @@ impl PreparedSnapshot {
                 .layers
                 .iter()
                 .any(|layer| !layer.style.is_empty() || layer.shape_fill.is_some());
-        let snapshot_version = if dissolve_schema {
+        let raster_pixel_mask_schema = portable.layers.iter().any(|layer| {
+            matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some()
+        });
+        let snapshot_version = if raster_pixel_mask_schema {
+            RASTER_PIXEL_MASK_SNAPSHOT_VERSION
+        } else if dissolve_schema {
             DISSOLVE_SNAPSHOT_VERSION
         } else if paint_schema {
             PAINT_SNAPSHOT_VERSION
@@ -158,7 +163,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | COLOR_SELECTION_SNAPSHOT_VERSION
             | PATH_SNAPSHOT_VERSION
             | PAINT_SNAPSHOT_VERSION
-            | DISSOLVE_SNAPSHOT_VERSION,
+            | DISSOLVE_SNAPSHOT_VERSION
+            | RASTER_PIXEL_MASK_SNAPSHOT_VERSION,
             true,
             false,
         ) => bounded_snapshot_bytes(&payload.bytes),
@@ -168,7 +174,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | COLOR_SELECTION_SNAPSHOT_VERSION
             | PATH_SNAPSHOT_VERSION
             | PAINT_SNAPSHOT_VERSION
-            | DISSOLVE_SNAPSHOT_VERSION,
+            | DISSOLVE_SNAPSHOT_VERSION
+            | RASTER_PIXEL_MASK_SNAPSHOT_VERSION,
             false,
             true,
         ) => inflate_snapshot(&payload.bytes),
@@ -290,6 +297,43 @@ mod tests {
     }
 
     #[test]
+    fn raster_pixel_mask_snapshot_uses_v9_and_round_trips_exactly() {
+        let path =
+            std::env::temp_dir().join(format!("prism-v9-raster-mask-{}.png", std::process::id()));
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([20, 40, 60, 255]))
+            .save(&path)
+            .unwrap();
+        let path = std::fs::canonicalize(path).unwrap();
+        let mut document = Document::new("V9 raster mask", 3, 2);
+        document.layers.push(crate::Layer {
+            id: 1,
+            pixel_mask: Some(crate::PixelMask::new(3, 2, vec![255, 0, 128, 255, 64, 0])),
+            kind: LayerKind::Raster {
+                path: path.clone(),
+                original_path: None,
+            },
+            ..crate::Layer::default()
+        });
+        let prepared = PreparedSnapshot::compressed(&document).unwrap();
+        assert_eq!(
+            prepared.payload.encoding.version,
+            RASTER_PIXEL_MASK_SNAPSHOT_VERSION
+        );
+        let decoded: Document =
+            serde_json::from_slice(&decode_snapshot(&prepared.payload).unwrap()).unwrap();
+        assert_eq!(decoded.version, RASTER_PIXEL_MASK_SNAPSHOT_VERSION);
+        assert_eq!(decoded.layers[0].pixel_mask, document.layers[0].pixel_mask);
+        assert!(matches!(
+            decoded.layers[0].kind,
+            LayerKind::Raster {
+                original_path: None,
+                ..
+            }
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn dissolve_snapshot_uses_v8_and_round_trips_the_seed() {
         let mut document = Document::new("V8 Dissolve", 32, 24);
         document.layers.push(crate::Layer {
@@ -304,5 +348,40 @@ mod tests {
             serde_json::from_slice(&decode_snapshot(&prepared.payload).unwrap()).unwrap();
         assert_eq!(decoded.layers[0].dissolve_seed, 0x1234_5678);
         assert_eq!(decoded.layers[0].blend_mode, crate::BlendMode::Dissolve);
+    }
+
+    #[test]
+    fn raster_mask_and_dissolve_snapshot_uses_v9_and_round_trips_both() {
+        let path = std::env::temp_dir().join(format!(
+            "prism-v9-raster-mask-dissolve-{}.png",
+            std::process::id()
+        ));
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 40, 60, 128]))
+            .save(&path)
+            .unwrap();
+        let path = std::fs::canonicalize(path).unwrap();
+        let mut document = Document::new("V9 raster mask and Dissolve", 2, 2);
+        document.layers.push(crate::Layer {
+            id: 1,
+            kind: LayerKind::Raster {
+                path: path.clone(),
+                original_path: None,
+            },
+            pixel_mask: Some(crate::PixelMask::new(2, 2, vec![255, 0, 128, 64])),
+            blend_mode: crate::BlendMode::Dissolve,
+            dissolve_seed: 0x89ab_cdef,
+            ..crate::Layer::default()
+        });
+        let prepared = PreparedSnapshot::compressed(&document).unwrap();
+        assert_eq!(
+            prepared.payload.encoding.version,
+            RASTER_PIXEL_MASK_SNAPSHOT_VERSION
+        );
+        let decoded: Document =
+            serde_json::from_slice(&decode_snapshot(&prepared.payload).unwrap()).unwrap();
+        assert_eq!(decoded.layers[0].pixel_mask, document.layers[0].pixel_mask);
+        assert_eq!(decoded.layers[0].blend_mode, crate::BlendMode::Dissolve);
+        assert_eq!(decoded.layers[0].dissolve_seed, 0x89ab_cdef);
+        let _ = std::fs::remove_file(path);
     }
 }

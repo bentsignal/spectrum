@@ -130,6 +130,25 @@ impl Selection {
         }
     }
 
+    pub(crate) fn alpha_at(&self, x: u32, y: u32) -> u8 {
+        let (origin_x, origin_y, width, height) = self.bounds();
+        if x < origin_x
+            || y < origin_y
+            || x >= origin_x.saturating_add(width)
+            || y >= origin_y.saturating_add(height)
+        {
+            return 0;
+        }
+        match self {
+            Self::Rectangle { .. } => 255,
+            Self::ColorMask { alpha, .. } => {
+                let local_x = x - origin_x;
+                let local_y = y - origin_y;
+                alpha[(u64::from(local_y) * u64::from(width) + u64::from(local_x)) as usize]
+            }
+        }
+    }
+
     pub(crate) fn validated(self, canvas_width: u32, canvas_height: u32) -> Result<Self> {
         let (x, y, width, height) = self.bounds();
         if width == 0 || height == 0 {

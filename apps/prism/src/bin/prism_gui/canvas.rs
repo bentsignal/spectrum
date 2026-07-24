@@ -1,3 +1,4 @@
+use super::brush_tool::brush_display_document;
 use super::*;
 
 const MIN_PARAGRAPH_TEXT_SCREEN_POINTS: f32 = 3.0;
@@ -33,40 +34,49 @@ impl PrismApp {
                 // needed. In particular, the first resize frame must reuse the existing layer
                 // texture instead of dispatching settled-resolution work for the pre-drag
                 // transform and immediately invalidating it.
-                self.ensure_layer_visuals(
-                    ui.ctx(),
-                    geometry.pixels_per_point * ui.ctx().pixels_per_point(),
-                );
+                let display_scale = geometry.pixels_per_point * ui.ctx().pixels_per_point();
+                self.ensure_layer_visuals(ui.ctx(), display_scale);
+                self.settle_brush_preview_if_ready(display_scale);
                 let direct_manipulation = direct_manipulation_preview(self.drag);
-                let preview_document = self
-                    .brush
-                    .preview
-                    .as_ref()
-                    .unwrap_or(&self.workspace.document);
+                let preview_document =
+                    brush_display_document(&self.brush, &self.workspace.document);
+                let region_path_preview = preview_document.layers.iter().any(|layer| {
+                    layer.visible
+                        && prism_core::path_preview_requires_region(layer, display_scale)
+                            .unwrap_or(false)
+                });
                 let exact_direct_composite =
                     direct_manipulation_requires_immediate_composite(preview_document, self.drag);
                 if (self.brush.preview.is_some()
+                    || region_path_preview
                     || document_requires_composite_preview(preview_document))
                     && (!direct_manipulation || exact_direct_composite)
                 {
                     let raster_sources = self.raster_sources.snapshot();
+                    let progressive_brush = self.brush_preview_key();
                     let frame = match if exact_direct_composite {
                         self.composite_preview.ensure_immediate(
                             ui.ctx(),
-                            self.active_tab_id,
-                            preview_document,
-                            geometry,
-                            ui.ctx().pixels_per_point(),
-                            raster_sources,
+                            CompositePreviewRequest {
+                                tab_id: self.active_tab_id,
+                                document: preview_document,
+                                geometry,
+                                physical_pixels_per_point: ui.ctx().pixels_per_point(),
+                                raster_sources,
+                                progressive_brush,
+                            },
                         )
                     } else {
                         self.composite_preview.ensure(
                             ui.ctx(),
-                            self.active_tab_id,
-                            preview_document,
-                            geometry,
-                            ui.ctx().pixels_per_point(),
-                            raster_sources,
+                            CompositePreviewRequest {
+                                tab_id: self.active_tab_id,
+                                document: preview_document,
+                                geometry,
+                                physical_pixels_per_point: ui.ctx().pixels_per_point(),
+                                raster_sources,
+                                progressive_brush,
+                            },
                         )
                     } {
                         Ok(frame) => {
@@ -78,6 +88,9 @@ impl PrismApp {
                             None
                         }
                     };
+                    let exact_desired_frame_ready = frame.as_ref().is_some_and(|frame| {
+                        self.composite_preview.frame_matches_exact_desired(frame)
+                    });
                     if let Some(frame) = frame.as_ref() {
                         paint_composite_preview(ui, geometry, Some(frame));
                     } else if exact_direct_composite {
@@ -95,6 +108,7 @@ impl PrismApp {
                             &self.layer_visuals,
                         );
                     }
+                    self.settle_composited_brush_preview_if_ready(exact_desired_frame_ready);
                 } else {
                     paint_interactive_document(ui, geometry, preview_document, &self.layer_visuals);
                 }

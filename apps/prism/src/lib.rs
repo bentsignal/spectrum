@@ -54,6 +54,7 @@ mod transfer;
 pub use transfer::{
     DISSOLVE_LAYER_TRANSFER_VERSION, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer,
     LayerTransferFont, PAINT_LAYER_TRANSFER_VERSION, PATH_LAYER_TRANSFER_VERSION,
+    RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION,
 };
 
 mod validation;
@@ -71,8 +72,8 @@ pub use workspace::Workspace;
 
 mod shapes;
 pub use shapes::{
-    RasterizedShapeAsset, interactive_shape_scale, rasterize_shape_asset,
-    recommended_rasterization_scale, shape_dimensions,
+    RasterizedShapeAsset, interactive_shape_scale, path_preview_requires_region,
+    rasterize_shape_asset, recommended_rasterization_scale, shape_dimensions,
 };
 
 mod paths;
@@ -97,8 +98,8 @@ pub use lasso::{
     combine_selections, lasso_selection,
 };
 
-pub const PRISM_VERSION: u32 = 8;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 11;
+pub const PRISM_VERSION: u32 = 9;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 12;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
@@ -118,6 +119,9 @@ pub use alignment::{
 mod selection;
 pub use selection::{MAX_COLOR_SELECTION_PIXELS, Selection, magic_wand_selection};
 
+mod pixel_masks;
+mod render_preview;
+mod selection_commands;
 mod selection_outline;
 pub use selection_outline::{
     MAX_SELECTION_OUTLINE_EDGES, SelectionMaskOutline, SelectionOutlineFrame, SelectionOutlinePath,
@@ -565,13 +569,18 @@ impl Document {
                     );
                 }
                 let dimensions = match &layer.kind {
+                    LayerKind::Raster { path, .. } => {
+                        image::image_dimensions(path).with_context(|| {
+                            format!("could not inspect raster layer {}", path.display())
+                        })?
+                    }
                     LayerKind::Paint { program } => (program.width, program.height),
                     _ => shape_dimensions(layer)
-                        .context("only shape and Paint layers can carry a pixel mask")?,
+                        .context("only raster, shape, and Paint layers can carry a pixel mask")?,
                 };
                 if dimensions != (mask.width, mask.height) {
                     bail!(
-                        "layer {} pixel mask dimensions do not match its shape",
+                        "layer {} pixel mask dimensions do not match its source",
                         layer.id
                     );
                 }
@@ -701,8 +710,9 @@ pub use render::{
     render_document, render_document_region_scaled, render_document_region_scaled_with_sources,
     render_document_region_scaled_with_sources_and_stats, render_document_region_scaled_with_stats,
     render_document_scaled, render_document_thumbnail, render_layer_base, render_layer_base_scaled,
-    render_layer_base_scaled_with_font, render_layer_preview, render_layer_preview_scaled,
-    render_layer_preview_scaled_with_font, render_solid_color, save_document,
+    render_layer_base_scaled_with_font, render_layer_preview, render_layer_preview_from_base,
+    render_layer_preview_scaled, render_layer_preview_scaled_with_font, render_solid_color,
+    save_document,
 };
 pub use render_region::{RegionSourceScales, recommended_text_raster_scale, region_source_scales};
 pub use text_preview_cache::{LayerPreviewSchedule, TextPreviewFrameCache};
@@ -799,6 +809,10 @@ mod effect_tests;
 #[cfg(test)]
 #[path = "selection_tests.rs"]
 mod selection_tests;
+
+#[cfg(test)]
+#[path = "pixel_mask_tests.rs"]
+mod pixel_mask_tests;
 
 #[cfg(test)]
 #[path = "path_tests.rs"]

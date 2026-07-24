@@ -8,5 +8,7 @@ mod lasso_tests;
 mod optimized_copy_tests;
 #[path = "paint_tests.rs"]
 mod paint_tests;
+#[path = "schema_tests.rs"]
+mod schema_tests;
 #[path = "tests.rs"]
 mod tests;

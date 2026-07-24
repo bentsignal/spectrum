@@ -13,6 +13,7 @@ pub(super) const COLOR_SELECTION_SNAPSHOT_VERSION: u32 = 5;
 pub(super) const PATH_SNAPSHOT_VERSION: u32 = 6;
 pub(super) const PAINT_SNAPSHOT_VERSION: u32 = 7;
 pub(super) const DISSOLVE_SNAPSHOT_VERSION: u32 = 8;
+pub(super) const RASTER_PIXEL_MASK_SNAPSHOT_VERSION: u32 = 9;
 pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
@@ -24,6 +25,7 @@ pub(super) const PAINT_OPERATIONS_VERSION: u32 = 8;
 pub(super) const LASSO_OPERATIONS_VERSION: u32 = 9;
 pub(super) const DOCUMENT_LIFECYCLE_OPERATIONS_VERSION: u32 = 10;
 pub(super) const DISSOLVE_OPERATIONS_VERSION: u32 = 11;
+pub(super) const RASTER_PIXEL_MASK_OPERATIONS_VERSION: u32 = 12;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -56,7 +58,7 @@ impl Compatibility for PrismCompatibility {
                     encoding.required_capabilities.is_empty()
                         || encoding.required_capabilities == [DEFLATE_CAPABILITY]
                 }
-                DISSOLVE_SNAPSHOT_VERSION => {
+                DISSOLVE_SNAPSHOT_VERSION | RASTER_PIXEL_MASK_SNAPSHOT_VERSION => {
                     encoding.required_capabilities.is_empty()
                         || encoding.required_capabilities == [DEFLATE_CAPABILITY]
                 }
@@ -66,12 +68,25 @@ impl Compatibility for PrismCompatibility {
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=DISSOLVE_OPERATIONS_VERSION).contains(&encoding.version)
+            && (LEGACY_OPERATIONS_VERSION..=RASTER_PIXEL_MASK_OPERATIONS_VERSION)
+                .contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands.iter().any(|command| {
+        matches!(command, Command::DeleteSelectedPixels { .. })
+            || matches!(
+                command,
+                Command::InsertLayer { transfer, .. }
+                    if transfer.version >= crate::RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
+                        || matches!(transfer.layer.kind, crate::LayerKind::Raster { .. })
+                            && transfer.layer.pixel_mask.is_some()
+            )
+    }) {
+        return RASTER_PIXEL_MASK_OPERATIONS_VERSION;
+    }
     if commands.iter().any(|command| {
         matches!(
             command,
@@ -132,7 +147,11 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
         matches!(command, Command::MagicWandSelection { .. })
             || matches!(command, Command::MagicWandSnapshot { .. })
             || matches!(command, Command::SetSelection { selection: Some(selection) } if selection.alpha().is_some())
-            || matches!(command, Command::InsertLayer { transfer, .. } if transfer.layer.pixel_mask.is_some())
+            || matches!(
+                command,
+                Command::InsertLayer { transfer, .. }
+                    if transfer.version == 3 || transfer.layer.pixel_mask.is_some()
+            )
     }) {
         return COLOR_SELECTION_OPERATIONS_VERSION;
     }
@@ -156,7 +175,8 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
         ) || matches!(
             command,
             Command::InsertLayer { transfer, .. }
-                if !transfer.layer.style.is_empty()
+                if transfer.version == 2
+                    || !transfer.layer.style.is_empty()
                     || transfer.layer.shape_fill.is_some()
         )
     }) {
@@ -176,7 +196,11 @@ pub(super) fn downgrade_compatible_transfers(commands: &mut [Command]) {
         if let Command::InsertLayer { transfer, .. } = command
             && transfer.validate_envelope().is_ok()
         {
-            let minimal_version = if transfer.layer.blend_mode == crate::BlendMode::Dissolve
+            let minimal_version = if matches!(transfer.layer.kind, crate::LayerKind::Raster { .. })
+                && transfer.layer.pixel_mask.is_some()
+            {
+                crate::RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
+            } else if transfer.layer.blend_mode == crate::BlendMode::Dissolve
                 || transfer.layer.dissolve_seed != 0
             {
                 crate::DISSOLVE_LAYER_TRANSFER_VERSION
@@ -216,7 +240,8 @@ mod tests {
     use super::*;
     use crate::{
         DropShadow, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LassoPath, LassoPoint, Layer,
-        LayerStyle, LayerTransfer, Selection, SelectionCombineMode,
+        LayerKind, LayerStyle, LayerTransfer, PAINT_LAYER_TRANSFER_VERSION, PixelMask,
+        RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION, Selection, SelectionCombineMode,
     };
 
     fn insert_transfer(version: u32, layer: Layer) -> Vec<Command> {
@@ -250,6 +275,21 @@ mod tests {
         assert!(validate_operations_version(&commands, LASSO_OPERATIONS_VERSION).is_err());
         assert!(
             validate_operations_version(&commands, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION).is_ok()
+        );
+    }
+
+    #[test]
+    fn raster_pixel_deletion_requires_the_v12_operation_envelope() {
+        let commands = [Command::DeleteSelectedPixels { id: 7 }];
+        assert_eq!(
+            operations_version(&commands),
+            RASTER_PIXEL_MASK_OPERATIONS_VERSION
+        );
+        assert!(
+            validate_operations_version(&commands, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION).is_err()
+        );
+        assert!(
+            validate_operations_version(&commands, RASTER_PIXEL_MASK_OPERATIONS_VERSION).is_ok()
         );
     }
 
@@ -363,13 +403,13 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_advertises_operation_versions_one_through_eleven() {
-        for version in LEGACY_OPERATIONS_VERSION..=DISSOLVE_OPERATIONS_VERSION {
+    fn compatibility_advertises_operation_versions_one_through_twelve() {
+        for version in LEGACY_OPERATIONS_VERSION..=RASTER_PIXEL_MASK_OPERATIONS_VERSION {
             assert!(
                 PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
-        for version in [0, DISSOLVE_OPERATIONS_VERSION + 1] {
+        for version in [0, RASTER_PIXEL_MASK_OPERATIONS_VERSION + 1] {
             assert!(
                 !PrismCompatibility
                     .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
@@ -443,7 +483,10 @@ mod tests {
             transfer: Box::new(transfer.clone()),
             index: None,
         }];
-        assert_eq!(operations_version(&compatible), DISSOLVE_OPERATIONS_VERSION);
+        assert_eq!(
+            operations_version(&compatible),
+            RASTER_PIXEL_MASK_OPERATIONS_VERSION
+        );
         assert!(
             validate_operations_version(&compatible, LAYER_TRANSFER_OPERATIONS_VERSION).is_err()
         );
@@ -464,6 +507,44 @@ mod tests {
             operations_version(&styled),
             LAYER_EFFECTS_OPERATIONS_VERSION
         );
+    }
+
+    #[test]
+    fn raster_pixel_mask_transfers_require_v12_even_with_an_older_transfer_marker() {
+        let raster_mask = PixelMask::new(2, 1, vec![255, 0]);
+        for transfer_version in [
+            PAINT_LAYER_TRANSFER_VERSION,
+            RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION,
+        ] {
+            let commands = [Command::InsertLayer {
+                transfer: Box::new(LayerTransfer {
+                    format: LAYER_TRANSFER_FORMAT.into(),
+                    version: transfer_version,
+                    layer: Layer {
+                        kind: LayerKind::Raster {
+                            path: "source.png".into(),
+                            original_path: None,
+                        },
+                        pixel_mask: Some(raster_mask.clone()),
+                        ..Layer::default()
+                    },
+                    font_asset: None,
+                }),
+                index: None,
+            }];
+            assert_eq!(
+                operations_version(&commands),
+                RASTER_PIXEL_MASK_OPERATIONS_VERSION
+            );
+            assert!(
+                validate_operations_version(&commands, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION)
+                    .is_err()
+            );
+            assert!(
+                validate_operations_version(&commands, RASTER_PIXEL_MASK_OPERATIONS_VERSION)
+                    .is_ok()
+            );
+        }
     }
 
     #[test]
@@ -602,7 +683,7 @@ mod tests {
 
         let transfer = LayerTransfer {
             format: LAYER_TRANSFER_FORMAT.into(),
-            version: crate::PAINT_LAYER_TRANSFER_VERSION,
+            version: PAINT_LAYER_TRANSFER_VERSION,
             layer: Layer {
                 kind: crate::LayerKind::Paint { program },
                 ..Layer::default()

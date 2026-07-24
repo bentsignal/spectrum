@@ -72,6 +72,57 @@ fn direct_dissolve_composite_matches_seeded_move_rotate_resize_oracle() {
     );
 }
 
+#[test]
+fn masked_dissolve_direct_preview_is_exact_and_stable() {
+    let mut document = Document::new("Masked Dissolve", 6, 5);
+    document.background = [9, 13, 17, 255];
+    document.layers.push(Layer {
+        id: 1,
+        opacity: 0.72,
+        blend_mode: BlendMode::Dissolve,
+        dissolve_seed: 0xa5c3_19e7,
+        pixel_mask: Some(prism_core::PixelMask::new(
+            4,
+            3,
+            vec![255, 0, 128, 255, 64, 255, 192, 0, 255, 128, 32, 255],
+        )),
+        kind: LayerKind::Rectangle {
+            width: 4,
+            height: 3,
+            color: [220, 70, 145, 211],
+            corner_radius: 0.0,
+        },
+        transform: Transform {
+            x: 1.0,
+            y: 1.0,
+            ..Transform::default()
+        },
+        ..Layer::default()
+    });
+    let geometry = CanvasGeometry {
+        canvas: Rect::from_min_size(Pos2::ZERO, Vec2::new(6.0, 5.0)),
+        viewport: Rect::from_min_size(Pos2::ZERO, Vec2::new(6.0, 5.0)),
+        pixels_per_point: 1.0,
+    };
+    let key = CompositePreviewKey::new(1, 0, &document, geometry, 1.0).unwrap();
+    let expected = prism_core::render_document_region_scaled(&document, key.scale(), key.region)
+        .unwrap()
+        .to_rgba8();
+    let request = CompositeRenderRequest {
+        sequence: 1,
+        key,
+        raster_sources: Arc::new(RasterSourceSnapshot::empty()),
+    };
+    let first = render_immediate_composite_request(&request)
+        .unwrap()
+        .to_rgba8();
+    let second = render_immediate_composite_request(&request)
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(first, expected);
+    assert_eq!(second, expected);
+}
+
 struct PatternSource {
     info: RegionSourceInfo,
 }

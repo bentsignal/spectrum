@@ -362,7 +362,7 @@ impl VectorMask {
 
 const PATH_AA_PADDING: f32 = 1.0;
 const PATH_RASTER_TILE: u32 = 256;
-const MAX_PATH_RASTER_PIXELS: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_PATH_RASTER_PIXELS: u64 = 32 * 1024 * 1024;
 const MAX_VECTOR_MASK_TILE_PIXELS: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
