@@ -52,8 +52,8 @@ pub use font_subset_plan::{
 
 mod transfer;
 pub use transfer::{
-    LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont,
-    PATH_LAYER_TRANSFER_VERSION,
+    DISSOLVE_LAYER_TRANSFER_VERSION, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer,
+    LayerTransferFont, PAINT_LAYER_TRANSFER_VERSION, PATH_LAYER_TRANSFER_VERSION,
 };
 
 mod validation;
@@ -96,15 +96,17 @@ pub use lasso::{
     combine_selections, lasso_selection,
 };
 
-pub const PRISM_VERSION: u32 = 7;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 10;
+pub const PRISM_VERSION: u32 = 8;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 11;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_DOCUMENT_NAME_CHARS: usize = 128;
 
 mod blend;
-pub use blend::{BlendMode, blend_rgb};
+pub use blend::{
+    BlendMode, GroupCompositing, blend_rgb, dissolve_coverage, dissolve_pixel_present,
+};
 
 mod alignment;
 pub use alignment::{
@@ -311,6 +313,7 @@ pub struct Layer {
     pub locked: bool,
     pub opacity: f32,
     pub blend_mode: BlendMode,
+    pub dissolve_seed: u32,
     pub transform: Transform,
     pub adjustments: Adjustments,
     pub mask: LayerMask,
@@ -336,6 +339,7 @@ impl Default for Layer {
             locked: false,
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
+            dissolve_seed: 0,
             transform: Transform::default(),
             adjustments: Adjustments::default(),
             mask: LayerMask::default(),
@@ -666,6 +670,7 @@ mod command_apply;
 use command_apply::apply_command;
 use commands::output;
 
+mod direct_preview;
 mod raster_backing_cache;
 mod raster_region;
 mod raster_sources;
@@ -679,6 +684,10 @@ mod transform_math;
 
 pub use transform_math::rotation_sin_cos;
 
+pub use direct_preview::{
+    DIRECT_PREVIEW_MAX_OUTPUT_PIXELS, DIRECT_PREVIEW_STRIPS, render_direct_preview_region_scaled,
+    render_direct_preview_region_scaled_with_sources,
+};
 pub use raster_backing_cache::{
     DerivedBackingCache, DerivedBackingIdentity, DerivedBackingLimits, DerivedBackingMemoryPlan,
     DerivedBackingReadError, DerivedRasterBacking, PrepareDerivedBacking,

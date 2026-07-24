@@ -12,14 +12,27 @@ use std::{
 };
 
 use super::{
-    FileIdentity, PublishStats, PublishStrategy, RevisionError, RevisionResult, RevisionStore,
-    SessionId, StorageStateId, sync_parent, temporary_path, validate_named_identity,
+    FileIdentity, PublishStats, PublishStrategy, PublishTimings, RevisionError, RevisionResult,
+    RevisionStore, SessionId, StorageStateId, sync_parent, temporary_path, validate_named_identity,
     validated_identity,
 };
 
 const RENAME_EXCHANGE: libc::c_uint = 2;
+mod inode_exchange;
+mod markers;
 mod mutation;
 mod publication;
+pub(super) use inode_exchange::{
+    exchange_proof_matches, recover_inode_exchange, write_exchange_intent,
+};
+pub(super) use markers::{
+    WorkingRecoveryInstall, publication_marker_bytes_match, publication_marker_matches,
+    read_publication_marker, read_working_recovery_marker, working_recovery_marker_bytes_match,
+    working_recovery_poison_present, write_publication_marker, write_ready_marker,
+    write_working_recovery_marker,
+};
+#[cfg(test)]
+pub(super) use markers::{ready_marker_matches, working_recovery_marker_matches};
 pub(super) use publication::{
     PublishBase, recover_full_copy, validate_publish_base, write_full_copy_intent,
 };
@@ -74,6 +87,12 @@ pub(super) struct PrivateDirectory {
 
 impl PrivateDirectory {
     pub(super) fn open(path: &Path) -> RevisionResult<Self> {
+        let directory = Self::open_unrecovered(path)?;
+        directory.recover_mutation()?;
+        Ok(directory)
+    }
+
+    pub(super) fn open_unrecovered(path: &Path) -> RevisionResult<Self> {
         #[cfg(test)]
         let path_buf = path.to_path_buf();
         let path = CString::new(path.as_os_str().as_bytes())
@@ -104,8 +123,11 @@ impl PrivateDirectory {
             #[cfg(test)]
             path: path_buf,
         };
-        mutation::recover(&directory)?;
         Ok(directory)
+    }
+
+    pub(super) fn recover_mutation(&self) -> RevisionResult<()> {
+        mutation::recover(self)
     }
 
     pub(super) fn open_file(&self, name: &str, write: bool) -> io::Result<File> {
@@ -171,6 +193,15 @@ impl PrivateDirectory {
     }
 
     pub(super) fn write_marker(&self, name: &str, bytes: &[u8]) -> RevisionResult<()> {
+        self.write_marker_with_boundaries(name, bytes, None)
+    }
+
+    fn write_marker_with_boundaries(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        faults: Option<(super::PublishFault, super::PublishFault)>,
+    ) -> RevisionResult<()> {
         let temporary = format!(".{name}-{}.tmp", SessionId::new());
         let result = (|| -> RevisionResult<()> {
             let mut marker = self.create_file(&temporary)?;
@@ -179,7 +210,14 @@ impl PrivateDirectory {
             let identity = validated_identity(&marker, true)?;
             self.validate(&temporary, identity, true)?;
             self.rename(&temporary, name)?;
-            self.sync()
+            if let Some((renamed, _)) = faults {
+                super::maybe_recovery_fault(renamed)?;
+            }
+            self.sync()?;
+            if let Some((_, synced)) = faults {
+                super::maybe_recovery_fault(synced)?;
+            }
+            Ok(())
         })();
         if result.is_err() {
             let _ = self.remove(&temporary);
@@ -277,8 +315,17 @@ impl PrivateDirectory {
         if exchanged != 0 {
             return Err(io::Error::last_os_error().into());
         }
-        parent_descriptor.sync_all()?;
-        self.sync()?;
+        std::thread::scope(|scope| -> RevisionResult<()> {
+            let parent_sync = scope.spawn(|| parent_descriptor.sync_all());
+            let cache_sync = scope.spawn(|| self.sync());
+            parent_sync.join().map_err(|_| {
+                RevisionError::Invalid("canonical directory sync panicked".into())
+            })??;
+            cache_sync
+                .join()
+                .map_err(|_| RevisionError::Invalid("cache directory sync panicked".into()))??;
+            Ok(())
+        })?;
         let published =
             super::openat_nofollow(&parent_descriptor, destination_name.as_c_str(), false)?;
         if validated_identity(&published, false)? != source_identity {
@@ -303,18 +350,18 @@ impl PrivateDirectory {
     }
 
     pub(super) fn exchange_supported(&self) -> RevisionResult<bool> {
+        // Probe entries are randomized scratch, never publication or recovery state. Namespace
+        // success is sufficient to detect rename support, so durability barriers do not belong here.
         let first_name = format!(".exchange-probe-a-{}", SessionId::new());
         let second_name = format!(".exchange-probe-b-{}", SessionId::new());
-        let first = self.create_file(&first_name)?;
-        let second = match self.create_file(&second_name) {
+        let _first = self.create_file(&first_name)?;
+        let _second = match self.create_file(&second_name) {
             Ok(second) => second,
             Err(error) => {
                 let _ = self.remove(&first_name);
                 return Err(error.into());
             }
         };
-        first.sync_all()?;
-        second.sync_all()?;
         let first_name_c = CString::new(first_name.as_str()).unwrap();
         let second_name_c = CString::new(second_name.as_str()).unwrap();
         let result = unsafe {
@@ -329,7 +376,6 @@ impl PrivateDirectory {
         let error = io::Error::last_os_error();
         let _ = self.remove(&first_name);
         let _ = self.remove(&second_name);
-        self.sync()?;
         if result == 0 {
             Ok(true)
         } else if error.raw_os_error().is_some_and(|code| {
@@ -385,7 +431,7 @@ fn maybe_inject_slot_hardlink(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ExchangeIntent {
     pub(super) canonical_identity: FileIdentity,
     pub(super) candidate_identity: FileIdentity,
@@ -396,8 +442,12 @@ pub(super) struct ExchangeIntent {
 }
 
 impl ExchangeIntent {
-    const MAGIC: [u8; 8] = *b"SPXCHG01";
-    const ENCODED_LEN: usize = 8 + 6 * 8 + 2 * (1 + 16);
+    const LEGACY_MAGIC: [u8; 8] = *b"SPXCHG01";
+    const MAGIC: [u8; 8] = *b"SPXCHG02";
+    const PAYLOAD_LEN: usize = 6 * 8 + 2 * (1 + 16);
+    const CHECKSUM_LEN: usize = 16;
+    const LEGACY_ENCODED_LEN: usize = 8 + Self::PAYLOAD_LEN;
+    const ENCODED_LEN: usize = Self::LEGACY_ENCODED_LEN + Self::CHECKSUM_LEN;
 
     pub(super) fn encode(self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(Self::ENCODED_LEN);
@@ -416,18 +466,33 @@ impl ExchangeIntent {
         bytes.extend(self.state_id.unwrap_or([0; 16]));
         bytes.push(u8::from(self.target_state_id.is_some()));
         bytes.extend(self.target_state_id.unwrap_or([0; 16]));
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(&bytes);
+        bytes.extend(&digest[..Self::CHECKSUM_LEN]);
         bytes
     }
 
     pub(super) fn decode(bytes: &[u8]) -> RevisionResult<Self> {
-        if bytes.len() != Self::ENCODED_LEN || bytes[..8] != Self::MAGIC {
+        let payload = if bytes.len() == Self::ENCODED_LEN && bytes[..8] == Self::MAGIC {
+            use sha2::Digest as _;
+            let checksum_at = Self::LEGACY_ENCODED_LEN;
+            let digest = sha2::Sha256::digest(&bytes[..checksum_at]);
+            if bytes[checksum_at..] != digest[..Self::CHECKSUM_LEN] {
+                return Err(RevisionError::Corrupt(
+                    "publication exchange intent checksum mismatch".into(),
+                ));
+            }
+            &bytes[..checksum_at]
+        } else if bytes.len() == Self::LEGACY_ENCODED_LEN && bytes[..8] == Self::LEGACY_MAGIC {
+            bytes
+        } else {
             return Err(RevisionError::Corrupt(
                 "invalid publication exchange intent".into(),
             ));
-        }
+        };
         let mut offset = 8;
         let mut next_u64 = || {
-            let value = u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            let value = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
             offset += 8;
             value
         };
@@ -441,9 +506,9 @@ impl ExchangeIntent {
         };
         let generation = next_u64();
         let target_generation = next_u64();
-        let present = bytes[offset];
+        let present = payload[offset];
         offset += 1;
-        let state_bytes: [u8; 16] = bytes[offset..offset + 16].try_into().unwrap();
+        let state_bytes: [u8; 16] = payload[offset..offset + 16].try_into().unwrap();
         let state_id = match present {
             0 if state_bytes == [0; 16] => None,
             0 => {
@@ -459,9 +524,9 @@ impl ExchangeIntent {
             }
         };
         offset += 16;
-        let target_present = bytes[offset];
+        let target_present = payload[offset];
         offset += 1;
-        let target_state_bytes: [u8; 16] = bytes[offset..offset + 16].try_into().unwrap();
+        let target_state_bytes: [u8; 16] = payload[offset..offset + 16].try_into().unwrap();
         let target_state_id = match target_present {
             0 if target_state_bytes == [0; 16] => None,
             0 => {
@@ -526,7 +591,9 @@ pub(super) fn recover_exchange(
 ) -> RevisionResult<()> {
     let intent = match directory.read_marker(super::PUBLISH_EXCHANGE_INTENT_FILE) {
         Ok(bytes) => ExchangeIntent::decode(&bytes)?,
-        Err(RevisionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(RevisionError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return recover_inode_exchange(directory, destination, cache_directory);
+        }
         Err(error) => return Err(error),
     };
     let canonical = super::open_nofollow(destination, false)?;
@@ -609,6 +676,17 @@ pub(super) fn remove_private_file(directory: &PrivateDirectory, name: &str) -> R
     }
 }
 
+pub(super) fn remove_private_file_lazy(
+    directory: &PrivateDirectory,
+    name: &str,
+) -> RevisionResult<()> {
+    match directory.remove(name) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(super) fn prepare_reusable_slot(
     directory: &PrivateDirectory,
     name: &str,
@@ -626,7 +704,6 @@ pub(super) fn prepare_reusable_slot(
     if descriptor.metadata()?.mode() & 0o200 == 0 {
         descriptor.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    descriptor.sync_all()?;
     validated_identity(descriptor, true)?;
     mutation.finish(name, identity)
 }
@@ -675,6 +752,7 @@ fn apply_checkpoint_delta_from(source: &File, mirror: &File) -> RevisionResult<P
         scanned_bytes: source_len.max(mirror_len),
         changed_bytes,
         written_bytes,
+        timings: PublishTimings::default(),
     })
 }
 
@@ -690,20 +768,32 @@ pub(super) fn update_private_slot(
     source: &Path,
     mirror: &File,
     identity: FileIdentity,
-    permissions: Option<fs::Permissions>,
-    point: SlotMutationPoint,
-) -> RevisionResult<PublishStats> {
+    update: PrivateSlotUpdate,
+) -> RevisionResult<Option<PublishStats>> {
     let source = super::open_nofollow(source, false)?;
     validated_identity(&source, false)?;
-    let mutation = directory.begin_mutation(name, mirror, identity, point)?;
+    let mutation = directory.begin_mutation(name, mirror, identity, update.point)?;
     let stats = apply_checkpoint_delta_from(&source, mirror)?;
-    if let Some(permissions) = permissions {
+    // Install proof before final mode (fsetxattr EACCES); one fsync seals delta, proof, and mode.
+    if let Some(intent) = update.exchange_intent
+        && !write_exchange_intent(mirror, intent)?
+    {
+        mutation.finish(name, identity)?;
+        return Ok(None);
+    }
+    if let Some(permissions) = update.permissions {
         mirror.set_permissions(permissions)?;
     }
     mirror.sync_all()?;
     validated_identity(mirror, true)?;
     mutation.finish(name, identity)?;
-    Ok(stats)
+    Ok(Some(stats))
+}
+
+pub(super) struct PrivateSlotUpdate {
+    pub(super) permissions: Option<fs::Permissions>,
+    pub(super) point: SlotMutationPoint,
+    pub(super) exchange_intent: Option<ExchangeIntent>,
 }
 
 pub(super) fn update_candidate_slot(
@@ -712,15 +802,19 @@ pub(super) fn update_candidate_slot(
     mirror: &File,
     identity: FileIdentity,
     permissions: fs::Permissions,
-) -> RevisionResult<PublishStats> {
+    intent: ExchangeIntent,
+) -> RevisionResult<Option<PublishStats>> {
     update_private_slot(
         directory,
         super::PUBLISH_MIRROR_FILE,
         source,
         mirror,
         identity,
-        Some(permissions),
-        SlotMutationPoint::CandidateDelta,
+        PrivateSlotUpdate {
+            permissions: Some(permissions),
+            point: SlotMutationPoint::CandidateDelta,
+            exchange_intent: Some(intent),
+        },
     )
 }
 
@@ -744,9 +838,13 @@ pub(super) fn catch_up_after_bulk(
         source,
         &slot,
         identity,
-        None,
-        SlotMutationPoint::BulkCatchUp,
-    )?;
+        PrivateSlotUpdate {
+            permissions: None,
+            point: SlotMutationPoint::BulkCatchUp,
+            exchange_intent: None,
+        },
+    )?
+    .expect("bulk catch-up does not install an exchange intent");
     write_ready_marker(directory, generation, state_id)?;
     stats.scanned_bytes = stats.scanned_bytes.saturating_add(catch_up.scanned_bytes);
     stats.changed_bytes = stats.changed_bytes.saturating_add(catch_up.changed_bytes);
@@ -818,6 +916,19 @@ impl StagedFile {
         self.published = true;
         Ok(())
     }
+
+    pub(super) fn publish_no_replace(mut self, destination: &Path) -> RevisionResult<()> {
+        validate_named_identity(&self.path, self.identity, true)?;
+        super::rename_no_replace(&self.path, destination)?;
+        sync_parent(destination)?;
+        if validated_identity(&super::open_nofollow(destination, false)?, false)? != self.identity {
+            return Err(RevisionError::Invalid(
+                "published path does not match its completed unnamed file".into(),
+            ));
+        }
+        self.published = true;
+        Ok(())
+    }
 }
 
 impl Drop for StagedFile {
@@ -877,60 +988,9 @@ pub(super) fn publish_unnamed(descriptor: File, destination: &Path) -> RevisionR
     stage_unnamed(descriptor, destination)?.publish(destination)
 }
 
-fn marker_bytes(generation: u64, state_id: Option<StorageStateId>) -> Vec<u8> {
-    let mut marker = generation.to_string();
-    marker.push(':');
-    match state_id {
-        Some(state_id) => {
-            for byte in state_id {
-                use std::fmt::Write as _;
-                write!(&mut marker, "{byte:02x}").expect("writing to a string cannot fail");
-            }
-        }
-        None => marker.push('-'),
-    }
-    marker.into_bytes()
-}
-
-#[cfg(test)]
-pub(super) fn ready_marker_matches(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> bool {
-    directory
-        .read_marker(super::PUBLISH_MIRROR_READY_FILE)
-        .is_ok_and(|bytes| bytes == marker_bytes(generation, state_id))
-}
-
-pub(super) fn write_ready_marker(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
+pub(super) fn publish_unnamed_no_replace(
+    descriptor: File,
+    destination: &Path,
 ) -> RevisionResult<()> {
-    directory.write_marker(
-        super::PUBLISH_MIRROR_READY_FILE,
-        &marker_bytes(generation, state_id),
-    )
-}
-
-pub(super) fn publication_marker_matches(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> bool {
-    directory
-        .read_marker(super::PUBLISH_CURRENT_FILE)
-        .is_ok_and(|bytes| bytes == marker_bytes(generation, state_id))
-}
-
-pub(super) fn write_publication_marker(
-    directory: &PrivateDirectory,
-    generation: u64,
-    state_id: Option<StorageStateId>,
-) -> RevisionResult<()> {
-    directory.write_marker(
-        super::PUBLISH_CURRENT_FILE,
-        &marker_bytes(generation, state_id),
-    )
+    stage_unnamed(descriptor, destination)?.publish_no_replace(destination)
 }

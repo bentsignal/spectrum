@@ -34,7 +34,8 @@ pub(super) fn schema() -> Value {
             "path_operations_version": 7,
             "paint_operations_version": 8,
             "lasso_operations_version": 9,
-            "document_lifecycle_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "document_lifecycle_operations_version": 10,
+            "dissolve_operations_version": 11,
             "examples": command_examples
         },
         "document_lifecycle": {
@@ -56,12 +57,26 @@ pub(super) fn schema() -> Value {
             "geometry": "alignment and snapping use actual rotated visual bounds in canvas coordinates"
         },
         "blend_modes": [
-            "normal", "darken", "multiply", "color_burn", "linear_burn", "darker_color",
+            "normal", "dissolve", "darken", "multiply", "color_burn", "linear_burn", "darker_color",
             "lighten", "screen", "color_dodge", "linear_dodge", "lighter_color", "overlay",
             "soft_light", "hard_light", "vivid_light", "linear_light", "pin_light", "hard_mix",
             "difference", "exclusion", "subtract", "divide", "hue", "saturation", "color",
             "luminosity"
         ],
+        "dissolve": {
+            "cli": "prism blend <layer> dissolve [--seed <u32>]",
+            "seed": "persisted per layer; defaults to zero and can be changed independently with set_dissolve_seed",
+            "sampling": "source/mask/clip UNORM8 and once-rounded layer-opacity UNORM16 are combined by rounded integer UNORM multiplication; an integer-only hash of seed and absolute scaled-document x/y turns coverage into present/absent pixels",
+            "kept_pixels": "effective alpha is the presence probability; present pixels composite fully opaque, matching conventional Dissolve semantics",
+            "parity": "export, tiled region rendering, and composite preview use the same core function"
+        },
+        "future_group_compositing": {
+            "status": "semantic contract only; groups are not yet a Prism layer type",
+            "default": "pass_through",
+            "isolated": "children composite onto a transparent intermediate, then group opacity and blend mode apply once to that result",
+            "pass_through": "children composite directly into the parent stack; group opacity scales each child effective opacity and the group has no independent blend operation",
+            "dissolve": "an isolated group hashes its own seed at the group boundary; a pass-through group does not introduce a Dissolve boundary"
+        },
         "layer_types": ["raster", "text", "rectangle", "ellipse", "path", "paint"],
         "paint": {
             "program_version": prism_core::BRUSH_PROGRAM_VERSION,
@@ -132,7 +147,7 @@ pub(super) fn schema() -> Value {
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
-            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks with verified content identity; v4 preserves paths and reusable vector masks; v5 preserves bounded nondestructive Paint programs",
+            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
         "color": "RRGGBB or RRGGBBAA",
@@ -143,6 +158,7 @@ pub(super) fn schema() -> Value {
 fn command_examples() -> Vec<Value> {
     vec![
         json!({"command": "rename_document", "name": "Campaign"}),
+        json!({"command": "set_dissolve_seed", "id": 1, "seed": 305419896}),
         json!({"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0}),
         json!({"command": "import_font", "path": "/fonts/Inter-Regular.ttf"}),
         json!({"command": "set_text_typography", "id": 1, "typography": {"font_id": 1, "alignment": "center", "line_height": 1.3, "tracking": 2.0, "box_width": 480.0, "effects": {"outline_width": 1.0, "outline_color": [0,0,0,255], "shadow_offset_x": 4.0, "shadow_offset_y": 6.0, "shadow_color": [0,0,0,128]}}}),
