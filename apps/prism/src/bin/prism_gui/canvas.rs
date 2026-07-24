@@ -204,14 +204,12 @@ impl PrismApp {
             && let Some(cursor) = self.guide_cursor(id)
         {
             ui.ctx().set_cursor_icon(cursor);
-        } else if let Some(handle) = resize_hover {
-            let rotation = self
-                .drag
-                .filter(|drag| matches!(drag.action, DragAction::Resize(_)))
-                .map(|drag| drag.transform.rotation)
-                .or_else(|| self.selected_layer().map(|layer| layer.transform.rotation))
-                .unwrap_or_default();
-            ui.ctx().set_cursor_icon(resize_cursor(handle, rotation));
+        } else if let Some(handle) = resize_hover
+            && let Some(layer) = self.selected_layer()
+            && let Some(cursor) =
+                resize_cursor(geometry, layer, self.layer_source_geometry(layer), handle)
+        {
+            ui.ctx().set_cursor_icon(cursor);
         }
         if response.drag_started()
             && let Some(pointer) = pointer
@@ -400,10 +398,8 @@ impl PrismApp {
                         paragraph_width_from_drag(drag, handle)
                             .map(|width| format!("{width:.0} px text width"))
                             .unwrap_or_else(|| "Text width".into())
-                    } else if ui.input(|input| input.modifiers.shift) {
-                        "Free resize".into()
                     } else {
-                        "Proportional resize · Shift for free".into()
+                        resize_guidance(ui.input(|input| input.modifiers.shift)).into()
                     },
                     FontId::monospace(11.0),
                     ACCENT,
@@ -795,6 +791,14 @@ fn selection_outline_has_resize_handles(tool: Tool) -> bool {
     !matches!(tool, Tool::Rotate | Tool::Pen)
 }
 
+fn resize_guidance(shift_held: bool) -> &'static str {
+    if shift_held {
+        "Free resize · release Shift to lock ratio"
+    } else {
+        "Aspect ratio locked · hold Shift for free resize"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,6 +807,18 @@ mod tests {
     fn rotate_uses_a_stroke_only_selection_outline() {
         assert!(!selection_outline_has_resize_handles(Tool::Rotate));
         assert!(selection_outline_has_resize_handles(Tool::Move));
+    }
+
+    #[test]
+    fn resize_guidance_describes_the_live_modifier_contract() {
+        assert_eq!(
+            resize_guidance(false),
+            "Aspect ratio locked · hold Shift for free resize"
+        );
+        assert_eq!(
+            resize_guidance(true),
+            "Free resize · release Shift to lock ratio"
+        );
     }
 
     #[test]

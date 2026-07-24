@@ -13,7 +13,7 @@ pub(super) fn show_terminal(
     focus_requested: &mut bool,
 ) {
     let outer = ui.available_rect_before_wrap();
-    ui.painter().rect_filled(outer, 0.0, INK);
+    ui.painter().rect_filled(outer, 0.0, TERMINAL_SURFACE);
     let viewport = outer.shrink2(Vec2::new(HORIZONTAL_PADDING, VERTICAL_PADDING));
     let font = FontId::new(FONT_SIZE, egui::FontFamily::Monospace);
     let cell_size = terminal_cell_size(ui, &font);
@@ -153,7 +153,7 @@ fn row_layout_job(
             if !cell.bold() {
                 foreground = Color32::TRANSPARENT;
             }
-        } else if background == INK {
+        } else if background == TERMINAL_SURFACE {
             background = Color32::TRANSPARENT;
         }
         let contents = if cell.has_contents() {
@@ -190,7 +190,7 @@ pub(super) fn terminal_color(color: vt100::Color, foreground: bool) -> Color32 {
             if foreground {
                 Color32::from_rgb(218, 216, 222)
             } else {
-                INK
+                TERMINAL_SURFACE
             }
         }
         vt100::Color::Rgb(red, green, blue) => Color32::from_rgb(red, green, blue),
@@ -268,7 +268,15 @@ mod tests {
 
     #[test]
     fn default_terminal_colors_belong_to_prism_dark_surface() {
-        assert_eq!(terminal_color(vt100::Color::Default, false), INK);
-        assert_ne!(terminal_color(vt100::Color::Default, true), INK);
+        assert_eq!(
+            terminal_color(vt100::Color::Default, false),
+            TERMINAL_SURFACE
+        );
+        assert_eq!(TERMINAL_SURFACE, WORKSPACE);
+        assert_ne!(
+            terminal_color(vt100::Color::Default, true),
+            TERMINAL_SURFACE
+        );
+        assert_ne!(indexed_color(0), TERMINAL_SURFACE);
     }
 }

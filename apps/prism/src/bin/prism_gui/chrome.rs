@@ -229,9 +229,18 @@ impl PrismApp {
             })
             .collect();
         ui.horizontal(|ui| {
-            let new_document = ui.add_sized(
-                [112.0, COMPACT_CONTROL_HEIGHT],
-                egui::Button::new("+  New Document"),
+            let new_document = shortcut_action_button(
+                ui,
+                Vec2::new(
+                    if cfg!(target_os = "macos") {
+                        154.0
+                    } else {
+                        162.0
+                    },
+                    COMPACT_CONTROL_HEIGHT,
+                ),
+                "+ New Document",
+                "N",
             );
             if new_document
                 .on_hover_text(format!(
@@ -310,8 +319,9 @@ impl PrismApp {
                     } else {
                         shortcut_key(ui, self.tool.shortcut());
                     }
-                    if workbench_action_button(
+                    if shortcut_action_button(
                         ui,
+                        WORKBENCH_ACTION_SIZE,
                         "Tools & Actions",
                         shortcuts::GlobalShortcut::ToolsAndActions.label(),
                     )
@@ -439,9 +449,8 @@ impl PrismApp {
                 );
                 ui.add_space(6.0);
                 let search = ui.add(
-                    egui::TextEdit::singleline(&mut state.query)
+                    text_field(&mut state.query)
                         .hint_text("Search tools and actions…")
-                        .margin(egui::Margin::symmetric(10, 8))
                         .desired_width(f32::INFINITY),
                 );
                 search.request_focus();
@@ -569,9 +578,8 @@ impl PrismApp {
                 );
                 ui.add_space(6.0);
                 let search = ui.add(
-                    egui::TextEdit::singleline(&mut state.query)
+                    text_field(&mut state.query)
                         .hint_text("Search shapes…")
-                        .margin(egui::Margin::symmetric(10, 8))
                         .desired_width(f32::INFINITY),
                 );
                 search.request_focus();
@@ -653,7 +661,7 @@ impl PrismApp {
 
 const WORKBENCH_ACTION_SIZE: Vec2 = Vec2::new(148.0, CONTROL_HEIGHT);
 
-fn workbench_shortcut_rect(rect: Rect) -> Rect {
+fn shortcut_button_shortcut_rect(rect: Rect) -> Rect {
     let width = if cfg!(target_os = "macos") {
         43.0
     } else {
@@ -665,8 +673,8 @@ fn workbench_shortcut_rect(rect: Rect) -> Rect {
     )
 }
 
-fn workbench_action_button(ui: &mut egui::Ui, label: &str, key: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(WORKBENCH_ACTION_SIZE, Sense::click());
+fn shortcut_action_button(ui: &mut egui::Ui, size: Vec2, label: &str, key: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let visuals = if response.is_pointer_button_down_on() {
         &ui.style().visuals.widgets.active
     } else if response.hovered() {
@@ -688,7 +696,7 @@ fn workbench_action_button(ui: &mut egui::Ui, label: &str, key: &str) -> egui::R
         FontId::proportional(12.0),
         TEXT,
     );
-    paint_command_shortcut(ui, workbench_shortcut_rect(rect), key);
+    paint_command_shortcut(ui, shortcut_button_shortcut_rect(rect), key);
     response
 }
 
@@ -920,9 +928,9 @@ mod tests {
     }
 
     #[test]
-    fn workbench_shortcut_is_centered_inside_the_complete_control() {
+    fn shortcut_keycap_is_centered_inside_the_complete_control() {
         let control = Rect::from_min_size(Pos2::new(10.0, 20.0), WORKBENCH_ACTION_SIZE);
-        let shortcut = workbench_shortcut_rect(control);
+        let shortcut = shortcut_button_shortcut_rect(control);
         assert_eq!(shortcut.center().y, control.center().y);
         assert_eq!(shortcut.height(), 20.0);
         assert_eq!(control.height(), CONTROL_HEIGHT);

@@ -968,8 +968,8 @@ mod tests {
             );
         }
         assert_eq!(
-            resize_cursor(ResizeHandle::TopLeft, 0.0),
-            egui::CursorIcon::ResizeNwSe
+            resize_cursor(geometry, &layer, None, ResizeHandle::TopLeft),
+            Some(egui::CursorIcon::ResizeNwSe)
         );
     }
 

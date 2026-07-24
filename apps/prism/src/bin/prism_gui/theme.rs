@@ -23,10 +23,25 @@ pub(super) const DANGER: Color32 = Color32::from_rgb(218, 111, 120);
 pub(super) const CANVAS_EDGE: Color32 = Color32::from_rgb(72, 72, 80);
 pub(super) const CHECKER_LIGHT: Color32 = Color32::from_rgb(53, 53, 59);
 pub(super) const CHECKER_DARK: Color32 = Color32::from_rgb(41, 41, 46);
+pub(super) const TERMINAL_SURFACE: Color32 = WORKSPACE;
 
 pub(super) const RADIUS: f32 = 3.0;
 pub(super) const CONTROL_HEIGHT: f32 = 28.0;
 pub(super) const COMPACT_CONTROL_HEIGHT: f32 = 24.0;
+pub(super) const BUTTON_HORIZONTAL_PADDING: f32 = 10.0;
+pub(super) const BUTTON_VERTICAL_PADDING: f32 = 5.0;
+pub(super) const CONTROL_HORIZONTAL_PADDING: i8 = 10;
+pub(super) const CONTROL_VERTICAL_PADDING: i8 = 6;
+pub(super) const COMPACT_CONTROL_HORIZONTAL_PADDING: i8 = 8;
+pub(super) const COMPACT_CONTROL_VERTICAL_PADDING: i8 = 4;
+const _: () = {
+    assert!(CONTROL_HEIGHT > COMPACT_CONTROL_HEIGHT);
+    assert!(CONTROL_HORIZONTAL_PADDING > COMPACT_CONTROL_HORIZONTAL_PADDING);
+    assert!(CONTROL_VERTICAL_PADDING > COMPACT_CONTROL_VERTICAL_PADDING);
+    assert!(CONTROL_HORIZONTAL_PADDING - COMPACT_CONTROL_HORIZONTAL_PADDING == 2);
+    assert!(CONTROL_VERTICAL_PADDING - COMPACT_CONTROL_VERTICAL_PADDING == 2);
+    assert!(BUTTON_HORIZONTAL_PADDING == CONTROL_HORIZONTAL_PADDING as f32);
+};
 pub(super) const PANEL_PADDING: i8 = 10;
 pub(super) const SECTION_GAP: f32 = 12.0;
 #[cfg(target_os = "macos")]
@@ -35,6 +50,20 @@ pub(super) const TOP_BAR_HEIGHT: f32 = 36.0;
 pub(super) const TOP_BAR_HEIGHT: f32 = 64.0;
 pub(super) const WORKBENCH_HEIGHT: f32 = 40.0;
 pub(super) const STATUS_HEIGHT: f32 = 24.0;
+
+pub(super) const MODAL_SHADOW: egui::epaint::Shadow = egui::epaint::Shadow {
+    offset: [0, 3],
+    blur: 14,
+    spread: 1,
+    color: Color32::from_black_alpha(72),
+};
+
+pub(super) const POPOVER_SHADOW: egui::epaint::Shadow = egui::epaint::Shadow {
+    offset: [0, 2],
+    blur: 10,
+    spread: 0,
+    color: Color32::from_black_alpha(60),
+};
 
 pub(super) fn inspector_group_heading(ui: &mut egui::Ui, label: &str) {
     ui.add_space(12.0);
@@ -51,7 +80,9 @@ pub(super) fn install_style(context: &egui::Context) {
     visuals.window_fill = PANEL;
     visuals.window_stroke = Stroke::new(1.0, BORDER_STRONG);
     visuals.window_corner_radius = egui::CornerRadius::same(4);
+    visuals.window_shadow = MODAL_SHADOW;
     visuals.menu_corner_radius = radius;
+    visuals.popup_shadow = POPOVER_SHADOW;
     visuals.extreme_bg_color = INK;
     visuals.text_edit_bg_color = Some(WORKSPACE);
     visuals.faint_bg_color = SURFACE;
@@ -116,7 +147,8 @@ pub(super) fn install_style(context: &egui::Context) {
             ),
         ]);
         style.spacing.item_spacing = Vec2::new(6.0, 6.0);
-        style.spacing.button_padding = Vec2::new(8.0, 5.0);
+        style.spacing.button_padding =
+            Vec2::new(BUTTON_HORIZONTAL_PADDING, BUTTON_VERTICAL_PADDING);
         style.spacing.interact_size.y = CONTROL_HEIGHT;
         style.spacing.slider_width = 92.0;
         style.spacing.combo_width = 96.0;
@@ -188,5 +220,45 @@ mod tests {
         assert!(contrast_ratio(SUBTLE, SELECTED_SURFACE) >= 4.5);
         assert!(contrast_ratio(ACCENT, PANEL) >= 3.0);
         assert!(contrast_ratio(DANGER, PANEL) >= 4.5);
+    }
+
+    #[test]
+    fn modal_and_popover_shadows_are_restrained_and_fit_representative_surfaces() {
+        for shadow in [MODAL_SHADOW, POPOVER_SHADOW] {
+            let margin = shadow.margin();
+            assert!(margin.left >= 0.0);
+            assert!(margin.top >= 0.0);
+            assert!(margin.right <= 12.0);
+            assert!(margin.bottom <= 12.0);
+            assert!(shadow.color.a() <= 72);
+        }
+
+        for size in [Vec2::new(360.0, 108.0), Vec2::new(520.0, 454.0)] {
+            let rect = Rect::from_min_size(Pos2::new(24.0, 24.0), size);
+            let shadow_bounds = rect + MODAL_SHADOW.margin();
+            assert!(shadow_bounds.width() < size.x + 24.0);
+            assert!(shadow_bounds.height() < size.y + 24.0);
+        }
+    }
+
+    #[test]
+    fn shadow_alpha_supports_dark_and_light_surface_contrast_without_a_halo() {
+        let composite = |background: Color32, shadow: egui::epaint::Shadow| {
+            let alpha = f32::from(shadow.color.a()) / 255.0;
+            let channel = |value: u8| ((f32::from(value) * (1.0 - alpha)).round()) as u8;
+            Color32::from_rgb(
+                channel(background.r()),
+                channel(background.g()),
+                channel(background.b()),
+            )
+        };
+        for background in [PANEL, Color32::from_rgb(242, 242, 245)] {
+            let modal = composite(background, MODAL_SHADOW);
+            let popover = composite(background, POPOVER_SHADOW);
+            assert_ne!(modal, background);
+            assert_ne!(popover, background);
+            assert!(contrast_ratio(modal, background) < 2.0);
+            assert!(contrast_ratio(popover, background) < 2.0);
+        }
     }
 }

@@ -1,5 +1,9 @@
 use super::*;
 
+#[path = "controls.rs"]
+mod controls;
+pub(super) use controls::*;
+
 const RESIZE_HANDLE_HIT_RADIUS: f32 = 18.0;
 const RESIZE_HANDLE_SIZE: f32 = 9.0;
 
@@ -208,18 +212,54 @@ pub(super) fn resize_handle_at(
         .map(|(handle, _)| handle)
 }
 
-pub(super) fn resize_cursor(handle: ResizeHandle, rotation: f32) -> egui::CursorIcon {
-    match handle {
-        ResizeHandle::TopLeft | ResizeHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
-        ResizeHandle::TopRight | ResizeHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
-        ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight => {
-            match ((rotation.rem_euclid(180.0) / 45.0).round() as u32) % 4 {
-                0 => egui::CursorIcon::ResizeHorizontal,
-                1 => egui::CursorIcon::ResizeNwSe,
-                2 => egui::CursorIcon::ResizeVertical,
-                _ => egui::CursorIcon::ResizeNeSw,
-            }
-        }
+pub(super) fn resize_cursor(
+    geometry: CanvasGeometry,
+    layer: &Layer,
+    source_geometry: Option<LayerSourceGeometry>,
+    handle: ResizeHandle,
+) -> Option<egui::CursorIcon> {
+    resize_screen_axis(geometry, layer, source_geometry, handle).map(cursor_for_screen_axis)
+}
+
+pub(super) fn resize_screen_axis(
+    geometry: CanvasGeometry,
+    layer: &Layer,
+    source_geometry: Option<LayerSourceGeometry>,
+    handle: ResizeHandle,
+) -> Option<Vec2> {
+    if matches!(
+        handle,
+        ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight
+    ) {
+        let [left, right] = paragraph_width_handle_positions(layer, source_geometry)?;
+        return nonzero_axis(geometry.canvas_to_screen(right) - geometry.canvas_to_screen(left));
+    }
+
+    let corners = rotated_layer_corners(layer, source_geometry)?
+        .map(|point| geometry.canvas_to_screen(point));
+    let (corner, first_neighbor, second_neighbor) = match handle {
+        ResizeHandle::TopLeft => (0, 1, 3),
+        ResizeHandle::TopRight => (1, 0, 2),
+        ResizeHandle::BottomRight => (2, 1, 3),
+        ResizeHandle::BottomLeft => (3, 0, 2),
+        ResizeHandle::ParagraphLeft | ResizeHandle::ParagraphRight => unreachable!(),
+    };
+    let first = nonzero_axis(corners[corner] - corners[first_neighbor])?;
+    let second = nonzero_axis(corners[corner] - corners[second_neighbor])?;
+    nonzero_axis(first + second)
+}
+
+fn nonzero_axis(axis: Vec2) -> Option<Vec2> {
+    (axis.length_sq() > f32::EPSILON).then(|| axis.normalized())
+}
+
+fn cursor_for_screen_axis(axis: Vec2) -> egui::CursorIcon {
+    let angle = axis.angle().to_degrees().rem_euclid(180.0);
+    match (((angle + 22.5) / 45.0).floor() as u32) % 4 {
+        0 => egui::CursorIcon::ResizeHorizontal,
+        1 => egui::CursorIcon::ResizeNwSe,
+        2 => egui::CursorIcon::ResizeVertical,
+        _ => egui::CursorIcon::ResizeNeSw,
     }
 }
 
@@ -526,39 +566,6 @@ fn paint_resize_handle(ui: &egui::Ui, corner: Pos2) {
     );
 }
 
-pub(super) fn contrast_text(background: Color32) -> Color32 {
-    let luma = background.r() as u16 * 3 + background.g() as u16 * 6 + background.b() as u16;
-    if luma > 1_400 {
-        Color32::BLACK
-    } else {
-        Color32::WHITE
-    }
-}
-
-pub(super) fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).strong().color(contrast_text(ACCENT)))
-            .fill(ACCENT)
-            .stroke(Stroke::new(1.0, ACCENT)),
-    )
-}
-
-pub(super) fn quiet_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(egui::Button::new(RichText::new(label).size(11.0)).frame(false))
-}
-
-pub(super) fn quiet_danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(egui::Button::new(RichText::new(label).size(11.0).color(DANGER)).frame(false))
-}
-
-pub(super) fn danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).strong().color(contrast_text(DANGER)))
-            .fill(DANGER)
-            .stroke(Stroke::new(1.0, DANGER)),
-    )
-}
-
 pub(super) fn color32(value: [u8; 4]) -> Color32 {
     Color32::from_rgba_unmultiplied(value[0], value[1], value[2], value[3])
 }
@@ -674,6 +681,10 @@ pub(super) fn alternate_shortcut(ui: &mut egui::Ui, key: &str) -> egui::Response
         response
     }
 }
+
+#[cfg(test)]
+#[path = "resize_cursor_tests.rs"]
+mod resize_cursor_tests;
 
 #[cfg(test)]
 mod tests {
