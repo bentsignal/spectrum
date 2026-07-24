@@ -19,6 +19,7 @@ pub(super) enum PublishFault {
     WorkingPoisonSynced,
     WorkingRecoveryMarkerRenamed,
     WorkingRecoveryMarkerSynced,
+    WorkingRecoveryMarkerInstall,
     WorkingPoisonRemoved,
     WorkingPoisonRemovalSynced,
 }
@@ -42,6 +43,10 @@ thread_local! {
     pub(super) static RECOVERY_CRASH_MODE: std::cell::Cell<Option<CrashMode>> =
         const { std::cell::Cell::new(None) };
     pub(super) static PUBLISH_HARDLINK_ALIAS: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    pub(super) static PRIVATE_LOCK_HARDLINK_ALIAS: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    pub(super) static INITIAL_PUBLISH_RACE: std::cell::RefCell<Option<Vec<u8>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -97,4 +102,32 @@ pub(super) fn maybe_recovery_fault(_point: PublishFault) -> RevisionResult<()> {
 
 pub(super) fn maybe_seed_fault() -> RevisionResult<()> {
     maybe_publish_fault(PublishFault::SeedMirrorCreated)
+}
+
+#[cfg(test)]
+pub(super) fn maybe_private_lock_hardlink(path: &std::path::Path) -> RevisionResult<()> {
+    let alias = PRIVATE_LOCK_HARDLINK_ALIAS.with(|alias| alias.borrow_mut().take());
+    if let Some(alias) = alias {
+        std::fs::hard_link(path, alias)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+pub(super) fn maybe_private_lock_hardlink(_path: &std::path::Path) -> RevisionResult<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn maybe_initial_publish_race(path: &std::path::Path) -> RevisionResult<()> {
+    let bytes = INITIAL_PUBLISH_RACE.with(|bytes| bytes.borrow_mut().take());
+    if let Some(bytes) = bytes {
+        std::fs::write(path, bytes)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+pub(super) fn maybe_initial_publish_race(_path: &std::path::Path) -> RevisionResult<()> {
+    Ok(())
 }

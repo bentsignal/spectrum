@@ -135,6 +135,7 @@ pub(in crate::live) fn write_working_recovery_marker(
             super::super::PublishFault::WorkingPoisonSynced,
         )),
     )?;
+    super::super::maybe_recovery_fault(super::super::PublishFault::WorkingRecoveryMarkerInstall)?;
     directory.write_marker_with_boundaries(
         super::super::PUBLISH_WORKING_RECOVERY_FILE,
         &marker_bytes(generation, state_id),

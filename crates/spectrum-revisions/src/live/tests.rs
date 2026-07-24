@@ -845,6 +845,7 @@ fn fault_name(fault: PublishFault) -> &'static str {
         PublishFault::WorkingPoisonSynced => "working-poison-synced",
         PublishFault::WorkingRecoveryMarkerRenamed => "working-recovery-marker-renamed",
         PublishFault::WorkingRecoveryMarkerSynced => "working-recovery-marker-synced",
+        PublishFault::WorkingRecoveryMarkerInstall => "working-recovery-marker-install",
         PublishFault::WorkingPoisonRemoved => "working-poison-removed",
         PublishFault::WorkingPoisonRemovalSynced => "working-poison-removal-synced",
     }
@@ -867,6 +868,7 @@ fn parse_fault(name: &str) -> PublishFault {
         "working-poison-synced" => PublishFault::WorkingPoisonSynced,
         "working-recovery-marker-renamed" => PublishFault::WorkingRecoveryMarkerRenamed,
         "working-recovery-marker-synced" => PublishFault::WorkingRecoveryMarkerSynced,
+        "working-recovery-marker-install" => PublishFault::WorkingRecoveryMarkerInstall,
         "working-poison-removed" => PublishFault::WorkingPoisonRemoved,
         "working-poison-removal-synced" => PublishFault::WorkingPoisonRemovalSynced,
         other => panic!("unknown publication fault {other}"),

@@ -1,4 +1,7 @@
-use std::{os::unix::process::ExitStatusExt as _, process::Command};
+use std::{
+    os::unix::{fs::MetadataExt as _, process::ExitStatusExt as _},
+    process::Command,
+};
 
 use super::linux_io::working_recovery_marker_matches;
 use super::*;
@@ -30,7 +33,6 @@ fn initial_create_publication_is_one_shot_and_cannot_recreate_a_deleted_project(
     let directory = tempfile::tempdir().unwrap();
     let canonical = directory.path().join("project.lumen");
     let cache = directory.path().join("cache");
-    std::fs::write(&canonical, []).unwrap();
     let (live, _) =
         LiveRevisionStore::create(&canonical, &cache, project("spectrum.initial-publication"))
             .unwrap();
@@ -40,6 +42,95 @@ fn initial_create_publication_is_one_shot_and_cannot_recreate_a_deleted_project(
     std::fs::remove_file(&canonical).unwrap();
     assert!(live.publish().is_err());
     assert!(!canonical.exists());
+}
+
+#[test]
+fn create_rejects_an_existing_zero_length_destination() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    std::fs::write(&canonical, []).unwrap();
+
+    assert!(
+        LiveRevisionStore::create(
+            &canonical,
+            &cache,
+            project("spectrum.zero-length-destination"),
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::metadata(&canonical).unwrap().len(), 0);
+    assert!(!cache.exists());
+}
+
+#[test]
+fn initial_publication_never_replaces_a_destination_raced_in_after_validation() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    let raced_bytes = b"concurrent creator owns this destination".to_vec();
+
+    INITIAL_PUBLISH_RACE.with(|race| race.replace(Some(raced_bytes.clone())));
+    let created = LiveRevisionStore::create(
+        &canonical,
+        &cache,
+        project("spectrum.initial-publication-race"),
+    );
+    INITIAL_PUBLISH_RACE.with(|race| race.replace(None));
+
+    assert!(created.is_err());
+    assert_eq!(std::fs::read(&canonical).unwrap(), raced_bytes);
+}
+
+#[test]
+fn initial_publication_crash_child() {
+    let Ok(canonical) = std::env::var("SPECTRUM_INITIAL_CRASH_CANONICAL") else {
+        return;
+    };
+    let cache = std::env::var("SPECTRUM_INITIAL_CRASH_CACHE").unwrap();
+    PUBLISH_FAULT.set(Some(PublishFault::FullCopyPublished));
+    PUBLISH_CRASH_MODE.set(Some(CrashMode::Kill));
+    LiveRevisionStore::create(
+        std::path::Path::new(&canonical),
+        std::path::Path::new(&cache),
+        project("spectrum.initial-publication-crash-child"),
+    )
+    .unwrap();
+    panic!("initial publication fault did not terminate the child");
+}
+
+#[test]
+fn initial_no_replace_publication_crash_leaves_one_valid_canonical_name() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+
+    let status = Command::new(std::env::current_exe().unwrap())
+        .arg("initial_publication_crash_child")
+        .arg("--nocapture")
+        .env("SPECTRUM_INITIAL_CRASH_CANONICAL", &canonical)
+        .env("SPECTRUM_INITIAL_CRASH_CACHE", &cache)
+        .status()
+        .unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    let metadata = canonical.metadata().unwrap();
+    assert_eq!(metadata.nlink(), 1);
+    let inspection = RevisionStore::inspect(&canonical).unwrap();
+    let temporary_prefix = ".project.lumen.spectrum-publish-";
+    assert!(std::fs::read_dir(directory.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(temporary_prefix)
+    }));
+
+    let reopened = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    assert_eq!(
+        reopened.store().generation().unwrap(),
+        inspection.generation
+    );
+    assert_eq!(reopened.store().state_id().unwrap(), inspection.state_id);
 }
 
 #[test]
@@ -525,15 +616,19 @@ fn mutate_reports_failure_when_working_recovery_marker_cannot_be_written() {
     .unwrap();
     let base_generation = live.store().generation().unwrap();
     let project_cache = cache.join(info.project_id.to_string());
-    let blocked_marker = project_cache.join(PUBLISH_WORKING_RECOVERY_FILE);
-    std::fs::create_dir(&blocked_marker).unwrap();
-
     PUBLISH_FAULT.set(Some(PublishFault::CandidateSynced));
+    RECOVERY_FAULT.set(Some(PublishFault::WorkingRecoveryMarkerInstall));
+    let mut closure_ran = false;
     let error = live
-        .mutate(|store| store.put_asset("application/x-unacknowledged", b"not acknowledged"))
+        .mutate(|store| {
+            closure_ran = true;
+            store.put_asset("application/x-unacknowledged", b"not acknowledged")
+        })
         .unwrap_err();
     PUBLISH_FAULT.set(None);
+    RECOVERY_FAULT.set(None);
 
+    assert!(closure_ran, "the marker fault must happen after preflight");
     assert!(
         error
             .to_string()
@@ -544,8 +639,9 @@ fn mutate_reports_failure_when_working_recovery_marker_cannot_be_written() {
             .unwrap()
             .contains("could not preserve failed publication")
     );
+    assert!(project_cache.join(PUBLISH_WORKING_POISON_FILE).exists());
+    assert!(!project_cache.join(PUBLISH_WORKING_RECOVERY_FILE).exists());
 
-    std::fs::remove_dir(&blocked_marker).unwrap();
     assert!(live.publish().is_err());
     let mut retry_ran = false;
     assert!(

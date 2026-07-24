@@ -83,6 +83,12 @@ pub(super) struct PrivateDirectory {
 
 impl PrivateDirectory {
     pub(super) fn open(path: &Path) -> RevisionResult<Self> {
+        let directory = Self::open_unrecovered(path)?;
+        directory.recover_mutation()?;
+        Ok(directory)
+    }
+
+    pub(super) fn open_unrecovered(path: &Path) -> RevisionResult<Self> {
         #[cfg(test)]
         let path_buf = path.to_path_buf();
         let path = CString::new(path.as_os_str().as_bytes())
@@ -113,8 +119,11 @@ impl PrivateDirectory {
             #[cfg(test)]
             path: path_buf,
         };
-        mutation::recover(&directory)?;
         Ok(directory)
+    }
+
+    pub(super) fn recover_mutation(&self) -> RevisionResult<()> {
+        mutation::recover(self)
     }
 
     pub(super) fn open_file(&self, name: &str, write: bool) -> io::Result<File> {
@@ -854,6 +863,19 @@ impl StagedFile {
         self.published = true;
         Ok(())
     }
+
+    pub(super) fn publish_no_replace(mut self, destination: &Path) -> RevisionResult<()> {
+        validate_named_identity(&self.path, self.identity, true)?;
+        super::rename_no_replace(&self.path, destination)?;
+        sync_parent(destination)?;
+        if validated_identity(&super::open_nofollow(destination, false)?, false)? != self.identity {
+            return Err(RevisionError::Invalid(
+                "published path does not match its completed unnamed file".into(),
+            ));
+        }
+        self.published = true;
+        Ok(())
+    }
 }
 
 impl Drop for StagedFile {
@@ -911,4 +933,11 @@ pub(super) fn stage_unnamed(descriptor: File, destination: &Path) -> RevisionRes
 
 pub(super) fn publish_unnamed(descriptor: File, destination: &Path) -> RevisionResult<()> {
     stage_unnamed(descriptor, destination)?.publish(destination)
+}
+
+pub(super) fn publish_unnamed_no_replace(
+    descriptor: File,
+    destination: &Path,
+) -> RevisionResult<()> {
+    stage_unnamed(descriptor, destination)?.publish_no_replace(destination)
 }

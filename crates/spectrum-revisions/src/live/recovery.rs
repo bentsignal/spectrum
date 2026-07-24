@@ -83,7 +83,7 @@ impl LiveRevisionStore {
                         && working_state_id == canonical.state_id;
                     #[cfg(target_os = "linux")]
                     let recoverable_newer = {
-                        let recovery_matches =
+                        let recovery_matches_working =
                             working_recovery_marker.as_deref().is_none_or(|marker| {
                                 working_recovery_marker_bytes_match(
                                     marker,
@@ -91,32 +91,51 @@ impl LiveRevisionStore {
                                     working_state_id,
                                 )
                             });
-                        let publication_matches =
-                            publication_marker.as_deref().is_none_or(|marker| {
+                        if !recovery_matches_working {
+                            return Err(RevisionError::Invalid(
+                                "live cache has a working recovery marker that does not match its \
+                                 working state"
+                                    .into(),
+                            ));
+                        }
+                        let publication_matches_working =
+                            publication_marker.as_deref().is_some_and(|marker| {
                                 publication_marker_bytes_match(
                                     marker,
                                     working_generation,
                                     working_state_id,
                                 )
                             });
-                        if !recovery_matches || !publication_matches {
+                        let publication_matches_canonical =
+                            publication_marker.as_deref().is_some_and(|marker| {
+                                publication_marker_bytes_match(
+                                    marker,
+                                    canonical.generation,
+                                    canonical.state_id,
+                                )
+                            });
+                        if publication_marker.is_some()
+                            && !publication_matches_working
+                            && !publication_matches_canonical
+                        {
                             return Err(RevisionError::Invalid(
-                                "live cache has a publication marker that does not match its \
-                                 working state"
+                                "live cache has a publication marker that matches neither its \
+                                 canonical nor working state"
                                     .into(),
                             ));
                         }
                         let has_recovery_marker = working_recovery_marker.is_some();
-                        let has_publication_marker = publication_marker.is_some();
                         let recoverable = working_generation > canonical.generation
-                            && (has_recovery_marker || has_publication_marker);
+                            && (has_recovery_marker || publication_matches_working);
                         if !exact && !recoverable && has_recovery_marker {
                             return Err(RevisionError::Invalid(
                                 "live cache has an unresolved working recovery marker".into(),
                             ));
                         }
-                        remove_stale_publication_marker =
-                            !exact && !recoverable && has_publication_marker;
+                        remove_stale_publication_marker = !exact
+                            && !recoverable
+                            && publication_matches_working
+                            && !publication_matches_canonical;
                         recoverable
                     };
                     #[cfg(not(target_os = "linux"))]
@@ -125,7 +144,15 @@ impl LiveRevisionStore {
                 }
                 Err(_error) => {
                     #[cfg(target_os = "linux")]
-                    if working_recovery_marker.is_some() || publication_marker.is_some() {
+                    if working_recovery_marker.is_some()
+                        || publication_marker.as_deref().is_some_and(|marker| {
+                            !publication_marker_bytes_match(
+                                marker,
+                                canonical.generation,
+                                canonical.state_id,
+                            )
+                        })
+                    {
                         return Err(RevisionError::Invalid(format!(
                             "live cache cannot be validated against its publication marker: \
                              {_error}"
@@ -264,14 +291,14 @@ impl LiveRevisionStore {
             ));
         }
         if self.initial_publish_pending.get() {
-            let destination_is_empty = match fs::metadata(&self.canonical_path) {
-                Ok(metadata) => metadata.is_file() && metadata.len() == 0,
+            let destination_is_absent = match fs::metadata(&self.canonical_path) {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+                Ok(_) => false,
                 Err(error) => return Err(error.into()),
             };
             if self.published_generation.get() == 0
                 && self.published_state_id.get().is_none()
-                && destination_is_empty
+                && destination_is_absent
             {
                 return Ok(());
             }
@@ -286,14 +313,30 @@ impl LiveRevisionStore {
         }
         let published_here = self.published_generation.get() == generation
             && self.published_state_id.get() == state_id;
+        let published_predecessor_generation = self.published_generation.get();
+        let published_predecessor_state_id = self.published_state_id.get();
         match read_publication_marker(&directory)? {
-            Some(marker) if !publication_marker_bytes_match(&marker, generation, state_id) => {
-                Err(RevisionError::Invalid(
-                    "publication marker is malformed or does not match the live cache".into(),
-                ))
+            Some(marker) if publication_marker_bytes_match(&marker, generation, state_id) => {
+                if published_here {
+                    Ok(())
+                } else {
+                    self.publish_recovered_current()
+                }
             }
-            Some(_) if published_here => Ok(()),
-            Some(_) => self.publish_recovered_current(),
+            Some(marker)
+                if publication_marker_bytes_match(
+                    &marker,
+                    published_predecessor_generation,
+                    published_predecessor_state_id,
+                ) =>
+            {
+                self.publish_recovered_current()
+            }
+            Some(_) => Err(RevisionError::Invalid(
+                "publication marker is malformed or matches neither the live cache nor its \
+                 published predecessor"
+                    .into(),
+            )),
             None if published_here => Ok(()),
             None => Err(RevisionError::Invalid(
                 "live cache advanced beyond its last durable publication marker".into(),

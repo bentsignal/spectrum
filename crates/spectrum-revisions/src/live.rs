@@ -22,6 +22,7 @@ mod linux_io;
 mod metrics;
 #[cfg(all(test, target_os = "linux"))]
 mod mutation_tests;
+mod no_replace;
 mod recovery;
 #[cfg(all(test, target_os = "linux"))]
 mod recovery_tests;
@@ -38,13 +39,15 @@ use linux_io::write_ready_marker;
 use linux_io::{
     ExchangeIntent, PrivateDirectory, PublishBase, WorkingRecoveryInstall, catch_up_after_bulk,
     open_unnamed, prepare_reusable_slot, publication_marker_bytes_match, publish_unnamed,
-    read_publication_marker, read_working_recovery_marker, recover_exchange, recover_full_copy,
-    remove_private_file, remove_private_file_lazy, seed_incremental_mirror, update_candidate_slot,
-    validate_publish_base, working_recovery_marker_bytes_match, working_recovery_poison_present,
-    write_full_copy_intent, write_publication_marker, write_working_recovery_marker,
+    publish_unnamed_no_replace, read_publication_marker, read_working_recovery_marker,
+    recover_exchange, recover_full_copy, remove_private_file, remove_private_file_lazy,
+    seed_incremental_mirror, update_candidate_slot, validate_publish_base,
+    working_recovery_marker_bytes_match, working_recovery_poison_present, write_full_copy_intent,
+    write_publication_marker, write_working_recovery_marker,
 };
 use metrics::elapsed_us;
 pub use metrics::{PublishStats, PublishStrategy, PublishTimings};
+use no_replace::rename_no_replace;
 
 const STORE_FILE: &str = "live.sqlite";
 const LOCK_FILE: &str = "publish.lock";
@@ -95,7 +98,7 @@ impl LiveRevisionStore {
         project: NewProject,
     ) -> RevisionResult<(Self, ProjectInfo)> {
         let canonical_path = absolute_path(canonical_path)?;
-        if canonical_path.exists() && canonical_path.metadata()?.len() > 0 {
+        if canonical_path.exists() {
             return Err(RevisionError::Invalid(format!(
                 "refusing to replace existing project {}",
                 canonical_path.display()
@@ -269,6 +272,7 @@ impl LiveRevisionStore {
             &self.publish_capabilities,
             self.published_generation.get(),
             self.published_state_id.get(),
+            self.initial_publish_pending.get(),
         )?;
         self.last_publish_stats.set(stats);
         self.published_generation.set(working_generation);
@@ -371,7 +375,7 @@ fn prepare_canonical_copy(
     let staging = cache_root.join(format!(".canonical-prepare-{}.sqlite", SessionId::new()));
     let prepared = (|| {
         RevisionStore::snapshot_for_migration(canonical_path, &staging)?;
-        atomic_publish(&staging, canonical_path)?;
+        atomic_publish(&staging, canonical_path, false)?;
         sync_parent(canonical_path)?;
         RevisionStore::inspect(canonical_path)
     })();
@@ -409,7 +413,9 @@ fn lock_private(path: &Path) -> RevisionResult<File> {
     let parent = path
         .parent()
         .ok_or_else(|| RevisionError::Invalid("publish lock has no private directory".into()))?;
-    let directory = PrivateDirectory::open(parent)?;
+    // Opening the lock descriptor must not repair the mutation namespace: another
+    // publisher may hold this same lock with its candidate sealed inside the gate.
+    let directory = PrivateDirectory::open_unrecovered(parent)?;
     let lock = match directory.create_file(LOCK_FILE) {
         Ok(lock) => lock,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -418,10 +424,17 @@ fn lock_private(path: &Path) -> RevisionResult<File> {
         Err(error) => return Err(error.into()),
     };
     let identity = validated_identity(&lock, true)?;
-    lock.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    maybe_private_lock_hardlink(path)?;
+    use std::os::unix::fs::PermissionsExt as _;
+    if lock.metadata()?.permissions().mode() & 0o777 != 0o600 {
+        return Err(RevisionError::Invalid(
+            "publish lock must have private owner-only permissions".into(),
+        ));
+    }
     directory.validate(LOCK_FILE, identity, true)?;
     lock.lock_exclusive()?;
     directory.validate(LOCK_FILE, identity, true)?;
+    directory.recover_mutation()?;
     Ok(lock)
 }
 
@@ -449,7 +462,11 @@ fn replace_with_copy(source: &Path, destination: &Path) -> RevisionResult<()> {
     Ok(())
 }
 
-fn atomic_publish(source: &Path, destination: &Path) -> RevisionResult<()> {
+fn atomic_publish(
+    source: &Path,
+    destination: &Path,
+    initial_no_replace: bool,
+) -> RevisionResult<()> {
     if let Some(parent) = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -471,15 +488,23 @@ fn atomic_publish(source: &Path, destination: &Path) -> RevisionResult<()> {
                 .map(|metadata| metadata.permissions())?;
             candidate.set_permissions(permissions)?;
             candidate.sync_all()?;
-            publish_unnamed(candidate, destination)?;
+            if initial_no_replace {
+                publish_unnamed_no_replace(candidate, destination)?;
+            } else {
+                publish_unnamed(candidate, destination)?;
+            }
             return Ok(());
         }
     }
 
-    atomic_publish_named(source, destination)
+    atomic_publish_named(source, destination, initial_no_replace)
 }
 
-fn atomic_publish_named(source: &Path, destination: &Path) -> RevisionResult<()> {
+fn atomic_publish_named(
+    source: &Path,
+    destination: &Path,
+    initial_no_replace: bool,
+) -> RevisionResult<()> {
     let temporary = temporary_path(destination);
     let permissions = destination
         .metadata()
@@ -490,7 +515,11 @@ fn atomic_publish_named(source: &Path, destination: &Path) -> RevisionResult<()>
             fs::set_permissions(&temporary, permissions)?;
         }
         File::open(&temporary)?.sync_all()?;
-        fs::rename(&temporary, destination)
+        if initial_no_replace {
+            rename_no_replace(&temporary, destination)
+        } else {
+            fs::rename(&temporary, destination)
+        }
     }) {
         let _ = fs::remove_file(&temporary);
         return Err(error.into());
@@ -505,6 +534,7 @@ fn publish_checkpoint(
     _publish_capabilities: &PublishCapabilities,
     _expected_generation: u64,
     _expected_state_id: Option<StorageStateId>,
+    initial_publish: bool,
 ) -> RevisionResult<PublishStats> {
     #[cfg(target_os = "linux")]
     {
@@ -553,7 +583,10 @@ fn publish_checkpoint(
             source_inspection.generation,
             source_inspection.state_id,
         )?;
-        atomic_publish(source, destination)?;
+        if initial_publish {
+            maybe_initial_publish_race(destination)?;
+        }
+        atomic_publish(source, destination, initial_publish)?;
         sync_parent(destination)?;
         maybe_publish_fault(PublishFault::FullCopyPublished)?;
         write_publication_marker(
@@ -584,7 +617,7 @@ fn publish_checkpoint(
     }
 
     #[cfg(not(target_os = "linux"))]
-    atomic_publish(source, destination)?;
+    atomic_publish(source, destination, initial_publish)?;
     #[cfg(not(target_os = "linux"))]
     let written_bytes = source.metadata()?.len();
     #[cfg(not(target_os = "linux"))]
