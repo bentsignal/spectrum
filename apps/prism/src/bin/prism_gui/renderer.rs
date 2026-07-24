@@ -152,6 +152,12 @@ pub(super) fn reuse_cached_visual_during_interaction(
         && cached_max_size.is_some_and(|max_size| max_size >= required_max_size)
 }
 
+fn effective_font_preview_layer<'a>(layer: &'a Layer, preview: Option<&'a Layer>) -> &'a Layer {
+    preview
+        .filter(|preview| preview.id == layer.id)
+        .unwrap_or(layer)
+}
+
 fn make_texture_budget_room(
     visuals: &mut HashMap<u64, LayerVisualEntry>,
     replacement_id: u64,
@@ -219,6 +225,8 @@ impl PrismApp {
                 .iter()
                 .find(|layer| layer.id == result.layer_id)
                 .map(|layer| {
+                    let preview_layer = self.font_preview_layer_override(layer);
+                    let layer = preview_layer.as_ref().unwrap_or(layer);
                     desired_layer_visual_key(
                         layer,
                         display_scale,
@@ -319,11 +327,18 @@ impl PrismApp {
             .retain(|id, _| visible_ids.contains(id));
 
         let interaction_active = self.workspace.interaction_active();
+        let font_preview_layer = self
+            .workspace
+            .document
+            .layers
+            .iter()
+            .find_map(|layer| self.font_preview_layer_override(layer));
         let visible_texture_layers = self
             .workspace
             .document
             .layers
             .iter()
+            .map(|layer| effective_font_preview_layer(layer, font_preview_layer.as_ref()))
             .filter(|layer| layer.visible && solid_preview(layer).is_none())
             .count();
         let layer_byte_budget = per_layer_texture_bytes(visible_texture_layers);
@@ -332,6 +347,7 @@ impl PrismApp {
             .document
             .layers
             .iter()
+            .map(|layer| effective_font_preview_layer(layer, font_preview_layer.as_ref()))
             .filter(|layer| layer.visible)
         {
             let source_geometry = self.text_source_geometries.get(layer.id).copied();
@@ -448,6 +464,8 @@ impl PrismApp {
     }
 
     pub(super) fn layer_source_geometry(&self, layer: &Layer) -> Option<LayerSourceGeometry> {
+        let preview_layer = self.font_preview_layer_override(layer);
+        let layer = preview_layer.as_ref().unwrap_or(layer);
         let source_override = self.layer_source_overrides.get(&layer.id);
         let cached = self
             .layer_visuals

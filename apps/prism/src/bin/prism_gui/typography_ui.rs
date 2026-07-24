@@ -1,8 +1,8 @@
 use super::*;
 
-const BUNDLED_FAMILY: &str = "Spectrum Sans";
-const BUNDLED_STYLE: &str = "Regular";
-const BUNDLED_WEIGHT: u16 = 300;
+#[path = "typography_ui/font_picker.rs"]
+mod font_picker;
+pub(crate) use font_picker::FontHoverPreview;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FontUsageAnalysisKey {
@@ -57,155 +57,6 @@ fn candidate_size_label(source_bytes: u64, candidate: &prism_core::FontSubsetCan
         byte_size_label(candidate.reduction_bytes),
         reduction_percent(source_bytes, candidate.reduction_bytes)
     )
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FontFaceChoice {
-    id: Option<u64>,
-    family: String,
-    style: String,
-    weight: u16,
-    slant: prism_core::FontSlant,
-}
-
-impl FontFaceChoice {
-    fn bundled() -> Self {
-        Self {
-            id: None,
-            family: BUNDLED_FAMILY.into(),
-            style: BUNDLED_STYLE.into(),
-            weight: BUNDLED_WEIGHT,
-            slant: prism_core::FontSlant::Normal,
-        }
-    }
-
-    fn from_asset(font: &prism_core::FontAsset) -> Self {
-        Self {
-            id: Some(font.id),
-            family: font.family.clone(),
-            style: font.style.clone(),
-            weight: font.weight,
-            slant: font.slant,
-        }
-    }
-
-    fn face_label(&self) -> String {
-        format!(
-            "{} · {} · {}",
-            self.style,
-            self.weight,
-            slant_label(self.slant)
-        )
-    }
-}
-
-fn slant_label(slant: prism_core::FontSlant) -> &'static str {
-    match slant {
-        prism_core::FontSlant::Normal => "Normal",
-        prism_core::FontSlant::Italic => "Italic",
-        prism_core::FontSlant::Oblique => "Oblique",
-    }
-}
-
-fn font_face_choices(fonts: &[prism_core::FontAsset], query: &str) -> Vec<FontFaceChoice> {
-    let mut imported = fonts
-        .iter()
-        .map(FontFaceChoice::from_asset)
-        .filter(|face| font_face_matches(face, query))
-        .collect::<Vec<_>>();
-    imported.sort_by(|left, right| {
-        left.family
-            .to_ascii_lowercase()
-            .cmp(&right.family.to_ascii_lowercase())
-            .then_with(|| left.weight.cmp(&right.weight))
-            .then_with(|| slant_rank(left.slant).cmp(&slant_rank(right.slant)))
-            .then_with(|| {
-                left.style
-                    .to_ascii_lowercase()
-                    .cmp(&right.style.to_ascii_lowercase())
-            })
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    let mut choices = vec![FontFaceChoice::bundled()];
-    choices.extend(imported);
-    choices
-}
-
-fn font_face_matches(face: &FontFaceChoice, query: &str) -> bool {
-    let haystack = format!(
-        "{} {} {} {}",
-        face.family,
-        face.style,
-        face.weight,
-        slant_label(face.slant)
-    )
-    .to_ascii_lowercase();
-    query
-        .split_whitespace()
-        .all(|term| haystack.contains(&term.to_ascii_lowercase()))
-}
-
-fn slant_rank(slant: prism_core::FontSlant) -> u8 {
-    match slant {
-        prism_core::FontSlant::Normal => 0,
-        prism_core::FontSlant::Italic => 1,
-        prism_core::FontSlant::Oblique => 2,
-    }
-}
-
-fn font_family_names(faces: &[FontFaceChoice]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    faces
-        .iter()
-        .filter_map(|face| {
-            let key = face.family.to_ascii_lowercase();
-            seen.insert(key).then(|| face.family.clone())
-        })
-        .collect()
-}
-
-fn selected_face(fonts: &[prism_core::FontAsset], font_id: Option<u64>) -> FontFaceChoice {
-    font_id
-        .and_then(|id| fonts.iter().find(|font| font.id == id))
-        .map(FontFaceChoice::from_asset)
-        .unwrap_or_else(FontFaceChoice::bundled)
-}
-
-fn default_face_for_family(faces: &[FontFaceChoice], family: &str) -> Option<FontFaceChoice> {
-    if family.eq_ignore_ascii_case(BUNDLED_FAMILY) {
-        return faces
-            .iter()
-            .filter(|face| face.family.eq_ignore_ascii_case(family))
-            .find(|face| face.id.is_none())
-            .cloned()
-            .or_else(|| {
-                faces
-                    .iter()
-                    .find(|face| face.family.eq_ignore_ascii_case(family))
-                    .cloned()
-            });
-    }
-    faces
-        .iter()
-        .filter(|face| face.family.eq_ignore_ascii_case(family))
-        .min_by_key(|face| {
-            (
-                face.weight.abs_diff(400),
-                slant_rank(face.slant),
-                face.style.to_ascii_lowercase(),
-                face.id,
-            )
-        })
-        .cloned()
-}
-
-fn with_font_id(
-    current: &prism_core::TextTypography,
-    font_id: Option<u64>,
-) -> prism_core::TextTypography {
-    let mut changed = current.clone();
-    changed.font_id = font_id;
-    changed
 }
 
 fn with_alignment(
@@ -283,97 +134,6 @@ fn with_shadow_color(
 }
 
 impl PrismApp {
-    pub(super) fn typeface_controls(
-        &mut self,
-        ui: &mut egui::Ui,
-        id: u64,
-        current: &prism_core::TextTypography,
-    ) {
-        typography_section_label(ui, "TYPEFACE");
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.font_query)
-                    .hint_text("Search family, style, or weight")
-                    .desired_width(158.0),
-            );
-            if ui.small_button("Import…").clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("OpenType font", &["ttf", "otf"])
-                    .pick_file()
-            {
-                self.execute(Command::ImportFont {
-                    path,
-                    source_name: None,
-                });
-            }
-        });
-
-        let current_face = selected_face(&self.workspace.document.font_assets, current.font_id);
-        let all_faces = font_face_choices(&self.workspace.document.font_assets, "");
-        let filtered_faces =
-            font_face_choices(&self.workspace.document.font_assets, &self.font_query);
-        let families = font_family_names(&filtered_faces);
-        let mut chosen_family = None;
-        egui::ComboBox::from_id_salt(("text-font-family", id))
-            .selected_text(current_face.family.clone())
-            .width(ui.available_width())
-            .show_ui(ui, |ui| {
-                for family in families {
-                    if ui
-                        .selectable_label(
-                            current_face.family.eq_ignore_ascii_case(&family),
-                            family.as_str(),
-                        )
-                        .clicked()
-                    {
-                        chosen_family = default_face_for_family(&all_faces, &family);
-                    }
-                }
-            });
-        if let Some(face) = chosen_family {
-            if face.id != current.font_id {
-                self.execute(Command::SetTextTypography {
-                    id,
-                    typography: with_font_id(current, face.id),
-                });
-            }
-            return;
-        }
-
-        let family_faces = all_faces
-            .iter()
-            .filter(|face| face.family.eq_ignore_ascii_case(&current_face.family))
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut chosen_face = None;
-        egui::ComboBox::from_id_salt(("text-font-face", id))
-            .selected_text(current_face.face_label())
-            .width(ui.available_width())
-            .show_ui(ui, |ui| {
-                for face in family_faces {
-                    if ui
-                        .selectable_label(face.id == current.font_id, face.face_label())
-                        .clicked()
-                    {
-                        chosen_face = Some(face.id);
-                    }
-                }
-            });
-        if let Some(font_id) = chosen_face
-            && font_id != current.font_id
-        {
-            self.execute(Command::SetTextTypography {
-                id,
-                typography: with_font_id(current, font_id),
-            });
-            return;
-        }
-
-        if let Some(font_id) = current.font_id {
-            self.font_usage_controls(ui, font_id);
-        }
-    }
-
     fn font_usage_controls(&mut self, ui: &mut egui::Ui, font_id: u64) {
         let Some(font) = self
             .workspace
@@ -384,10 +144,6 @@ impl PrismApp {
         else {
             return;
         };
-        if let Some(advisory) = font.embedding_permission.advisory() {
-            ui.add_space(4.0);
-            ui.label(RichText::new(advisory).size(10.0).color(ACCENT_WARM));
-        }
         let key = font_usage_analysis_key(self.active_tab_id, &self.workspace, font);
         ui.add_space(4.0);
         let cached_is_current = self
@@ -451,9 +207,9 @@ impl PrismApp {
                     .color(MUTED),
             );
             let policy = if analysis.embedding_metadata_allows_subsetting {
-                "Embedding metadata allows subsetting · verify the font license"
+                "Embedding metadata allows an optimized font copy"
             } else {
-                "Embedding metadata disallows subsetting · verify the font license"
+                "Embedding metadata disables an optimized font copy"
             };
             ui.label(RichText::new(policy).size(10.0).color(MUTED));
             if let Some(candidate) = &plan.candidate {
@@ -761,74 +517,6 @@ mod tests {
         assert_eq!(byte_size_label(900), "900 B");
         assert_eq!(byte_size_label(2_621_440), "2.5 MiB");
         assert_eq!(reduction_percent(0, 0), 0);
-    }
-
-    #[test]
-    fn bundled_face_is_first_and_imported_faces_sort_stably() {
-        let fonts = vec![
-            font(3, "Zed", "Bold", 700),
-            font(2, "Alpha", "Italic", 400),
-            font(1, "Alpha", "Regular", 400),
-        ];
-        let choices = font_face_choices(&fonts, "");
-
-        assert_eq!(choices[0], FontFaceChoice::bundled());
-        assert_eq!(
-            choices[1..]
-                .iter()
-                .map(|face| face.id.unwrap())
-                .collect::<Vec<_>>(),
-            vec![1, 2, 3]
-        );
-        assert_eq!(
-            font_family_names(&choices),
-            vec!["Spectrum Sans", "Alpha", "Zed"]
-        );
-    }
-
-    #[test]
-    fn search_matches_family_style_weight_and_slant_terms() {
-        let fonts = vec![
-            font(1, "Atlas Grotesk", "Regular", 400),
-            font(2, "Atlas Grotesk", "Bold Italic", 700),
-            font(3, "Mono", "Book", 350),
-        ];
-
-        assert_eq!(
-            font_face_choices(&fonts, "atlas italic")
-                .iter()
-                .filter_map(|face| face.id)
-                .collect::<Vec<_>>(),
-            vec![2]
-        );
-        assert_eq!(
-            font_face_choices(&fonts, "350")
-                .iter()
-                .filter_map(|face| face.id)
-                .collect::<Vec<_>>(),
-            vec![3]
-        );
-    }
-
-    #[test]
-    fn family_selection_uses_bundled_first_and_nearest_regular_face() {
-        let faces = font_face_choices(
-            &[
-                font(1, "Atlas", "Thin", 100),
-                font(2, "Atlas", "Regular", 400),
-                font(3, "Atlas", "Bold", 700),
-            ],
-            "",
-        );
-
-        assert_eq!(
-            default_face_for_family(&faces, BUNDLED_FAMILY).unwrap().id,
-            None
-        );
-        assert_eq!(
-            default_face_for_family(&faces, "Atlas").unwrap().id,
-            Some(2)
-        );
     }
 
     #[test]

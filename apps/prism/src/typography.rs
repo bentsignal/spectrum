@@ -32,11 +32,11 @@ pub enum FontEmbeddingPermission {
 impl FontEmbeddingPermission {
     pub fn advisory(self) -> Option<&'static str> {
         match self {
-            Self::PreviewAndPrint => Some(
-                "This font declares preview/print embedding. Prism preserves the original bytes and allows local editable text, but portability or redistribution may be limited; verify the font license.",
-            ),
+            Self::PreviewAndPrint => {
+                Some("Preview/print embedding metadata may limit editable-project portability.")
+            }
             Self::Restricted => Some(
-                "This font declares restricted embedding. At the user's direction, Prism preserves the original bytes and allows local editable text, but portable editing and redistribution are not verified; subsetting is disabled. Verify the font license.",
+                "Restricted embedding metadata disables optimized font copies and may limit sharing.",
             ),
             Self::Installable | Self::Editable | Self::LegacyUnknown => None,
         }

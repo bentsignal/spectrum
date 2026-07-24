@@ -20,6 +20,8 @@ use raster_fixture::PreparedRasterFixture;
 #[path = "benchmark/temporary_font.rs"]
 mod temporary_font;
 use temporary_font::TemporaryFont;
+#[path = "benchmark/font_picker.rs"]
+mod font_picker;
 #[path = "benchmark/paint.rs"]
 mod paint;
 #[path = "benchmark/path.rs"]
@@ -169,6 +171,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let path = path::measure()?;
     let paint = paint::measure()?;
     let text_preview_frame = text_preview_frame::measure()?;
+    let font_picker = font_picker::measure();
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
@@ -762,6 +765,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: text_preview_frame.scheduling_p95_ms,
             budget_ms: 0.05,
             pass: text_preview_frame.scheduling_p95_ms <= 0.05,
+        },
+        BenchmarkMetric {
+            name: "10k_font_search_and_reversible_hover_dispatch",
+            median_ms: font_picker.median_ms,
+            p95_ms: font_picker.p95_ms,
+            budget_ms: 50.0,
+            pass: font_picker.p95_ms <= 50.0,
         },
         BenchmarkMetric {
             name: "cold_imported_font_identity",

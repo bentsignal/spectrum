@@ -160,6 +160,7 @@ impl PrismApp {
     }
 
     pub(super) fn close_tab(&mut self, id: u64) {
+        self.clear_font_hover_preview();
         // Decide before settling inline text: refusing a close must not commit or cancel any live
         // project interaction.
         let Some(position) =

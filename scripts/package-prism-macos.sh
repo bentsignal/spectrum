@@ -172,6 +172,9 @@ install -m 0644 "$repo_root/packaging/prism/macos/Info.plist" "$bundle/Contents/
   "$bundle/Contents/Resources/Prism.icns"
 install -m 0644 "$repo_root/LICENSE" "$bundle/Contents/Resources/LICENSE"
 install -m 0644 "$repo_root/THIRD_PARTY.md" "$bundle/Contents/Resources/THIRD_PARTY.md"
+install -m 0644 \
+  "$repo_root/packaging/prism/licenses/UBUNTU-FONT-LICENCE-1.0.txt" \
+  "$bundle/Contents/Resources/UBUNTU-FONT-LICENCE-1.0.txt"
 
 if [[ "$ghostty_enabled" == true ]]; then
   mkdir -p "$bundle/Contents/Frameworks"

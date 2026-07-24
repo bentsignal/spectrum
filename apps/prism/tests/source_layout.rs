@@ -243,6 +243,39 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
     assert!(windows.contains("Prism.png"));
 }
 
+#[test]
+fn bundled_ubuntu_license_is_exact_and_installed_by_every_native_package() {
+    use sha2::{Digest, Sha256};
+
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let license_name = "UBUNTU-FONT-LICENCE-1.0.txt";
+    let license = fs::read(
+        repository
+            .join("packaging/prism/licenses")
+            .join(license_name),
+    )
+    .expect("bundled Ubuntu license should be readable");
+    let license_sha256 = Sha256::digest(&license)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        license_sha256,
+        "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002"
+    );
+    for script in [
+        "scripts/package-prism-macos.sh",
+        "scripts/package-prism-linux.sh",
+        "scripts/package-prism-windows.ps1",
+    ] {
+        let source = fs::read_to_string(repository.join(script)).unwrap();
+        assert!(
+            source.contains(license_name),
+            "{script} must install the exact bundled-font license"
+        );
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn prism_macos_package_build_is_bash_3_safe_and_preserves_cargo_failure() {

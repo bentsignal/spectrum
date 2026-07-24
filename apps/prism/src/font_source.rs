@@ -191,7 +191,7 @@ impl VerifiedFontSource {
         }
         let face = Face::parse(&bytes, 0)
             .with_context(|| format!("{} is not a supported OpenType font", label.display()))?;
-        let embedding_permission = require_local_editing_embedding(&face)?;
+        let embedding_permission = embedding_permission(face.permissions())?;
         let family = font_name(&face, &[name_id::TYPOGRAPHIC_FAMILY, name_id::FAMILY])
             .unwrap_or_else(|| "Imported Font".into());
         let style = font_name(&face, &[name_id::TYPOGRAPHIC_SUBFAMILY, name_id::SUBFAMILY])
@@ -204,7 +204,8 @@ impl VerifiedFontSource {
             FontSlant::Normal
         };
         let weight = face.weight().to_number();
-        let subset_allowed = face.is_subsetting_allowed()
+        let subset_allowed = face.is_outline_embedding_allowed()
+            && face.is_subsetting_allowed()
             && embedding_permission != FontEmbeddingPermission::Restricted;
         Ok(Self {
             content_hash,
@@ -626,16 +627,6 @@ fn windows_file_index(high: u32, low: u32) -> u64 {
 #[cfg(not(any(unix, windows)))]
 fn file_identity(_file: &File, _metadata: &Metadata) -> Result<FileIdentity> {
     bail!("secure font source identity is unsupported on this platform")
-}
-
-fn require_local_editing_embedding(face: &Face<'_>) -> Result<FontEmbeddingPermission> {
-    let permission = embedding_permission(face.permissions())?;
-    if !face.is_outline_embedding_allowed() {
-        bail!(
-            "OpenType embedding metadata forbids outline embedding; bitmap-only fonts cannot be used for local editable text"
-        );
-    }
-    Ok(permission)
 }
 
 fn embedding_permission(permissions: Option<Permissions>) -> Result<FontEmbeddingPermission> {

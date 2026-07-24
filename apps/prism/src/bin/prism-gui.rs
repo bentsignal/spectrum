@@ -145,6 +145,7 @@ struct PrismApp {
     inline_text_editor: Option<inline_text::InlineTextEditor>,
     next_inline_text_creation_id: u64,
     font_query: String,
+    font_hover_preview: Option<typography_ui::FontHoverPreview>,
     font_usage_analysis: Option<typography_ui::CachedFontUsageAnalysis>,
     delete_confirmation: Option<u64>,
     layer_drag: Option<u64>,
@@ -277,6 +278,7 @@ impl PrismApp {
             inline_text_editor: None,
             next_inline_text_creation_id: 1,
             font_query: String::new(),
+            font_hover_preview: None,
             font_usage_analysis: None,
             delete_confirmation: None,
             layer_drag: None,
@@ -318,6 +320,7 @@ impl PrismApp {
     }
 
     fn execute(&mut self, command: Command) -> bool {
+        self.clear_font_hover_preview();
         if self.inline_text_editor.is_some() && !matches!(command, Command::SelectLayer { .. }) {
             self.settle_inline_text_editor();
         }
@@ -359,6 +362,7 @@ impl PrismApp {
     }
 
     fn execute_batch(&mut self, commands: Vec<Command>) -> bool {
+        self.clear_font_hover_preview();
         self.settle_inline_text_editor();
         let invalidations = commands.iter().map(canvas_invalidation).collect::<Vec<_>>();
         let text_geometry_ids = commands
@@ -527,6 +531,7 @@ impl PrismApp {
     }
 
     fn add_workspace_tab(&mut self, workspace: Workspace) {
+        self.clear_font_hover_preview();
         self.settle_inline_text_editor();
         self.cancel_pen();
         self.cancel_brush();
@@ -554,6 +559,7 @@ impl PrismApp {
         if id == self.active_tab_id {
             return;
         }
+        self.clear_font_hover_preview();
         self.settle_inline_text_editor();
         self.cancel_pen();
         self.cancel_brush();
