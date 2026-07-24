@@ -53,7 +53,8 @@ pub use font_subset_plan::{
 mod transfer;
 pub use transfer::{
     LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont,
-    PATH_LAYER_TRANSFER_VERSION,
+    PAINT_LAYER_TRANSFER_VERSION, PATH_LAYER_TRANSFER_VERSION,
+    RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION,
 };
 
 mod validation;
@@ -692,8 +693,9 @@ pub use render::{
     render_document, render_document_region_scaled, render_document_region_scaled_with_sources,
     render_document_region_scaled_with_sources_and_stats, render_document_region_scaled_with_stats,
     render_document_scaled, render_document_thumbnail, render_layer_base, render_layer_base_scaled,
-    render_layer_base_scaled_with_font, render_layer_preview, render_layer_preview_scaled,
-    render_layer_preview_scaled_with_font, render_solid_color, save_document,
+    render_layer_base_scaled_with_font, render_layer_preview, render_layer_preview_from_base,
+    render_layer_preview_scaled, render_layer_preview_scaled_with_font, render_solid_color,
+    save_document,
 };
 pub use render_region::{RegionSourceScales, recommended_text_raster_scale, region_source_scales};
 pub use text_preview_cache::{LayerPreviewSchedule, TextPreviewFrameCache};

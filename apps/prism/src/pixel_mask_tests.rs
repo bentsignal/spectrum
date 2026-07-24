@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use image::Rgba;
+use image::{GenericImageView, Rgba};
 use sha2::Digest;
 
 use crate::*;
@@ -334,6 +334,126 @@ fn deleting_selection_multiplies_existing_soft_mask_and_survives_geometry_change
     .unwrap()
     .into_rgba8();
     assert_eq!(region, full);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn transparent_raster_mask_matches_worker_full_region_export_and_bounded_crop_geometry() {
+    let directory = test_directory("transparent-worker-parity");
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("transparent.png");
+    let source_pixels = image::RgbaImage::from_fn(12, 9, |x, y| {
+        Rgba([
+            (x * 29 + y * 7) as u8,
+            (y * 37 + x * 3) as u8,
+            (x * 11 + y * 19) as u8,
+            ((x * 31 + y * 43) % 256) as u8,
+        ])
+    });
+    source_pixels.save(&source).unwrap();
+    let layer = Layer {
+        id: 1,
+        pixel_mask: Some(PixelMask::new(
+            12,
+            9,
+            (0..108)
+                .map(|index| ((index * 53 + 17) % 256) as u8)
+                .collect::<Vec<_>>(),
+        )),
+        adjustments: spectrum_imaging::Adjustments {
+            exposure: 0.35,
+            rotation: 90,
+            flip_horizontal: true,
+            straighten: 9.0,
+            crop: Some(spectrum_imaging::CropRect {
+                x: 0.125,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0,
+            }),
+            ..Default::default()
+        },
+        transform: Transform {
+            x: 6.0,
+            y: 5.0,
+            scale_x: 1.25,
+            scale_y: 1.1,
+            rotation: 17.0,
+        },
+        kind: LayerKind::Raster {
+            path: source.clone(),
+            original_path: None,
+        },
+        ..Layer::default()
+    };
+
+    let cached_larger_base = render_layer_base(&layer, Some(8)).unwrap();
+    let unsafe_two_stage =
+        render_layer_preview_from_base(&layer, cached_larger_base, Some(4)).unwrap();
+    let core_preview = render_layer_preview(&layer, Some(4)).unwrap();
+    assert_ne!(
+        unsafe_two_stage, core_preview,
+        "a genuinely downsampled larger cache entry is not exact and must not be reused for masked rasters"
+    );
+
+    let bounded_base = render_layer_base(&layer, Some(4)).unwrap();
+    assert_eq!(bounded_base.dimensions(), (4, 3));
+    let worker_equivalent = render_layer_preview_from_base(&layer, bounded_base, Some(4)).unwrap();
+    assert_eq!(worker_equivalent, core_preview);
+    let cached_valid_base = render_layer_base(&layer, Some(8)).unwrap();
+    let mut malformed = layer.clone();
+    malformed.pixel_mask = Some(PixelMask::new(11, 9, vec![255; 99]));
+    assert!(
+        render_layer_preview_from_base(&malformed, cached_valid_base, Some(4)).is_err(),
+        "cached unmasked bases must still reject source-dimension mask mismatches"
+    );
+
+    let mut old_order = source_pixels.clone();
+    crate::pixel_masks::apply_pixel_mask_region(
+        &mut old_order,
+        layer.pixel_mask.as_ref(),
+        (12, 9),
+        (0, 0),
+    )
+    .unwrap();
+    let old_order = image::DynamicImage::ImageRgba8(old_order).resize(
+        4,
+        4,
+        image::imageops::FilterType::Triangle,
+    );
+    let old_order = spectrum_imaging::render_image(
+        old_order,
+        layer.adjustments.clone(),
+        spectrum_imaging::RenderOptions::default(),
+    );
+    assert_ne!(
+        old_order, worker_equivalent,
+        "transparent fixture must distinguish mask-before-geometry from the shared mask-after-geometry pipeline"
+    );
+
+    let mut document = Document::new("Transparent parity", 32, 28);
+    document.background = [0; 4];
+    document.layers.push(layer);
+    document.selected = Some(1);
+    document.next_id = 2;
+    let full = render_document(&document, None).unwrap().into_rgba8();
+    let region = render_document_region_scaled(
+        &document,
+        1.0,
+        RenderRegion {
+            x: 0,
+            y: 0,
+            width: document.width,
+            height: document.height,
+        },
+    )
+    .unwrap()
+    .into_rgba8();
+    assert_eq!(region, full);
+
+    let export = directory.join("transparent-parity.png");
+    export_document(&document, &export, 92).unwrap();
+    assert_eq!(image::open(&export).unwrap().into_rgba8(), full);
     std::fs::remove_dir_all(directory).unwrap();
 }
 

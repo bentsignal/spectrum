@@ -393,19 +393,29 @@ pub(crate) fn apply_adjusted_pixel_mask_region(
 pub(crate) fn apply_pixel_mask_to_adjusted_preview(
     layer: &Layer,
     image: &mut RgbaImage,
-    max_size: Option<u32>,
+    preview_source_dimensions: (u32, u32),
 ) -> Result<()> {
     let (Some(mask), LayerKind::Raster { .. }) = (&layer.pixel_mask, &layer.kind) else {
         return Ok(());
     };
+    validate_raster_pixel_mask_source(layer)?;
     let mask_image = RgbaImage::from_fn(mask.width, mask.height, |x, y| {
         let index = (u64::from(y) * u64::from(mask.width) + u64::from(x)) as usize;
         Rgba([255, 255, 255, mask.alpha[index]])
     });
+    let mask_image = if (mask.width, mask.height) == preview_source_dimensions {
+        DynamicImage::ImageRgba8(mask_image)
+    } else {
+        DynamicImage::ImageRgba8(mask_image).resize_exact(
+            preview_source_dimensions.0,
+            preview_source_dimensions.1,
+            image::imageops::FilterType::Triangle,
+        )
+    };
     let transformed = spectrum_imaging::render_image(
-        DynamicImage::ImageRgba8(mask_image),
+        mask_image,
         geometry_adjustments(&layer.adjustments),
-        spectrum_imaging::RenderOptions { max_size },
+        spectrum_imaging::RenderOptions::default(),
     )
     .into_rgba8();
     if transformed.dimensions() != image.dimensions() {
@@ -417,7 +427,16 @@ pub(crate) fn apply_pixel_mask_to_adjusted_preview(
     Ok(())
 }
 
-fn validate_pixel_mask_source_dimensions(
+pub(crate) fn validate_raster_pixel_mask_source(layer: &Layer) -> Result<()> {
+    let (Some(mask), LayerKind::Raster { path, .. }) = (&layer.pixel_mask, &layer.kind) else {
+        return Ok(());
+    };
+    let source_dimensions = image::image_dimensions(path)
+        .with_context(|| format!("could not inspect raster layer {}", path.display()))?;
+    validate_pixel_mask_source_dimensions(mask, source_dimensions)
+}
+
+pub(crate) fn validate_pixel_mask_source_dimensions(
     mask: &PixelMask,
     source_dimensions: (u32, u32),
 ) -> Result<()> {

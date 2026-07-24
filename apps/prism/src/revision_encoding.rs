@@ -73,10 +73,16 @@ impl Compatibility for PrismCompatibility {
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
-    if commands
-        .iter()
-        .any(|command| matches!(command, Command::DeleteSelectedPixels { .. }))
-    {
+    if commands.iter().any(|command| {
+        matches!(command, Command::DeleteSelectedPixels { .. })
+            || matches!(
+                command,
+                Command::InsertLayer { transfer, .. }
+                    if transfer.version == crate::RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
+                        || matches!(transfer.layer.kind, crate::LayerKind::Raster { .. })
+                            && transfer.layer.pixel_mask.is_some()
+            )
+    }) {
         return RASTER_PIXEL_MASK_OPERATIONS_VERSION;
     }
     if commands
@@ -98,7 +104,7 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
                 | Command::AddPaintLayerWithStroke { .. }
                 | Command::AddBrushStroke { .. }
         ) || matches!(command, Command::InsertLayer { transfer, .. }
-                if transfer.version >= crate::LAYER_TRANSFER_VERSION
+                if transfer.version == crate::PAINT_LAYER_TRANSFER_VERSION
                     || matches!(transfer.layer.kind, crate::LayerKind::Paint { .. }))
     }) {
         return PAINT_OPERATIONS_VERSION;
@@ -110,7 +116,7 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
         ) || matches!(
             command,
             Command::InsertLayer { transfer, .. }
-                if transfer.version >= crate::LAYER_TRANSFER_VERSION
+                if transfer.version == crate::PATH_LAYER_TRANSFER_VERSION
                     || transfer.layer.vector_mask.is_some()
                     || matches!(transfer.layer.kind, crate::LayerKind::Path { .. })
         )
@@ -121,7 +127,11 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
         matches!(command, Command::MagicWandSelection { .. })
             || matches!(command, Command::MagicWandSnapshot { .. })
             || matches!(command, Command::SetSelection { selection: Some(selection) } if selection.alpha().is_some())
-            || matches!(command, Command::InsertLayer { transfer, .. } if transfer.layer.pixel_mask.is_some())
+            || matches!(
+                command,
+                Command::InsertLayer { transfer, .. }
+                    if transfer.version == 3 || transfer.layer.pixel_mask.is_some()
+            )
     }) {
         return COLOR_SELECTION_OPERATIONS_VERSION;
     }
@@ -145,7 +155,8 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
         ) || matches!(
             command,
             Command::InsertLayer { transfer, .. }
-                if !transfer.layer.style.is_empty()
+                if transfer.version == 2
+                    || !transfer.layer.style.is_empty()
                     || transfer.layer.shape_fill.is_some()
         )
     }) {
@@ -199,7 +210,8 @@ mod tests {
     use super::*;
     use crate::{
         DropShadow, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LassoPath, LassoPoint, Layer,
-        LayerStyle, LayerTransfer, Selection, SelectionCombineMode,
+        LayerKind, LayerStyle, LayerTransfer, PAINT_LAYER_TRANSFER_VERSION, PixelMask,
+        RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION, Selection, SelectionCombineMode,
     };
 
     #[test]
@@ -422,7 +434,10 @@ mod tests {
             transfer: Box::new(transfer.clone()),
             index: None,
         }];
-        assert_eq!(operations_version(&compatible), PAINT_OPERATIONS_VERSION);
+        assert_eq!(
+            operations_version(&compatible),
+            RASTER_PIXEL_MASK_OPERATIONS_VERSION
+        );
         assert!(
             validate_operations_version(&compatible, LAYER_TRANSFER_OPERATIONS_VERSION).is_err()
         );
@@ -446,6 +461,44 @@ mod tests {
     }
 
     #[test]
+    fn raster_pixel_mask_transfers_require_v11_even_with_an_older_transfer_marker() {
+        let raster_mask = PixelMask::new(2, 1, vec![255, 0]);
+        for transfer_version in [
+            PAINT_LAYER_TRANSFER_VERSION,
+            RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION,
+        ] {
+            let commands = [Command::InsertLayer {
+                transfer: Box::new(LayerTransfer {
+                    format: LAYER_TRANSFER_FORMAT.into(),
+                    version: transfer_version,
+                    layer: Layer {
+                        kind: LayerKind::Raster {
+                            path: "source.png".into(),
+                            original_path: None,
+                        },
+                        pixel_mask: Some(raster_mask.clone()),
+                        ..Layer::default()
+                    },
+                    font_asset: None,
+                }),
+                index: None,
+            }];
+            assert_eq!(
+                operations_version(&commands),
+                RASTER_PIXEL_MASK_OPERATIONS_VERSION
+            );
+            assert!(
+                validate_operations_version(&commands, DOCUMENT_LIFECYCLE_OPERATIONS_VERSION)
+                    .is_err()
+            );
+            assert!(
+                validate_operations_version(&commands, RASTER_PIXEL_MASK_OPERATIONS_VERSION)
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn paint_commands_and_transfers_require_v8() {
         let program = crate::BrushProgram::new(16, 16).unwrap();
         let commands = [Command::AddPaintLayer {
@@ -458,7 +511,7 @@ mod tests {
 
         let transfer = LayerTransfer {
             format: LAYER_TRANSFER_FORMAT.into(),
-            version: LAYER_TRANSFER_VERSION,
+            version: PAINT_LAYER_TRANSFER_VERSION,
             layer: Layer {
                 kind: crate::LayerKind::Paint { program },
                 ..Layer::default()
