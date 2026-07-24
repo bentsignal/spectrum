@@ -318,6 +318,13 @@ impl LiveRevisionStore {
             && self.published_state_id.get() == state_id;
         let published_predecessor_generation = self.published_generation.get();
         let published_predecessor_state_id = self.published_state_id.get();
+        if exchange_proof_matches(&self.canonical_path, generation, state_id)? {
+            return if published_here {
+                Ok(())
+            } else {
+                self.publish_recovered_current()
+            };
+        }
         let canonical_exchange_proof = exchange_proof_matches(
             &self.canonical_path,
             published_predecessor_generation,

@@ -1,9 +1,12 @@
 use std::{
-    os::unix::{fs::MetadataExt as _, process::ExitStatusExt as _},
+    os::unix::{
+        fs::{MetadataExt as _, PermissionsExt as _},
+        process::ExitStatusExt as _,
+    },
     process::Command,
 };
 
-use super::linux_io::working_recovery_marker_matches;
+use super::linux_io::{working_recovery_marker_matches, write_exchange_intent};
 use super::*;
 use crate::{Actor, ActorKind, Asset, Payload};
 
@@ -601,6 +604,83 @@ fn shared_lock_publishes_another_store_recovery_before_entering_the_next_mutatio
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn already_open_store_accepts_exact_canonical_proof_of_shared_working_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    let (first, _) =
+        LiveRevisionStore::create(&canonical, &cache, project("spectrum.shared-proof")).unwrap();
+    let mut second = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    let base_generation = first.store().generation().unwrap();
+
+    second
+        .mutate(|store| store.put_asset("application/x-shared-one", b"one"))
+        .unwrap();
+    second
+        .mutate(|store| store.put_asset("application/x-shared-two", b"two"))
+        .unwrap();
+    let working = RevisionStore::inspect(first.working_path()).unwrap();
+    assert_eq!(working.generation, base_generation + 2);
+    assert!(exchange_proof_matches(&canonical, working.generation, working.state_id).unwrap());
+
+    first.publish().unwrap();
+
+    assert!(first.pending_publish_error().is_none());
+    assert_eq!(first.last_publish_stats(), PublishStats::default());
+    let published = RevisionStore::inspect(&canonical).unwrap();
+    assert_eq!(published.generation, working.generation);
+    assert_eq!(published.state_id, working.state_id);
+}
+
+#[test]
+fn older_slot_proof_is_non_authorizing_when_canonical_has_no_inode_proof() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    fs::create_dir(&cache).unwrap();
+    fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
+    let private = PrivateDirectory::open(&cache).unwrap();
+    let (mut canonical_store, _) =
+        RevisionStore::create(&canonical, project("spectrum.stale-slot-proof")).unwrap();
+    let predecessor = RevisionStore::inspect(&canonical).unwrap();
+    let mirror_path = cache.join(PUBLISH_MIRROR_FILE);
+    fs::copy(&canonical, &mirror_path).unwrap();
+    fs::set_permissions(&mirror_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let mirror = open_nofollow(&mirror_path, true).unwrap();
+    let candidate_identity = validated_identity(&mirror, true).unwrap();
+    let stale = ExchangeIntent {
+        canonical_identity: FileIdentity {
+            device: candidate_identity.device,
+            inode: candidate_identity.inode.wrapping_add(1),
+        },
+        candidate_identity,
+        generation: predecessor.generation.saturating_sub(1),
+        state_id: None,
+        target_generation: predecessor.generation,
+        target_state_id: predecessor.state_id,
+    };
+    assert!(write_exchange_intent(&mirror, stale).unwrap());
+    mirror.sync_all().unwrap();
+    canonical_store
+        .put_asset("application/x-newer-canonical", b"newer")
+        .unwrap();
+    canonical_store.checkpoint().unwrap();
+    drop(canonical_store);
+    let current = RevisionStore::inspect(&canonical).unwrap();
+    assert!(current.generation > predecessor.generation);
+    assert!(!exchange_proof_matches(&canonical, current.generation, current.state_id).unwrap());
+
+    recover_exchange(&private, &canonical, &cache).unwrap();
+
+    assert!(
+        exchange_proof_matches(&mirror_path, predecessor.generation, predecessor.state_id).unwrap()
+    );
+    let recovered = RevisionStore::inspect(&canonical).unwrap();
+    assert_eq!(recovered.generation, current.generation);
+    assert_eq!(recovered.state_id, current.state_id);
 }
 
 #[test]
