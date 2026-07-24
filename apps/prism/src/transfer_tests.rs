@@ -453,7 +453,7 @@ fn durable_raster_transfer_embeds_pixels_in_a_version_two_operation() {
 }
 
 #[test]
-fn durable_raster_pixel_mask_transfer_uses_v11_and_replays() {
+fn durable_raster_pixel_mask_and_dissolve_transfer_uses_v7_v12_and_replays() {
     let directory = test_directory("durable-raster-pixel-mask");
     fs::create_dir_all(&directory).unwrap();
     let source_path = directory.join("source.png");
@@ -474,6 +474,8 @@ fn durable_raster_pixel_mask_transfer_uses_v11_and_replays() {
         3,
         vec![255, 0, 255, 255, 128, 255, 0, 255, 255, 255, 255, 64],
     ));
+    source.document.layer_mut(source_id).unwrap().blend_mode = BlendMode::Dissolve;
+    source.document.layer_mut(source_id).unwrap().dissolve_seed = 0x7654_3210;
     let transfer = LayerTransfer::from_selected(&source.document).unwrap();
     assert_eq!(
         transfer.version,
@@ -520,6 +522,8 @@ fn durable_raster_pixel_mask_transfer_uses_v11_and_replays() {
 
     let loaded = Workspace::load_read_only(&project_path).unwrap();
     assert_eq!(loaded.layers[0].pixel_mask.as_ref().unwrap().alpha[1], 0);
+    assert_eq!(loaded.layers[0].blend_mode, BlendMode::Dissolve);
+    assert_eq!(loaded.layers[0].dissolve_seed, 0x7654_3210);
     let embedded_path = match &loaded.layers[0].kind {
         LayerKind::Raster { path, .. } => path.clone(),
         _ => panic!("replayed transfer should remain raster"),
@@ -539,6 +543,8 @@ fn durable_raster_pixel_mask_transfer_uses_v11_and_replays() {
             .alpha[11],
         64
     );
+    assert_eq!(reopened.document.layers[0].blend_mode, BlendMode::Dissolve);
+    assert_eq!(reopened.document.layers[0].dissolve_seed, 0x7654_3210);
     drop(reopened);
     fs::remove_dir_all(directory).unwrap();
 }

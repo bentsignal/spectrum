@@ -203,6 +203,10 @@ pub enum Command {
         id: u64,
         blend_mode: BlendMode,
     },
+    SetDissolveSeed {
+        id: u64,
+        seed: u32,
+    },
     SetTransform {
         id: u64,
         transform: Transform,

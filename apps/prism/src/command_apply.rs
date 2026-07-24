@@ -743,6 +743,14 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             document.layer_mut(id)?.blend_mode = blend_mode;
             Ok(output("set_blend_mode", "updated blend mode", vec![id]))
         }
+        Command::SetDissolveSeed { id, seed } => {
+            document.layer_mut(id)?.dissolve_seed = seed;
+            Ok(output(
+                "set_dissolve_seed",
+                "updated dissolve seed",
+                vec![id],
+            ))
+        }
         Command::SetTransform { id, transform } => {
             validate_transform(transform)?;
             let layer = document.layer_mut(id)?;

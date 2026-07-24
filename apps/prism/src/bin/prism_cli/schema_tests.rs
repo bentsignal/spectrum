@@ -21,7 +21,7 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
     assert!(schema["alignment"].is_object());
     assert_eq!(
         schema["command_protocol"]["supported_operation_versions"],
-        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
     );
     assert_eq!(
         schema["command_protocol"]["selection_operations_version"],
@@ -41,8 +41,12 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
         10
     );
     assert_eq!(
-        schema["command_protocol"]["raster_pixel_mask_operations_version"],
+        schema["command_protocol"]["dissolve_operations_version"],
         11
+    );
+    assert_eq!(
+        schema["command_protocol"]["raster_pixel_mask_operations_version"],
+        12
     );
     assert_eq!(schema["paths"]["geometry_version"], 1);
     assert_eq!(

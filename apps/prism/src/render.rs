@@ -18,6 +18,8 @@ use crate::{
 
 mod tiles;
 use tiles::render_document_region_scaled_impl;
+mod stats;
+pub use stats::RegionRenderStats;
 
 pub fn save_document(document: &Document, path: &Path) -> Result<()> {
     let extension = path.extension().and_then(|value| value.to_str());
@@ -154,32 +156,6 @@ pub struct RenderRegion {
     pub y: u32,
     pub width: u32,
     pub height: u32,
-}
-
-/// Allocation accounting for exact viewport compositing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RegionRenderStats {
-    pub output_pixels: u64,
-    pub source_staging_pixels: u64,
-    pub source_staging_bytes: u64,
-    pub max_source_staging_pixels: u64,
-    pub adjusted_staging_pixels: u64,
-    pub max_adjusted_staging_pixels: u64,
-    pub full_source_pixels: u64,
-    /// Bytes in the initial full-source fallback decode or rasterization.
-    pub fallback_decode_bytes: u64,
-    /// Conservative peak bytes estimated for one full-source fallback layer.
-    pub fallback_peak_bytes: u64,
-    /// Pixels materialized in full scaled and rotated fallback surfaces.
-    pub transformed_surface_pixels: u64,
-    /// Fixed-kernel source-alpha samples used for layer drop shadows.
-    pub shadow_samples: u64,
-    /// Cumulative one-byte alpha-tile pixels allocated for bounded shadows.
-    pub shadow_alpha_tile_pixels: u64,
-    pub shadow_alpha_tile_bytes: u64,
-    /// Peak live alpha-tile allocation; tiles are processed one layer at a time.
-    pub max_shadow_alpha_tile_pixels: u64,
-    pub max_shadow_alpha_tile_bytes: u64,
 }
 
 /// Whether every visible layer can be sampled directly into a viewport region
@@ -782,6 +758,8 @@ fn composite_layer_region(
                 clip,
                 x,
                 y,
+                canvas_x as u32,
+                canvas_y as u32,
             );
         }
     }
@@ -800,18 +778,33 @@ pub(crate) fn composite_pixel(
     clip: Option<&RgbaImage>,
     x: u32,
     y: u32,
+    document_x: u32,
+    document_y: u32,
 ) {
     let mask_alpha = if layer_mask_allows(layer, source_x, source_y, source_width, source_height) {
-        1.0
+        255
     } else {
-        0.0
+        0
     };
     let clip_alpha = if layer.clip_to_below {
-        clip.map_or(0.0, |image| image.get_pixel(x, y)[3] as f32 / 255.0)
+        clip.map_or(0, |image| image.get_pixel(x, y)[3])
     } else {
-        1.0
+        255
     };
-    let alpha = source_pixel[3] as f32 / 255.0 * layer.opacity * mask_alpha * clip_alpha;
+    let alpha = if layer.blend_mode == crate::BlendMode::Dissolve {
+        let coverage =
+            crate::dissolve_coverage(source_pixel[3], layer.opacity, mask_alpha, clip_alpha);
+        if crate::dissolve_pixel_present(layer.dissolve_seed, document_x, document_y, coverage) {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        source_pixel[3] as f32 / 255.0
+            * layer.opacity
+            * (mask_alpha as f32 / 255.0)
+            * (clip_alpha as f32 / 255.0)
+    };
     if alpha <= 0.0 {
         return;
     }

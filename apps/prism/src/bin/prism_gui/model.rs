@@ -33,7 +33,7 @@ impl Tool {
         (Self::Brush, "B", "Brush"),
         (Self::Eraser, "E", "Eraser"),
         (Self::Mask, "K", "Layer mask"),
-        (Self::Marquee, "M", "Rectangular marquee"),
+        (Self::Marquee, "M", "Selection"),
         (Self::Lasso, "L", "Freehand lasso"),
         (Self::MagicWand, "W", "Magic wand"),
     ];
@@ -49,7 +49,7 @@ impl Tool {
             Self::Brush => "Brush",
             Self::Eraser => "Eraser",
             Self::Mask => "Draw mask",
-            Self::Marquee => "Rectangular marquee",
+            Self::Marquee => "Selection",
             Self::Lasso => "Freehand lasso",
             Self::MagicWand => "Magic wand",
         }

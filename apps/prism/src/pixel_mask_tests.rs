@@ -173,7 +173,7 @@ fn magic_wand_delete_is_mask_only_one_revision_and_round_trips_two_edits() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(operation_version, 11);
+    assert_eq!(operation_version, 12);
     drop(connection);
 
     let mut reopened = Workspace::open_as(&project, test_actor(), session).unwrap();
@@ -207,7 +207,7 @@ fn magic_wand_delete_is_mask_only_one_revision_and_round_trips_two_edits() {
     reopened.execute(Command::Redo).unwrap();
     assert_eq!(reopened.document, reopened_document);
     let transfer = LayerTransfer::from_document(&reopened.document, 1).unwrap();
-    assert_eq!(transfer.version, 6);
+    assert_eq!(transfer.version, 7);
     assert_eq!(
         LayerTransfer::from_json(&transfer.to_json().unwrap()).unwrap(),
         transfer

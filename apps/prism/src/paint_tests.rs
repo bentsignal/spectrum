@@ -1,4 +1,5 @@
 use image::imageops;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::*;
 
@@ -32,6 +33,14 @@ fn paint_layer(program: BrushProgram) -> Layer {
         kind: LayerKind::Paint { program },
         ..Layer::default()
     }
+}
+
+fn paint_project(label: &str) -> std::path::PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("prism-paint-{label}-{stamp}.prism"))
 }
 
 #[test]
@@ -111,6 +120,68 @@ fn first_drag_is_one_undoable_command_and_selection_is_baked() {
     assert!(rendered.get_pixel(12, 12)[3] > 0);
     workspace.execute(Command::Undo).unwrap();
     assert!(workspace.document.layers.is_empty());
+}
+
+#[test]
+fn live_preview_release_export_reopen_undo_and_redo_are_pixel_exact() {
+    let project = paint_project("live-preview-parity");
+    let actor = spectrum_revisions::Actor {
+        id: "person:brush-preview".into(),
+        display_name: "Brush preview test".into(),
+        kind: spectrum_revisions::ActorKind::Human,
+    };
+    let session = spectrum_revisions::SessionId::new();
+    let mut document = Document::new("Live Brush parity", 96, 72);
+    document.background = [0; 4];
+    let mut workspace =
+        Workspace::create_durable(document, &project, actor.clone(), session).unwrap();
+    let command = Command::AddPaintLayerWithStroke {
+        name: Some("One drag".into()),
+        width: 96,
+        height: 72,
+        stroke: BrushStroke::new(
+            BrushStyle {
+                mode: BrushMode::Paint,
+                color: [37, 164, 229, 203],
+                size: 19.0,
+                hardness: 0.42,
+                opacity: 0.68,
+                spacing: 0.09,
+            },
+            vec![sample(8.5, 9.5), sample(43.5, 31.5), sample(87.5, 63.5)],
+        )
+        .unwrap(),
+        selection: PaintSelection::Current,
+    };
+    let preview = preview_paint_command(&workspace.document, command.clone()).unwrap();
+    let preview_pixels = render_document(&preview, None).unwrap().to_rgba8();
+    workspace.execute(command).unwrap();
+    assert_eq!(
+        render_document(&workspace.document, None)
+            .unwrap()
+            .to_rgba8(),
+        preview_pixels
+    );
+    workspace.execute(Command::Undo).unwrap();
+    assert!(workspace.document.layers.is_empty());
+    workspace.execute(Command::Redo).unwrap();
+    assert_eq!(
+        render_document(&workspace.document, None)
+            .unwrap()
+            .to_rgba8(),
+        preview_pixels
+    );
+    drop(workspace);
+
+    let reopened = Workspace::open_as(&project, actor, session).unwrap();
+    assert_eq!(
+        render_document(&reopened.document, None)
+            .unwrap()
+            .to_rgba8(),
+        preview_pixels
+    );
+    drop(reopened);
+    std::fs::remove_file(project).unwrap();
 }
 
 #[test]

@@ -57,12 +57,13 @@ clipping, per-layer adjustments, canvas crop/resize, history, export, and the
 Lumen handoff. `schema`, raw `run`, and `benchmark` provide discovery, low-level
 agent control, and repeatable performance checks.
 
-Pixel selections are persistent document-space rectangles. Use `prism selection
-rectangle <x> <y> <width> <height>` to replace the marquee, `selection clear` to
-deselect, and `selection fill` to create an editable solid layer without
-rewriting existing pixels. `selection crop` crops the canvas exactly to the
-validated marquee, offsets layers and guides, and clears the selection as one
-atomic revision; it rejects a missing or already-full-canvas selection.
+Pixel selections are persistent document-space rectangles or bounded alpha
+masks. Use `prism selection rectangle <x> <y> <width> <height>` to replace the
+selection, `selection clear` to deselect, and `selection fill` to create an
+editable solid layer without rewriting existing pixels. `selection crop` crops
+the canvas exactly to the validated selection bounds, offsets layers and guides,
+and clears the selection as one atomic revision; it rejects a missing or
+already-full-canvas selection.
 Prism document snapshots remain at version 4. Command operation envelopes support
 versions 1 through 5: existing selection and fill commands remain at version 4,
 while crop-to-selection uses version 5 so older version-4 readers reject the new

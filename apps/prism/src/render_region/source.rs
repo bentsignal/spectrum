@@ -461,10 +461,6 @@ impl<'a> SampleSource<'a> {
             Self::Shape(sampler) => sampler.alpha(x, y),
         }
     }
-
-    pub(super) fn supports_unstaged_alpha_tile(&self) -> bool {
-        matches!(self, Self::Constant(_) | Self::Shape(_))
-    }
 }
 
 pub(super) fn sample_triangle_resize_alpha(

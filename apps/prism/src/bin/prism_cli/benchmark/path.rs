@@ -3,11 +3,12 @@ use std::{f32::consts::TAU, time::Instant};
 use anyhow::{Result, bail};
 use prism_core::{
     Command, Document, GradientStop, Layer, LayerKind, PathAnchor, PathFillRule, PathGeometry,
-    ShapeFill, ShapeGradient, ShapeStroke, Workspace, path_source_bounds, render_layer_base_scaled,
+    RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, Workspace, path_preview_requires_region,
+    render_document_region_scaled_with_stats,
 };
 
 const ANCHOR_COUNT: usize = 256;
-const VIEWPORT_SIZE: u32 = 128;
+const VIEWPORT_SIZE: u32 = 2_048;
 const HIGH_ZOOM: f32 = 16.0;
 
 pub(super) struct PathMeasurements {
@@ -41,28 +42,33 @@ pub(super) fn measure() -> Result<PathMeasurements> {
         ..Layer::default()
     };
 
-    // Warm caches before the timed high-zoom samples. The 128 px bounded
-    // viewport plus symmetric stroke padding produces a 2112 px alpha surface
-    // at 16x, exercising all 256 cubic segments without permitting an
-    // unbounded benchmark allocation.
-    let expected_dimensions = path_source_bounds(&layer)
-        .expect("benchmark layer is a path")
-        .raster_dimensions([HIGH_ZOOM; 2])?;
-    let expected_pixels = u64::from(expected_dimensions.0) * u64::from(expected_dimensions.1);
-    let warm = render_layer_base_scaled(&layer, None, [HIGH_ZOOM; 2])?;
-    if (warm.width(), warm.height()) != expected_dimensions {
-        bail!(
-            "16x path benchmark produced an unexpected {}x{} surface",
-            warm.width(),
-            warm.height()
-        );
+    if !path_preview_requires_region(&layer, HIGH_ZOOM)? {
+        bail!("16x path benchmark did not activate viewport-bounded rendering");
+    }
+    let mut document = Document::new("Path viewport benchmark", 4_096, 4_096);
+    document.background = [0; 4];
+    document.layers.push(layer);
+    let region = benchmark_region();
+    let (warm, warm_stats) =
+        render_document_region_scaled_with_stats(&document, HIGH_ZOOM, region)?;
+    if (warm.width(), warm.height()) != (region.width, region.height)
+        || !region_crosses_visible_path_edge(&warm)
+        || warm_stats.max_source_staging_pixels == 0
+        || warm_stats.max_source_staging_pixels > 4_096 * 4_096
+    {
+        bail!("16x path viewport benchmark missed content or exceeded its bounded region");
     }
     let mut raster_samples = Vec::with_capacity(5);
     for _ in 0..5 {
         let started = Instant::now();
-        let rendered = render_layer_base_scaled(&layer, None, [HIGH_ZOOM; 2])?;
-        if u64::from(rendered.width()) * u64::from(rendered.height()) > expected_pixels {
-            bail!("16x path raster exceeded its bounded alpha surface");
+        let (rendered, stats) =
+            render_document_region_scaled_with_stats(&document, HIGH_ZOOM, region)?;
+        if (rendered.width(), rendered.height()) != (region.width, region.height)
+            || !region_crosses_visible_path_edge(&rendered)
+            || stats.max_source_staging_pixels == 0
+            || stats.max_source_staging_pixels > 4_096 * 4_096
+        {
+            bail!("16x path viewport raster missed content or exceeded its bounded region");
         }
         raster_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
@@ -100,6 +106,23 @@ pub(super) fn measure() -> Result<PathMeasurements> {
         edit_median_ms,
         edit_p95_ms,
     })
+}
+
+fn benchmark_region() -> RenderRegion {
+    // The 54 px radius path is centered at (1024, 1024). At 16x its right
+    // edge is x=17248, so this viewport contains both rendered path pixels and
+    // transparent pixels beyond the edge rather than timing an empty region.
+    RenderRegion {
+        x: 17_120,
+        y: 16_294,
+        width: 320,
+        height: 180,
+    }
+}
+
+fn region_crosses_visible_path_edge(image: &image::DynamicImage) -> bool {
+    let pixels = image.to_rgba8();
+    pixels.pixels().any(|pixel| pixel[3] > 0) && pixels.pixels().any(|pixel| pixel[3] == 0)
 }
 
 fn benchmark_geometry() -> Result<PathGeometry> {
@@ -145,7 +168,32 @@ mod tests {
     fn benchmark_path_is_maximally_bounded() {
         let geometry = benchmark_geometry().unwrap();
         assert_eq!(geometry.anchors().len(), prism_core::MAX_PATH_ANCHORS);
-        assert_eq!((geometry.width(), geometry.height()), (128, 128));
+        assert_eq!((geometry.width(), geometry.height()), (2_048, 2_048));
         assert!(geometry.closed());
+    }
+
+    #[test]
+    fn benchmark_region_crosses_real_path_content() {
+        let mut document = Document::new("Path benchmark regression", 4_096, 4_096);
+        document.background = [0; 4];
+        document.layers.push(Layer {
+            id: 1,
+            stroke: ShapeStroke {
+                enabled: true,
+                width: 2.0,
+                color: [255; 4],
+            },
+            kind: LayerKind::Path {
+                geometry: benchmark_geometry().unwrap(),
+                color: [53, 201, 220, 238],
+            },
+            ..Layer::default()
+        });
+        let (rendered, stats) =
+            render_document_region_scaled_with_stats(&document, HIGH_ZOOM, benchmark_region())
+                .unwrap();
+        assert!(region_crosses_visible_path_edge(&rendered));
+        assert!(stats.max_source_staging_pixels > 0);
+        assert!(stats.max_source_staging_pixels <= 4_096 * 4_096);
     }
 }

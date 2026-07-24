@@ -15,7 +15,8 @@ use crate::{
 pub const LAYER_TRANSFER_FORMAT: &str = "spectrum.prism.layer";
 pub const PATH_LAYER_TRANSFER_VERSION: u32 = 4;
 pub const PAINT_LAYER_TRANSFER_VERSION: u32 = 5;
-pub const RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION: u32 = 6;
+pub const DISSOLVE_LAYER_TRANSFER_VERSION: u32 = 6;
+pub const RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION: u32 = 7;
 pub const LAYER_TRANSFER_VERSION: u32 = RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION;
 const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 64 * 1024 * 1024;
 
@@ -68,6 +69,8 @@ impl LayerTransfer {
         let version =
             if matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some() {
                 RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
+            } else if layer.blend_mode == crate::BlendMode::Dissolve || layer.dissolve_seed != 0 {
+                DISSOLVE_LAYER_TRANSFER_VERSION
             } else if matches!(layer.kind, LayerKind::Paint { .. }) {
                 PAINT_LAYER_TRANSFER_VERSION
             } else if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. }) {
@@ -174,11 +177,17 @@ impl LayerTransfer {
         {
             bail!("Prism layer transfer versions before 5 cannot contain Paint layers");
         }
+        if self.version < DISSOLVE_LAYER_TRANSFER_VERSION
+            && (self.layer.blend_mode == crate::BlendMode::Dissolve
+                || self.layer.dissolve_seed != 0)
+        {
+            bail!("Prism layer transfer versions before 6 cannot contain Dissolve settings");
+        }
         if self.version < RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
             && matches!(self.layer.kind, LayerKind::Raster { .. })
             && self.layer.pixel_mask.is_some()
         {
-            bail!("Prism layer transfer versions before 6 cannot contain raster pixel masks");
+            bail!("Prism layer transfer versions before 7 cannot contain raster pixel masks");
         }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");
