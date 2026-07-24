@@ -15,9 +15,11 @@ mod identity;
 mod live;
 mod metadata;
 mod model;
+mod publish;
 mod schema;
 mod storage_io;
 mod store;
+mod store_payloads;
 mod store_tracks;
 
 pub use error::{RevisionError, RevisionResult};
@@ -29,4 +31,5 @@ pub use model::{
     CollaborationSync, Encoding, NewProject, NewTrack, Payload, Preview, ProjectInfo, ReplayPlan,
     ReplayStep, Revision, Session, Track,
 };
+pub use publish::publish_noreplace;
 pub use store::{Compatibility, RevisionStore};

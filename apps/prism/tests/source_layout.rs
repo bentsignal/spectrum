@@ -92,7 +92,7 @@ fn font_subset_plan_preview_is_button_gated_revision_cached_and_explicitly_read_
     assert!(!controls.contains("self.execute("));
     assert!(controls.contains("editable project unchanged"));
     assert!(controls.contains("no smaller copy created"));
-    assert!(controls.contains("history-safe compact-copy export"));
+    assert!(controls.contains("Use Prism optimized-copy"));
     for stable_key_part in [
         "active_tab_id",
         "document_identity",
