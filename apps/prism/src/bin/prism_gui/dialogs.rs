@@ -2,6 +2,7 @@ use super::*;
 
 const NEW_DOCUMENT_NAME_ID: &str = "prism-new-document-name";
 const RENAME_LAYER_ID: &str = "prism-rename-layer-name";
+pub(super) const RENAME_DOCUMENT_ID: &str = "prism-rename-document-name";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum ModalAction {
@@ -35,7 +36,7 @@ fn modal_action_from_keys(
     }
 }
 
-fn modal_text_input(
+pub(super) fn modal_text_input(
     ui: &mut egui::Ui,
     text: &mut String,
     id_source: &'static str,
@@ -70,7 +71,7 @@ fn modal_text_input(
     }
 }
 
-fn reset_modal_text_input(context: &egui::Context, id_source: &'static str) {
+pub(super) fn reset_modal_text_input(context: &egui::Context, id_source: &'static str) {
     let initialized_id = egui::Id::new(id_source).with("focus-initialized");
     context.data_mut(|data| data.remove_temp::<bool>(initialized_id));
 }
@@ -96,7 +97,7 @@ fn show_modal_backdrop(context: &egui::Context) {
         });
 }
 
-fn modal_surface_present(states: [bool; 6]) -> bool {
+fn modal_surface_present(states: [bool; 7]) -> bool {
     states.into_iter().any(|present| present)
 }
 
@@ -106,6 +107,7 @@ impl PrismApp {
             self.move_project_dialog.is_some(),
             self.delete_confirmation.is_some(),
             self.rename_layer.is_some(),
+            self.rename_document.is_some(),
             self.new_dialog.is_some(),
             self.tool_palette.is_some(),
             self.shape_palette.is_some(),
@@ -132,6 +134,8 @@ impl PrismApp {
         }
         if self.move_project_dialog.is_some() {
             self.move_project_dialog(context);
+        } else if self.rename_document.is_some() {
+            self.rename_document_dialog(context);
         } else if self.delete_confirmation.is_some() {
             self.delete_dialog(context);
         } else if self.rename_layer.is_some() {
@@ -307,9 +311,9 @@ mod tests {
 
     #[test]
     fn every_dialog_state_gates_the_shared_modal_surface() {
-        assert!(!modal_surface_present([false; 6]));
-        for index in 0..6 {
-            let mut states = [false; 6];
+        assert!(!modal_surface_present([false; 7]));
+        for index in 0..7 {
+            let mut states = [false; 7];
             states[index] = true;
             assert!(modal_surface_present(states));
         }

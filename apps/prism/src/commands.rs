@@ -31,6 +31,9 @@ pub struct CommandOutput {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
+    RenameDocument {
+        name: String,
+    },
     SetCanvas {
         width: u32,
         height: u32,

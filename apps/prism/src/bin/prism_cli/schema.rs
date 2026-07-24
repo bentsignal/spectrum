@@ -33,8 +33,14 @@ pub(super) fn schema() -> Value {
             "color_selection_operations_version": 6,
             "path_operations_version": 7,
             "paint_operations_version": 8,
-            "lasso_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "lasso_operations_version": 9,
+            "document_lifecycle_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
+        },
+        "document_lifecycle": {
+            "rename": "prism --project <path> rename-document <name> changes durable document metadata only and appends one revision",
+            "project_path": "rename-document never changes the .prism filename or location; Move Project remains the only GUI path relocation action",
+            "close": "Command-W on macOS or Ctrl-W on Windows/Linux closes the active tab; the only remaining tab stays open with an explicit status"
         },
         "gui_interactions": {
             "rotate_focused_object": "Option-R on macOS or Alt-R on Windows/Linux arms the next canvas drag; Shift snaps the absolute angle to 15-degree increments; Escape cancels",
@@ -136,6 +142,7 @@ pub(super) fn schema() -> Value {
 
 fn command_examples() -> Vec<Value> {
     vec![
+        json!({"command": "rename_document", "name": "Campaign"}),
         json!({"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0}),
         json!({"command": "import_font", "path": "/fonts/Inter-Regular.ttf"}),
         json!({"command": "set_text_typography", "id": 1, "typography": {"font_id": 1, "alignment": "center", "line_height": 1.3, "tracking": 2.0, "box_width": 480.0, "effects": {"outline_width": 1.0, "outline_color": [0,0,0,255], "shadow_offset_x": 4.0, "shadow_offset_y": 6.0, "shadow_color": [0,0,0,128]}}}),
