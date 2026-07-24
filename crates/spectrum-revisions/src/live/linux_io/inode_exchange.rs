@@ -1,7 +1,10 @@
 use std::{
     fs::File,
     io,
-    os::fd::{AsRawFd as _, RawFd},
+    os::{
+        fd::{AsRawFd as _, RawFd},
+        unix::fs::MetadataExt as _,
+    },
     path::Path,
 };
 
@@ -182,9 +185,7 @@ pub(in crate::live) fn recover_inode_exchange(
             || intent.target_generation != canonical_inspection.generation
             || intent.target_state_id != canonical_inspection.state_id
         {
-            return Err(RevisionError::Invalid(
-                "canonical inode-bound publication proof is stale or mismatched".into(),
-            ));
+            return Ok(());
         }
         if let (Some(slot), Some(slot_identity)) = (slot.as_ref(), slot_identity) {
             if intent.canonical_identity != slot_identity {
@@ -193,7 +194,32 @@ pub(in crate::live) fn recover_inode_exchange(
                 ));
             }
             let slot_path = cache_directory.join(super::super::PUBLISH_MIRROR_FILE);
-            let slot_inspection = inspect_named_checkpoint(&slot_path, slot, slot_identity, false)?;
+            let slot_inspection =
+                match inspect_named_checkpoint(&slot_path, slot, slot_identity, false) {
+                    Ok(inspection) => inspection,
+                    Err(_) => {
+                        directory.validate(
+                            super::super::PUBLISH_MIRROR_FILE,
+                            slot_identity,
+                            false,
+                        )?;
+                        if slot.metadata()?.nlink() == 1 {
+                            prepare_reusable_slot(
+                                directory,
+                                super::super::PUBLISH_MIRROR_FILE,
+                                slot,
+                                slot_identity,
+                            )?;
+                        } else {
+                            remove_private_file(directory, super::super::PUBLISH_MIRROR_FILE)?;
+                        }
+                        remove_private_file_lazy(
+                            directory,
+                            super::super::PUBLISH_MIRROR_READY_FILE,
+                        )?;
+                        return Ok(());
+                    }
+                };
             let predecessor = slot_inspection.generation == intent.generation
                 && slot_inspection.state_id == intent.state_id;
             let caught_up = slot_inspection.generation == intent.target_generation
@@ -204,7 +230,6 @@ pub(in crate::live) fn recover_inode_exchange(
                         .into(),
                 ));
             }
-            use std::os::unix::fs::MetadataExt as _;
             if slot.metadata()?.nlink() == 1 {
                 prepare_reusable_slot(
                     directory,

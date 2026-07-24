@@ -117,9 +117,12 @@ impl LiveRevisionStore {
                                     canonical.state_id,
                                 )
                             });
+                        let equal_generation_conflict = working_generation == canonical.generation
+                            && working_state_id != canonical.state_id;
                         if publication_marker.is_some()
                             && !publication_matches_working
                             && !publication_matches_canonical
+                            && !equal_generation_conflict
                         {
                             return Err(RevisionError::Invalid(
                                 "live cache has a publication marker that matches neither its \
@@ -137,8 +140,8 @@ impl LiveRevisionStore {
                         }
                         remove_stale_publication_marker = !exact
                             && !recoverable
-                            && publication_matches_working
-                            && !publication_matches_canonical;
+                            && ((publication_matches_working && !publication_matches_canonical)
+                                || equal_generation_conflict);
                         recoverable
                     };
                     #[cfg(not(target_os = "linux"))]

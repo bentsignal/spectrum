@@ -1,4 +1,8 @@
-use std::{fs, os::unix::process::ExitStatusExt, process::Command};
+use std::{
+    fs,
+    os::unix::{fs::MetadataExt as _, process::ExitStatusExt},
+    process::Command,
+};
 
 use super::*;
 use crate::{Actor, ActorKind, Asset, Payload};
@@ -78,6 +82,118 @@ fn abandoned_exchange_probe_entries_are_ignored_by_recovery() {
             .asset(Asset::new("application/x-after-residual", b"committed".to_vec()).id)
             .unwrap()
             .is_some()
+    );
+}
+
+#[test]
+fn copy_over_stale_canonical_xattr_is_non_authorizing() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let stale = directory.path().join("stale.lumen");
+    let cache = directory.path().join("cache");
+    let (mut live, info) =
+        LiveRevisionStore::create(&canonical, &cache, project("spectrum.copy-over-proof")).unwrap();
+    let base = RevisionStore::inspect(&canonical).unwrap();
+    fs::copy(&canonical, &stale).unwrap();
+    let added = Asset::new("application/x-copy-over", b"newer".to_vec());
+
+    live.mutate(|store| store.put_asset(&added.media_type, &added.bytes))
+        .unwrap();
+    let published = RevisionStore::inspect(&canonical).unwrap();
+    assert!(exchange_proof_matches(&canonical, published.generation, published.state_id).unwrap());
+    let project_cache = cache.join(info.project_id.to_string());
+    remove_private_file(
+        &PrivateDirectory::open(&project_cache).unwrap(),
+        PUBLISH_CURRENT_FILE,
+    )
+    .unwrap();
+    let canonical_inode = canonical.metadata().unwrap().ino();
+    fs::copy(&stale, &canonical).unwrap();
+    assert_eq!(canonical.metadata().unwrap().ino(), canonical_inode);
+    assert!(!exchange_proof_matches(&canonical, base.generation, base.state_id).unwrap());
+    recover_exchange(
+        &PrivateDirectory::open(&project_cache).unwrap(),
+        &canonical,
+        &project_cache,
+    )
+    .unwrap();
+    drop(live);
+
+    let reopened = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    assert_eq!(reopened.store().generation().unwrap(), base.generation);
+    assert!(reopened.store().asset(added.id).unwrap().is_none());
+}
+
+#[test]
+fn equal_generation_returned_copy_wins_over_stale_local_proof() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let traveler = directory.path().join("traveler.lumen");
+    let cache = directory.path().join("cache");
+    let remote_cache = directory.path().join("remote-cache");
+    let (mut local, _) =
+        LiveRevisionStore::create(&canonical, &cache, project("spectrum.returned-copy")).unwrap();
+    fs::copy(&canonical, &traveler).unwrap();
+    let mut remote = LiveRevisionStore::open(&traveler, &remote_cache).unwrap();
+    let local_asset = Asset::new("application/x-local", b"local".to_vec());
+    let remote_asset = Asset::new("application/x-remote", b"remote".to_vec());
+
+    local
+        .mutate(|store| store.put_asset(&local_asset.media_type, &local_asset.bytes))
+        .unwrap();
+    remote
+        .mutate(|store| store.put_asset(&remote_asset.media_type, &remote_asset.bytes))
+        .unwrap();
+    let local_state = RevisionStore::inspect(&canonical).unwrap();
+    let returned_state = RevisionStore::inspect(&traveler).unwrap();
+    assert_eq!(local_state.generation, returned_state.generation);
+    assert_ne!(local_state.state_id, returned_state.state_id);
+    drop(local);
+    drop(remote);
+
+    let canonical_inode = canonical.metadata().unwrap().ino();
+    fs::copy(&traveler, &canonical).unwrap();
+    assert_eq!(canonical.metadata().unwrap().ino(), canonical_inode);
+    assert!(
+        !exchange_proof_matches(
+            &canonical,
+            returned_state.generation,
+            returned_state.state_id,
+        )
+        .unwrap()
+    );
+    let reopened = LiveRevisionStore::open(&canonical, &cache).unwrap();
+    assert_eq!(
+        reopened.store().state_id().unwrap(),
+        returned_state.state_id
+    );
+    assert!(reopened.store().asset(local_asset.id).unwrap().is_none());
+    assert!(reopened.store().asset(remote_asset.id).unwrap().is_some());
+}
+
+#[test]
+fn corrupted_private_predecessor_is_reconstructed_before_exchange() {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = directory.path().join("project.lumen");
+    let cache = directory.path().join("cache");
+    let (mut live, info) =
+        LiveRevisionStore::create(&canonical, &cache, project("spectrum.corrupt-predecessor"))
+            .unwrap();
+    live.mutate(|store| store.put_asset("application/x-first", b"first"))
+        .unwrap();
+    let project_cache = cache.join(info.project_id.to_string());
+    let mirror = project_cache.join(PUBLISH_MIRROR_FILE);
+    let mirror_len = mirror.metadata().unwrap().len();
+    fs::write(&mirror, vec![0x3c; mirror_len as usize]).unwrap();
+
+    live.mutate(|store| store.put_asset("application/x-second", b"second"))
+        .unwrap();
+
+    assert!(live.pending_publish_error().is_none());
+    assert!(live.last_publish_stats().incremental);
+    assert_eq!(
+        fs::read(&canonical).unwrap(),
+        fs::read(live.working_path()).unwrap()
     );
 }
 

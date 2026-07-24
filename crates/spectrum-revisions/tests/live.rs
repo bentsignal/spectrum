@@ -224,6 +224,29 @@ fn exact_published_marker_recovers_a_stale_published_copy() {
     let stale = fixture.directory.path().join("stale.prism");
     fs::copy(&fixture.canonical, &stale).unwrap();
     let latest = fixture.append(fixture.human_session, fixture.root, "Survives");
+    #[cfg(target_os = "linux")]
+    {
+        let generation = fixture.live.store().generation().unwrap();
+        let state_id: Vec<u8> = rusqlite::Connection::open(fixture.live.working_path())
+            .unwrap()
+            .query_row(
+                "SELECT value FROM spectrum_meta WHERE key = 'storage_state_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let project_id = fixture.live.store().project_info().unwrap().project_id;
+        let project_cache = fixture.cache.join(project_id.to_string());
+        let mut marker = format!("{generation}:");
+        for byte in state_id {
+            use std::fmt::Write as _;
+            write!(&mut marker, "{byte:02x}").unwrap();
+        }
+        let marker_path = project_cache.join("published-current.ready");
+        fs::write(&marker_path, marker).unwrap();
+        fs::File::open(&marker_path).unwrap().sync_all().unwrap();
+        fs::File::open(&project_cache).unwrap().sync_all().unwrap();
+    }
     drop(fixture.live);
 
     fs::copy(&stale, &fixture.canonical).unwrap();
