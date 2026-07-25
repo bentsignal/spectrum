@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use spectrum_fonts::{
-    FontSubsetEngine, HarfBuzzSubsetEngine, SubsetRequest,
+    FontSubsetEngine, HarfBuzzSubsetEngine, ShapingSample, SubsetRequest,
     UnicodeVariationSequence as SubsetVariationSequence,
 };
 use spectrum_revisions::{
@@ -17,8 +17,10 @@ use spectrum_revisions::{
 };
 
 use crate::{
-    Command, Document, FontAsset, FontEmbeddingPermission, LayerKind, VerifiedFontSource,
-    font_usage::analyze_font_usage_with_source,
+    Command, Document, FontAsset, FontEmbeddingPermission, LayerKind, TextShapingEngine,
+    VerifiedFontSource,
+    font_usage::{analyze_font_usage_with_source, collect_unicode_repertoire},
+    text_render::{PrimaryFontShapingSample, primary_font_shaping_samples},
 };
 
 use super::{
@@ -28,7 +30,9 @@ use super::{
 
 #[path = "optimized_copy_validation.rs"]
 mod validation;
-use validation::{validate_copy_store, validate_render_parity};
+#[cfg(test)]
+use validation::validate_render_parity;
+use validation::{validate_copy_store, validate_history_render_parity};
 
 const MAX_OPTIMIZED_FONT_COUNT: usize = 64;
 const MAX_OPTIMIZED_FONT_BYTES: u64 = 256 * 1024 * 1024;
@@ -63,7 +67,15 @@ struct FontRequirement {
     extension: String,
     codepoints: BTreeSet<u32>,
     variation_sequences: BTreeSet<(u32, u32)>,
-    shaping_samples: BTreeSet<Vec<u32>>,
+    shaping_samples: BTreeSet<ShapingSample>,
+}
+
+#[derive(Default)]
+struct ShapingRequirements {
+    codepoints: BTreeSet<u32>,
+    variation_sequences: BTreeSet<(u32, u32)>,
+    unpaired_variation_selectors: BTreeSet<u32>,
+    samples: BTreeSet<ShapingSample>,
 }
 
 struct RewrittenFont {
@@ -128,7 +140,6 @@ fn create_optimized_font_copy_before_publish(
     let mut destination_parent = destination_info.root_revision;
 
     let mut source_document = root_document(&source_store, revisions[0].id)?;
-    let mut final_rewritten_document = document;
     for revision in &revisions[1..] {
         let (operation_payload, commands) = operation_batch(&source_store, revision)?;
         replay_commands(&source_store, &mut source_document, commands.clone())?;
@@ -168,7 +179,6 @@ fn create_optimized_font_copy_before_publish(
             assets: deduplicate_assets(assets)?,
         })?;
         destination_parent = appended.id;
-        final_rewritten_document = rewritten_document;
     }
     reset_author_sessions_to_tip(
         &mut destination,
@@ -177,13 +187,7 @@ fn create_optimized_font_copy_before_publish(
     )?;
     destination.verify_integrity()?;
     validate_copy_store(&destination, revisions.len())?;
-    validate_render_parity(
-        &source_store,
-        &source_document,
-        &destination,
-        &final_rewritten_document,
-        &output,
-    )?;
+    validate_history_render_parity(&source_store, &destination, &output)?;
     destination.checkpoint()?;
     drop(destination);
     let reopened = RevisionStore::open_read_only(&temporary)
@@ -472,17 +476,11 @@ fn collect_font_requirements(
         validate_asset_identity(&asset, reference.id, &reference.extension)?;
         let source = font.verify_embedded_bytes(asset.bytes)?;
         let analysis = analyze_font_usage_with_source(document, font.id, source.bytes())?;
-        if !analysis.usage.unpaired_variation_selectors.is_empty() {
+        let shaped = shaping_requirements(document, font, source.bytes())?;
+        if !shaped.unpaired_variation_selectors.is_empty() {
             bail!("font {} has unpaired Unicode variation selectors", font.id);
         }
-        if !analysis.missing_codepoints.is_empty()
-            || !analysis.missing_variation_sequences.is_empty()
-        {
-            bail!(
-                "font {} does not cover its historical text repertoire",
-                font.id
-            );
-        }
+        validate_font_repertoire(font.id, source.bytes(), &shaped)?;
         if !analysis.embedding_metadata_allows_subsetting {
             bail!("font {} embedding metadata forbids subsetting", font.id);
         }
@@ -500,35 +498,93 @@ fn collect_font_requirements(
         if requirement.source.bytes() != source.bytes() {
             bail!("font content identity resolves to inconsistent source bytes");
         }
-        requirement.codepoints.extend(analysis.usage.codepoints);
-        requirement.variation_sequences.extend(
-            analysis
-                .usage
-                .variation_sequences
-                .into_iter()
-                .map(|sequence| (sequence.base_codepoint, sequence.selector_codepoint)),
-        );
+        requirement.codepoints.extend(shaped.codepoints);
         requirement
-            .shaping_samples
-            .extend(shaping_samples(document, font.id));
+            .variation_sequences
+            .extend(shaped.variation_sequences);
+        requirement.shaping_samples.extend(shaped.samples);
     }
     Ok(())
 }
 
-fn shaping_samples(document: &Document, font_id: u64) -> impl Iterator<Item = Vec<u32>> + '_ {
-    document.layers.iter().flat_map(move |layer| {
-        let text = match &layer.kind {
-            LayerKind::Text {
-                text, typography, ..
-            } if typography.font_id == Some(font_id) => Some(text.as_str()),
-            _ => None,
+fn shaping_requirements(
+    document: &Document,
+    font: &FontAsset,
+    font_source: &[u8],
+) -> Result<ShapingRequirements> {
+    let mut requirements = ShapingRequirements::default();
+    for layer in &document.layers {
+        let LayerKind::Text {
+            text, typography, ..
+        } = &layer.kind
+        else {
+            continue;
         };
-        text.into_iter().flat_map(|text| {
-            text.split('\n')
-                .map(|line| line.chars().map(u32::from).collect::<Vec<_>>())
-                .filter(|sample| !sample.is_empty())
-        })
-    })
+        if typography.font_id != Some(font.id) {
+            continue;
+        }
+        match typography.shaping.engine {
+            TextShapingEngine::LegacyCharV1 => {
+                collect_repertoire(text, &mut requirements);
+                requirements.samples.extend(
+                    text.split('\n')
+                        .filter(|line| !line.is_empty())
+                        .map(ShapingSample::new),
+                );
+            }
+            TextShapingEngine::HarfBuzzV1 => {
+                let runs: Vec<PrimaryFontShapingSample> =
+                    primary_font_shaping_samples(text, typography, font_source)?;
+                for run in runs {
+                    collect_repertoire(&run.item_text, &mut requirements);
+                    requirements.samples.insert(run.sample);
+                }
+            }
+        }
+    }
+    Ok(requirements)
+}
+
+fn collect_repertoire(text: &str, requirements: &mut ShapingRequirements) {
+    let mut sequences = BTreeSet::new();
+    collect_unicode_repertoire(
+        text,
+        &mut requirements.codepoints,
+        &mut sequences,
+        &mut requirements.unpaired_variation_selectors,
+    );
+    requirements.variation_sequences.extend(
+        sequences
+            .into_iter()
+            .map(|sequence| (sequence.base_codepoint, sequence.selector_codepoint)),
+    );
+}
+
+fn validate_font_repertoire(
+    font_id: u64,
+    source: &[u8],
+    requirements: &ShapingRequirements,
+) -> Result<()> {
+    let face = ttf_parser::Face::parse(source, 0).context("embedded font is malformed")?;
+    let missing_codepoint = requirements.codepoints.iter().any(|codepoint| {
+        char::from_u32(*codepoint).is_none_or(|character| face.glyph_index(character).is_none())
+    });
+    let missing_sequence = requirements
+        .variation_sequences
+        .iter()
+        .any(|(base, selector)| {
+            let Some(base) = char::from_u32(*base) else {
+                return true;
+            };
+            let Some(selector) = char::from_u32(*selector) else {
+                return true;
+            };
+            face.glyph_variation_index(base, selector).is_none()
+        });
+    if missing_codepoint || missing_sequence {
+        bail!("font {font_id} does not cover its historical primary-face repertoire");
+    }
+    Ok(())
 }
 
 fn subset_fonts(
@@ -568,7 +624,7 @@ fn subset_fonts(
                 },
             ),
         )
-        .with_shaping_samples(requirement.shaping_samples);
+        .with_policy_shaping_samples(requirement.shaping_samples);
         let artifact = HarfBuzzSubsetEngine
             .subset(requirement.source.bytes(), &request)
             .with_context(|| format!("could not subset embedded font {source_hash}"))?;
@@ -878,6 +934,10 @@ impl SourceIdentity {
 #[cfg(test)]
 #[path = "optimized_copy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "optimized_copy_shaping_tests.rs"]
+mod shaping_tests;
 
 #[cfg(test)]
 #[path = "optimized_copy_publish_tests.rs"]

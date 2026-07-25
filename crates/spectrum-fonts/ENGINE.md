@@ -62,8 +62,10 @@ local `glyf` instruction stream fail closed: the candidate does not claim hinted
 interpreter parity. The envelope includes OpenType GSUB/GPOS/GDEF tables. A
 request for a layout font must
 provide exact shaping samples; each sample is closed by HarfBuzz and shaped
-before and after subsetting with default features, character-level clusters,
-fixed `und` language, and guessed direction/script. Glyphs are compared through
+before and after subsetting with default features and character-level clusters.
+Legacy samples use deterministic `und` plus guessed direction/script; policy
+samples retain their full text context, item range, direction, script, and
+language. Glyphs are compared through
 the subset plan's old-to-new map, including cluster, glyph flags, advances, and
 offsets. Every shaped closure glyph also receives outline, horizontal-metric,
 and indexed-raster comparison, except a mapped non-default UVS alternate that
@@ -75,14 +77,14 @@ The seam still rejects TTC, CFF/CFF2, STAT, BASE, MATH, VORG, `kern`, TrueType
 hint programs and local instructions, every
 variable-font table including VARC, all color/bitmap/SVG tables including
 `sbix`, Graphite/AAT, and unknown tables. Subset closure validation continues
-to use HarfBuzz defaults, guessed direction/script, and deterministic `und`.
-The public run shaper supports bounded feature overrides and explicit run
-properties, but those inputs are not yet part of `SubsetRequest` and therefore
-are not claimed by the subset candidate.
+to use HarfBuzz defaults. `SubsetRequest` now carries explicit run properties
+used by Prism shaped text; feature overrides and variable coordinates remain
+outside the candidate claim.
 
 Prism's optimized-copy transaction is the only production caller allowed to
 persist a candidate artifact. It additionally verifies immutable source identity,
-linear history, reachable assets, and exact full/region render parity before
+linear history, reachable assets, and exact full/region render parity at every
+retained revision before
 atomic publication; this does not authorize the general export path. The
 path-pinned dependency and licensed conformance corpus must continue to pass on
 macOS, Windows, and Linux. The approved local bounded build and corpus pass are

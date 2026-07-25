@@ -3,11 +3,14 @@ mod support;
 use fontdue::{Font, FontSettings};
 use sha2::{Digest, Sha256};
 use spectrum_fonts::UnicodeVariationSequence;
-use spectrum_fonts::{FontSubsetEngine, HarfBuzzSubsetEngine, SubsetRequest};
+use spectrum_fonts::{
+    FontSubsetEngine, HarfBuzzSubsetEngine, Script, ShapingSample, SubsetRequest, TextDirection,
+};
 use ttf_parser::Face;
 
 const STATIC_TRUE_TYPE: &[u8] = include_bytes!("fonts/noto-sans-static-source.ttf");
 const LAYOUT_TRUE_TYPE: &[u8] = include_bytes!("fonts/noto-sans-layout-source.ttf");
+const LOCL_TRUE_TYPE: &[u8] = include_bytes!("fonts/noto-sans-locl-source.ttf");
 const RICH_TRUE_TYPE: &[u8] = include_bytes!("fonts/noto-sans-rich-rejected.ttf");
 const VARIABLE_TRUE_TYPE: &[u8] = include_bytes!("fonts/noto-sans-variable-rejected.ttf");
 const CFF_OPEN_TYPE: &[u8] = include_bytes!("fonts/noto-sans-cff-rejected.otf");
@@ -24,6 +27,10 @@ fn checked_fixtures_match_the_locked_golden_hashes() {
         "05549e889a11eb65b542a071e97d71f4333caf5a88408ab10a1ac3de25d4be3a"
     );
     assert_eq!(
+        sha256_hex(LOCL_TRUE_TYPE),
+        "43d596cd5da2d1067e94a42e4cad85ec67767906b6a5aca78597861889a41404"
+    );
+    assert_eq!(
         sha256_hex(RICH_TRUE_TYPE),
         "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5"
     );
@@ -35,6 +42,30 @@ fn checked_fixtures_match_the_locked_golden_hashes() {
         sha256_hex(CFF_OPEN_TYPE),
         "7b8a545d63de82a3325dc3c545b597898c03219bd432b0a18086e7605859c6c4"
     );
+}
+
+#[test]
+fn policy_bearing_sample_preserves_real_serbian_locl_substitution() {
+    let text = "xбгдптx";
+    let script = Script::from_iso15924(*b"Cyrl").unwrap();
+    let request = SubsetRequest::new(0, "бгдпт".chars().map(u32::from), [])
+        .with_policy_shaping_samples([ShapingSample::new(text)
+            .item_range(1..11)
+            .direction(TextDirection::LeftToRight)
+            .script(script)
+            .language("sr")]);
+    let artifact = HarfBuzzSubsetEngine
+        .subset(LOCL_TRUE_TYPE, &request)
+        .expect("real locl policy must survive candidate subsetting");
+    assert!(artifact.subset_bytes < artifact.source_bytes);
+    let sample = &request.shaping_samples()[0];
+    assert_eq!(sample.item_range_bytes(), Some(1..11));
+    assert_eq!(
+        sample.requested_direction(),
+        Some(TextDirection::LeftToRight)
+    );
+    assert_eq!(sample.requested_script(), Some(script));
+    assert_eq!(sample.requested_language(), Some("sr"));
 }
 
 #[test]

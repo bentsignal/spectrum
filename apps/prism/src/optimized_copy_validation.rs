@@ -96,6 +96,7 @@ fn exact_snapshot_document(store: &RevisionStore, revision: RevisionId) -> Resul
     Ok(document)
 }
 
+#[cfg(test)]
 pub(super) fn validate_render_parity(
     source_store: &RevisionStore,
     source_document: &Document,
@@ -104,9 +105,86 @@ pub(super) fn validate_render_parity(
     output: &Path,
 ) -> Result<()> {
     let materialization = RenderMaterialization::new(output)?;
-    let source = materialization.materialize(source_store, source_document, "source")?;
+    validate_materialized_render_parity(
+        &materialization,
+        source_store,
+        source_document,
+        destination_store,
+        destination_document,
+        "source",
+        "destination",
+    )
+}
+
+pub(super) fn validate_history_render_parity(
+    source_store: &RevisionStore,
+    destination_store: &RevisionStore,
+    output: &Path,
+) -> Result<()> {
+    let source_info = source_store.project_info()?;
+    let destination_info = destination_store.project_info()?;
+    let source_revisions = source_store.revisions_for_track(source_info.default_track_id)?;
+    let destination_revisions =
+        destination_store.revisions_for_track(destination_info.default_track_id)?;
+    let source_ordered = ordered_revisions(&source_revisions, source_info.root_revision)?;
+    let destination_ordered =
+        ordered_revisions(&destination_revisions, destination_info.root_revision)?;
+    if source_ordered.len() != destination_ordered.len() {
+        bail!("optimized copy render proof has mismatched revision histories");
+    }
+    let materialization = RenderMaterialization::new(output)?;
+    for (index, (source_revision, destination_revision)) in source_ordered
+        .iter()
+        .zip(destination_ordered.iter())
+        .enumerate()
+    {
+        let source = replayed_document(source_store, source_revision.id)?;
+        let destination = exact_snapshot_document(destination_store, destination_revision.id)?;
+        validate_materialized_render_parity(
+            &materialization,
+            source_store,
+            &source,
+            destination_store,
+            &destination,
+            &format!("source-{index}"),
+            &format!("destination-{index}"),
+        )
+        .with_context(|| {
+            format!(
+                "optimized copy changed rendering at retained revision {}",
+                source_revision.id
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn replayed_document(store: &RevisionStore, revision: RevisionId) -> Result<Document> {
+    let plan = store.replay_plan(revision, &PrismCompatibility)?;
+    let mut document: Document = serde_json::from_slice(&decode_snapshot(&plan.snapshot)?)
+        .context("optimized copy source has an invalid compatible snapshot")?;
+    readonly_font::hydrate_read_only_legacy_font_permissions(store, &mut document)?;
+    document.migrate()?;
+    for step in plan.steps {
+        let commands: Vec<crate::Command> = serde_json::from_slice(&step.operations.bytes)
+            .context("optimized copy source has invalid replay operations")?;
+        replay_commands(store, &mut document, commands)?;
+    }
+    Ok(document)
+}
+
+fn validate_materialized_render_parity(
+    materialization: &RenderMaterialization,
+    source_store: &RevisionStore,
+    source_document: &Document,
+    destination_store: &RevisionStore,
+    destination_document: &Document,
+    source_label: &str,
+    destination_label: &str,
+) -> Result<()> {
+    let source = materialization.materialize(source_store, source_document, source_label)?;
     let destination =
-        materialization.materialize(destination_store, destination_document, "destination")?;
+        materialization.materialize(destination_store, destination_document, destination_label)?;
     let source_full = render_document(&source, None)?.to_rgba8();
     let destination_full = render_document(&destination, None)?.to_rgba8();
     if source_full != destination_full {

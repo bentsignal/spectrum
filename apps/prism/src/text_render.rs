@@ -7,6 +7,7 @@
 #[path = "text_layout/mod.rs"]
 mod text_layout;
 
+pub(crate) use text_layout::{PrimaryFontShapingSample, primary_font_shaping_samples};
 pub use text_layout::{
     TextGeometry, measure_text, measure_text_geometry, measure_text_geometry_with_typography,
     measure_text_with_typography,

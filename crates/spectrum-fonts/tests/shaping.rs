@@ -5,7 +5,31 @@ use spectrum_fonts::{
 use ttf_parser::Face;
 
 const LAYOUT_TRUE_TYPE: &[u8] = include_bytes!("fonts/noto-sans-layout-source.ttf");
+const LOCL_TRUE_TYPE: &[u8] = include_bytes!("fonts/noto-sans-locl-source.ttf");
 const RICH_TRUE_TYPE: &[u8] = include_bytes!("fonts/noto-sans-rich-rejected.ttf");
+
+#[test]
+fn real_locl_fixture_changes_serbian_cyrillic_shaping() {
+    let shaper = HarfBuzzShaper::new(LOCL_TRUE_TYPE, 0).expect("locl fixture opens");
+    let script = Script::from_iso15924(*b"Cyrl").unwrap();
+    let shape = |language| {
+        shaper
+            .shape(
+                &ShapeRequest::new("бгдпт")
+                    .direction(TextDirection::LeftToRight)
+                    .script(script)
+                    .language(language),
+            )
+            .unwrap()
+    };
+    let serbian = shape("sr");
+    let russian = shape("ru");
+    assert_ne!(
+        serbian.glyphs(),
+        russian.glyphs(),
+        "the checked fixture must exercise real language-specific locl substitutions"
+    );
+}
 
 #[test]
 fn default_features_apply_ligatures_and_gpos_kerning_deterministically() {

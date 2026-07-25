@@ -13,8 +13,8 @@ pub(crate) const MAX_NOMINAL_CODEPOINTS: usize = 1_000_000;
 pub(crate) const MAX_SUBSET_CODEPOINTS: usize = 1_000_000;
 pub(crate) const MAX_VARIATION_SEQUENCES: usize = 65_536;
 pub(crate) const MAX_SHAPING_SAMPLES: usize = 256;
-pub(crate) const MAX_SHAPING_SCALARS_PER_SAMPLE: usize = 256;
-pub(crate) const MAX_TOTAL_SHAPING_SCALARS: usize = 16_384;
+pub(crate) const MAX_SHAPING_SCALARS_PER_SAMPLE: usize = crate::MAX_SHAPE_SCALARS;
+pub(crate) const MAX_TOTAL_SHAPING_SCALARS: usize = 16 * crate::MAX_SHAPE_SCALARS;
 pub(crate) const MAX_SHAPED_OUTPUT_GLYPHS: usize = 16_384;
 pub(crate) const MAX_SHAPED_CLOSURE_GLYPHS: usize = MAX_SHAPED_OUTPUT_GLYPHS;
 
@@ -41,13 +41,13 @@ pub(crate) fn validate_request(request: &SubsetRequest) -> Result<(), SubsetErro
     }
     let mut total_scalars = 0_usize;
     for sample in request.shaping_samples() {
-        if sample.len() > MAX_SHAPING_SCALARS_PER_SAMPLE {
+        if sample.codepoints().len() > MAX_SHAPING_SCALARS_PER_SAMPLE {
             return Err(SubsetError::new(
                 "shaping sample length exceeds resource limit",
             ));
         }
         total_scalars = total_scalars
-            .checked_add(sample.len())
+            .checked_add(sample.codepoints().len())
             .ok_or_else(|| SubsetError::new("total shaping repertoire length overflow"))?;
         if total_scalars > MAX_TOTAL_SHAPING_SCALARS {
             return Err(SubsetError::new(

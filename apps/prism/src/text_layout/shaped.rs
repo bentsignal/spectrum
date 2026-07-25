@@ -2,7 +2,7 @@ use std::{collections::VecDeque, ops::Range};
 
 use anyhow::{Context, Result, bail};
 use image::{Rgba, RgbaImage};
-use spectrum_fonts::{HarfBuzzShaper, Script, ShapeRequest, TextDirection};
+use spectrum_fonts::{HarfBuzzShaper, Script, ShapeRequest, ShapingSample, TextDirection};
 use unicode_bidi::BidiInfo;
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 use unicode_script::{Script as UnicodeScript, UnicodeScript as _};
@@ -100,8 +100,6 @@ impl TextLayout {
 struct RawGlyph {
     face: FaceChoice,
     glyph_id: u16,
-    cluster: u32,
-    cluster_end: u32,
     units_per_em: u16,
     x_advance: i32,
     x_offset: i32,
@@ -109,6 +107,51 @@ struct RawGlyph {
     ascender: i16,
     descender: i16,
     line_gap: i16,
+    graphemes: Range<usize>,
+}
+
+struct ShapingContext<'text> {
+    bidi: BidiInfo<'text>,
+    graphemes: Vec<Range<usize>>,
+}
+
+impl<'text> ShapingContext<'text> {
+    fn new(text: &'text str) -> Self {
+        Self {
+            bidi: BidiInfo::new(text, None),
+            graphemes: text
+                .grapheme_indices(true)
+                .map(|(start, grapheme)| start..start + grapheme.len())
+                .collect(),
+        }
+    }
+
+    fn boundary_index(&self, byte: usize) -> Result<usize> {
+        if byte == 0 {
+            return Ok(0);
+        }
+        let index = self
+            .graphemes
+            .partition_point(|grapheme| grapheme.end < byte);
+        self.graphemes
+            .get(index)
+            .filter(|grapheme| grapheme.end == byte)
+            .map(|_| index + 1)
+            .context("line break is not an extended grapheme boundary")
+    }
+
+    fn span(&self, bytes: Range<usize>) -> Result<Range<usize>> {
+        let start = self
+            .graphemes
+            .partition_point(|grapheme| grapheme.end <= bytes.start);
+        let end = self
+            .graphemes
+            .partition_point(|grapheme| grapheme.start < bytes.end);
+        if start >= end {
+            bail!("shaped glyph cluster has no extended grapheme");
+        }
+        Ok(start..end)
+    }
 }
 
 pub(super) fn measure(
@@ -164,6 +207,50 @@ pub(super) fn render_region(
     render_layout_region(&layout, color, typography, region)
 }
 
+pub(crate) struct PrimaryFontShapingSample {
+    pub(crate) sample: ShapingSample,
+    pub(crate) item_text: String,
+}
+
+pub(crate) fn primary_font_shaping_samples(
+    text: &str,
+    typography: &TextTypography,
+    primary_font: &[u8],
+) -> Result<Vec<PrimaryFontShapingSample>> {
+    validate_inputs(text, 1.0, typography)?;
+    let fonts = ResolvedFonts::from_primary_bytes(primary_font)?;
+    let context = ShapingContext::new(text);
+    let mut samples = Vec::new();
+    for paragraph in &context.bidi.paragraphs {
+        if paragraph.range.is_empty() {
+            continue;
+        }
+        let (_, visual_runs) = context.bidi.visual_runs(paragraph, paragraph.range.clone());
+        for visual_run in visual_runs {
+            let direction = if context.bidi.levels[visual_run.start].is_rtl() {
+                TextDirection::RightToLeft
+            } else {
+                TextDirection::LeftToRight
+            };
+            for group in resolved_groups(text, visual_run, &fonts)? {
+                if group.face != FaceChoice::Primary {
+                    continue;
+                }
+                let script = Script::from_iso15924(group.script.as_iso15924_tag().to_be_bytes())?;
+                samples.push(PrimaryFontShapingSample {
+                    item_text: text[group.range.clone()].to_owned(),
+                    sample: ShapingSample::new(text)
+                        .item_range(group.range)
+                        .direction(direction)
+                        .script(script)
+                        .language(typography.shaping.resolved_language()),
+                });
+            }
+        }
+    }
+    Ok(samples)
+}
+
 fn layout_text(
     text: &str,
     font_size: f32,
@@ -172,13 +259,14 @@ fn layout_text(
 ) -> Result<TextLayout> {
     validate_inputs(text, font_size, typography)?;
     let fonts = ResolvedFonts::new(font_asset)?;
-    let lines = wrapped_lines(text, font_size, typography, &fonts)?;
+    let context = ShapingContext::new(text);
+    let lines = wrapped_lines(text, font_size, typography, &fonts, &context)?;
     let mut shaped_lines = Vec::with_capacity(lines.len());
     let mut natural_width = 1.0_f32;
     let mut natural_height = font_size;
     for range in &lines {
-        let raw = shape_range(text, range.clone(), typography, &fonts)?;
-        let (advance, metrics) = position_line(&raw, text, font_size, typography.tracking);
+        let raw = shape_range(text, range.clone(), typography, &fonts, &context)?;
+        let (advance, metrics) = position_line(&raw, font_size, typography.tracking);
         natural_width = natural_width.max(advance);
         natural_height = natural_height.max(metrics);
         shaped_lines.push((raw, advance, metrics));
@@ -210,10 +298,8 @@ fn layout_text(
                 .map(|glyph| f32::from(glyph.ascender) * font_size / f32::from(glyph.units_per_em))
                 .fold(font_size * 0.8, f32::max);
             let baseline = line_index as f32 * line_height + ascent;
-            let mut cursor = alignment;
-            for (index, glyph) in raw.iter().enumerate() {
-                let scale = font_size / f32::from(glyph.units_per_em);
-                let pen_x = cursor;
+            let pen_positions = line_pen_positions(raw, font_size, typography.tracking, alignment);
+            for (glyph, pen_x) in raw.iter().zip(pen_positions) {
                 let face = match glyph.face {
                     FaceChoice::Primary => &primary_face,
                     FaceChoice::Bundled => &bundled_face,
@@ -243,8 +329,6 @@ fn layout_text(
                     x_offset: glyph.x_offset,
                     y_offset: glyph.y_offset,
                 });
-                cursor += glyph.x_advance as f32 * scale;
-                cursor += tracking_after(raw, index, text, typography.tracking);
             }
         }
     }
@@ -310,6 +394,7 @@ fn wrapped_lines(
     font_size: f32,
     typography: &TextTypography,
     fonts: &ResolvedFonts,
+    context: &ShapingContext<'_>,
 ) -> Result<Vec<Range<usize>>> {
     let mut output = Vec::new();
     let mut start = 0;
@@ -321,6 +406,7 @@ fn wrapped_lines(
             font_size,
             typography,
             fonts,
+            context,
             &mut output,
         )?;
         start += paragraph_with_break.len();
@@ -332,6 +418,7 @@ fn wrapped_lines(
             font_size,
             typography,
             fonts,
+            context,
             &mut output,
         )?;
     } else if text.ends_with('\n') || text.is_empty() {
@@ -349,6 +436,7 @@ fn wrap_paragraph(
     font_size: f32,
     typography: &TextTypography,
     fonts: &ResolvedFonts,
+    context: &ShapingContext<'_>,
     output: &mut Vec<Range<usize>>,
 ) -> Result<()> {
     let Some(limit) = typography.box_width else {
@@ -363,11 +451,13 @@ fn wrap_paragraph(
     if opportunities.len() > MAX_BREAK_OPPORTUNITIES {
         bail!("shaped text exceeds the line-break resource limit");
     }
+    let shaped = shape_range(text, paragraph.clone(), typography, fonts, context)?;
+    let advances = paragraph_advances(&shaped, font_size, context)?;
     let mut line_start = paragraph.start;
     let mut last_fitting = None;
     for (relative_end, opportunity) in opportunities {
         let end = paragraph.start + relative_end;
-        let width = measure_range(text, line_start..end, font_size, typography, fonts)?;
+        let width = advances.measure(line_start..end, typography.tracking, context)?;
         if width <= limit || line_start == end {
             last_fitting = Some(end);
         } else {
@@ -390,41 +480,97 @@ fn wrap_paragraph(
     Ok(())
 }
 
-fn measure_range(
-    text: &str,
-    range: Range<usize>,
-    font_size: f32,
-    typography: &TextTypography,
-    fonts: &ResolvedFonts,
-) -> Result<f32> {
-    let glyphs = shape_range(text, range, typography, fonts)?;
-    Ok(position_line(&glyphs, text, font_size, typography.tracking).0)
+struct ParagraphAdvances {
+    prefix: Vec<f32>,
+    unsafe_boundaries: Vec<bool>,
 }
 
-fn position_line(glyphs: &[RawGlyph], text: &str, font_size: f32, tracking: f32) -> (f32, f32) {
+impl ParagraphAdvances {
+    fn measure(
+        &self,
+        range: Range<usize>,
+        tracking: f32,
+        context: &ShapingContext<'_>,
+    ) -> Result<f32> {
+        let start = context.boundary_index(range.start)?;
+        let end = context.boundary_index(range.end)?;
+        if self.unsafe_boundaries[start] || self.unsafe_boundaries[end] {
+            bail!("line break crosses a shaped glyph spanning multiple graphemes");
+        }
+        let advance = self.prefix[end] - self.prefix[start];
+        let tracked_boundaries = end.saturating_sub(start).saturating_sub(1);
+        Ok((advance + tracking * tracked_boundaries as f32).max(0.0))
+    }
+}
+
+fn paragraph_advances(
+    glyphs: &[RawGlyph],
+    font_size: f32,
+    context: &ShapingContext<'_>,
+) -> Result<ParagraphAdvances> {
+    let mut advances = vec![0.0_f32; context.graphemes.len() + 1];
+    let mut unsafe_boundaries = vec![false; context.graphemes.len() + 1];
+    for glyph in glyphs {
+        let scale = font_size / f32::from(glyph.units_per_em);
+        let slot = advances
+            .get_mut(glyph.graphemes.end)
+            .context("shaped glyph exceeds the grapheme advance table")?;
+        *slot += glyph.x_advance as f32 * scale;
+        unsafe_boundaries
+            .get_mut(glyph.graphemes.start + 1..glyph.graphemes.end)
+            .context("shaped glyph exceeds the grapheme boundary table")?
+            .fill(true);
+    }
+    for index in 1..advances.len() {
+        advances[index] += advances[index - 1];
+    }
+    Ok(ParagraphAdvances {
+        prefix: advances,
+        unsafe_boundaries,
+    })
+}
+
+fn position_line(glyphs: &[RawGlyph], font_size: f32, tracking: f32) -> (f32, f32) {
     let mut advance = 0.0;
     let mut height = font_size;
     for (index, glyph) in glyphs.iter().enumerate() {
         let scale = font_size / f32::from(glyph.units_per_em);
         advance += glyph.x_advance as f32 * scale;
-        advance += tracking_after(glyphs, index, text, tracking);
+        advance += tracking_after(glyphs, index, tracking);
         height = height.max(f32::from(glyph.ascender - glyph.descender + glyph.line_gap) * scale);
     }
     (advance.max(0.0), height.max(1.0))
 }
 
-fn tracking_after(glyphs: &[RawGlyph], index: usize, text: &str, tracking: f32) -> f32 {
+fn line_pen_positions(
+    glyphs: &[RawGlyph],
+    font_size: f32,
+    tracking: f32,
+    initial: f32,
+) -> Vec<f32> {
+    let mut cursor = initial;
+    glyphs
+        .iter()
+        .enumerate()
+        .map(|(index, glyph)| {
+            let pen = cursor;
+            let scale = font_size / f32::from(glyph.units_per_em);
+            cursor += glyph.x_advance as f32 * scale;
+            cursor += tracking_after(glyphs, index, tracking);
+            pen
+        })
+        .collect()
+}
+
+fn tracking_after(glyphs: &[RawGlyph], index: usize, tracking: f32) -> f32 {
     let glyph = &glyphs[index];
-    if glyphs
-        .get(index + 1)
-        .is_some_and(|next| next.cluster == glyph.cluster && next.face == glyph.face)
-    {
-        return 0.0;
-    }
-    let cluster = glyph.cluster as usize..glyph.cluster_end as usize;
-    let boundaries = text[cluster].graphemes(true).count();
-    let following_cluster = index + 1 < glyphs.len();
-    tracking * (boundaries.saturating_sub(usize::from(!following_cluster))) as f32
+    let next = glyphs.get(index + 1);
+    let finishes_span = next.is_none_or(|next| next.graphemes != glyph.graphemes);
+    let internal = finishes_span.then_some(glyph.graphemes.len().saturating_sub(1));
+    let external = next.is_some_and(|next| {
+        glyph.graphemes.end <= next.graphemes.start || next.graphemes.end <= glyph.graphemes.start
+    });
+    tracking * (internal.unwrap_or(0) + usize::from(external)) as f32
 }
 
 fn shape_range(
@@ -432,20 +578,21 @@ fn shape_range(
     range: Range<usize>,
     typography: &TextTypography,
     fonts: &ResolvedFonts,
+    context: &ShapingContext<'_>,
 ) -> Result<Vec<RawGlyph>> {
     if range.is_empty() {
         return Ok(Vec::new());
     }
-    let bidi = BidiInfo::new(text, None);
-    let paragraph = bidi
+    let paragraph = context
+        .bidi
         .paragraphs
         .iter()
         .find(|paragraph| paragraph.range.start <= range.start && paragraph.range.end >= range.end)
         .context("shaped line is outside a resolved bidi paragraph")?;
-    let (_, visual_runs) = bidi.visual_runs(paragraph, range.clone());
+    let (_, visual_runs) = context.bidi.visual_runs(paragraph, range.clone());
     let mut output = Vec::new();
     for visual_run in visual_runs {
-        let rtl = bidi.levels[visual_run.start].is_rtl();
+        let rtl = context.bidi.levels[visual_run.start].is_rtl();
         let mut groups = resolved_groups(text, visual_run, fonts)?;
         if rtl {
             groups.reverse();
@@ -463,19 +610,20 @@ fn shape_range(
                 .script(script)
                 .language(typography.shaping.resolved_language());
             let shaped = HarfBuzzShaper::new(fonts.bytes(group.face), 0)?.shape(&request)?;
-            output.extend(shaped.glyphs().iter().map(|glyph| RawGlyph {
-                face: group.face,
-                glyph_id: glyph.glyph_id,
-                cluster: glyph.cluster,
-                cluster_end: glyph.cluster_end,
-                units_per_em: shaped.units_per_em(),
-                x_advance: glyph.x_advance,
-                x_offset: glyph.x_offset,
-                y_offset: glyph.y_offset,
-                ascender: shaped.ascender(),
-                descender: shaped.descender(),
-                line_gap: shaped.line_gap(),
-            }));
+            for glyph in shaped.glyphs() {
+                output.push(RawGlyph {
+                    face: group.face,
+                    glyph_id: glyph.glyph_id,
+                    units_per_em: shaped.units_per_em(),
+                    x_advance: glyph.x_advance,
+                    x_offset: glyph.x_offset,
+                    y_offset: glyph.y_offset,
+                    ascender: shaped.ascender(),
+                    descender: shaped.descender(),
+                    line_gap: shaped.line_gap(),
+                    graphemes: context.span(glyph.cluster as usize..glyph.cluster_end as usize)?,
+                });
+            }
         }
     }
     Ok(output)

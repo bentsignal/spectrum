@@ -8,9 +8,12 @@ trap 'rm -rf "$fixture_tmp"' EXIT HUP INT TERM
 curl --fail --location --proto '=https' --tlsv1.2 \
   --output "$fixture_tmp/NotoSans-Regular.ttf" \
   'https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans/NotoSans-Regular.ttf'
+curl --fail --location --proto '=https' --tlsv1.2 \
+  --output "$fixture_tmp/NotoSans-Italic.ttf" \
+  'https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans/NotoSans-Italic.ttf'
 
 cargo run --locked -p spectrum-fonts --example generate_fixtures -- \
-  "$fixture_tmp/NotoSans-Regular.ttf" "$fixture_dir"
+  "$fixture_tmp/NotoSans-Regular.ttf" "$fixture_dir" "$fixture_tmp/NotoSans-Italic.ttf"
 
 download_fixture() {
   url=$1

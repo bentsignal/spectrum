@@ -25,7 +25,7 @@ pub const MAX_SHAPE_FEATURES: usize = 32;
 pub const MAX_VARIATION_COORDINATES: usize = 64;
 
 /// Horizontal direction for one already-resolved shaping run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TextDirection {
     /// Logical text is shaped from left to right.
     LeftToRight,

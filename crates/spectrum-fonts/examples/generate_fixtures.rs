@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 const INPUT_SHA256: &str = "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5";
 const STATIC_SHA256: &str = "1de794fb16bb4fc99afef5d597b909791230be4ea216c5762797f09d9d56a04c";
 const LAYOUT_SHA256: &str = "05549e889a11eb65b542a071e97d71f4333caf5a88408ab10a1ac3de25d4be3a";
+const LOCL_INPUT_SHA256: &str = "36cff144df01309dab648bea71baff9bb074026914afe63aeacc8bc90b67a28b";
+const LOCL_SHA256: &str = "43d596cd5da2d1067e94a42e4cad85ec67767906b6a5aca78597861889a41404";
 const STATIC_TABLES: [[u8; 4]; 10] = [
     *b"head", *b"hhea", *b"maxp", *b"OS/2", *b"hmtx", *b"cmap", *b"loca", *b"glyf", *b"name",
     *b"post",
@@ -19,12 +21,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args_os().skip(1);
     let source_path = arguments.next().ok_or("missing source-font path")?;
     let output_directory = arguments.next().ok_or("missing output-directory path")?;
+    let locl_source_path = arguments.next().ok_or("missing locl source-font path")?;
     if arguments.next().is_some() {
-        return Err("expected exactly two arguments".into());
+        return Err("expected exactly three arguments".into());
     }
 
     let source = fs::read(&source_path)?;
+    let locl_source = fs::read(&locl_source_path)?;
     require_hash("upstream Noto Sans source", &source, INPUT_SHA256)?;
+    require_hash(
+        "upstream Noto Sans Italic locl source",
+        &locl_source,
+        LOCL_INPUT_SHA256,
+    )?;
     fs::create_dir_all(&output_directory)?;
     let output_directory = Path::new(&output_directory);
     fs::write(
@@ -38,6 +47,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .chain(['\u{c5}'])
         .collect::<Vec<_>>();
     let layout_subset = subset(&source, layout_characters, &LAYOUT_TABLES)?;
+    let locl_characters = ('A'..='Z').chain(['б', 'г', 'д', 'п', 'т']);
+    let locl_subset = subset(&locl_source, locl_characters, &LAYOUT_TABLES)?;
     let mut pending = Vec::new();
     if let Err(error) = require_hash(
         "generated unhinted static fixture",
@@ -53,6 +64,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     ) {
         pending.push(error.to_string());
     }
+    if let Err(error) = require_hash("generated unhinted locl fixture", &locl_subset, LOCL_SHA256) {
+        pending.push(error.to_string());
+    }
     if !pending.is_empty() {
         return Err(pending.join("\n").into());
     }
@@ -63,6 +77,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::write(
         output_directory.join("noto-sans-layout-source.ttf"),
         layout_subset,
+    )?;
+    fs::write(
+        output_directory.join("noto-sans-locl-source.ttf"),
+        locl_subset,
     )?;
     Ok(())
 }
