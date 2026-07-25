@@ -37,7 +37,16 @@ pub enum HostApplyOutcome {
 
 pub trait BridgeHost: Send + Sync + 'static {
     fn current_cursors(&self) -> BridgeResult<Vec<ExpectedCursor>>;
-    fn snapshot(&self) -> BridgeResult<StateSnapshot>;
+    /// Keep the host's mutation/publication state lock held for the callback.
+    ///
+    /// Every state mutation must append its durable event before releasing the
+    /// same lock. The callback attaches the event-log cut and subscription, so
+    /// returning a bare snapshot/sequence pair is deliberately impossible.
+    /// Required lock order is host state, then bridge event log.
+    fn with_snapshot<R>(
+        &self,
+        attach: impl FnOnce(StateSnapshot) -> BridgeResult<R>,
+    ) -> BridgeResult<R>;
     fn apply_if_current(&self, request: &RequestEnvelope) -> BridgeResult<HostApplyOutcome>;
 }
 
@@ -95,7 +104,7 @@ impl<H: BridgeHost> BridgeServer<H> {
         reader.set_read_timeout(Some(crate::IDLE_TIMEOUT))?;
         let (sender, receiver) = mpsc::sync_channel(MAX_IN_FLIGHT_PER_CONNECTION);
         let connection_inbound = Arc::new(AtomicUsize::new(0));
-        thread::Builder::new()
+        let reader_worker = thread::Builder::new()
             .name("spectrum-live-reader".into())
             .spawn({
                 let connection_inbound = Arc::clone(&connection_inbound);
@@ -104,7 +113,16 @@ impl<H: BridgeHost> BridgeServer<H> {
             })
             .map_err(BridgeError::Io)?;
 
-        self.connection_loop(stream, receiver)
+        let result = self.connection_loop(&mut stream, receiver);
+        let _ = stream.shutdown();
+        let joined = reader_worker.join();
+        if let Err(payload) = joined {
+            return Err(BridgeError::Protocol(format!(
+                "connection reader panicked: {}",
+                panic_message(payload)
+            )));
+        }
+        result
     }
 
     pub fn handle_request(&self, request: RequestEnvelope) -> BridgeResult<ResponseEnvelope> {
@@ -121,15 +139,36 @@ impl<H: BridgeHost> BridgeServer<H> {
             }
             RequestLookup::Miss => {}
         }
+        state.cache.reserve(request.request_id, &request)?;
 
-        let current = normalize_cursors(self.host.current_cursors()?)?;
+        let current = match self.host.current_cursors().and_then(normalize_cursors) {
+            Ok(current) => current,
+            Err(error) => {
+                state.cache.cancel_reservation(request.request_id);
+                return Err(error);
+            }
+        };
+        let mut handed_to_host = false;
         let body = if ensure_exact_cursors(&request.expected_cursors, &current).is_err() {
             ResponseBody::Conflict { current }
         } else {
-            match self.host.apply_if_current(&request)? {
-                HostApplyOutcome::Applied(body) => body,
-                HostApplyOutcome::Conflict(current) => ResponseBody::Conflict {
-                    current: normalize_cursors(current)?,
+            handed_to_host = true;
+            match self.host.apply_if_current(&request) {
+                Err(error) => {
+                    state.cache.mark_outcome_unknown(request.request_id)?;
+                    return Err(error);
+                }
+                Ok(outcome) => match outcome {
+                    HostApplyOutcome::Applied(body) => body,
+                    HostApplyOutcome::Conflict(current) => ResponseBody::Conflict {
+                        current: match normalize_cursors(current) {
+                            Ok(current) => current,
+                            Err(error) => {
+                                state.cache.mark_outcome_unknown(request.request_id)?;
+                                return Err(error);
+                            }
+                        },
+                    },
                 },
             }
         };
@@ -137,10 +176,25 @@ impl<H: BridgeHost> BridgeServer<H> {
             request_id: request.request_id,
             body,
         };
-        response.validate()?;
-        state
+        if let Err(error) = response.validate() {
+            if handed_to_host {
+                state.cache.mark_outcome_unknown(request.request_id)?;
+            } else {
+                state.cache.cancel_reservation(request.request_id);
+            }
+            return Err(error);
+        }
+        if let Err(error) = state
             .cache
-            .insert(request.request_id, &request, response.clone())?;
+            .complete(request.request_id, &request, response.clone())
+        {
+            if handed_to_host {
+                state.cache.mark_outcome_unknown(request.request_id)?;
+            } else {
+                state.cache.cancel_reservation(request.request_id);
+            }
+            return Err(error);
+        }
         Ok(response)
     }
 
@@ -201,7 +255,7 @@ impl<H: BridgeHost> BridgeServer<H> {
 
     fn connection_loop(
         &self,
-        mut writer: LocalStream,
+        writer: &mut LocalStream,
         receiver: Receiver<Inbound>,
     ) -> BridgeResult<()> {
         let mut mutations = TokenBucket::new(20.0, 40.0);
@@ -225,7 +279,7 @@ impl<H: BridgeHost> BridgeServer<H> {
                     if let Err(retry_after) = rate {
                         rate_offenses = rate_offenses.saturating_add(1);
                         let disconnect = rate_offenses > 1;
-                        write_rate_limit(&mut writer, retry_after, disconnect)?;
+                        write_rate_limit(writer, retry_after, disconnect)?;
                         if disconnect {
                             return Ok(());
                         }
@@ -236,11 +290,7 @@ impl<H: BridgeHost> BridgeServer<H> {
                             if deferred >= MAX_DEFERRED_PER_CONNECTION {
                                 rate_offenses = rate_offenses.saturating_add(1);
                                 let disconnect = rate_offenses > 1;
-                                write_rate_limit(
-                                    &mut writer,
-                                    Duration::from_millis(250),
-                                    disconnect,
-                                )?;
+                                write_rate_limit(writer, Duration::from_millis(250), disconnect)?;
                                 if disconnect {
                                     return Ok(());
                                 }
@@ -250,36 +300,30 @@ impl<H: BridgeHost> BridgeServer<H> {
                             if matches!(response.body, ResponseBody::Deferred) {
                                 deferred += 1;
                             }
-                            write_frame(&mut writer, &ServerMessage::Response(response))?;
+                            write_frame(writer, &ServerMessage::Response(response))?;
                         }
                         ClientMessage::Subscribe { after_seq } => {
                             if subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
                                 rate_offenses = rate_offenses.saturating_add(1);
                                 let disconnect = rate_offenses > 1;
-                                write_rate_limit(
-                                    &mut writer,
-                                    Duration::from_millis(250),
-                                    disconnect,
-                                )?;
+                                write_rate_limit(writer, Duration::from_millis(250), disconnect)?;
                                 if disconnect {
                                     return Ok(());
                                 }
                                 continue;
                             }
-                            let mut snapshot = self.host.snapshot()?;
-                            self.validate_snapshot(&snapshot)?;
-                            snapshot.current_event_seq = self.events.current_seq();
-                            write_frame(&mut writer, &ServerMessage::Snapshot(snapshot))?;
                             match self
-                                .events
-                                .subscribe_with_budget(after_seq, Arc::clone(&connection_queued))
+                                .snapshot_subscription(after_seq, Arc::clone(&connection_queued))
                             {
-                                Ok(subscription) => subscriptions.push(subscription),
+                                Ok((snapshot, subscription)) => {
+                                    subscriptions.push(subscription);
+                                    write_frame(writer, &ServerMessage::Snapshot(snapshot))?;
+                                }
                                 Err(BridgeError::ResyncRequired {
                                     oldest_seq,
                                     newest_seq,
                                 }) => write_frame(
-                                    &mut writer,
+                                    writer,
                                     &ServerMessage::ResyncRequired {
                                         oldest_seq,
                                         newest_seq,
@@ -289,14 +333,14 @@ impl<H: BridgeHost> BridgeServer<H> {
                             }
                         }
                         ClientMessage::Ping { nonce, .. } => {
-                            write_frame(&mut writer, &ServerMessage::Pong { nonce })?;
+                            write_frame(writer, &ServerMessage::Pong { nonce })?;
                         }
                     }
                 }
                 Ok(Inbound::RateLimited { retry_after }) => {
                     rate_offenses = rate_offenses.saturating_add(1);
                     let disconnect = rate_offenses > 1;
-                    write_rate_limit(&mut writer, retry_after, disconnect)?;
+                    write_rate_limit(writer, retry_after, disconnect)?;
                     if disconnect {
                         return Ok(());
                     }
@@ -308,7 +352,7 @@ impl<H: BridgeHost> BridgeServer<H> {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
 
-            drain_subscriptions(&mut writer, &mut subscriptions)?;
+            drain_subscriptions(writer, &mut subscriptions)?;
             if input_closed {
                 return Ok(());
             }
@@ -324,6 +368,20 @@ impl<H: BridgeHost> BridgeServer<H> {
             return Err(BridgeError::StaleBinding);
         }
         Ok(())
+    }
+
+    fn snapshot_subscription(
+        &self,
+        after_seq: u64,
+        connection_queued: Arc<AtomicUsize>,
+    ) -> BridgeResult<(StateSnapshot, Subscription)> {
+        self.host.with_snapshot(|snapshot| {
+            let (snapshot, subscription) =
+                self.events
+                    .attach_snapshot(after_seq, connection_queued, snapshot)?;
+            self.validate_snapshot(&snapshot)?;
+            Ok((snapshot, subscription))
+        })
     }
 
     fn validate_snapshot(&self, snapshot: &StateSnapshot) -> BridgeResult<()> {
@@ -369,6 +427,10 @@ fn read_connection(
     loop {
         match read_frame_counted::<_, ClientMessage>(stream) {
             Ok((message, bytes)) => {
+                if let Err(error) = message.validate() {
+                    let _ = sender.send(Inbound::Error(error));
+                    return;
+                }
                 if let Err(retry_after) = ingress.take(bytes) {
                     violations = violations.saturating_add(1);
                     if sender.send(Inbound::RateLimited { retry_after }).is_err() {
@@ -532,6 +594,17 @@ fn reserve_atomic(counter: &AtomicUsize, bytes: usize, maximum: usize) -> bool {
                 .filter(|updated| *updated <= maximum)
         })
         .is_ok()
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload.downcast_ref::<&str>().map_or_else(
+        || {
+            payload
+                .downcast_ref::<String>()
+                .map_or_else(|| "unknown panic payload".into(), Clone::clone)
+        },
+        |message| (*message).into(),
+    )
 }
 
 enum Inbound {

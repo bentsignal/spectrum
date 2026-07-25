@@ -191,7 +191,7 @@ impl ResponseEnvelope {
     pub fn validate(&self) -> BridgeResult<()> {
         match &self.body {
             ResponseBody::Applied { result, cursors } => {
-                validate_json_limits(result)?;
+                validate_json_limits_except_payload(result)?;
                 if serde_json::to_vec(result)?.len() > MAX_ACTION_BYTES {
                     return Err(BridgeError::Limit(
                         "application result exceeds 4 MiB".into(),
@@ -419,6 +419,16 @@ pub enum ClientMessage {
     },
 }
 
+impl ClientMessage {
+    pub fn validate(&self) -> BridgeResult<()> {
+        match self {
+            Self::Request(request) => request.validate(),
+            Self::Subscribe { .. } => Ok(()),
+            Self::Ping { padding, .. } => bounded("ping padding", padding, MAX_STRING_BYTES),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
@@ -497,6 +507,10 @@ fn bounded(name: &str, value: &str, maximum: usize) -> BridgeResult<()> {
 }
 
 fn validate_json_limits_except_action(value: &Value) -> BridgeResult<()> {
+    validate_json_limits_except_payload(value)
+}
+
+fn validate_json_limits_except_payload(value: &Value) -> BridgeResult<()> {
     fn walk(value: &Value, depth: usize, nodes: &mut usize) -> BridgeResult<()> {
         *nodes = nodes
             .checked_add(1)

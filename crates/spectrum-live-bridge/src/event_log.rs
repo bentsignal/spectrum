@@ -10,7 +10,7 @@ use std::{
 use crate::{
     BridgeError, BridgeEvent, BridgeEventKind, BridgeResult, EVENT_LOG_MAX_BYTES,
     EVENT_LOG_MAX_EVENTS, MAX_QUEUED_BYTES_PER_CONNECTION, MAX_QUEUED_BYTES_PER_HOST,
-    MAX_SUBSCRIBER_BYTES, MAX_SUBSCRIBER_EVENTS,
+    MAX_SUBSCRIBER_BYTES, MAX_SUBSCRIBER_EVENTS, StateSnapshot,
 };
 
 #[derive(Default)]
@@ -130,16 +130,32 @@ impl EventLog {
         connection_queued: Arc<AtomicUsize>,
     ) -> BridgeResult<Subscription> {
         let mut state = self.state.lock().map_err(|_| BridgeError::Closed)?;
+        self.subscribe_locked(&mut state, after_seq, connection_queued)
+    }
+
+    pub(crate) fn attach_snapshot(
+        &self,
+        after_seq: u64,
+        connection_queued: Arc<AtomicUsize>,
+        mut snapshot: StateSnapshot,
+    ) -> BridgeResult<(StateSnapshot, Subscription)> {
+        let mut state = self.state.lock().map_err(|_| BridgeError::Closed)?;
+        validate_replay_cut(&state, after_seq)?;
+        let cut_seq = state.next_seq.saturating_sub(1);
+        snapshot.current_event_seq = cut_seq;
+        let subscription = self.subscribe_locked(&mut state, cut_seq, connection_queued)?;
+        Ok((snapshot, subscription))
+    }
+
+    fn subscribe_locked(
+        &self,
+        state: &mut LogState,
+        after_seq: u64,
+        connection_queued: Arc<AtomicUsize>,
+    ) -> BridgeResult<Subscription> {
+        validate_replay_cut(state, after_seq)?;
         let oldest = state.retained.front().map(|(event, _)| event.seq);
         let newest = state.retained.back().map_or(0, |(event, _)| event.seq);
-        if let Some(oldest) = oldest
-            && after_seq.saturating_add(1) < oldest
-        {
-            return Err(BridgeError::ResyncRequired {
-                oldest_seq: oldest,
-                newest_seq: newest,
-            });
-        }
         let subscriber = Arc::new(Subscriber {
             state: Mutex::new(SubscriberState::default()),
             wake: Condvar::new(),
@@ -210,6 +226,25 @@ impl EventLog {
             .map_or(0, |state| state.retained_bytes);
         retained.saturating_add(self.host_queued.load(Ordering::Acquire))
     }
+}
+
+fn validate_replay_cut(state: &LogState, after_seq: u64) -> BridgeResult<()> {
+    let oldest = state.retained.front().map(|(event, _)| event.seq);
+    let newest = state.retained.back().map_or(0, |(event, _)| event.seq);
+    if after_seq > newest {
+        return Err(BridgeError::Protocol(
+            "subscription sequence is ahead of the binding".into(),
+        ));
+    }
+    if let Some(oldest) = oldest
+        && after_seq.saturating_add(1) < oldest
+    {
+        return Err(BridgeError::ResyncRequired {
+            oldest_seq: oldest,
+            newest_seq: newest,
+        });
+    }
+    Ok(())
 }
 
 pub struct Subscription {
@@ -306,15 +341,32 @@ fn reserve_atomic(counter: &AtomicUsize, bytes: usize, maximum: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use spectrum_revisions::{RevisionId, SessionId, TrackId};
+    use std::{
+        sync::{Arc, Barrier},
+        thread,
+    };
+
+    use spectrum_revisions::{ProjectId, RevisionId, SessionId, TrackId};
 
     use super::*;
-    use crate::CursorTransition;
+    use crate::{BindingId, CursorTransition};
 
     fn event(index: u64, padding: usize) -> BridgeEventKind {
         BridgeEventKind::InteractionBegan {
             interaction_id: format!("{index}-{}", "x".repeat(padding)),
             interaction_kind: "benchmark".into(),
+        }
+    }
+
+    fn snapshot() -> StateSnapshot {
+        StateSnapshot {
+            project_id: ProjectId::new(),
+            binding_id: BindingId::new(),
+            binding_epoch: 1,
+            cursors: Vec::new(),
+            current_event_seq: 0,
+            application_protocols: Default::default(),
+            application_state: Default::default(),
         }
     }
 
@@ -413,5 +465,33 @@ mod tests {
             Err(BridgeError::ResyncRequired { .. })
         )));
         assert!(log.host_queued.load(Ordering::Acquire) <= MAX_QUEUED_BYTES_PER_HOST);
+    }
+
+    #[test]
+    fn snapshot_cut_and_concurrent_append_rebuild_exactly_once() {
+        let log = Arc::new(EventLog::new());
+        log.append(event(0, 0)).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let append_thread = thread::spawn({
+            let log = Arc::clone(&log);
+            let barrier = Arc::clone(&barrier);
+            move || {
+                barrier.wait();
+                log.append(event(1, 0)).unwrap()
+            }
+        });
+        barrier.wait();
+        let (snapshot, subscription) = log
+            .attach_snapshot(0, Arc::new(AtomicUsize::new(0)), snapshot())
+            .unwrap();
+        assert_eq!(append_thread.join().unwrap(), 2);
+        let mut suffix = Vec::new();
+        while let Some(event) = subscription.try_next().unwrap() {
+            suffix.push(event.seq);
+        }
+        assert!(suffix.iter().all(|seq| *seq > snapshot.current_event_seq));
+        assert_eq!(snapshot.current_event_seq + suffix.len() as u64, 2);
+        assert_eq!(log.append(event(2, 0)).unwrap(), 3);
+        assert_eq!(subscription.try_next().unwrap().unwrap().seq, 3);
     }
 }

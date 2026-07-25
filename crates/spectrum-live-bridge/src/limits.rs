@@ -26,6 +26,7 @@ pub const MAX_SUBSCRIBER_BYTES: usize = 2 * 1024 * 1024;
 pub const EVENT_LOG_MAX_EVENTS: usize = 1_024;
 pub const EVENT_LOG_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const REQUEST_CACHE_MAX_ENTRIES: usize = 1_024;
+pub const REQUEST_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const REQUEST_TOMBSTONE_MAX_ENTRIES: usize = 8_192;
 pub const REQUEST_TOMBSTONE_BLOOM_WORDS: usize = 2_048;
 pub const MAX_INGRESS_BYTES_PER_SECOND: usize = 8 * 1024 * 1024;

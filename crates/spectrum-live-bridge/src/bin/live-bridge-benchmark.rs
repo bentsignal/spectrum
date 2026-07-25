@@ -8,17 +8,20 @@ use std::{
 };
 
 use spectrum_live_bridge::{
-    BindingId, BridgeClient, BridgeEventKind, BridgeHost, BridgeResult, BridgeServer, Capability,
-    ClientConfig, EndpointAddress, ExpectedCursor, HostApplyOutcome, InstanceId, LocalListener,
-    RequestEnvelope, ResponseBody, ServerConfig, ServerMessage, StateSnapshot,
+    ActionEnvelope, BindingId, BridgeClient, BridgeEventKind, BridgeHost, BridgeResult,
+    BridgeServer, Capability, ClientConfig, EndpointAddress, ExpectedCursor, HostApplyOutcome,
+    InstanceId, InteractionPolicy, LocalListener, PROTOCOL_FAMILY, PROTOCOL_VERSION,
+    RequestEnvelope, RequestId, ResponseBody, ServerConfig, ServerMessage, StateSnapshot,
 };
-use spectrum_revisions::{ProjectId, RevisionId, TrackId};
+use spectrum_revisions::{ProjectId, RevisionId, SessionId, TrackId};
 
 const HANDSHAKE_SAMPLES: usize = 100;
 const PING_SAMPLES: usize = 100;
 const EVENT_COUNT: usize = 1_000;
 const CLIENT_COUNT: usize = 8;
 const SLOW_EVENT_COUNT: usize = 100;
+const CACHE_RESULT_COUNT: usize = 12;
+const CACHE_RESULT_BYTES: usize = 512 * 1024;
 
 struct Results {
     authenticated_connect_p95: Duration,
@@ -76,6 +79,23 @@ fn run() -> Result<Results, Box<dyn Error>> {
         ping.push(started.elapsed());
     }
     ping.sort_unstable();
+
+    let mut first_cached_request = None;
+    for index in 0..CACHE_RESULT_COUNT {
+        let request = cached_result_request(&harness, index);
+        let response = event_client.request(request.clone())?;
+        let ResponseBody::Applied { result, .. } = response.body else {
+            return Err("cache benchmark mutation was not applied".into());
+        };
+        if result["padding"].as_str().map(str::len) != Some(CACHE_RESULT_BYTES) {
+            return Err("cache benchmark result payload has the wrong size".into());
+        }
+        first_cached_request.get_or_insert(request);
+    }
+    let replay = event_client.request(first_cached_request.expect("cache request"))?;
+    if !matches!(replay.body, ResponseBody::Applied { .. }) {
+        return Err("exact cached request retry did not replay its result".into());
+    }
 
     let snapshot = event_client.subscribe(0)?;
     if snapshot.current_event_seq != 0 {
@@ -189,21 +209,35 @@ impl BridgeHost for BenchmarkHost {
         ])
     }
 
-    fn snapshot(&self) -> BridgeResult<StateSnapshot> {
-        Ok(StateSnapshot {
+    fn with_snapshot<R>(
+        &self,
+        attach: impl FnOnce(StateSnapshot) -> BridgeResult<R>,
+    ) -> BridgeResult<R> {
+        let cursor = self
+            .cursor
+            .lock()
+            .map_err(|_| spectrum_live_bridge::BridgeError::Closed)?;
+        attach(StateSnapshot {
             project_id: self.config.project_id,
             binding_id: self.config.binding_id,
             binding_epoch: self.config.binding_epoch,
-            cursors: self.current_cursors()?,
+            cursors: vec![cursor.clone()],
             current_event_seq: 0,
             application_protocols: Default::default(),
             application_state: Default::default(),
         })
     }
 
-    fn apply_if_current(&self, _request: &RequestEnvelope) -> BridgeResult<HostApplyOutcome> {
+    fn apply_if_current(&self, request: &RequestEnvelope) -> BridgeResult<HostApplyOutcome> {
+        let result_bytes = request
+            .action
+            .action
+            .get("result_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .unwrap_or(0);
         Ok(HostApplyOutcome::Applied(ResponseBody::Applied {
-            result: serde_json::json!({"ok": true}),
+            result: serde_json::json!({"ok": true, "padding": "x".repeat(result_bytes)}),
             cursors: self.current_cursors()?,
         }))
     }
@@ -213,6 +247,8 @@ struct Harness {
     server: Arc<BridgeServer<BenchmarkHost>>,
     capability: Capability,
     address: EndpointAddress,
+    binding: ServerConfig,
+    cursor: ExpectedCursor,
     acceptor: thread::JoinHandle<()>,
     cleanup: Option<PathBuf>,
 }
@@ -230,14 +266,19 @@ impl Harness {
             binding_id: BindingId::new(),
             binding_epoch: 1,
         };
+        let cursor = ExpectedCursor {
+            track_id: TrackId::new(),
+            revision_id: RevisionId::new(),
+        };
         let host = Arc::new(BenchmarkHost {
             config: config.clone(),
-            cursor: Mutex::new(ExpectedCursor {
-                track_id: TrackId::new(),
-                revision_id: RevisionId::new(),
-            }),
+            cursor: Mutex::new(cursor.clone()),
         });
-        let server = Arc::new(BridgeServer::new(config, capability.duplicate(), host));
+        let server = Arc::new(BridgeServer::new(
+            config.clone(),
+            capability.duplicate(),
+            host,
+        ));
         let acceptor = {
             let server = Arc::clone(&server);
             thread::spawn(move || {
@@ -260,6 +301,8 @@ impl Harness {
             server,
             capability,
             address,
+            binding: config,
+            cursor,
             acceptor,
             cleanup,
         })
@@ -285,6 +328,28 @@ impl Harness {
             fs::remove_dir_all(path)?;
         }
         Ok(())
+    }
+}
+
+fn cached_result_request(harness: &Harness, index: usize) -> RequestEnvelope {
+    RequestEnvelope {
+        protocol: PROTOCOL_FAMILY.into(),
+        version: PROTOCOL_VERSION,
+        request_id: RequestId::new(),
+        binding_id: harness.binding.binding_id,
+        binding_epoch: harness.binding.binding_epoch,
+        project_id: harness.binding.project_id,
+        application: harness.binding.application.clone(),
+        session_id: SessionId::new(),
+        expected_cursors: vec![harness.cursor.clone()],
+        actor_label: format!("cache benchmark {index}"),
+        interaction: InteractionPolicy::Immediate,
+        action: ActionEnvelope {
+            family: "spectrum.benchmark.cache".into(),
+            version: 1,
+            capabilities: vec![],
+            action: serde_json::json!({"result_bytes": CACHE_RESULT_BYTES}),
+        },
     }
 }
 

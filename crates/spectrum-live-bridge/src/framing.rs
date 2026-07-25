@@ -10,8 +10,8 @@ use serde::{
 use serde_json::{Number, Value};
 
 use crate::{
-    BridgeError, BridgeResult, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, MAX_JSON_DEPTH, MAX_JSON_NODES,
-    MAX_STRING_BYTES,
+    BridgeError, BridgeResult, MAX_ACTION_BYTES, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, MAX_JSON_DEPTH,
+    MAX_JSON_NODES, MAX_STRING_BYTES,
 };
 
 pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> BridgeResult<()> {
@@ -157,18 +157,18 @@ impl<'de> Visitor<'de> for StrictValueVisitor<'_> {
     }
 
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-        if value.len() > MAX_STRING_BYTES {
+        if value.len() > MAX_ACTION_BYTES {
             return Err(E::custom(format!(
-                "JSON string exceeds {MAX_STRING_BYTES} bytes"
+                "JSON string exceeds bounded payload limit of {MAX_ACTION_BYTES} bytes"
             )));
         }
         Ok(StrictValue(Value::String(value.to_owned())))
     }
 
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
-        if value.len() > MAX_STRING_BYTES {
+        if value.len() > MAX_ACTION_BYTES {
             return Err(E::custom(format!(
-                "JSON string exceeds {MAX_STRING_BYTES} bytes"
+                "JSON string exceeds bounded payload limit of {MAX_ACTION_BYTES} bytes"
             )));
         }
         Ok(StrictValue(Value::String(value)))
@@ -283,5 +283,18 @@ mod tests {
         framed.extend_from_slice(body.as_bytes());
         let error = read_frame::<_, Value>(&mut framed.as_slice()).unwrap_err();
         assert!(error.to_string().contains("aggregate values"));
+    }
+
+    #[test]
+    fn structural_reader_allows_bounded_payload_but_typed_ping_rejects_it() {
+        let payload = "x".repeat(MAX_STRING_BYTES + 1);
+        let message = crate::ClientMessage::Ping {
+            nonce: 7,
+            padding: payload,
+        };
+        let mut framed = Vec::new();
+        write_frame(&mut framed, &message).unwrap();
+        let decoded: crate::ClientMessage = read_frame(&mut framed.as_slice()).unwrap();
+        assert!(decoded.validate().is_err());
     }
 }

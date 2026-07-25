@@ -181,6 +181,16 @@ impl LocalStream {
         *self.write_timeout.lock().map_err(|_| BridgeError::Closed)? = timeout;
         Ok(())
     }
+
+    pub fn shutdown(&self) -> BridgeResult<()> {
+        unsafe {
+            CancelIoEx(self.handle, ptr::null());
+            if self.disconnect_on_drop {
+                DisconnectNamedPipe(self.handle);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Read for LocalStream {
@@ -452,7 +462,7 @@ fn last_error() -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::{thread, time::Instant};
+    use std::{io::Write as _, thread, time::Instant};
 
     use super::*;
 
@@ -472,12 +482,15 @@ mod tests {
     #[test]
     fn current_user_peer_and_real_read_timeout_are_enforced() {
         let address = address();
-        let listener = LocalListener::bind(&address).unwrap();
+        let listener =
+            LocalListener::bind(&address).expect("bind current-user-only first pipe instance");
         let client = thread::spawn({
             let address = address.clone();
-            move || LocalStream::connect(&address).unwrap()
+            move || LocalStream::connect(&address).expect("connect same-user pipe client")
         });
-        let (mut server, identity) = listener.accept().unwrap();
+        let (mut server, identity) = listener
+            .accept()
+            .expect("accept and verify same-user pipe client");
         let _client = client.join().unwrap();
         assert!(identity.same_user);
         server
@@ -487,6 +500,31 @@ mod tests {
         let error = server.read(&mut [0_u8; 1]).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn real_write_timeout_cancels_pending_overlapped_io() {
+        let address = address();
+        let listener =
+            LocalListener::bind(&address).expect("bind current-user-only first pipe instance");
+        let client = thread::spawn({
+            let address = address.clone();
+            move || LocalStream::connect(&address).expect("connect non-reading pipe client")
+        });
+        let (mut server, _) = listener
+            .accept()
+            .expect("accept non-reading same-user pipe client");
+        let _client = client.join().unwrap();
+        server
+            .set_write_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let started = Instant::now();
+        let payload = vec![0_u8; 64 * 1024];
+        let error = (0..16)
+            .find_map(|_| server.write_all(&payload).err())
+            .expect("named pipe writes never reached the bounded timeout");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

@@ -1,20 +1,21 @@
 use std::{ffi::c_void, os::windows::ffi::OsStrExt, os::windows::io::AsRawHandle, path::Path, ptr};
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE, LocalFree},
+    Foundation::{CloseHandle, GENERIC_ALL, HANDLE, LocalFree},
     Security::{
-        ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+        ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             GetSecurityInfo, SE_FILE_OBJECT,
         },
-        DACL_SECURITY_INFORMATION, EqualSid, GetAclInformation, GetFileSecurityW,
-        GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, GetTokenInformation,
-        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SetFileSecurityW, TOKEN_QUERY,
-        TOKEN_USER, TokenUser,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetFileSecurityW,
+        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+        GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        SE_DACL_PROTECTED, SetFileSecurityW, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
+    Storage::FileSystem::FILE_ALL_ACCESS,
     System::{
-        SystemServices::SECURITY_DESCRIPTOR_REVISION,
+        SystemServices::{ACCESS_ALLOWED_ACE_TYPE, SECURITY_DESCRIPTOR_REVISION},
         Threading::{GetCurrentProcess, OpenProcessToken},
     },
 };
@@ -121,50 +122,30 @@ pub(crate) fn verify_private_handle(file: &std::fs::File) -> BridgeResult<()> {
 }
 
 fn verify_descriptor(actual_descriptor: PSECURITY_DESCRIPTOR) -> BridgeResult<()> {
-    let expected = current_user_only_descriptor()?;
-    verify_owner_matches_current(actual_descriptor, expected.as_ptr())?;
-    if dacl_bytes(actual_descriptor)? != dacl_bytes(expected.as_ptr())? {
-        return Err(BridgeError::Authentication(
-            "binding path does not have the exact current-user protected DACL".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn verify_owner_matches_current(
-    actual: PSECURITY_DESCRIPTOR,
-    expected: PSECURITY_DESCRIPTOR,
-) -> BridgeResult<()> {
-    let actual_owner = descriptor_owner(actual)?;
-    let expected_owner = descriptor_owner(expected)?;
-    if unsafe { EqualSid(actual_owner, expected_owner) } == 0 {
+    let current = current_user_sid()?;
+    let actual_owner = descriptor_owner(actual_descriptor)?;
+    if unsafe { EqualSid(actual_owner, current.as_sid()) } == 0 {
         return Err(BridgeError::Authentication(
             "binding path owner is not the current logon SID".into(),
         ));
     }
-    Ok(())
-}
-
-fn descriptor_owner(descriptor: PSECURITY_DESCRIPTOR) -> BridgeResult<PSID> {
-    let mut owner = ptr::null_mut();
-    let mut defaulted = 0;
-    if unsafe { GetSecurityDescriptorOwner(descriptor, &raw mut owner, &raw mut defaulted) } == 0
-        || owner.is_null()
+    let mut control = 0;
+    let mut revision = 0;
+    if unsafe {
+        GetSecurityDescriptorControl(actual_descriptor, &raw mut control, &raw mut revision)
+    } == 0
+        || control & SE_DACL_PROTECTED == 0
     {
         return Err(BridgeError::Authentication(
-            "security descriptor has no owner SID".into(),
+            "binding path DACL is not protected from inheritance".into(),
         ));
     }
-    Ok(owner)
-}
-
-fn dacl_bytes(descriptor: PSECURITY_DESCRIPTOR) -> BridgeResult<Vec<u8>> {
     let mut present = 0;
     let mut defaulted = 0;
     let mut acl: *mut ACL = ptr::null_mut();
     if unsafe {
         GetSecurityDescriptorDacl(
-            descriptor,
+            actual_descriptor,
             &raw mut present,
             &raw mut acl,
             &raw mut defaulted,
@@ -191,10 +172,46 @@ fn dacl_bytes(descriptor: PSECURITY_DESCRIPTOR) -> BridgeResult<Vec<u8>> {
     {
         return Err(std::io::Error::last_os_error().into());
     }
-    Ok(
-        unsafe { std::slice::from_raw_parts(acl.cast::<u8>(), size.AclBytesInUse as usize) }
-            .to_vec(),
-    )
+    if size.AceCount != 1 {
+        return Err(BridgeError::Authentication(
+            "binding path DACL must contain exactly one access rule".into(),
+        ));
+    }
+    let mut raw_ace = ptr::null_mut();
+    if unsafe { GetAce(acl, 0, &raw mut raw_ace) } == 0 || raw_ace.is_null() {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
+    if u32::from(ace.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE {
+        return Err(BridgeError::Authentication(
+            "binding path DACL contains a non-allow rule".into(),
+        ));
+    }
+    let allowed_sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
+    if unsafe { EqualSid(allowed_sid, current.as_sid()) } == 0 {
+        return Err(BridgeError::Authentication(
+            "binding path DACL grants a principal other than the current user".into(),
+        ));
+    }
+    if ace.Mask != GENERIC_ALL && ace.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS {
+        return Err(BridgeError::Authentication(
+            "binding path DACL does not grant full current-user access".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn descriptor_owner(descriptor: PSECURITY_DESCRIPTOR) -> BridgeResult<PSID> {
+    let mut owner = ptr::null_mut();
+    let mut defaulted = 0;
+    if unsafe { GetSecurityDescriptorOwner(descriptor, &raw mut owner, &raw mut defaulted) } == 0
+        || owner.is_null()
+    {
+        return Err(BridgeError::Authentication(
+            "security descriptor has no owner SID".into(),
+        ));
+    }
+    Ok(owner)
 }
 
 fn descriptor_from_sddl(sddl: &str) -> BridgeResult<OwnedSecurityDescriptor> {
@@ -215,9 +232,8 @@ fn descriptor_from_sddl(sddl: &str) -> BridgeResult<OwnedSecurityDescriptor> {
 }
 
 fn current_user_sid_string() -> BridgeResult<String> {
-    let token = process_token()?;
-    let user = token_user(token.0)?;
-    let sid = unsafe { (*(user.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    let user = current_user_sid()?;
+    let sid = user.as_sid();
     let mut text = ptr::null_mut();
     if unsafe { ConvertSidToStringSidW(sid, &raw mut text) } == 0 || text.is_null() {
         return Err(std::io::Error::last_os_error().into());
@@ -235,6 +251,19 @@ fn current_user_sid_string() -> BridgeResult<String> {
         LocalFree(text.cast());
     }
     result
+}
+
+struct OwnedTokenUser(Vec<u8>);
+
+impl OwnedTokenUser {
+    fn as_sid(&self) -> PSID {
+        unsafe { (*(self.0.as_ptr().cast::<TOKEN_USER>())).User.Sid }
+    }
+}
+
+fn current_user_sid() -> BridgeResult<OwnedTokenUser> {
+    let token = process_token()?;
+    token_user(token.0).map(OwnedTokenUser)
 }
 
 struct OwnedHandle(HANDLE);
@@ -278,4 +307,20 @@ fn token_user(token: HANDLE) -> BridgeResult<Vec<u8>> {
         return Err(std::io::Error::last_os_error().into());
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_full_access_forms_pass_but_extra_principal_fails() {
+        let sid = current_user_sid_string().unwrap();
+        let file_all = descriptor_from_sddl(&format!("O:{sid}D:P(A;;FA;;;{sid})")).unwrap();
+        verify_descriptor(file_all.as_ptr()).unwrap();
+
+        let broad =
+            descriptor_from_sddl(&format!("O:{sid}D:P(A;;FA;;;{sid})(A;;GR;;;WD)")).unwrap();
+        assert!(verify_descriptor(broad.as_ptr()).is_err());
+    }
 }

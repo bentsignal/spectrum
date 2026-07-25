@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::{Read, Write},
+    net::Shutdown,
     os::{
         fd::AsRawFd,
         unix::{
@@ -181,6 +182,11 @@ impl LocalStream {
 
     pub fn set_write_timeout(&self, timeout: Option<Duration>) -> BridgeResult<()> {
         self.inner.set_write_timeout(timeout)?;
+        Ok(())
+    }
+
+    pub fn shutdown(&self) -> BridgeResult<()> {
+        self.inner.shutdown(Shutdown::Both)?;
         Ok(())
     }
 }
