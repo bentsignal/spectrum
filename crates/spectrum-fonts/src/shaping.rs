@@ -1,245 +1,455 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ptr::null,
-    slice,
-    str::FromStr,
-};
+//! Deterministic, bounded shaping of one already-resolved font run.
+//!
+//! This module intentionally does not resolve bidi paragraphs, choose fallback
+//! fonts, break lines, or implement caret and IME behavior. Those layers must
+//! divide text into runs and select a font before calling this API.
 
-use hb_subset::{Blob, FontFace, Language, sys};
+mod native;
+mod subset;
 
-use crate::{SubsetError, SubsetRequest};
+use std::ops::Range;
 
+use crate::ShapeError;
+
+pub(crate) use subset::validate_parity;
+
+/// Maximum UTF-8 bytes accepted in one shaping run.
+pub const MAX_SHAPE_TEXT_BYTES: usize = 64 * 1024;
+/// Maximum Unicode scalar values accepted in one shaping run.
+pub const MAX_SHAPE_SCALARS: usize = 16_384;
+/// Maximum glyphs accepted from HarfBuzz for one shaping run.
+pub const MAX_SHAPE_GLYPHS: usize = 65_536;
+/// Maximum explicit OpenType feature overrides accepted per run.
+pub const MAX_SHAPE_FEATURES: usize = 32;
+
+/// Horizontal direction for one already-resolved shaping run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ShapedGlyph {
-    pub(crate) glyph_id: u16,
-    pub(crate) cluster: u32,
-    pub(crate) flags: u32,
-    pub(crate) x_advance: i32,
-    pub(crate) y_advance: i32,
-    pub(crate) x_offset: i32,
-    pub(crate) y_offset: i32,
+pub enum TextDirection {
+    /// Logical text is shaped from left to right.
+    LeftToRight,
+    /// Logical text is shaped from right to left.
+    RightToLeft,
 }
 
-pub(crate) fn validate_parity(
-    source: &[u8],
-    output: &[u8],
-    request: &SubsetRequest,
-    glyph_mapping: &BTreeMap<u16, u16>,
-) -> Result<BTreeSet<(u16, u16)>, SubsetError> {
-    let mut shaped_glyphs = BTreeSet::new();
-    for sample in request.shaping_samples() {
-        let source_shape = shape(source, sample)?;
-        let output_shape = shape(output, sample)?;
-        if source_shape.len() != output_shape.len() {
-            return Err(SubsetError::new(
-                "subset candidate changed shaped glyph count",
+/// A normalized four-letter ISO 15924 script tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Script([u8; 4]);
+
+impl Script {
+    /// Creates a script from a four-letter ISO 15924 tag such as `Latn`.
+    ///
+    /// ASCII case is normalized to title case before it reaches HarfBuzz.
+    pub fn from_iso15924(tag: [u8; 4]) -> Result<Self, ShapeError> {
+        if !tag.iter().all(u8::is_ascii_alphabetic) {
+            return Err(ShapeError::new(
+                "ISO 15924 script tag must contain four ASCII letters",
             ));
         }
-        for (source_glyph, output_glyph) in source_shape.iter().zip(&output_shape) {
-            let mapped_glyph = glyph_mapping.get(&source_glyph.glyph_id).ok_or_else(|| {
-                SubsetError::new(format!(
-                    "layout closure omitted shaped source glyph {}",
-                    source_glyph.glyph_id
-                ))
-            })?;
-            if *mapped_glyph != output_glyph.glyph_id
-                || source_glyph.cluster != output_glyph.cluster
-                || source_glyph.flags != output_glyph.flags
-                || source_glyph.x_advance != output_glyph.x_advance
-                || source_glyph.y_advance != output_glyph.y_advance
-                || source_glyph.x_offset != output_glyph.x_offset
-                || source_glyph.y_offset != output_glyph.y_offset
-            {
-                return Err(SubsetError::new(
-                    "subset candidate changed default-feature HarfBuzz shaping",
+        Ok(Self([
+            tag[0].to_ascii_uppercase(),
+            tag[1].to_ascii_lowercase(),
+            tag[2].to_ascii_lowercase(),
+            tag[3].to_ascii_lowercase(),
+        ]))
+    }
+
+    /// Returns the normalized ISO 15924 bytes.
+    pub fn iso15924(self) -> [u8; 4] {
+        self.0
+    }
+
+    pub(crate) fn from_resolved_tag(tag: [u8; 4]) -> Self {
+        Self(tag)
+    }
+}
+
+/// One bounded OpenType feature override.
+///
+/// HarfBuzz defaults remain active unless overridden. In particular, Spectrum
+/// does not disable default `kern`, `liga`, or `clig`. Ranged overrides use
+/// UTF-8 byte offsets, matching the clusters returned by [`ShapedGlyph`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenTypeFeature {
+    tag: [u8; 4],
+    value: u32,
+    byte_range: Option<(u32, u32)>,
+}
+
+impl OpenTypeFeature {
+    /// Applies a feature value to the complete run.
+    pub fn global(tag: [u8; 4], value: u32) -> Result<Self, ShapeError> {
+        validate_feature_tag(tag)?;
+        Ok(Self {
+            tag,
+            value,
+            byte_range: None,
+        })
+    }
+
+    /// Applies a feature value to a UTF-8 byte range.
+    ///
+    /// The range is validated against the request text at shape time, including
+    /// both UTF-8 character boundaries.
+    pub fn for_byte_range(
+        tag: [u8; 4],
+        value: u32,
+        byte_range: Range<usize>,
+    ) -> Result<Self, ShapeError> {
+        validate_feature_tag(tag)?;
+        if byte_range.start >= byte_range.end {
+            return Err(ShapeError::new(
+                "OpenType feature byte range must be non-empty",
+            ));
+        }
+        let start = u32::try_from(byte_range.start)
+            .map_err(|_| ShapeError::new("OpenType feature range start is out of range"))?;
+        let end = u32::try_from(byte_range.end)
+            .map_err(|_| ShapeError::new("OpenType feature range end is out of range"))?;
+        Ok(Self {
+            tag,
+            value,
+            byte_range: Some((start, end)),
+        })
+    }
+
+    /// Returns the four-byte OpenType feature tag.
+    pub fn tag(self) -> [u8; 4] {
+        self.tag
+    }
+
+    /// Returns the feature value passed to HarfBuzz.
+    pub fn value(self) -> u32 {
+        self.value
+    }
+
+    /// Returns the optional UTF-8 byte range.
+    pub fn byte_range(self) -> Option<Range<u32>> {
+        self.byte_range.map(|(start, end)| start..end)
+    }
+
+    pub(crate) fn raw_range(self) -> (u32, u32) {
+        self.byte_range.unwrap_or((0, u32::MAX))
+    }
+}
+
+fn validate_feature_tag(tag: [u8; 4]) -> Result<(), ShapeError> {
+    if !tag
+        .iter()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return Err(ShapeError::new(
+            "OpenType feature tag must contain four lowercase ASCII letters or digits",
+        ));
+    }
+    Ok(())
+}
+
+/// Inputs for shaping one text run with one already-selected font face.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShapeRequest<'text> {
+    text: &'text str,
+    direction: Option<TextDirection>,
+    script: Option<Script>,
+    language: Option<String>,
+    features: Vec<OpenTypeFeature>,
+}
+
+impl<'text> ShapeRequest<'text> {
+    /// Creates a request whose direction and script are guessed from the text.
+    ///
+    /// An omitted language deterministically resolves to `und`; process locale
+    /// is never consulted.
+    pub fn new(text: &'text str) -> Self {
+        Self {
+            text,
+            direction: None,
+            script: None,
+            language: None,
+            features: Vec::new(),
+        }
+    }
+
+    /// Sets an explicit run direction.
+    pub fn direction(mut self, direction: TextDirection) -> Self {
+        self.direction = Some(direction);
+        self
+    }
+
+    /// Sets an explicit ISO 15924 script.
+    pub fn script(mut self, script: Script) -> Self {
+        self.script = Some(script);
+        self
+    }
+
+    /// Sets an explicit BCP 47 language.
+    pub fn language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
+    }
+
+    /// Replaces the bounded OpenType feature override list.
+    pub fn features(mut self, features: impl IntoIterator<Item = OpenTypeFeature>) -> Self {
+        self.features = features.into_iter().collect();
+        self
+    }
+
+    /// Returns the UTF-8 source text.
+    pub fn text(&self) -> &'text str {
+        self.text
+    }
+
+    /// Returns the explicit direction, or `None` when it will be guessed.
+    pub fn requested_direction(&self) -> Option<TextDirection> {
+        self.direction
+    }
+
+    /// Returns the explicit script, or `None` when it will be guessed.
+    pub fn requested_script(&self) -> Option<Script> {
+        self.script
+    }
+
+    /// Returns the explicit language, or `None` when it resolves to `und`.
+    pub fn requested_language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+
+    /// Returns the ordered feature overrides.
+    pub fn feature_overrides(&self) -> &[OpenTypeFeature] {
+        &self.features
+    }
+}
+
+/// Flags HarfBuzz attached to one shaped glyph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GlyphFlags(u8);
+
+impl GlyphFlags {
+    const UNSAFE_TO_BREAK: u8 = 1;
+    const UNSAFE_TO_CONCAT: u8 = 2;
+    const SAFE_TO_INSERT_TATWEEL: u8 = 4;
+
+    /// Returns the HarfBuzz-defined flag bits.
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Whether breaking before this glyph can change shaping on either side.
+    pub fn unsafe_to_break(self) -> bool {
+        self.0 & Self::UNSAFE_TO_BREAK != 0
+    }
+
+    /// Whether concatenating text before this glyph can change shaping.
+    pub fn unsafe_to_concat(self) -> bool {
+        self.0 & Self::UNSAFE_TO_CONCAT != 0
+    }
+
+    /// Whether inserting an Arabic tatweel before this glyph is safe.
+    pub fn safe_to_insert_tatweel(self) -> bool {
+        self.0 & Self::SAFE_TO_INSERT_TATWEEL != 0
+    }
+
+    pub(crate) fn from_bits(bits: u32) -> Result<Self, ShapeError> {
+        let bits = u8::try_from(bits)
+            .map_err(|_| ShapeError::new("HarfBuzz returned out-of-range glyph flags"))?;
+        if bits & !(Self::UNSAFE_TO_BREAK | Self::UNSAFE_TO_CONCAT | Self::SAFE_TO_INSERT_TATWEEL)
+            != 0
+        {
+            return Err(ShapeError::new(
+                "HarfBuzz returned unknown shaped-glyph flags",
+            ));
+        }
+        Ok(Self(bits))
+    }
+}
+
+/// One positioned glyph in a shaped run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShapedGlyph {
+    /// Glyph ID within the selected face.
+    pub glyph_id: u16,
+    /// UTF-8 byte offset of the source cluster.
+    pub cluster: u32,
+    /// HarfBuzz safety flags.
+    pub flags: GlyphFlags,
+    /// Horizontal advance in font units.
+    pub x_advance: i32,
+    /// Vertical advance in font units.
+    pub y_advance: i32,
+    /// Horizontal placement offset in font units.
+    pub x_offset: i32,
+    /// Vertical placement offset in font units.
+    pub y_offset: i32,
+}
+
+/// Resolved properties and positioned glyphs for one font run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShapedRun {
+    glyphs: Vec<ShapedGlyph>,
+    direction: TextDirection,
+    script: Option<Script>,
+    language: String,
+    direction_was_guessed: bool,
+    script_was_guessed: bool,
+    language_was_defaulted: bool,
+    units_per_em: u16,
+    face_index: u32,
+    source_text_bytes: u32,
+}
+
+impl ShapedRun {
+    /// Returns positioned glyphs in HarfBuzz output order.
+    pub fn glyphs(&self) -> &[ShapedGlyph] {
+        &self.glyphs
+    }
+
+    /// Returns the resolved shaping direction.
+    pub fn direction(&self) -> TextDirection {
+        self.direction
+    }
+
+    /// Returns the resolved script, or `None` if no strong script was found.
+    pub fn script(&self) -> Option<Script> {
+        self.script
+    }
+
+    /// Returns the resolved BCP 47 language.
+    pub fn language(&self) -> &str {
+        &self.language
+    }
+
+    /// Whether HarfBuzz guessed the direction from the run.
+    pub fn direction_was_guessed(&self) -> bool {
+        self.direction_was_guessed
+    }
+
+    /// Whether HarfBuzz guessed the script from the run.
+    pub fn script_was_guessed(&self) -> bool {
+        self.script_was_guessed
+    }
+
+    /// Whether an omitted language was deterministically defaulted to `und`.
+    pub fn language_was_defaulted(&self) -> bool {
+        self.language_was_defaulted
+    }
+
+    /// Returns the face units per em used for advances and offsets.
+    pub fn units_per_em(&self) -> u16 {
+        self.units_per_em
+    }
+
+    /// Returns the selected face index.
+    pub fn face_index(&self) -> u32 {
+        self.face_index
+    }
+
+    /// Returns the UTF-8 byte length of the source run.
+    pub fn source_text_bytes(&self) -> u32 {
+        self.source_text_bytes
+    }
+}
+
+/// Public contract for deterministic shaping of one already-resolved font run.
+pub trait TextShaper {
+    /// Shapes one bounded request or fails closed.
+    fn shape(&self, request: &ShapeRequest<'_>) -> Result<ShapedRun, ShapeError>;
+}
+
+/// Bundled HarfBuzz 8.2.2 shaper over immutable caller-owned font bytes.
+///
+/// The font is linked in process through the pinned bundled dependency. This
+/// type never invokes a system executable or loads a runtime HarfBuzz dylib.
+pub struct HarfBuzzShaper<'font> {
+    native: native::NativeShaper<'font>,
+}
+
+impl<'font> HarfBuzzShaper<'font> {
+    /// Validates and opens one face from immutable font bytes.
+    pub fn new(bytes: &'font [u8], face_index: u32) -> Result<Self, ShapeError> {
+        native::NativeShaper::new(bytes, face_index).map(|native| Self { native })
+    }
+
+    /// Shapes one bounded request.
+    pub fn shape(&self, request: &ShapeRequest<'_>) -> Result<ShapedRun, ShapeError> {
+        <Self as TextShaper>::shape(self, request)
+    }
+
+    /// Returns the selected face index.
+    pub fn face_index(&self) -> u32 {
+        self.native.face_index()
+    }
+
+    /// Returns the selected face units per em.
+    pub fn units_per_em(&self) -> u16 {
+        self.native.units_per_em()
+    }
+}
+
+impl TextShaper for HarfBuzzShaper<'_> {
+    fn shape(&self, request: &ShapeRequest<'_>) -> Result<ShapedRun, ShapeError> {
+        self.native.shape(request)
+    }
+}
+
+fn validate_language(language: &str) -> Result<(), ShapeError> {
+    if language.is_empty() || language.len() > 63 {
+        return Err(ShapeError::new(
+            "BCP 47 language must contain between 1 and 63 bytes",
+        ));
+    }
+    if !language.is_ascii()
+        || language.starts_with('-')
+        || language.ends_with('-')
+        || language.contains("--")
+    {
+        return Err(ShapeError::new(
+            "BCP 47 language must contain non-empty ASCII subtags",
+        ));
+    }
+    for subtag in language.split('-') {
+        if subtag.len() > 8 || !subtag.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+            return Err(ShapeError::new(
+                "BCP 47 language contains an invalid subtag",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_request(request: &ShapeRequest<'_>) -> Result<(), ShapeError> {
+    let text = request.text();
+    if text.is_empty() {
+        return Err(ShapeError::new("shaping text cannot be empty"));
+    }
+    if text.len() > MAX_SHAPE_TEXT_BYTES {
+        return Err(ShapeError::new(
+            "shaping text byte length exceeds resource limit",
+        ));
+    }
+    if text.chars().count() > MAX_SHAPE_SCALARS {
+        return Err(ShapeError::new(
+            "shaping scalar count exceeds resource limit",
+        ));
+    }
+    if request.feature_overrides().len() > MAX_SHAPE_FEATURES {
+        return Err(ShapeError::new(
+            "OpenType feature count exceeds resource limit",
+        ));
+    }
+    if let Some(language) = request.requested_language() {
+        validate_language(language)?;
+    }
+    for feature in request.feature_overrides() {
+        if let Some(range) = feature.byte_range() {
+            let start = usize::try_from(range.start)
+                .map_err(|_| ShapeError::new("OpenType feature range is out of range"))?;
+            let end = usize::try_from(range.end)
+                .map_err(|_| ShapeError::new("OpenType feature range is out of range"))?;
+            if end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+                return Err(ShapeError::new(
+                    "OpenType feature range must use valid UTF-8 byte boundaries",
                 ));
             }
-            shaped_glyphs.insert((source_glyph.glyph_id, output_glyph.glyph_id));
-            if shaped_glyphs.len() > crate::limits::MAX_SHAPED_CLOSURE_GLYPHS {
-                return Err(SubsetError::new(
-                    "shaped closure glyph count exceeds resource limit",
-                ));
-            }
         }
     }
-    Ok(shaped_glyphs)
-}
-
-pub(crate) fn shape(bytes: &[u8], codepoints: &[u32]) -> Result<Vec<ShapedGlyph>, SubsetError> {
-    if codepoints.is_empty() {
-        return Err(SubsetError::new("shaping sample cannot be empty"));
-    }
-    if codepoints.len() > crate::limits::MAX_SHAPING_SCALARS_PER_SAMPLE {
-        return Err(SubsetError::new(
-            "shaping sample length exceeds resource limit",
-        ));
-    }
-    let text_length = i32::try_from(codepoints.len())
-        .map_err(|_| SubsetError::new("shaping sample is too long"))?;
-    let blob = Blob::from_bytes(bytes)
-        .map_err(|_| SubsetError::new("could not allocate HarfBuzz shaping blob"))?;
-    let face = FontFace::new(blob)
-        .map_err(|_| SubsetError::new("could not create HarfBuzz shaping face"))?;
-    let font = HbFont::new(&face)?;
-    let buffer = HbBuffer::new()?;
-    let language = Language::from_str("und")
-        .map_err(|_| SubsetError::new("could not intern deterministic shaping language"))?;
-
-    unsafe {
-        sys::hb_buffer_set_cluster_level(
-            buffer.0,
-            sys::hb_buffer_cluster_level_t_HB_BUFFER_CLUSTER_LEVEL_CHARACTERS,
-        );
-        sys::hb_buffer_add_codepoints(buffer.0, codepoints.as_ptr(), text_length, 0, text_length);
-        if sys::hb_buffer_allocation_successful(buffer.0) == 0 {
-            return Err(SubsetError::new(
-                "HarfBuzz could not allocate shaping input",
-            ));
-        }
-        sys::hb_buffer_set_language(buffer.0, language.as_raw());
-        sys::hb_buffer_guess_segment_properties(buffer.0);
-        sys::hb_shape(font.0, buffer.0, null(), 0);
-        if sys::hb_buffer_allocation_successful(buffer.0) == 0 {
-            return Err(SubsetError::new(
-                "HarfBuzz could not allocate shaping output",
-            ));
-        }
-
-        let mut info_length = 0_u32;
-        let infos = sys::hb_buffer_get_glyph_infos(buffer.0, &mut info_length);
-        let mut position_length = 0_u32;
-        let positions = sys::hb_buffer_get_glyph_positions(buffer.0, &mut position_length);
-        let length = checked_output_length(info_length, position_length)?;
-        if length != 0 && (infos.is_null() || positions.is_null()) {
-            return Err(SubsetError::new(
-                "HarfBuzz returned inconsistent shaping arrays",
-            ));
-        }
-        if length == 0 {
-            return Ok(Vec::new());
-        }
-        let infos = slice::from_raw_parts(infos, length);
-        let positions = slice::from_raw_parts(positions, length);
-        infos
-            .iter()
-            .zip(positions)
-            .map(|(info, position)| {
-                Ok(ShapedGlyph {
-                    glyph_id: u16::try_from(info.codepoint).map_err(|_| {
-                        SubsetError::new("shaping produced an out-of-range glyph ID")
-                    })?,
-                    cluster: info.cluster,
-                    flags: sys::hb_glyph_info_get_glyph_flags(info) as u32,
-                    x_advance: position.x_advance,
-                    y_advance: position.y_advance,
-                    x_offset: position.x_offset,
-                    y_offset: position.y_offset,
-                })
-            })
-            .collect()
-    }
-}
-
-fn checked_output_length(info_length: u32, position_length: u32) -> Result<usize, SubsetError> {
-    if info_length != position_length {
-        return Err(SubsetError::new(
-            "HarfBuzz returned inconsistent shaping arrays",
-        ));
-    }
-    let length = usize::try_from(info_length)
-        .map_err(|_| SubsetError::new("shaping output length does not fit this platform"))?;
-    if length > crate::limits::MAX_SHAPED_OUTPUT_GLYPHS {
-        return Err(SubsetError::new(
-            "HarfBuzz shaping output exceeds resource limit",
-        ));
-    }
-    Ok(length)
-}
-
-struct HbFont(*mut sys::hb_font_t);
-
-impl HbFont {
-    fn new(face: &FontFace<'_>) -> Result<Self, SubsetError> {
-        let font = unsafe { sys::hb_font_create(face.as_raw()) };
-        if font.is_null() {
-            return Err(SubsetError::new("could not allocate HarfBuzz font"));
-        }
-        let font = Self(font);
-        unsafe {
-            sys::hb_ot_font_set_funcs(font.0);
-            let units_per_em = i32::try_from(sys::hb_face_get_upem(face.as_raw()))
-                .map_err(|_| SubsetError::new("font units-per-em is out of range"))?;
-            sys::hb_font_set_scale(font.0, units_per_em, units_per_em);
-        }
-        Ok(font)
-    }
-}
-
-impl Drop for HbFont {
-    fn drop(&mut self) {
-        unsafe { sys::hb_font_destroy(self.0) };
-    }
-}
-
-struct HbBuffer(*mut sys::hb_buffer_t);
-
-impl HbBuffer {
-    fn new() -> Result<Self, SubsetError> {
-        let buffer = unsafe { sys::hb_buffer_create() };
-        if buffer.is_null() {
-            return Err(SubsetError::new("could not allocate HarfBuzz buffer"));
-        }
-        Ok(Self(buffer))
-    }
-}
-
-impl Drop for HbBuffer {
-    fn drop(&mut self) {
-        unsafe { sys::hb_buffer_destroy(self.0) };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use ttf_parser::Face;
-
-    use super::*;
-
-    const NOTO_SANS: &[u8] = include_bytes!("../tests/fonts/noto-sans-rich-rejected.ttf");
-
-    #[test]
-    fn real_layout_fixture_exercises_gsub_ligature_and_gpos_kerning() {
-        let ligature = shape(NOTO_SANS, &[u32::from('f'), u32::from('f'), u32::from('i')])
-            .expect("Noto ffi shapes");
-        assert!(
-            ligature.len() < 3,
-            "fixture must substitute at least one ligature"
-        );
-
-        let positioned =
-            shape(NOTO_SANS, &[u32::from('A'), u32::from('V')]).expect("Noto AV shapes");
-        let face = Face::parse(NOTO_SANS, 0).expect("Noto fixture parses");
-        let nominal_a = face
-            .glyph_hor_advance(face.glyph_index('A').expect("Noto maps A"))
-            .expect("Noto has horizontal metrics");
-        assert_eq!(positioned.len(), 2);
-        assert_ne!(
-            positioned[0].x_advance,
-            i32::from(nominal_a),
-            "fixture must apply GPOS kerning to AV"
-        );
-    }
-
-    #[test]
-    fn oversized_input_and_output_lengths_fail_before_native_slices() {
-        let oversized_input =
-            vec![u32::from('A'); crate::limits::MAX_SHAPING_SCALARS_PER_SAMPLE + 1];
-        let error = shape(b"not a font", &oversized_input).unwrap_err();
-        assert!(error.to_string().contains("resource limit"));
-
-        let oversized_output = u32::try_from(crate::limits::MAX_SHAPED_OUTPUT_GLYPHS + 1).unwrap();
-        let error = checked_output_length(oversized_output, oversized_output).unwrap_err();
-        assert!(error.to_string().contains("resource limit"));
-        assert!(checked_output_length(4, 3).is_err());
-    }
+    Ok(())
 }
