@@ -455,7 +455,7 @@ fn durable_raster_transfer_embeds_pixels_in_a_version_two_operation() {
 }
 
 #[test]
-fn durable_raster_pixel_mask_and_dissolve_transfer_uses_v7_v12_and_replays() {
+fn durable_raster_pixel_mask_and_dissolve_transfer_keeps_v7_v12_and_replays() {
     let directory = test_directory("durable-raster-pixel-mask");
     fs::create_dir_all(&directory).unwrap();
     let source_path = directory.join("source.png");

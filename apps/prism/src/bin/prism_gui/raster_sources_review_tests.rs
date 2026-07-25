@@ -1,7 +1,57 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{tests::*, *};
-use prism_core::Layer;
+use prism_core::{
+    BrushProgram, BrushSample, BrushStroke, BrushStyle, Layer, SampledSourceSnapshot, Transform,
+};
+use spectrum_imaging::Adjustments;
+
+fn exact_requirement_document(path: PathBuf, content_sha256: String) -> Document {
+    let snapshot = SampledSourceSnapshot {
+        version: prism_core::SAMPLED_SOURCE_VERSION,
+        source_layer_id: 1,
+        source_layer_name: "Hidden source".into(),
+        path: path.clone(),
+        content_hash: content_sha256,
+        width: 4,
+        height: 4,
+        anchor_local: [1.5, 1.5],
+        source_transform: Transform::default(),
+        adjustments: Adjustments::default(),
+        pixel_mask: None,
+        vector_mask: None,
+    };
+    let marker = BrushStroke::new_clone_stamp(
+        BrushStyle::default(),
+        [BrushSample {
+            x: 1.5,
+            y: 1.5,
+            pressure: 1.0,
+        }],
+        snapshot.clone(),
+    )
+    .unwrap();
+    let source_id = serde_json::to_value(&marker).unwrap()["source"]["source_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut document = raster_document(path);
+    document.layers[0].id = 1;
+    document.layers[0].visible = false;
+    document.layers.push(Layer {
+        id: 2,
+        name: "Clone".into(),
+        kind: LayerKind::Paint {
+            program: BrushProgram::new(4, 4).unwrap().append(marker).unwrap(),
+        },
+        ..Layer::default()
+    });
+    document.next_id = 3;
+    let mut encoded = serde_json::to_value(document).unwrap();
+    encoded["clone_source"] = serde_json::json!(source_id);
+    encoded["sampled_sources"] = serde_json::json!({(source_id): snapshot});
+    serde_json::from_value(encoded).unwrap()
+}
 
 #[test]
 fn cache_root_includes_format_compatibility_and_app_version() {
@@ -192,6 +242,131 @@ fn atomic_active_replacement_preserves_overlapping_ready_provider() {
 }
 
 #[test]
+fn same_path_exact_identity_change_evicts_rejects_and_reprepares() {
+    let path = PathBuf::from("same-path.png");
+    let digest_a = "aa".repeat(32);
+    let digest_b = "bb".repeat(32);
+    let document_a = exact_requirement_document(path.clone(), digest_a.clone());
+    let document_b = exact_requirement_document(path.clone(), digest_b.clone());
+    let (mut coordinator, requests) = detached_coordinator();
+
+    coordinator.set_tab_document(1, &document_a);
+    coordinator.set_active_tab(1);
+    let request_a = requests.try_recv().unwrap();
+    let generation_a = request_a.generation;
+    coordinator.apply_result(
+        PreparationResult {
+            path: request_a.path,
+            generation: request_a.generation,
+            attempts: 0,
+            outcome: PreparationOutcome::Ready(resolved_authenticated("source-a", &digest_a)),
+        },
+        Instant::now(),
+    );
+    assert_eq!(
+        coordinator
+            .snapshot
+            .resolve(&path)
+            .unwrap()
+            .content_sha256(),
+        Some(digest_a.as_str())
+    );
+
+    coordinator.set_tab_document(1, &document_b);
+    let request_b = requests.try_recv().unwrap();
+    assert_ne!(generation_a, request_b.generation);
+    assert!(coordinator.snapshot.resolve(&path).is_none());
+
+    coordinator.apply_result(
+        PreparationResult {
+            path: request_b.path,
+            generation: request_b.generation,
+            attempts: 0,
+            outcome: PreparationOutcome::Ready(resolved_authenticated("stale-a", &digest_a)),
+        },
+        Instant::now(),
+    );
+    assert!(coordinator.snapshot.resolve(&path).is_none());
+    assert!(matches!(
+        &coordinator.paths[&path].phase,
+        PathPhase::Failed { diagnostic }
+            if diagnostic.contains("exact required content identity")
+    ));
+
+    assert_eq!(coordinator.retry_terminal_failures(), 1);
+    let retry_b = requests.try_recv().unwrap();
+    coordinator.apply_result(
+        PreparationResult {
+            path: retry_b.path,
+            generation: retry_b.generation,
+            attempts: retry_b.attempts,
+            outcome: PreparationOutcome::Ready(resolved_authenticated("source-b", &digest_b)),
+        },
+        Instant::now(),
+    );
+    let exact_b = coordinator.snapshot.resolve(&path).unwrap();
+    assert_eq!(exact_b.content_sha256(), Some(digest_b.as_str()));
+    assert_eq!(exact_b.source_epoch().as_str(), "source-b");
+
+    let full =
+        prism_core::render_document_with_sources(&document_b, None, coordinator.snapshot.as_ref())
+            .unwrap()
+            .to_rgba8();
+    let region = prism_core::render_document_region_scaled_with_sources(
+        &document_b,
+        1.0,
+        prism_core::RenderRegion {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        },
+        coordinator.snapshot.as_ref(),
+    )
+    .unwrap()
+    .to_rgba8();
+    assert_eq!(region, full);
+    assert!(full.pixels().any(|pixel| pixel[3] > 0));
+    let reopened: Document =
+        serde_json::from_slice(&serde_json::to_vec(&document_b).unwrap()).unwrap();
+    assert_eq!(
+        prism_core::render_document_with_sources(&reopened, None, coordinator.snapshot.as_ref(),)
+            .unwrap()
+            .to_rgba8(),
+        full
+    );
+    let export = std::env::temp_dir().join(format!(
+        "prism-same-path-clone-{}-{}.png",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    prism_core::export_document_with_sources(
+        &document_b,
+        &export,
+        92,
+        coordinator.snapshot.as_ref(),
+    )
+    .unwrap();
+    assert_eq!(image::open(&export).unwrap().to_rgba8(), full);
+    std::fs::remove_file(export).unwrap();
+}
+
+#[test]
+fn conflicting_exact_identities_for_one_path_fail_closed() {
+    let digest_a = "aa".repeat(32);
+    let digest_b = "bb".repeat(32);
+    let mut requirement = ContentRequirement::Any;
+    requirement.merge(Some(digest_a));
+    requirement.merge(Some(digest_b));
+    assert_eq!(requirement, ContentRequirement::ConflictingExactIdentities);
+    assert!(!requirement.accepts(&resolved_authenticated("either-source", &"aa".repeat(32))));
+    assert!(requirement.conflict_diagnostic().is_some());
+}
+
+#[test]
 fn stale_saturated_worker_queue_wakes_poll_to_dispatch_new_active_work() {
     let stale_path = PathBuf::from("stale.jpg");
     let active_path = PathBuf::from("active.jpg");
@@ -219,11 +394,15 @@ fn stale_saturated_worker_queue_wakes_poll_to_dispatch_new_active_work() {
     let mut coordinator = RasterSourceCoordinator {
         request_sender: Some(request_sender.clone()),
         result_receiver,
-        tab_paths: HashMap::from([(1, HashSet::from([active_path.clone()]))]),
+        tab_requirements: HashMap::from([(
+            1,
+            HashMap::from([(active_path.clone(), ContentRequirement::Any)]),
+        )]),
         paths: HashMap::from([(
             active_path.clone(),
             PathState {
                 generation: 2,
+                requirement: ContentRequirement::Any,
                 phase: PathPhase::Needed,
             },
         )]),

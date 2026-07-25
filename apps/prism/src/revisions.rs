@@ -27,10 +27,12 @@ mod durable_cache;
 #[path = "durable_edit.rs"]
 mod durable_edit;
 pub(crate) use durable_edit::PreparedEdit;
+#[path = "durable_sampled_sources.rs"]
+pub(crate) mod durable_sampled_sources;
 #[path = "revision_encoding.rs"]
 mod revision_encoding;
-pub(crate) use revision_encoding::SHAPED_TEXT_SNAPSHOT_VERSION;
 use revision_encoding::*;
+pub(crate) use revision_encoding::{CLONE_STAMP_SNAPSHOT_VERSION, SHAPED_TEXT_SNAPSHOT_VERSION};
 #[path = "revision_snapshot.rs"]
 mod revision_snapshot;
 use revision_snapshot::*;
@@ -552,6 +554,12 @@ impl DurableProject {
                 font.original_path = None;
             }
         }
+        durable_sampled_sources::map_document_sampled_sources(document, |source| {
+            if let Some(reference) = AssetReference::parse(source.asset_path()) {
+                source.set_asset_path(self.materialize(reference)?);
+            }
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -599,6 +607,12 @@ impl DurableProject {
                 }
                 _ => {}
             }
+            durable_sampled_sources::map_command_sampled_sources(command, |source| {
+                if let Some(reference) = AssetReference::parse(source.asset_path()) {
+                    source.set_asset_path(self.materialize(reference)?);
+                }
+                Ok(())
+            })?;
         }
         Ok(materialized)
     }
@@ -658,6 +672,9 @@ fn snapshot_backed_magic_wand_operations(commands: &[Command]) -> (Vec<Command>,
 }
 
 pub(crate) fn command_embeds_asset(command: &Command) -> bool {
+    if durable_sampled_sources::command_has_sampled_sources(command) {
+        return true;
+    }
     match command {
         Command::AddRaster { .. } | Command::ImportFont { .. } | Command::RasterizeShape { .. } => {
             true
@@ -733,6 +750,8 @@ impl PreparedOperations {
     fn new(commands: &[Command]) -> Result<Self> {
         let mut portable = commands.to_vec();
         let mut assets = Vec::new();
+        let mut sampled_assets: std::collections::BTreeMap<String, PathBuf> =
+            std::collections::BTreeMap::new();
         for command in &mut portable {
             match command {
                 Command::AddRaster { path, .. } => {
@@ -781,6 +800,25 @@ impl PreparedOperations {
                 }
                 _ => {}
             }
+            durable_sampled_sources::map_command_sampled_sources(command, |source| {
+                source.validate_asset()?;
+                let path = if let Some(path) = sampled_assets.get(&source.content_hash) {
+                    path.clone()
+                } else {
+                    let prepared = prepare_asset(source.asset_path())?;
+                    if prepared.asset.id.to_string() != source.content_hash {
+                        bail!(
+                            "Clone Stamp source asset identity does not match its captured SHA-256"
+                        );
+                    }
+                    let path = prepared.reference.path();
+                    assets.push(prepared.asset);
+                    sampled_assets.insert(source.content_hash.clone(), path.clone());
+                    path
+                };
+                source.set_asset_path(path);
+                Ok(())
+            })?;
         }
         downgrade_compatible_transfers(&mut portable);
         let version = operations_version(&portable);

@@ -79,6 +79,20 @@ impl BenchmarkProfile {
         }
     }
 
+    pub(crate) fn clone_stamp_viewport_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 500.0,
+            Self::HostedCi => 1_500.0,
+        }
+    }
+
+    pub(crate) fn clone_stamp_live_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 50.0,
+            Self::HostedCi => 150.0,
+        }
+    }
+
     pub(crate) fn optimized_copy_budget_ms(self) -> f64 {
         match self {
             Self::Interactive => 1_000.0,

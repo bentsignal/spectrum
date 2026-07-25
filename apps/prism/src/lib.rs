@@ -53,9 +53,10 @@ pub use font_subset_plan::{
 
 mod transfer;
 pub use transfer::{
-    DISSOLVE_LAYER_TRANSFER_VERSION, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer,
-    LayerTransferFont, PAINT_LAYER_TRANSFER_VERSION, PATH_LAYER_TRANSFER_VERSION,
-    RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION, SHAPED_TEXT_LAYER_TRANSFER_VERSION,
+    CLONE_STAMP_LAYER_TRANSFER_VERSION, DISSOLVE_LAYER_TRANSFER_VERSION, LAYER_TRANSFER_FORMAT,
+    LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont, PAINT_LAYER_TRANSFER_VERSION,
+    PATH_LAYER_TRANSFER_VERSION, RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION,
+    SHAPED_TEXT_LAYER_TRANSFER_VERSION,
 };
 
 mod validation;
@@ -83,14 +84,33 @@ pub use paths::{
     PathSourceBounds, VectorMask, apply_vector_mask_to_image, path_source_bounds,
 };
 
+mod document_export;
+mod export_sources;
 mod paint;
+mod paint_render;
 mod paint_selection;
+mod raster_requirements;
+mod sampled_source;
+mod sampled_source_portable;
+mod sampled_stroke;
+pub use document_export::{export_document, export_document_with_sources};
+pub use export_sources::{
+    PreparedRasterSources, default_raster_backing_cache_root, prepare_export_raster_sources,
+    raster_backing_cache_root,
+};
 pub use paint::{
     BRUSH_PROGRAM_VERSION, BrushClip, BrushMode, BrushProgram, BrushSample, BrushStroke,
     BrushStyle, MAX_BRUSH_CLIP_BYTES_PER_PROGRAM, MAX_BRUSH_DABS_PER_PROGRAM,
     MAX_BRUSH_DABS_PER_STROKE, MAX_BRUSH_SAMPLES_PER_DOCUMENT, MAX_BRUSH_SAMPLES_PER_STROKE,
     MAX_BRUSH_STROKES_PER_LAYER, MAX_PAINT_REGION_PIXELS,
 };
+pub use raster_requirements::RasterAssetRequirement;
+pub use sampled_source::{
+    MAX_SAMPLED_SOURCE_INLINE_MASK_BYTES, MAX_SAMPLED_SOURCE_METADATA_BYTES,
+    MAX_SAMPLED_SOURCES_PER_DOCUMENT, SAMPLED_SOURCE_VERSION, SampledSourceId,
+    SampledSourceMapping, SampledSourceRegistry, SampledSourceSnapshot,
+};
+pub use sampled_stroke::SampledBrushSource;
 
 mod lasso;
 pub use lasso::{
@@ -99,8 +119,8 @@ pub use lasso::{
     combine_selections, lasso_selection,
 };
 
-pub const PRISM_VERSION: u32 = 10;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 13;
+pub const PRISM_VERSION: u32 = 11;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 14;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
@@ -378,6 +398,10 @@ pub struct Document {
     pub font_assets: Vec<FontAsset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<Selection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_source: Option<SampledSourceId>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub sampled_sources: SampledSourceRegistry,
     /// Bottom-to-top paint order.
     pub layers: Vec<Layer>,
     pub selected: Option<u64>,
@@ -404,6 +428,8 @@ impl Document {
             snapping_enabled: true,
             font_assets: Vec::new(),
             selection: None,
+            clone_source: None,
+            sampled_sources: Default::default(),
             layers: Vec::new(),
             selected: None,
             next_id: 1,
@@ -451,6 +477,91 @@ impl Document {
             return None;
         };
         typography.font_id.and_then(|id| self.font_asset(id).ok())
+    }
+
+    pub fn sampled_source(&self, id: &SampledSourceId) -> Result<&SampledSourceSnapshot> {
+        self.sampled_sources
+            .get(id)
+            .with_context(|| format!("sampled source {} is not in this document", id.as_str()))
+    }
+
+    pub(crate) fn intern_sampled_source(
+        &mut self,
+        source: SampledSourceSnapshot,
+    ) -> Result<SampledSourceId> {
+        let id = source.stable_id()?;
+        if let Some(existing) = self.sampled_sources.get(&id) {
+            if existing != &source {
+                bail!("sampled source identity collision");
+            }
+            return Ok(id);
+        }
+        if self.sampled_sources.len() >= MAX_SAMPLED_SOURCES_PER_DOCUMENT {
+            bail!("document exceeds the sampled-source registry limit");
+        }
+        self.sampled_sources.insert(id.clone(), source);
+        self.validate_sampled_source_registry()?;
+        Ok(id)
+    }
+
+    pub(crate) fn validate_sampled_source_registry(&self) -> Result<()> {
+        if self.sampled_sources.len() > MAX_SAMPLED_SOURCES_PER_DOCUMENT {
+            bail!("document exceeds the sampled-source registry limit");
+        }
+        let inline_mask_bytes =
+            self.sampled_sources
+                .values()
+                .try_fold(0usize, |total, source| {
+                    total
+                        .checked_add(
+                            source
+                                .pixel_mask
+                                .as_ref()
+                                .map_or(0, |mask| mask.alpha.len()),
+                        )
+                        .context("sampled-source inline mask byte count overflows")
+                })?;
+        if inline_mask_bytes > MAX_SAMPLED_SOURCE_INLINE_MASK_BYTES {
+            bail!("document exceeds the 16 MiB sampled-source inline-mask limit");
+        }
+        let metadata_bytes =
+            self.sampled_sources
+                .iter()
+                .try_fold(0usize, |total, (id, source)| {
+                    source.validate_metadata()?;
+                    if source.stable_id()? != *id {
+                        bail!("sampled-source registry key does not match its stable identity");
+                    }
+                    total
+                        .checked_add(serde_json::to_vec(source)?.len())
+                        .context("sampled-source metadata byte count overflows")
+                })?;
+        if metadata_bytes > MAX_SAMPLED_SOURCE_METADATA_BYTES {
+            bail!("document exceeds the 8 MiB sampled-source metadata limit");
+        }
+        if let Some(active) = &self.clone_source
+            && !self.sampled_sources.contains_key(active)
+        {
+            bail!("active Clone Stamp source is missing from the sampled-source registry");
+        }
+        for layer in &self.layers {
+            if let LayerKind::Paint { program } = &layer.kind {
+                let mut missing = None;
+                program.for_each_sampled_source_id(|id| {
+                    if missing.is_none() && !self.sampled_sources.contains_key(id) {
+                        missing = Some(id.clone());
+                    }
+                });
+                if let Some(id) = missing {
+                    bail!(
+                        "Paint layer {} references missing sampled source {}",
+                        layer.id,
+                        id.as_str()
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn validate_inline_mask_budget(&self) -> Result<()> {
@@ -538,6 +649,19 @@ impl Document {
             );
         }
         let source_version = self.version;
+        if self.layers.iter().any(|layer| {
+            matches!(&layer.kind, LayerKind::Paint { program } if program.contains_current_clone_marker())
+        }) {
+            bail!("Prism snapshots cannot contain the authoring-only CurrentClone marker");
+        }
+        let contains_clone_schema = self.clone_source.is_some()
+            || !self.sampled_sources.is_empty()
+            || self.layers.iter().any(|layer| {
+                matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
+            });
+        if source_version < revisions::CLONE_STAMP_SNAPSHOT_VERSION && contains_clone_schema {
+            bail!("Prism snapshot version {source_version} cannot contain Clone Stamp state");
+        }
         self.version = PRISM_VERSION;
         self.width = self.width.clamp(1, MAX_CANVAS_DIMENSION);
         self.height = self.height.clamp(1, MAX_CANVAS_DIMENSION);
@@ -656,6 +780,7 @@ impl Document {
         if paint_dabs > MAX_BRUSH_DABS_PER_PROGRAM {
             bail!("document exceeds the aggregate Paint dab limit");
         }
+        self.validate_sampled_source_registry()?;
         self.selection = self
             .selection
             .take()
@@ -714,10 +839,11 @@ pub use raster_region::{RasterRegionInspection, inspect_raster_region_source};
 pub use raster_sources::{RasterSourceEpoch, RasterSourceResolver, ResolvedRasterSource};
 pub use render::{
     RegionRenderStats, RenderRegion, document_supports_region_native_zoom,
-    document_supports_region_native_zoom_with_sources, export_document, load_document,
-    render_document, render_document_region_scaled, render_document_region_scaled_with_sources,
+    document_supports_region_native_zoom_with_sources, load_document, render_document,
+    render_document_region_scaled, render_document_region_scaled_with_sources,
     render_document_region_scaled_with_sources_and_stats, render_document_region_scaled_with_stats,
-    render_document_scaled, render_document_thumbnail, render_layer_base, render_layer_base_scaled,
+    render_document_scaled, render_document_scaled_with_sources, render_document_thumbnail,
+    render_document_with_sources, render_layer_base, render_layer_base_scaled,
     render_layer_base_scaled_with_font, render_layer_preview, render_layer_preview_from_base,
     render_layer_preview_scaled, render_layer_preview_scaled_with_font, render_solid_color,
     save_document,
@@ -740,7 +866,11 @@ pub fn preview_paint_command(document: &Document, command: Command) -> Result<Do
         bail!("Paint preview accepts only completed Paint gesture commands");
     }
     let mut preview = document.clone();
-    apply_command(&mut preview, command)?;
+    // A live draft starts from a workspace document whose sampled-source registry was already
+    // authenticated at capture/load. Keep the preview independent of source byte size; every
+    // render read still authenticates the provider or file against the captured SHA-256. The
+    // durable command path revalidates the asset once more when the gesture is committed.
+    command_apply::apply_command_trusted_embedded(&mut preview, command)?;
     Ok(preview)
 }
 
@@ -827,6 +957,9 @@ mod pixel_mask_tests;
 #[path = "path_tests.rs"]
 mod path_tests;
 
+#[cfg(test)]
+#[path = "clone_stamp_tests.rs"]
+mod clone_stamp_tests;
 #[cfg(test)]
 #[path = "paint_limits_tests.rs"]
 mod paint_limits_tests;

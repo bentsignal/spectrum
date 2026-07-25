@@ -1,13 +1,18 @@
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use image::{Rgba, RgbaImage};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
-use crate::PixelMask;
+use crate::{
+    SampledBrushSource, SampledSourceId, SampledSourceMapping, SampledSourceSnapshot, Transform,
+};
 
-pub const BRUSH_PROGRAM_VERSION: u32 = 1;
+#[cfg(test)]
+pub(crate) use crate::paint_render::render_paint_region;
+
+pub const BRUSH_PROGRAM_VERSION: u32 = 2;
+const LEGACY_BRUSH_PROGRAM_VERSION: u32 = 1;
 pub const MAX_BRUSH_SAMPLES_PER_STROKE: usize = 4_096;
 pub const MAX_BRUSH_STROKES_PER_LAYER: usize = 1_024;
 pub const MAX_BRUSH_SAMPLES_PER_DOCUMENT: usize = 131_072;
@@ -21,6 +26,7 @@ pub const MAX_BRUSH_CLIP_BYTES_PER_PROGRAM: usize = 16 * 1024 * 1024;
 pub enum BrushMode {
     Paint,
     Erase,
+    CloneStamp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -157,7 +163,7 @@ impl BrushClip {
         }
     }
 
-    fn alpha_at(&self, x: u32, y: u32) -> u8 {
+    pub(crate) fn alpha_at(&self, x: u32, y: u32) -> u8 {
         match self {
             Self::Rectangle {
                 x: left,
@@ -184,6 +190,7 @@ pub struct BrushStroke {
     pub style: BrushStyle,
     pub samples: Arc<[BrushSample]>,
     pub clip: Option<BrushClip>,
+    pub source: Option<SampledBrushSource>,
     content_hash: [u8; 32],
 }
 
@@ -194,20 +201,63 @@ struct BrushStrokeWire {
     samples: Arc<[BrushSample]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     clip: Option<BrushClip>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<SampledBrushSource>,
 }
 
 impl BrushStroke {
     pub fn new(style: BrushStyle, samples: impl Into<Arc<[BrushSample]>>) -> Result<Self> {
-        Self::from_parts(style, samples.into(), None, None)
+        Self::from_parts(style, samples.into(), None, None, None, true)
+    }
+
+    pub fn new_clone_stamp(
+        mut style: BrushStyle,
+        samples: impl Into<Arc<[BrushSample]>>,
+        source: SampledSourceSnapshot,
+    ) -> Result<Self> {
+        style.mode = BrushMode::CloneStamp;
+        let samples = samples.into();
+        let first = samples
+            .first()
+            .context("a Clone Stamp stroke requires a destination anchor")?;
+        let mapping = SampledSourceMapping::capture(
+            &source,
+            [first.x, first.y],
+            (source.width, source.height),
+            Transform::default(),
+        )?;
+        let source_id = source.stable_id()?;
+        Self::from_parts(
+            style,
+            samples,
+            None,
+            Some(SampledBrushSource::resolved_clone(source_id, mapping)),
+            None,
+            false,
+        )
     }
 
     fn from_parts(
         style: BrushStyle,
         samples: Arc<[BrushSample]>,
         clip: Option<BrushClip>,
+        source: Option<SampledBrushSource>,
         viewport: Option<(u32, u32)>,
+        allow_current_source: bool,
     ) -> Result<Self> {
         let style = style.validate()?;
+        match (style.mode, &source) {
+            (BrushMode::CloneStamp, Some(SampledBrushSource::CurrentClone))
+                if allow_current_source => {}
+            (BrushMode::CloneStamp, Some(SampledBrushSource::CloneStamp { mapping, .. })) => {
+                mapping.validate()?;
+            }
+            (BrushMode::CloneStamp, _) => {
+                bail!("Clone Stamp strokes require one immutable sampled source")
+            }
+            (_, None) => {}
+            (_, Some(_)) => bail!("only Clone Stamp strokes can carry a sampled source"),
+        }
         if samples.is_empty() || samples.len() > MAX_BRUSH_SAMPLES_PER_STROKE {
             bail!("a brush stroke must contain 1 through {MAX_BRUSH_SAMPLES_PER_STROKE} samples");
         }
@@ -230,6 +280,7 @@ impl BrushStroke {
             style,
             samples,
             clip,
+            source,
             content_hash: [0; 32],
         };
         if stroke.estimated_dab_count()? > MAX_BRUSH_DABS_PER_STROKE {
@@ -248,15 +299,89 @@ impl BrushStroke {
             self.style,
             Arc::clone(&self.samples),
             self.clip.clone(),
+            self.source.clone(),
             Some((width, height)),
+            false,
         )
     }
 
     pub(crate) fn with_clip(&self, clip: Option<BrushClip>, viewport: (u32, u32)) -> Result<Self> {
-        Self::from_parts(self.style, Arc::clone(&self.samples), clip, Some(viewport))
+        Self::from_parts(
+            self.style,
+            Arc::clone(&self.samples),
+            clip,
+            self.source.clone(),
+            Some(viewport),
+            false,
+        )
     }
 
-    fn interval(&self) -> f32 {
+    pub(crate) fn resolve_current_clone(
+        &self,
+        current: Option<(&SampledSourceId, &SampledSourceSnapshot)>,
+        destination_dimensions: (u32, u32),
+        destination_transform: Transform,
+    ) -> Result<Self> {
+        if self.style.mode != BrushMode::CloneStamp {
+            return Ok(self.clone());
+        }
+        let source = match &self.source {
+            Some(SampledBrushSource::CurrentClone) => {
+                let (source_id, current) =
+                    current.context("set a Clone Stamp source before painting")?;
+                let first = self
+                    .samples
+                    .first()
+                    .context("a Clone Stamp stroke requires a destination anchor")?;
+                Some(SampledBrushSource::resolved_clone(
+                    source_id.clone(),
+                    SampledSourceMapping::capture(
+                        current,
+                        [first.x, first.y],
+                        destination_dimensions,
+                        destination_transform,
+                    )?,
+                ))
+            }
+            Some(source @ SampledBrushSource::CloneStamp { .. }) => Some(source.clone()),
+            None => bail!("Clone Stamp strokes require one immutable sampled source"),
+        };
+        Self::from_parts(
+            self.style,
+            Arc::clone(&self.samples),
+            self.clip.clone(),
+            source,
+            None,
+            false,
+        )
+    }
+
+    pub fn as_current_clone(&self) -> Result<Self> {
+        let mut style = self.style;
+        style.mode = BrushMode::CloneStamp;
+        Self::from_parts(
+            style,
+            Arc::clone(&self.samples),
+            self.clip.clone(),
+            Some(SampledBrushSource::CurrentClone),
+            None,
+            true,
+        )
+    }
+
+    pub(crate) fn sampled_source_id(&self) -> Option<&SampledSourceId> {
+        self.source.as_ref().and_then(SampledBrushSource::source_id)
+    }
+
+    pub fn sampled_source_identity(&self) -> Option<[u8; 32]> {
+        self.source.as_ref().map(SampledBrushSource::identity)
+    }
+
+    pub(crate) fn sampled_source_mapping(&self) -> Option<SampledSourceMapping> {
+        self.source.as_ref().and_then(SampledBrushSource::mapping)
+    }
+
+    pub(crate) fn interval(&self) -> f32 {
         (self.style.size * self.style.spacing).max(0.5)
     }
 
@@ -323,6 +448,13 @@ impl BrushStroke {
             }
             None => hash.update([0]),
         }
+        match &self.source {
+            Some(source) => {
+                hash.update([1]);
+                hash.update(source.identity());
+            }
+            None => hash.update([0]),
+        }
         hash.finalize().into()
     }
 }
@@ -333,6 +465,7 @@ impl Serialize for BrushStroke {
             style: self.style,
             samples: Arc::clone(&self.samples),
             clip: self.clip.clone(),
+            source: self.source.clone(),
         }
         .serialize(serializer)
     }
@@ -341,7 +474,7 @@ impl Serialize for BrushStroke {
 impl<'de> Deserialize<'de> for BrushStroke {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = BrushStrokeWire::deserialize(deserializer)?;
-        Self::from_parts(wire.style, wire.samples, wire.clip, None)
+        Self::from_parts(wire.style, wire.samples, wire.clip, wire.source, None, true)
             .map_err(serde::de::Error::custom)
     }
 }
@@ -377,7 +510,7 @@ struct BrushProgramWire {
 
 impl BrushProgram {
     pub fn new(width: u32, height: u32) -> Result<Self> {
-        Self::from_parts(BRUSH_PROGRAM_VERSION, width, height, Arc::from([]))
+        Self::from_parts(LEGACY_BRUSH_PROGRAM_VERSION, width, height, Arc::from([]))
     }
 
     fn from_parts(
@@ -386,7 +519,13 @@ impl BrushProgram {
         height: u32,
         strokes: Arc<[BrushStroke]>,
     ) -> Result<Self> {
-        if version != BRUSH_PROGRAM_VERSION {
+        if strokes
+            .iter()
+            .any(|stroke| matches!(stroke.source, Some(SampledBrushSource::CurrentClone)))
+        {
+            bail!("Paint programs cannot contain the authoring-only CurrentClone marker");
+        }
+        if !(LEGACY_BRUSH_PROGRAM_VERSION..=BRUSH_PROGRAM_VERSION).contains(&version) {
             bail!("unsupported BrushProgram version {version}");
         }
         if width == 0
@@ -404,6 +543,10 @@ impl BrushProgram {
         let mut validated = Vec::with_capacity(strokes.len());
         for stroke in strokes.iter() {
             let stroke = stroke.validated_for_viewport(width, height)?;
+            if version == LEGACY_BRUSH_PROGRAM_VERSION && stroke.style.mode == BrushMode::CloneStamp
+            {
+                bail!("BrushProgram version 1 cannot contain Clone Stamp strokes");
+            }
             sample_count = sample_count
                 .checked_add(stroke.samples.len())
                 .context("Paint sample count overflowed")?;
@@ -440,8 +583,13 @@ impl BrushProgram {
 
     pub fn append(&self, stroke: BrushStroke) -> Result<Self> {
         let mut strokes = self.strokes.to_vec();
+        let version = if stroke.style.mode == BrushMode::CloneStamp {
+            BRUSH_PROGRAM_VERSION
+        } else {
+            self.version
+        };
         strokes.push(stroke);
-        Self::from_parts(self.version, self.width, self.height, strokes.into())
+        Self::from_parts(version, self.width, self.height, strokes.into())
     }
 
     pub fn identity(&self) -> [u8; 32] {
@@ -481,6 +629,26 @@ impl BrushProgram {
         Ok(())
     }
 
+    pub(crate) fn contains_sampled_sources(&self) -> bool {
+        self.strokes
+            .iter()
+            .any(|stroke| stroke.sampled_source_id().is_some())
+    }
+
+    pub(crate) fn contains_current_clone_marker(&self) -> bool {
+        self.strokes
+            .iter()
+            .any(|stroke| matches!(stroke.source, Some(SampledBrushSource::CurrentClone)))
+    }
+
+    pub(crate) fn for_each_sampled_source_id(&self, mut visit: impl FnMut(&SampledSourceId)) {
+        for stroke in self.strokes.iter() {
+            if let Some(source_id) = stroke.sampled_source_id() {
+                visit(source_id);
+            }
+        }
+    }
+
     fn compute_identity(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(self.version.to_le_bytes());
@@ -511,231 +679,6 @@ impl<'de> Deserialize<'de> for BrushProgram {
         let wire = BrushProgramWire::deserialize(deserializer)?;
         Self::from_parts(wire.version, wire.width, wire.height, wire.strokes.into())
             .map_err(serde::de::Error::custom)
-    }
-}
-
-pub(crate) fn render_paint_region(
-    program: &BrushProgram,
-    pixel_mask: Option<&PixelMask>,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-) -> Result<RgbaImage> {
-    let pixels = u64::from(width) * u64::from(height);
-    if width == 0 || height == 0 || pixels > MAX_PAINT_REGION_PIXELS {
-        bail!("Paint render region exceeds the bounded 4096-square limit");
-    }
-    if x.checked_add(width)
-        .is_none_or(|right| right > program.width)
-        || y.checked_add(height)
-            .is_none_or(|bottom| bottom > program.height)
-    {
-        bail!("Paint render region exceeds the Paint viewport");
-    }
-    let mut output = RgbaImage::new(width, height);
-    for stroke in program.strokes.iter() {
-        let requested = (x, y, width, height);
-        let mut tiles = BTreeMap::<(u32, u32), Vec<u8>>::new();
-        for_each_dab(stroke, |dab| {
-            for_dab_tiles(dab, stroke.style.size, requested, |key, tile| {
-                let coverage = tiles
-                    .entry(key)
-                    .or_insert_with(|| vec![0; (tile.2 * tile.3) as usize]);
-                accumulate_dab(coverage, tile, stroke, dab);
-            });
-        });
-        for (key, coverage) in tiles {
-            let tile = paint_tile_region(key, requested);
-            for source_y in tile.1..tile.1 + tile.3 {
-                for source_x in tile.0..tile.0 + tile.2 {
-                    let index = ((source_y - tile.1) * tile.2 + (source_x - tile.0)) as usize;
-                    let mut alpha = u32::from(coverage[index]);
-                    if let Some(clip) = &stroke.clip {
-                        alpha = (alpha * u32::from(clip.alpha_at(source_x, source_y)) + 127) / 255;
-                    }
-                    alpha = (alpha * (stroke.style.opacity * 255.0).round() as u32 + 127) / 255;
-                    if stroke.style.mode == BrushMode::Paint {
-                        alpha = (alpha * u32::from(stroke.style.color[3]) + 127) / 255;
-                    }
-                    if alpha == 0 {
-                        continue;
-                    }
-                    let destination = output.get_pixel_mut(source_x - x, source_y - y);
-                    match stroke.style.mode {
-                        BrushMode::Paint => {
-                            source_over(destination, stroke.style.color, alpha as u8)
-                        }
-                        BrushMode::Erase => destination_out(destination, alpha as u8),
-                    }
-                }
-            }
-        }
-    }
-    if let Some(mask) = pixel_mask {
-        if (mask.width, mask.height) != (program.width, program.height) {
-            bail!("Paint pixel mask dimensions do not match its viewport");
-        }
-        for local_y in 0..height {
-            for local_x in 0..width {
-                let mask_alpha =
-                    u16::from(mask.alpha[((y + local_y) * mask.width + x + local_x) as usize]);
-                let pixel = output.get_pixel_mut(local_x, local_y);
-                pixel[3] = ((u16::from(pixel[3]) * mask_alpha + 127) / 255) as u8;
-                if pixel[3] == 0 {
-                    *pixel = Rgba([0; 4]);
-                }
-            }
-        }
-    }
-    Ok(output)
-}
-
-const PAINT_TILE_SIZE: u32 = 64;
-
-fn for_dab_tiles(
-    dab: Dab,
-    brush_size: f32,
-    requested: (u32, u32, u32, u32),
-    mut visit: impl FnMut((u32, u32), (u32, u32, u32, u32)),
-) {
-    let radius = brush_size * dab.pressure * 0.5 + 0.5;
-    if radius <= 0.5 {
-        return;
-    }
-    let left = (dab.x - radius).floor().max(requested.0 as f32) as u32;
-    let top = (dab.y - radius).floor().max(requested.1 as f32) as u32;
-    let right = (dab.x + radius)
-        .ceil()
-        .min((requested.0 + requested.2) as f32) as u32;
-    let bottom = (dab.y + radius)
-        .ceil()
-        .min((requested.1 + requested.3) as f32) as u32;
-    if right <= left || bottom <= top {
-        return;
-    }
-    for tile_y in top / PAINT_TILE_SIZE..=(bottom - 1) / PAINT_TILE_SIZE {
-        for tile_x in left / PAINT_TILE_SIZE..=(right - 1) / PAINT_TILE_SIZE {
-            let key = (tile_x, tile_y);
-            visit(key, paint_tile_region(key, requested));
-        }
-    }
-}
-
-fn paint_tile_region(key: (u32, u32), requested: (u32, u32, u32, u32)) -> (u32, u32, u32, u32) {
-    let left = (key.0 * PAINT_TILE_SIZE).max(requested.0);
-    let top = (key.1 * PAINT_TILE_SIZE).max(requested.1);
-    let right = ((key.0 + 1) * PAINT_TILE_SIZE).min(requested.0 + requested.2);
-    let bottom = ((key.1 + 1) * PAINT_TILE_SIZE).min(requested.1 + requested.3);
-    (left, top, right - left, bottom - top)
-}
-
-#[derive(Clone, Copy)]
-struct Dab {
-    x: f32,
-    y: f32,
-    pressure: f32,
-}
-
-fn for_each_dab(stroke: &BrushStroke, mut visit: impl FnMut(Dab)) {
-    let first = stroke.samples[0];
-    visit(Dab {
-        x: first.x,
-        y: first.y,
-        pressure: first.pressure,
-    });
-    let interval = stroke.interval();
-    let mut distance_to_next = interval;
-    let mut last_emitted = (first.x, first.y);
-    for pair in stroke.samples.windows(2) {
-        let start = pair[0];
-        let end = pair[1];
-        let dx = end.x - start.x;
-        let dy = end.y - start.y;
-        let length = dx.hypot(dy);
-        if length <= f32::EPSILON {
-            continue;
-        }
-        let mut traveled = distance_to_next;
-        while traveled <= length {
-            let t = traveled / length;
-            let dab = Dab {
-                x: start.x + dx * t,
-                y: start.y + dy * t,
-                pressure: start.pressure + (end.pressure - start.pressure) * t,
-            };
-            visit(dab);
-            last_emitted = (dab.x, dab.y);
-            traveled += interval;
-        }
-        distance_to_next = traveled - length;
-    }
-    let last = *stroke.samples.last().expect("validated stroke is nonempty");
-    if (last.x - last_emitted.0).hypot(last.y - last_emitted.1) > 0.0001 {
-        visit(Dab {
-            x: last.x,
-            y: last.y,
-            pressure: last.pressure,
-        });
-    }
-}
-
-fn accumulate_dab(
-    coverage: &mut [u8],
-    region: (u32, u32, u32, u32),
-    stroke: &BrushStroke,
-    dab: Dab,
-) {
-    let radius = stroke.style.size * dab.pressure * 0.5;
-    if radius <= 0.0 {
-        return;
-    }
-    let extent = radius + 0.5;
-    let left = (dab.x - extent).floor().max(region.0 as f32) as u32;
-    let top = (dab.y - extent).floor().max(region.1 as f32) as u32;
-    let right = (dab.x + extent).ceil().min((region.0 + region.2) as f32) as u32;
-    let bottom = (dab.y + extent).ceil().min((region.1 + region.3) as f32) as u32;
-    let hard_radius = radius * stroke.style.hardness;
-    for y in top..bottom {
-        for x in left..right {
-            let distance =
-                ((x as f32 + 0.5 - dab.x).powi(2) + (y as f32 + 0.5 - dab.y).powi(2)).sqrt();
-            let edge = radius + 0.5;
-            let radial = if distance <= hard_radius {
-                1.0
-            } else {
-                ((edge - distance) / (edge - hard_radius).max(0.0001)).clamp(0.0, 1.0)
-            };
-            let value = (radial * dab.pressure * 255.0).round() as u8;
-            let index = ((y - region.1) * region.2 + (x - region.0)) as usize;
-            coverage[index] = coverage[index].max(value);
-        }
-    }
-}
-
-fn source_over(destination: &mut Rgba<u8>, color: [u8; 4], source_alpha: u8) {
-    let source_alpha = u32::from(source_alpha);
-    let destination_alpha = u32::from(destination[3]);
-    let retained = (destination_alpha * (255 - source_alpha) + 127) / 255;
-    let output_alpha = source_alpha + retained;
-    if output_alpha == 0 {
-        *destination = Rgba([0; 4]);
-        return;
-    }
-    for channel in 0..3 {
-        destination[channel] = ((u32::from(color[channel]) * source_alpha
-            + u32::from(destination[channel]) * retained
-            + output_alpha / 2)
-            / output_alpha) as u8;
-    }
-    destination[3] = output_alpha.min(255) as u8;
-}
-
-fn destination_out(destination: &mut Rgba<u8>, source_alpha: u8) {
-    let alpha = (u32::from(destination[3]) * (255 - u32::from(source_alpha)) + 127) / 255;
-    destination[3] = alpha as u8;
-    if alpha == 0 {
-        *destination = Rgba([0; 4]);
     }
 }
 

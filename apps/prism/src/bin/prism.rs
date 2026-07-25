@@ -254,10 +254,12 @@ enum CliCommand {
     },
     Visibility {
         id: u64,
+        #[arg(action = clap::ArgAction::Set)]
         visible: bool,
     },
     Lock {
         id: u64,
+        #[arg(action = clap::ArgAction::Set)]
         locked: bool,
     },
     Opacity {

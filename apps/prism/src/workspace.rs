@@ -590,6 +590,19 @@ fn resolve_durable_commands(
 ) -> Result<Vec<Command>> {
     let mut candidate = document.clone();
     for command in &mut commands {
+        if let Command::SetCloneSource {
+            id,
+            document_x,
+            document_y,
+            resolved_source,
+        } = command
+            && resolved_source.is_none()
+        {
+            *resolved_source = Some(Box::new(crate::SampledSourceSnapshot::capture(
+                candidate.layer(*id)?,
+                [*document_x, *document_y],
+            )?));
+        }
         if let Command::MagicWandSelection {
             x,
             y,
@@ -610,8 +623,46 @@ fn resolve_durable_commands(
             )?));
         }
         let paint_selection = match command {
-            Command::AddBrushStroke { selection, .. }
-            | Command::AddPaintLayerWithStroke { selection, .. } => Some(selection),
+            Command::AddBrushStroke {
+                id,
+                stroke,
+                selection,
+            } => {
+                let layer = candidate.layer(*id)?;
+                let crate::LayerKind::Paint { program } = &layer.kind else {
+                    bail!("layer {id} is not a Paint layer");
+                };
+                *stroke = stroke.resolve_current_clone(
+                    candidate.clone_source.as_ref().and_then(|source_id| {
+                        candidate
+                            .sampled_sources
+                            .get(source_id)
+                            .map(|source| (source_id, source))
+                    }),
+                    (program.width, program.height),
+                    layer.transform,
+                )?;
+                Some(selection)
+            }
+            Command::AddPaintLayerWithStroke {
+                stroke,
+                selection,
+                width,
+                height,
+                ..
+            } => {
+                *stroke = stroke.resolve_current_clone(
+                    candidate.clone_source.as_ref().and_then(|source_id| {
+                        candidate
+                            .sampled_sources
+                            .get(source_id)
+                            .map(|source| (source_id, source))
+                    }),
+                    (*width, *height),
+                    crate::Transform::default(),
+                )?;
+                Some(selection)
+            }
             _ => None,
         };
         if let Some(selection) = paint_selection

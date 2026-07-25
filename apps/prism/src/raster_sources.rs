@@ -28,6 +28,7 @@ impl RasterSourceEpoch {
 #[derive(Clone)]
 pub struct ResolvedRasterSource {
     source_epoch: RasterSourceEpoch,
+    content_sha256: Option<Arc<str>>,
     source: Arc<dyn DynExactRegionSource>,
 }
 
@@ -45,8 +46,28 @@ impl ResolvedRasterSource {
         }
         Ok(Self {
             source_epoch,
+            content_sha256: None,
             source,
         })
+    }
+
+    /// Builds a provider authenticated to the exact encoded source bytes.
+    pub fn new_authenticated(
+        source_epoch: RasterSourceEpoch,
+        content_sha256: impl Into<Arc<str>>,
+        source: Arc<dyn DynExactRegionSource>,
+    ) -> Result<Self> {
+        let content_sha256 = content_sha256.into();
+        if content_sha256.len() != 64
+            || !content_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            bail!("raster source content identity must be lowercase SHA-256");
+        }
+        let mut resolved = Self::new(source_epoch, source)?;
+        resolved.content_sha256 = Some(content_sha256);
+        Ok(resolved)
     }
 
     pub fn source_epoch(&self) -> &RasterSourceEpoch {
@@ -56,6 +77,10 @@ impl ResolvedRasterSource {
     pub fn source(&self) -> &(dyn DynExactRegionSource + 'static) {
         self.source.as_ref()
     }
+
+    pub fn content_sha256(&self) -> Option<&str> {
+        self.content_sha256.as_deref()
+    }
 }
 
 impl fmt::Debug for ResolvedRasterSource {
@@ -63,6 +88,7 @@ impl fmt::Debug for ResolvedRasterSource {
         formatter
             .debug_struct("ResolvedRasterSource")
             .field("source_epoch", &self.source_epoch)
+            .field("content_sha256", &self.content_sha256)
             .field("info", self.source.info())
             .finish_non_exhaustive()
     }

@@ -38,7 +38,8 @@ pub(super) fn schema() -> Value {
             "document_lifecycle_operations_version": 10,
             "dissolve_operations_version": 11,
             "raster_pixel_mask_operations_version": 12,
-            "shaped_text_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "shaped_text_operations_version": 13,
+            "clone_stamp_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "document_lifecycle": {
@@ -83,8 +84,9 @@ pub(super) fn schema() -> Value {
         "layer_types": ["raster", "text", "rectangle", "ellipse", "path", "paint"],
         "paint": {
             "program_version": prism_core::BRUSH_PROGRAM_VERSION,
-            "cli": "paint add-layer --width <px> --height <px>; paint stroke <layer> <stroke.json> [--no-selection]",
-            "modes": ["paint", "erase"],
+            "cli": "paint add-layer --width <px> --height <px>; paint stroke <layer> <stroke.json> [--no-selection]; paint clone-source <raster-layer> <document-x> <document-y>; paint clone-stroke <paint-layer> <stroke.json> [--no-selection]",
+            "modes": ["paint", "erase", "clone_stamp"],
+            "clone_stamp": "clone-source inverse-maps one document point into a Raster layer and interns its exact embedded bytes, identity, dimensions, transform, non-geometric Develop adjustments, pixel mask, and vector mask once in the document registry; every clone-stroke references that stable source identity with a frozen destination-to-source affine mapping, samples transparent outside it, and clips only its destination against the current selection",
             "pressure_v1": "pressure multiplies both dab diameter and coverage; mouse input records 1.0",
             "rendering": "ordered source-over Paint and destination-out Erase strokes share one global-coordinate tiled CPU sampler across preview, region render, and export",
             "selection": "the current rectangular or soft-alpha selection is baked into Paint-local stroke clip coordinates when the stroke commits",
@@ -161,7 +163,7 @@ pub(super) fn schema() -> Value {
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
-            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed; v7 preserves raster pixel masks; v8 preserves HarfBuzzV1 text",
+            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed; v7 preserves raster pixel masks; v8 preserves HarfBuzzV1 text; v9 preserves immutable Clone Stamp sources",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
         "color": "RRGGBB or RRGGBBAA",
@@ -181,6 +183,8 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "add_path", "name": "Curve", "geometry": {"version": 1, "width": 320, "height": 240, "closed": false, "fill_rule": "even_odd", "anchors": [{"point": [20.0,200.0]}, {"point": [160.0,20.0], "handle_in": [-80.0,0.0], "handle_out": [80.0,0.0]}, {"point": [300.0,200.0]}]}, "color": [255,255,255,255], "x": 100.0, "y": 120.0}),
         json!({"command": "add_paint_layer_with_stroke", "name": "Paint", "width": 1920, "height": 1080, "stroke": {"style": {"mode": "paint", "color": [255,255,255,255], "size": 32.0, "hardness": 0.8, "opacity": 1.0, "spacing": 0.15}, "samples": [{"x": 120.0, "y": 80.0, "pressure": 1.0}]}, "selection": {"source": "current"}}),
         json!({"command": "add_brush_stroke", "id": 1, "stroke": {"style": {"mode": "erase", "color": [255,255,255,255], "size": 48.0, "hardness": 0.7, "opacity": 0.6, "spacing": 0.12}, "samples": [{"x": 160.0, "y": 120.0, "pressure": 1.0}, {"x": 240.0, "y": 160.0, "pressure": 0.75}]}, "selection": {"source": "none"}}),
+        json!({"command": "set_clone_source", "id": 2, "document_x": 240.0, "document_y": 160.0}),
+        json!({"command": "add_brush_stroke", "id": 1, "stroke": {"style": {"mode": "clone_stamp", "color": [0,0,0,0], "size": 48.0, "hardness": 0.7, "opacity": 0.6, "spacing": 0.12}, "samples": [{"x": 160.0, "y": 120.0, "pressure": 1.0}], "source": {"type": "current_clone"}}, "selection": {"source": "current"}}),
         json!({"command": "set_vector_mask", "id": 1, "mask": {"enabled": true, "invert": false, "path": {"version": 1, "width": 100, "height": 100, "closed": true, "fill_rule": "even_odd", "anchors": [{"point": [50.0,0.0]}, {"point": [100.0,100.0]}, {"point": [0.0,100.0]}]}}}),
         json!({"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}}),
         json!({"command": "set_shape_fill", "id": 1, "fill": {"type": "gradient", "kind": "linear", "angle": 30.0, "stops": [{"position": 0.0, "color": [93,216,199,255]}, {"position": 1.0, "color": [174,123,255,255]}]}}),
@@ -206,7 +210,7 @@ fn command_examples() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn schema_advertises_dissolve_v11_raster_masks_v12_and_shaped_text_v13() {
+    fn schema_advertises_shaped_text_v13_and_clone_v14() {
         let schema = super::schema();
         assert_eq!(
             schema["command_protocol"]["dissolve_operations_version"],
@@ -221,8 +225,12 @@ mod tests {
             13
         );
         assert_eq!(
+            schema["command_protocol"]["clone_stamp_operations_version"],
+            14
+        );
+        assert_eq!(
             schema["command_protocol"]["supported_operation_versions"],
-            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
         );
         assert_eq!(
             schema["typography"]["harfbuzz_v1_policy"]["engine"],

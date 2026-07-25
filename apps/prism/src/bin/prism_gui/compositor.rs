@@ -518,8 +518,20 @@ pub(super) fn document_requires_composite_preview(document: &Document) -> bool {
             && (layer.blend_mode != BlendMode::Normal
                 || layer.clip_to_below
                 || layer.style.drop_shadow.is_some()
-                || (layer.mask.enabled && layer.mask.invert))
+                || (layer.mask.enabled && layer.mask.invert)
+                || paint_layer_uses_clone_stamp(layer))
     })
+}
+
+pub(super) fn paint_layer_uses_clone_stamp(layer: &Layer) -> bool {
+    matches!(
+        &layer.kind,
+        LayerKind::Paint { program }
+            if program
+                .strokes
+                .iter()
+                .any(|stroke| stroke.style.mode == prism_core::BrushMode::CloneStamp)
+    )
 }
 
 pub(super) fn document_requires_immediate_direct_preview(document: &Document) -> bool {
@@ -935,3 +947,7 @@ mod dissolve_tests;
 #[cfg(test)]
 #[path = "compositor_raster_snapshot_tests.rs"]
 mod raster_snapshot_tests;
+
+#[cfg(test)]
+#[path = "compositor_clone_tests.rs"]
+mod clone_tests;

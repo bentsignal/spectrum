@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -21,7 +21,6 @@ use super::PrismApp;
 const PREPARATION_QUEUE_CAPACITY: usize = 16;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_GENERIC_FAILURE_ATTEMPTS: u32 = 3;
-const DERIVED_CACHE_COMPATIBILITY: &str = "derived-rgba8-schema-v2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RasterRenderMode {
@@ -62,6 +61,13 @@ impl RasterSourceSnapshot {
             if !self.providers.contains_key(path) {
                 return RasterRenderMode::FallbackCapped;
             }
+        }
+        if document
+            .raster_asset_paths()
+            .iter()
+            .any(|path| !self.providers.contains_key(path))
+        {
+            return RasterRenderMode::FallbackCapped;
         }
 
         if prism_core::document_supports_region_native_zoom_with_sources(document, self) {
@@ -119,8 +125,45 @@ enum PathPhase {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ContentRequirement {
+    Any,
+    Exact(String),
+    ConflictingExactIdentities,
+}
+
+impl ContentRequirement {
+    fn merge(&mut self, expected_sha256: Option<String>) {
+        let Some(expected) = expected_sha256 else {
+            return;
+        };
+        match self {
+            Self::Any => *self = Self::Exact(expected),
+            Self::Exact(current) if *current == expected => {}
+            Self::Exact(_) | Self::ConflictingExactIdentities => {
+                *self = Self::ConflictingExactIdentities;
+            }
+        }
+    }
+
+    fn accepts(&self, source: &ResolvedRasterSource) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Exact(expected) => source.content_sha256() == Some(expected.as_str()),
+            Self::ConflictingExactIdentities => false,
+        }
+    }
+
+    fn conflict_diagnostic(&self) -> Option<String> {
+        matches!(self, Self::ConflictingExactIdentities).then(|| {
+            "one raster path is required with multiple exact content identities".to_owned()
+        })
+    }
+}
+
 struct PathState {
     generation: u64,
+    requirement: ContentRequirement,
     phase: PathPhase,
 }
 
@@ -148,7 +191,7 @@ enum PreparationOutcome {
 pub(super) struct RasterSourceCoordinator {
     request_sender: Option<SyncSender<PreparationRequest>>,
     result_receiver: Receiver<PreparationResult>,
-    tab_paths: HashMap<u64, HashSet<PathBuf>>,
+    tab_requirements: HashMap<u64, HashMap<PathBuf, ContentRequirement>>,
     paths: HashMap<PathBuf, PathState>,
     active_tab: Option<u64>,
     active_generations: Arc<Mutex<HashMap<PathBuf, u64>>>,
@@ -222,7 +265,7 @@ impl RasterSourceCoordinator {
         Self {
             request_sender,
             result_receiver,
-            tab_paths: HashMap::new(),
+            tab_requirements: HashMap::new(),
             paths: HashMap::new(),
             active_tab: None,
             active_generations,
@@ -249,7 +292,9 @@ impl RasterSourceCoordinator {
             .paths
             .iter()
             .filter_map(|(path, state)| {
-                matches!(&state.phase, PathPhase::Failed { .. }).then_some(path.clone())
+                (matches!(&state.phase, PathPhase::Failed { .. })
+                    && state.requirement != ContentRequirement::ConflictingExactIdentities)
+                    .then_some(path.clone())
             })
             .collect();
         for path in &failed {
@@ -270,19 +315,11 @@ impl RasterSourceCoordinator {
     }
 
     pub(super) fn set_tab_document(&mut self, tab_id: u64, document: &Document) {
-        let desired: HashSet<_> = document
-            .layers
-            .iter()
-            .filter(|layer| layer.visible && layer.opacity > 0.0)
-            .filter_map(|layer| match &layer.kind {
-                LayerKind::Raster { path, .. } => Some(path.clone()),
-                _ => None,
-            })
-            .collect();
-        if self.tab_paths.get(&tab_id) == Some(&desired) {
+        let desired = document_content_requirements(document);
+        if self.tab_requirements.get(&tab_id) == Some(&desired) {
             return;
         }
-        self.tab_paths.insert(tab_id, desired);
+        self.tab_requirements.insert(tab_id, desired);
         if self.active_tab == Some(tab_id) {
             self.reconcile_active_paths();
         }
@@ -297,7 +334,7 @@ impl RasterSourceCoordinator {
     }
 
     pub(super) fn remove_tab(&mut self, tab_id: u64) {
-        self.tab_paths.remove(&tab_id);
+        self.tab_requirements.remove(&tab_id);
         if self.active_tab == Some(tab_id) {
             self.active_tab = None;
             self.reconcile_active_paths();
@@ -307,14 +344,16 @@ impl RasterSourceCoordinator {
     fn reconcile_active_paths(&mut self) {
         let desired = self
             .active_tab
-            .and_then(|tab_id| self.tab_paths.get(&tab_id))
+            .and_then(|tab_id| self.tab_requirements.get(&tab_id))
             .cloned()
             .unwrap_or_default();
         let removed_published = self.paths.iter().any(|(path, state)| {
-            !desired.contains(path) && matches!(&state.phase, PathPhase::Provider(_))
+            desired.get(path) != Some(&state.requirement)
+                && matches!(&state.phase, PathPhase::Provider(_))
         });
-        self.paths.retain(|path, _| desired.contains(path));
-        for path in desired {
+        self.paths
+            .retain(|path, state| desired.get(path) == Some(&state.requirement));
+        for (path, requirement) in desired {
             if self.paths.contains_key(&path) {
                 continue;
             }
@@ -326,7 +365,12 @@ impl RasterSourceCoordinator {
                 path,
                 PathState {
                     generation: self.next_generation,
-                    phase: PathPhase::Needed,
+                    phase: requirement
+                        .conflict_diagnostic()
+                        .map_or(PathPhase::Needed, |diagnostic| PathPhase::Failed {
+                            diagnostic,
+                        }),
+                    requirement,
                 },
             );
         }
@@ -368,10 +412,15 @@ impl RasterSourceCoordinator {
         }
         let mut publish = false;
         state.phase = match result.outcome {
-            PreparationOutcome::Ready(source) => {
+            PreparationOutcome::Ready(source) if state.requirement.accepts(&source) => {
                 publish = true;
                 PathPhase::Provider(source)
             }
+            PreparationOutcome::Ready(_) => PathPhase::Failed {
+                diagnostic:
+                    "prepared raster provider does not match the exact required content identity"
+                        .into(),
+            },
             PreparationOutcome::InProgress(identity) => PathPhase::Retry {
                 identity: Some(identity),
                 attempts: result.attempts.saturating_add(1),
@@ -466,6 +515,23 @@ impl RasterSourceCoordinator {
     }
 }
 
+fn document_content_requirements(document: &Document) -> HashMap<PathBuf, ContentRequirement> {
+    let mut desired = HashMap::new();
+    for requirement in document.raster_asset_requirements() {
+        desired
+            .entry(requirement.path)
+            .and_modify(|current: &mut ContentRequirement| {
+                current.merge(requirement.content_sha256.clone());
+            })
+            .or_insert_with(|| {
+                requirement
+                    .content_sha256
+                    .map_or(ContentRequirement::Any, ContentRequirement::Exact)
+            });
+    }
+    desired
+}
+
 impl PrismApp {
     pub(super) fn sync_active_raster_sources(&mut self) {
         self.raster_sources
@@ -475,10 +541,7 @@ impl PrismApp {
 }
 
 fn derived_cache_root(storage_directory: &Path, app_version: &str) -> PathBuf {
-    storage_directory
-        .join("Derived Raster Backings")
-        .join(DERIVED_CACHE_COMPATIBILITY)
-        .join(app_version)
+    prism_core::raster_backing_cache_root(storage_directory, app_version)
 }
 
 pub(super) fn terminal_failure_status(path: &Path, diagnostic: &str) -> String {
@@ -507,7 +570,12 @@ fn prepare_source(
                 Err(error) => return PreparationOutcome::Failed(format!("{error:#}")),
             };
             let source_epoch = source.source_epoch().clone();
-            match ResolvedRasterSource::new(source_epoch, Arc::new(source)) {
+            let source_sha256 = source.source_sha256().to_owned();
+            match ResolvedRasterSource::new_authenticated(
+                source_epoch,
+                source_sha256,
+                Arc::new(source),
+            ) {
                 Ok(source) => PreparationOutcome::Ready(source),
                 Err(error) => PreparationOutcome::Failed(format!("{error:#}")),
             }
@@ -536,7 +604,11 @@ fn prepared_outcome(
                 Err(error) => return PreparationOutcome::Failed(format!("{error:#}")),
             };
             let source = Arc::new(backing);
-            let source = match ResolvedRasterSource::new(source_epoch, source) {
+            let source = match ResolvedRasterSource::new_authenticated(
+                source_epoch,
+                identity.source_sha256().to_owned(),
+                source,
+            ) {
                 Ok(source) => source,
                 Err(error) => return PreparationOutcome::Failed(format!("{error:#}")),
             };
@@ -621,6 +693,33 @@ mod tests {
         .unwrap()
     }
 
+    pub(super) fn resolved_authenticated(
+        epoch: &str,
+        content_sha256: &str,
+    ) -> ResolvedRasterSource {
+        ResolvedRasterSource::new_authenticated(
+            RasterSourceEpoch::new(epoch.to_owned()).unwrap(),
+            content_sha256.to_owned(),
+            Arc::new(TestSource {
+                info: RegionSourceInfo {
+                    descriptor: RegionSourceDescriptor {
+                        width: 4,
+                        height: 4,
+                        color_encoding: "rgba8".into(),
+                        sample_depth: SourceSampleDepth::EightBit,
+                        frame_index: 0,
+                        page_index: 0,
+                        decoder_contract: "authenticated-test".into(),
+                    },
+                    capability: RegionReadCapability::DerivedBacking,
+                    readiness: RegionReadiness::Ready,
+                },
+                drops: None,
+            }),
+        )
+        .unwrap()
+    }
+
     pub(super) fn raster_document(path: impl Into<PathBuf>) -> Document {
         let mut document = Document::new("Raster", 4, 4);
         document.layers.push(Layer {
@@ -647,7 +746,7 @@ mod tests {
             RasterSourceCoordinator {
                 request_sender: Some(request_sender),
                 result_receiver,
-                tab_paths: HashMap::new(),
+                tab_requirements: HashMap::new(),
                 paths: HashMap::new(),
                 active_tab: None,
                 active_generations: Arc::new(Mutex::new(HashMap::new())),
@@ -691,7 +790,7 @@ mod tests {
         assert_eq!(first.path, path);
         coordinator.set_tab_document(2, &document);
         assert!(requests.try_recv().is_err());
-        assert_eq!(coordinator.tab_paths.len(), 2);
+        assert_eq!(coordinator.tab_requirements.len(), 2);
         assert_eq!(coordinator.paths.len(), 1);
     }
 

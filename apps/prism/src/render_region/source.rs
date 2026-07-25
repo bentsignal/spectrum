@@ -5,7 +5,7 @@ use image::{Rgba, RgbaImage};
 
 use crate::{
     FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
-    ResolvedRasterSource, TextTypography, VectorMask,
+    ResolvedRasterSource, SampledSourceId, SampledSourceSnapshot, TextTypography, VectorMask,
     raster_region::inspect_raster_region_source,
     shapes::ShapeSampler,
     text_render::{measure_text_with_typography, render_text_region},
@@ -48,6 +48,7 @@ impl Error for DynSourceReadError {
 
 pub(super) fn layer_supports_region_reads(
     layer: &Layer,
+    sampled_sources: &std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>,
     raster_sources: Option<&dyn RasterSourceResolver>,
 ) -> bool {
     match &layer.kind {
@@ -62,11 +63,29 @@ pub(super) fn layer_supports_region_reads(
                     .is_some_and(|source| source.source().info().supports_region_reads_now())
             },
         ),
+        LayerKind::Paint { program } => {
+            let mut ready = true;
+            program.for_each_sampled_source_id(|source_id| {
+                let Some(source) = sampled_sources.get(source_id) else {
+                    ready = false;
+                    return;
+                };
+                ready &= raster_sources.map_or_else(
+                    || {
+                        inspect_raster_region_source(&source.path)
+                            .is_ok_and(|inspection| inspection.info.supports_region_reads_now())
+                            || u64::from(source.width) * u64::from(source.height)
+                                <= crate::MAX_PAINT_REGION_PIXELS
+                    },
+                    |sources| sources.resolve(&source.path).is_some(),
+                );
+            });
+            ready
+        }
         LayerKind::Text { .. }
         | LayerKind::Rectangle { .. }
         | LayerKind::Ellipse { .. }
-        | LayerKind::Path { .. }
-        | LayerKind::Paint { .. } => true,
+        | LayerKind::Path { .. } => true,
     }
 }
 
@@ -112,6 +131,8 @@ pub(super) enum SourceDescriptor<'a> {
         dimensions: (u32, u32),
         adjustments: &'a spectrum_imaging::Adjustments,
         vector_mask: Option<&'a VectorMask>,
+        raster_sources: Option<&'a dyn RasterSourceResolver>,
+        sampled_sources: &'a std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>,
     },
 }
 
@@ -120,7 +141,8 @@ impl<'a> SourceDescriptor<'a> {
         render_layer: &'a Layer,
         shape_scale: [f32; 2],
         font_asset: Option<&'a FontAsset>,
-        raster_sources: Option<&dyn RasterSourceResolver>,
+        sampled_sources: &'a std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>,
+        raster_sources: Option<&'a dyn RasterSourceResolver>,
     ) -> Result<Self> {
         match &render_layer.kind {
             LayerKind::Raster { path, .. } => {
@@ -187,6 +209,8 @@ impl<'a> SourceDescriptor<'a> {
                 dimensions: (program.width, program.height),
                 adjustments: &render_layer.adjustments,
                 vector_mask: render_layer.vector_mask.as_ref(),
+                raster_sources,
+                sampled_sources,
             }),
         }
     }
@@ -398,17 +422,21 @@ impl<'a> SourceDescriptor<'a> {
                 region.width,
                 region.height,
             ),
-            Self::Paint { layer, .. } => {
+            Self::Paint {
+                layer,
+                raster_sources,
+                sampled_sources,
+                ..
+            } => {
                 let LayerKind::Paint { program } = &layer.kind else {
                     unreachable!("Paint source descriptor changed kind")
                 };
-                crate::paint::render_paint_region(
+                crate::paint_render::render_paint_region_with_sources(
                     program,
                     layer.pixel_mask.as_ref(),
-                    region.x,
-                    region.y,
-                    region.width,
-                    region.height,
+                    region.into(),
+                    sampled_sources,
+                    *raster_sources,
                 )
             }
         }

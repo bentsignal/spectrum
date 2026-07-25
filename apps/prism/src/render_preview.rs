@@ -10,6 +10,9 @@ pub(crate) fn render_paint_preview_exact(
     let LayerKind::Paint { program } = &layer.kind else {
         bail!("exact Paint preview requires a Paint layer");
     };
+    if program.contains_sampled_sources() {
+        bail!("Clone Stamp layer previews require their document sampled-source registry");
+    }
     let mut preview_layer = layer.clone();
     preview_layer.visible = true;
     preview_layer.opacity = 1.0;

@@ -355,6 +355,14 @@ impl PrismApp {
             .map(|layer| effective_font_preview_layer(layer, font_preview_layer.as_ref()))
             .filter(|layer| layer.visible)
         {
+            if paint_layer_uses_clone_stamp(layer) {
+                // Clone strokes resolve through the document-level sampled-source registry and
+                // immutable raster-provider snapshot. A detached per-layer preview has neither,
+                // so the exact visible-region compositor is the only valid rendering path.
+                self.layer_visuals.remove(&layer.id);
+                self.layer_render_pending.remove(&layer.id);
+                continue;
+            }
             if prism_core::path_preview_requires_region(layer, display_scale).unwrap_or(false) {
                 // Keep any lower-resolution texture as an immediate fallback. The canvas routes
                 // this layer through the exact visible-region compositor, so scheduling the

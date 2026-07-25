@@ -5,8 +5,9 @@ use spectrum_imaging::AdjustmentPatch;
 
 use crate::{
     Alignment, AlignmentReference, BlendMode, BrushStroke, GuideOrientation, LassoPath, LayerMask,
-    LayerStyle, LayerTransfer, PathGeometry, Selection, SelectionCombineMode, ShapeFill,
-    ShapeStroke, TextShaping, TextTypography, Transform, VectorMask,
+    LayerStyle, LayerTransfer, PathGeometry, SampledSourceSnapshot, Selection,
+    SelectionCombineMode, ShapeFill, ShapeStroke, TextShaping, TextTypography, Transform,
+    VectorMask,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -107,6 +108,13 @@ pub enum Command {
         id: u64,
         stroke: BrushStroke,
         selection: PaintSelection,
+    },
+    SetCloneSource {
+        id: u64,
+        document_x: f32,
+        document_y: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_source: Option<Box<SampledSourceSnapshot>>,
     },
     UpdateText {
         id: u64,

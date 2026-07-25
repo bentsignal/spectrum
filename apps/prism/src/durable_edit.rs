@@ -31,6 +31,7 @@ impl PreparedEdit {
         let mut execution_commands = commands.to_vec();
         let mut provenance = Vec::with_capacity(commands.len());
         let mut assets = Vec::new();
+        let mut sampled_assets = std::collections::BTreeMap::new();
         let mut force_snapshot = false;
 
         for (index, command) in commands.iter().enumerate() {
@@ -142,6 +143,14 @@ impl PreparedEdit {
                 }
                 _ => CommandProvenance::None,
             };
+            prepare_command_sampled_sources(
+                project,
+                command,
+                &mut portable_commands[index],
+                &mut execution_commands[index],
+                &mut sampled_assets,
+                &mut assets,
+            )?;
             provenance.push(command_provenance);
         }
 
@@ -210,6 +219,7 @@ const MAX_PREPARED_ASSET_BATCH_BYTES: u64 = MAX_EMBEDDED_RASTER_BYTES as u64;
 
 pub(super) fn preflight_asset_batch(commands: &[Command]) -> Result<()> {
     let mut sources = Vec::new();
+    let mut sampled_hashes = std::collections::BTreeSet::new();
     for command in commands {
         match command {
             Command::AddRaster { path, .. } => {
@@ -234,6 +244,20 @@ pub(super) fn preflight_asset_batch(commands: &[Command]) -> Result<()> {
             }
             _ => {}
         }
+        let mut sampled_command = command.clone();
+        super::durable_sampled_sources::map_command_sampled_sources(
+            &mut sampled_command,
+            |source| {
+                if sampled_hashes.insert(source.content_hash.clone()) {
+                    sources.push((
+                        source.path.clone(),
+                        MAX_EMBEDDED_RASTER_BYTES,
+                        "Clone Stamp raster source",
+                    ));
+                }
+                Ok(())
+            },
+        )?;
     }
     if sources.len() > MAX_PREPARED_ASSET_BATCH_COUNT {
         bail!(
@@ -255,6 +279,64 @@ pub(super) fn preflight_asset_batch(commands: &[Command]) -> Result<()> {
                 MAX_PREPARED_ASSET_BATCH_BYTES / (1024 * 1024)
             );
         }
+    }
+    Ok(())
+}
+
+fn prepare_command_sampled_sources(
+    project: &DurableProject,
+    original: &Command,
+    portable: &mut Command,
+    execution: &mut Command,
+    cache: &mut std::collections::BTreeMap<String, (PathBuf, PathBuf)>,
+    assets: &mut Vec<Asset>,
+) -> Result<()> {
+    if !super::durable_sampled_sources::command_has_sampled_sources(original) {
+        return Ok(());
+    }
+    let mut prepared_paths = Vec::new();
+    let mut source_command = original.clone();
+    super::durable_sampled_sources::map_command_sampled_sources(&mut source_command, |source| {
+        source.validate_asset()?;
+        if let Some(paths) = cache.get(&source.content_hash) {
+            prepared_paths.push(paths.clone());
+            return Ok(());
+        }
+        let prepared = prepare_asset(&source.path)?;
+        if prepared.asset.id.to_string() != source.content_hash {
+            bail!("Clone Stamp source asset identity does not match its captured SHA-256");
+        }
+        let staged = project.stage_asset(&prepared.reference, &prepared.asset.bytes)?;
+        let paths = (prepared.reference.path(), staged);
+        assets.push(prepared.asset);
+        cache.insert(source.content_hash.clone(), paths.clone());
+        prepared_paths.push(paths);
+        Ok(())
+    })?;
+    rewrite_command_sampled_source_paths(portable, &prepared_paths, true)?;
+    rewrite_command_sampled_source_paths(execution, &prepared_paths, false)
+}
+
+fn rewrite_command_sampled_source_paths(
+    command: &mut Command,
+    paths: &[(PathBuf, PathBuf)],
+    portable: bool,
+) -> Result<()> {
+    let mut index = 0;
+    super::durable_sampled_sources::map_command_sampled_sources(command, |source| {
+        let pair = paths
+            .get(index)
+            .context("prepared Clone Stamp source path count changed")?;
+        source.path = if portable {
+            pair.0.clone()
+        } else {
+            pair.1.clone()
+        };
+        index += 1;
+        Ok(())
+    })?;
+    if index != paths.len() {
+        bail!("prepared Clone Stamp source path count changed");
     }
     Ok(())
 }

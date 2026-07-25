@@ -93,6 +93,10 @@ pub fn recommended_text_raster_scale(layer: &Layer, document_scale: f32) -> f32 
 
 pub(crate) fn supports_bounded_source(
     layer: &Layer,
+    sampled_sources: &std::collections::BTreeMap<
+        crate::SampledSourceId,
+        crate::SampledSourceSnapshot,
+    >,
     raster_sources: Option<&dyn RasterSourceResolver>,
 ) -> bool {
     matches!(
@@ -103,7 +107,7 @@ pub(crate) fn supports_bounded_source(
             | LayerKind::Ellipse { .. }
             | LayerKind::Path { .. }
             | LayerKind::Paint { .. }
-    ) && source::layer_supports_region_reads(layer, raster_sources)
+    ) && source::layer_supports_region_reads(layer, sampled_sources, raster_sources)
         && layer.transform.scale_x.is_finite()
         && layer.transform.scale_y.is_finite()
         && layer.transform.scale_x > 0.0
@@ -121,13 +125,23 @@ pub(crate) fn composite_bounded_source_region(
     clip: Option<&RgbaImage>,
     region: RenderRegion,
     font_asset: Option<&FontAsset>,
+    sampled_sources: &std::collections::BTreeMap<
+        crate::SampledSourceId,
+        crate::SampledSourceSnapshot,
+    >,
     raster_sources: Option<&dyn RasterSourceResolver>,
     stats: &mut RegionRenderStats,
 ) -> Result<bool> {
-    if !supports_bounded_source(render_layer, raster_sources) {
+    if !supports_bounded_source(render_layer, sampled_sources, raster_sources) {
         return Ok(false);
     }
-    let descriptor = SourceDescriptor::new(render_layer, shape_scale, font_asset, raster_sources)?;
+    let descriptor = SourceDescriptor::new(
+        render_layer,
+        shape_scale,
+        font_asset,
+        sampled_sources,
+        raster_sources,
+    )?;
     let geometry = SamplingGeometry::new(
         base_layer,
         render_layer,

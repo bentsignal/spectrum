@@ -44,6 +44,21 @@ fn crop_canvas(
 }
 
 pub(super) fn apply_command(document: &mut Document, command: Command) -> Result<CommandOutput> {
+    apply_command_inner(document, command, false)
+}
+
+pub(crate) fn apply_command_trusted_embedded(
+    document: &mut Document,
+    command: Command,
+) -> Result<CommandOutput> {
+    apply_command_inner(document, command, true)
+}
+
+fn apply_command_inner(
+    document: &mut Document,
+    command: Command,
+    sampled_sources_are_verified_embedded_assets: bool,
+) -> Result<CommandOutput> {
     match command {
         Command::RenameDocument { name } => {
             let name = name.trim();
@@ -272,6 +287,37 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
             document.selected = Some(id);
             Ok(output("add_paint_layer", "added Paint layer", vec![id]))
         }
+        Command::SetCloneSource {
+            id,
+            document_x,
+            document_y,
+            resolved_source,
+        } => {
+            let source = match resolved_source {
+                Some(source) => {
+                    if sampled_sources_are_verified_embedded_assets {
+                        source.validate_metadata()?;
+                    } else {
+                        source.validate_asset()?;
+                    }
+                    *source
+                }
+                None => crate::SampledSourceSnapshot::capture(
+                    document.layer(id)?,
+                    [document_x, document_y],
+                )?,
+            };
+            if source.source_layer_id != id {
+                bail!("resolved Clone Stamp source does not match requested layer {id}");
+            }
+            let source_id = document.intern_sampled_source(source)?;
+            document.clone_source = Some(source_id);
+            Ok(output(
+                "set_clone_source",
+                "captured immutable Clone Stamp source",
+                vec![id],
+            ))
+        }
         Command::AddPaintLayerWithStroke {
             name,
             width,
@@ -294,6 +340,25 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
                 PaintSelection::None => None,
                 PaintSelection::Snapshot { .. } => validated_snapshot.as_ref(),
             };
+            let current_clone = document.clone_source.as_ref().and_then(|source_id| {
+                document
+                    .sampled_sources
+                    .get(source_id)
+                    .map(|source| (source_id, source))
+            });
+            let stroke = stroke.resolve_current_clone(
+                current_clone,
+                (width, height),
+                Transform::default(),
+            )?;
+            if let Some(source_id) = stroke.sampled_source_id() {
+                let source = document.sampled_source(source_id)?;
+                if sampled_sources_are_verified_embedded_assets {
+                    source.validate_metadata()?;
+                } else {
+                    source.validate_asset()?;
+                }
+            }
             let stroke = stroke.validated_for_viewport(width, height)?;
             let clip = crate::paint_selection::capture_selection_clip(
                 selection,
@@ -362,6 +427,25 @@ pub(super) fn apply_command(document: &mut Document, command: Command) -> Result
                 PaintSelection::None => None,
                 PaintSelection::Snapshot { .. } => validated_snapshot.as_ref(),
             };
+            let current_clone = document.clone_source.as_ref().and_then(|source_id| {
+                document
+                    .sampled_sources
+                    .get(source_id)
+                    .map(|source| (source_id, source))
+            });
+            let stroke = stroke.resolve_current_clone(
+                current_clone,
+                (program.width, program.height),
+                transform,
+            )?;
+            if let Some(source_id) = stroke.sampled_source_id() {
+                let source = document.sampled_source(source_id)?;
+                if sampled_sources_are_verified_embedded_assets {
+                    source.validate_metadata()?;
+                } else {
+                    source.validate_asset()?;
+                }
+            }
             let stroke = stroke.validated_for_viewport(program.width, program.height)?;
             let clip = crate::paint_selection::capture_selection_clip(
                 selection,
