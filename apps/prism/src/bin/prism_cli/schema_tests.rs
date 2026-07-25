@@ -69,6 +69,18 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
         schema["layer_transfer"]["version"],
         prism_core::LAYER_TRANSFER_VERSION
     );
+    assert!(
+        schema["layer_transfer"]["assets"]
+            .as_str()
+            .unwrap()
+            .contains("v10 preserves modern multi-stop shape gradients")
+    );
+    assert!(
+        schema["layer_styles"]["shape_gradient"]
+            .as_str()
+            .unwrap()
+            .contains("mutually exclusive")
+    );
     assert!(schema["gui_interactions"]["brush"].is_string());
     assert!(schema["gui_interactions"]["eraser"].is_string());
     assert!(schema["selection"].is_object());

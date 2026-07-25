@@ -53,6 +53,7 @@ use inspector_controls::*;
 mod lasso_tool;
 #[path = "prism_gui/launch.rs"]
 mod launch;
+#[cfg(target_os = "macos")]
 use launch::native_options;
 #[path = "prism_gui/layers.rs"]
 mod layers;

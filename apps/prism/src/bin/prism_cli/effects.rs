@@ -42,12 +42,14 @@ pub(super) struct GradientArgs {
     #[arg(long, default_value_t = 0.5)]
     radius: f32,
     /// Ordered POSITION:RRGGBBAA stop. Repeat for 2 through 32 stops.
-    #[arg(long = "stop")]
+    #[arg(long = "stop", conflicts_with_all = ["start", "end"])]
     stops: Vec<String>,
-    #[arg(long, default_value = "5dd8c7ff")]
-    pub start: String,
-    #[arg(long, default_value = "ae7bffff")]
-    pub end: String,
+    /// Legacy first color. Mutually exclusive with --stop.
+    #[arg(long, conflicts_with = "stops")]
+    pub start: Option<String>,
+    /// Legacy last color. Mutually exclusive with --stop.
+    #[arg(long, conflicts_with = "stops")]
+    pub end: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -107,10 +109,19 @@ pub(super) fn gradient_command(arguments: GradientArgs) -> Result<Command> {
     let fill = if arguments.clear {
         None
     } else {
+        if !arguments.stops.is_empty() && (arguments.start.is_some() || arguments.end.is_some()) {
+            bail!("--stop cannot be combined with legacy --start or --end");
+        }
         let stops = if arguments.stops.is_empty() {
             vec![
-                GradientStop::new(0.0, parse_color(&arguments.start)?),
-                GradientStop::new(1.0, parse_color(&arguments.end)?),
+                GradientStop::new(
+                    0.0,
+                    parse_color(arguments.start.as_deref().unwrap_or("5dd8c7ff"))?,
+                ),
+                GradientStop::new(
+                    1.0,
+                    parse_color(arguments.end.as_deref().unwrap_or("ae7bffff"))?,
+                ),
             ]
         } else {
             arguments
@@ -155,4 +166,27 @@ fn parse_color(value: &str) -> Result<[u8; 4]> {
             .context("color contains invalid hexadecimal digits")?;
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_construction_rejects_mixed_modern_and_legacy_stop_surfaces() {
+        let arguments = GradientArgs {
+            id: 1,
+            clear: false,
+            angle: 0.0,
+            kind: GradientKindArg::Linear,
+            spread: GradientSpreadArg::Pad,
+            center_x: 0.5,
+            center_y: 0.5,
+            radius: 0.5,
+            stops: vec!["0:ff0000ff".into(), "1:0000ffff".into()],
+            start: Some("00ff00ff".into()),
+            end: None,
+        };
+        assert!(gradient_command(arguments).is_err());
+    }
 }

@@ -115,3 +115,149 @@ fn invalid_cli_gradient_is_atomic() {
     assert_eq!(Workspace::load_read_only(&project).unwrap(), before);
     std::fs::remove_file(project).unwrap();
 }
+
+#[test]
+fn modern_stops_and_legacy_endpoints_are_mutually_exclusive() {
+    let project = temporary_project("surface-conflict");
+    invoke(
+        &project,
+        &["init", "Conflict", "--width", "32", "--height", "32"],
+    )
+    .unwrap();
+    invoke(
+        &project,
+        &["add-rectangle", "--width", "16", "--height", "16"],
+    )
+    .unwrap();
+    let before = Workspace::load_read_only(&project).unwrap();
+    for legacy in [["--start", "00ff00ff"], ["--end", "ffffffff"]] {
+        let arguments = [
+            "prism",
+            "--project",
+            project.to_str().unwrap(),
+            "gradient",
+            "1",
+            "--stop",
+            "0:ff0000ff",
+            "--stop",
+            "1:0000ffff",
+            legacy[0],
+            legacy[1],
+        ];
+        assert!(Cli::try_parse_from(arguments).is_err());
+        assert_eq!(Workspace::load_read_only(&project).unwrap(), before);
+    }
+    std::fs::remove_file(project).unwrap();
+}
+
+#[test]
+fn radial_and_angle_numeric_boundaries_fail_closed_or_export_without_panicking() {
+    let project = temporary_project("numeric-boundaries");
+    invoke(
+        &project,
+        &["init", "Boundaries", "--width", "64", "--height", "64"],
+    )
+    .unwrap();
+    invoke(
+        &project,
+        &["add-rectangle", "--width", "64", "--height", "64"],
+    )
+    .unwrap();
+    let before = Workspace::load_read_only(&project).unwrap();
+
+    let invalid: &[&[&str]] = &[
+        &[
+            "gradient",
+            "1",
+            "--kind",
+            "radial",
+            "--spread",
+            "repeat",
+            "--radius",
+            "1e-45",
+            "--stop",
+            "0:ff0000ff",
+            "--stop",
+            "1:0000ffff",
+        ],
+        &[
+            "gradient",
+            "1",
+            "--kind",
+            "radial",
+            "--spread",
+            "reflect",
+            "--radius",
+            "5e-39",
+            "--stop",
+            "0:ff0000ff",
+            "--stop",
+            "1:0000ffff",
+        ],
+        &["gradient", "1", "--angle", "NaN"],
+        &["gradient", "1", "--angle", "inf"],
+        &["gradient", "1", "--center-x", "3.4028235e38"],
+        &["gradient", "1", "--radius", "inf"],
+    ];
+    for arguments in invalid {
+        assert!(
+            invoke(&project, arguments).is_err(),
+            "invalid gradient invocation was accepted: {arguments:?}"
+        );
+        assert_eq!(Workspace::load_read_only(&project).unwrap(), before);
+    }
+
+    let safe_cases: &[&[&str]] = &[
+        &[
+            "gradient",
+            "1",
+            "--kind",
+            "radial",
+            "--spread",
+            "reflect",
+            "--radius",
+            "1.17549435e-38",
+            "--stop",
+            "0:ff0000ff",
+            "--stop",
+            "1:0000ffff",
+        ],
+        &[
+            "gradient",
+            "1",
+            "--kind",
+            "radial",
+            "--spread",
+            "repeat",
+            "--radius",
+            "3.4028235e38",
+            "--stop",
+            "0:ff0000ff",
+            "--stop",
+            "1:0000ffff",
+        ],
+        &[
+            "gradient",
+            "1",
+            "--kind",
+            "linear",
+            "--spread",
+            "reflect",
+            "--angle",
+            "3.4028235e38",
+            "--stop",
+            "0:ff0000ff",
+            "--stop",
+            "1:0000ffff",
+        ],
+    ];
+    for (index, arguments) in safe_cases.iter().enumerate() {
+        invoke(&project, arguments).unwrap();
+        let export = project.with_extension(format!("boundary-{index}.png"));
+        invoke(&project, &["export", export.to_str().unwrap()]).unwrap();
+        assert!(std::fs::metadata(&export).unwrap().len() > 0);
+        std::fs::remove_file(export).unwrap();
+    }
+
+    std::fs::remove_file(project).unwrap();
+}

@@ -245,6 +245,22 @@ fn malformed_and_oversized_gradients_never_mutate_the_document() {
             ..Default::default()
         },
         ShapeGradient {
+            kind: GradientKind::Radial,
+            spread: GradientSpread::Repeat,
+            radius: f32::from_bits(1),
+            ..Default::default()
+        },
+        ShapeGradient {
+            kind: GradientKind::Radial,
+            spread: GradientSpread::Reflect,
+            radius: f32::MIN_POSITIVE / 2.0,
+            ..Default::default()
+        },
+        ShapeGradient {
+            angle: f32::INFINITY,
+            ..Default::default()
+        },
+        ShapeGradient {
             stops: (0..33)
                 .map(|index| GradientStop::new(index as f32 / 32.0, [index as u8, 0, 0, 255]))
                 .collect(),

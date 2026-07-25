@@ -136,7 +136,7 @@ pub(super) fn schema() -> Value {
         },
         "layer_styles": {
             "drop_shadow": "shadow <layer> [--x <px>] [--y <px>] [--blur <px>] [--color <RRGGBBAA>] [--clear]",
-            "shape_gradient": "gradient <shape> [--kind <linear|radial|angle>] [--angle <degrees>] [--spread <pad|repeat|reflect>] [--center-x <0..1>] [--center-y <0..1>] [--radius <positive>] [--stop <POSITION:RRGGBBAA>]... [--start <RRGGBBAA>] [--end <RRGGBBAA>] [--clear]",
+            "shape_gradient": "gradient <shape> [--kind <linear|radial|angle>] [--angle <degrees>] [--spread <pad|repeat|reflect>] [--center-x <0..1>] [--center-y <0..1>] [--radius <positive normal>] (--stop <POSITION:RRGGBBAA> repeated 2..32 times | legacy --start <RRGGBBAA> and/or --end <RRGGBBAA>) [--clear]; modern --stop is mutually exclusive with legacy --start/--end",
             "rendering": "portable CPU export and exact interactive composite preview share the same fixed-kernel shadow and shape sampler"
         },
         "selection": {
@@ -181,7 +181,7 @@ pub(super) fn schema() -> Value {
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
-            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed; v7 preserves raster pixel masks; v8 preserves HarfBuzzV1 text; v9 preserves immutable Clone Stamp sources",
+            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed; v7 preserves raster pixel masks; v8 preserves HarfBuzzV1 text; v9 preserves immutable Clone Stamp sources; v10 preserves modern multi-stop shape gradients",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
         "color": "RRGGBB or RRGGBBAA",

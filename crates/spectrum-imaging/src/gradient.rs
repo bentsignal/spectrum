@@ -88,9 +88,9 @@ impl Gradient {
                 "gradient center coordinates must be finite and between 0 and 1",
             ));
         }
-        if !self.radius.is_finite() || self.radius <= 0.0 {
+        if !self.radius.is_normal() || self.radius <= 0.0 {
             return Err(GradientValidationError::new(
-                "gradient radius must be positive and finite",
+                "gradient radius must be positive, finite, and non-subnormal",
             ));
         }
         if !(2..=MAX_GRADIENT_STOPS).contains(&self.stops.len()) {
@@ -219,10 +219,20 @@ fn is_pad(value: &GradientSpread) -> bool {
 fn apply_spread(value: f32, spread: GradientSpread) -> f32 {
     match spread {
         GradientSpread::Pad => value.clamp(0.0, 1.0),
-        GradientSpread::Repeat => value.rem_euclid(1.0),
+        GradientSpread::Repeat => {
+            if value.is_finite() {
+                value.rem_euclid(1.0)
+            } else {
+                0.0
+            }
+        }
         GradientSpread::Reflect => {
-            let value = value.rem_euclid(2.0);
-            if value <= 1.0 { value } else { 2.0 - value }
+            if value.is_finite() {
+                let value = value.rem_euclid(2.0);
+                if value <= 1.0 { value } else { 2.0 - value }
+            } else {
+                0.0
+            }
         }
     }
 }
@@ -231,15 +241,29 @@ fn sample_stops(stops: &[GradientStop], position: f32) -> [u8; 4] {
     let Some(first) = stops.first().copied() else {
         return [0; 4];
     };
+    if !position.is_finite() {
+        return first.color;
+    }
     if position <= first.position {
         return first.color;
     }
     let index = stops.partition_point(|stop| stop.position < position);
+    if index == 0 {
+        return first.color;
+    }
     let Some(end) = stops.get(index).copied() else {
         return stops.last().map_or(first.color, |stop| stop.color);
     };
     let start = stops[index - 1];
-    let amount = ((position - start.position) / (end.position - start.position)).clamp(0.0, 1.0);
+    let span = end.position - start.position;
+    if !span.is_finite() || span <= 0.0 {
+        return start.color;
+    }
+    let amount = (position - start.position) / span;
+    if !amount.is_finite() {
+        return start.color;
+    }
+    let amount = amount.clamp(0.0, 1.0);
     interpolate_premultiplied(start.color, end.color, amount)
 }
 
@@ -379,6 +403,132 @@ mod tests {
         assert!(gradient.validate().is_err());
         let canonical = gradient.clone().canonicalized();
         assert_eq!(canonical.stops, gradient.stops);
+    }
+
+    #[test]
+    fn radial_validation_rejects_every_subnormal_radius_but_accepts_safe_extremes() {
+        for radius in [
+            0.0,
+            -0.0,
+            f32::from_bits(1),
+            f32::MIN_POSITIVE / 2.0,
+            -f32::MIN_POSITIVE,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+        ] {
+            let gradient = Gradient {
+                kind: GradientKind::Radial,
+                radius,
+                ..Gradient::default()
+            };
+            assert!(
+                gradient.validate().is_err(),
+                "radius {radius:?} was accepted"
+            );
+        }
+
+        for radius in [f32::MIN_POSITIVE, 0.5, f32::MAX] {
+            let gradient = Gradient {
+                kind: GradientKind::Radial,
+                radius,
+                ..Gradient::default()
+            };
+            gradient.validate().unwrap();
+            for spread in [
+                GradientSpread::Pad,
+                GradientSpread::Repeat,
+                GradientSpread::Reflect,
+            ] {
+                let mut gradient = gradient.clone();
+                gradient.spread = spread;
+                for (x, y) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0)] {
+                    let sampled = gradient.sampler().sample(x, y);
+                    assert_eq!(sampled, gradient.sampler().sample(x, y));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finite_huge_angles_canonicalize_and_sample_every_geometry_and_spread() {
+        for angle in [f32::MAX, -f32::MAX] {
+            for kind in [
+                GradientKind::Linear,
+                GradientKind::Radial,
+                GradientKind::Angle,
+            ] {
+                for spread in [
+                    GradientSpread::Pad,
+                    GradientSpread::Repeat,
+                    GradientSpread::Reflect,
+                ] {
+                    let gradient = Gradient {
+                        kind,
+                        angle,
+                        spread,
+                        radius: f32::MAX,
+                        ..Gradient::default()
+                    };
+                    gradient.validate().unwrap();
+                    assert!(gradient.clone().canonicalized().angle.is_finite());
+                    for (x, y) in [(0.0, 0.0), (0.25, 0.75), (1.0, 1.0)] {
+                        let sampled = gradient.sampler().sample(x, y);
+                        assert_eq!(sampled, gradient.sampler().sample(x, y));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sampler_is_total_for_nonfinite_geometry_inputs_and_malformed_stops() {
+        let boundary_values = [
+            f32::NEG_INFINITY,
+            -f32::MAX,
+            -1.0,
+            -0.0,
+            0.0,
+            f32::from_bits(1),
+            f32::MIN_POSITIVE,
+            0.5,
+            1.0,
+            f32::MAX,
+            f32::INFINITY,
+            f32::NAN,
+        ];
+        for kind in [
+            GradientKind::Linear,
+            GradientKind::Radial,
+            GradientKind::Angle,
+        ] {
+            for spread in [
+                GradientSpread::Pad,
+                GradientSpread::Repeat,
+                GradientSpread::Reflect,
+            ] {
+                for value in boundary_values {
+                    let gradient = Gradient {
+                        kind,
+                        spread,
+                        angle: value,
+                        radius: value,
+                        ..Gradient::default()
+                    };
+                    let sample = gradient.sampler().sample(value, -value);
+                    assert_eq!(sample, gradient.sampler().sample(value, -value));
+                }
+            }
+        }
+
+        assert_eq!(sample_stops(&[], f32::NAN), [0; 4]);
+        let malformed = [
+            GradientStop::new(f32::NAN, [1, 2, 3, 4]),
+            GradientStop::new(f32::NEG_INFINITY, [5, 6, 7, 8]),
+        ];
+        assert_eq!(sample_stops(&malformed, f32::NAN), malformed[0].color);
+        let malformed_sample = sample_stops(&malformed, 0.5);
+        assert_eq!(malformed_sample, sample_stops(&malformed, 0.5));
     }
 
     #[test]
