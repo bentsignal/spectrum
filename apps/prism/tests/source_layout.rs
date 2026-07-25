@@ -344,6 +344,35 @@ fn toolbar_gradient_editor_preserves_its_nested_visual_stop_picker() {
 }
 
 #[test]
+fn toolbar_gradient_editor_owns_escape_before_global_tool_reset() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/shortcuts.rs");
+    let shortcuts = fs::read_to_string(source).unwrap();
+    let keyboard_start = shortcuts
+        .find("pub(super) fn keyboard")
+        .expect("keyboard shortcut routing should exist");
+    let keyboard_end = shortcuts[keyboard_start..]
+        .find("\n    }\n}\n\n#[cfg(test)]")
+        .map(|offset| keyboard_start + offset)
+        .expect("keyboard shortcut routing should end before its tests");
+    let keyboard = &shortcuts[keyboard_start..keyboard_end];
+    let gradient_owner = keyboard
+        .find("toolbar_gradient_editor_owns_escape")
+        .expect("the floating gradient editor should own Escape");
+    let global_reset = keyboard
+        .find("reset_tool_after_escape")
+        .expect("the global Escape fallback should still reset the active tool");
+
+    assert!(
+        gradient_owner < global_reset,
+        "the gradient editor must route Escape before the global tool reset"
+    );
+    assert!(
+        keyboard.contains("input.key_pressed(egui::Key::Escape)"),
+        "the editor owner must observe Escape without consuming it before nested popup handling"
+    );
+}
+
+#[test]
 fn bundled_ubuntu_license_is_exact_and_installed_by_every_native_package() {
     use sha2::{Digest, Sha256};
 

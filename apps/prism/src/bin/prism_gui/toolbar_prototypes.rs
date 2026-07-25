@@ -101,6 +101,10 @@ impl ToolbarPrototypeState {
     pub(super) fn enabled(&self) -> bool {
         self.enabled
     }
+
+    pub(super) fn gradient_editor_open(&self) -> bool {
+        self.gradient_editor_panel.is_some()
+    }
 }
 
 fn prototype_enabled(value: Option<&str>) -> bool {

@@ -239,6 +239,10 @@ fn reset_tool_after_escape(tool: &mut Tool, status: &mut String, status_error: &
     *status_error = false;
 }
 
+fn toolbar_gradient_editor_owns_escape(editor_open: bool, escape_pressed: bool) -> bool {
+    editor_open && escape_pressed
+}
+
 impl PrismApp {
     pub(super) fn keyboard(&mut self, context: &egui::Context) {
         let application_shortcut_owner = application_shortcut_owner();
@@ -263,6 +267,13 @@ impl PrismApp {
             return;
         }
         if self.has_modal_surface() {
+            return;
+        }
+        if toolbar_gradient_editor_owns_escape(
+            self.toolbar_prototype.gradient_editor_open(),
+            context.input(|input| input.key_pressed(egui::Key::Escape)),
+        ) {
+            // Leave Escape unconsumed for the nested picker or outer editor.
             return;
         }
         let inline_text_owns_escape = self.inline_text_editor.is_some();
@@ -531,6 +542,22 @@ mod tests {
         assert_eq!(tool, Tool::Move);
         assert_eq!(status, Tool::Move.description());
         assert!(!status_error);
+    }
+
+    #[test]
+    fn toolbar_gradient_editor_routes_escape_before_the_global_tool_reset() {
+        let mut tool = Tool::Shape;
+        let mut status = Tool::Shape.description().to_owned();
+        let mut status_error = false;
+
+        if !toolbar_gradient_editor_owns_escape(true, true) {
+            reset_tool_after_escape(&mut tool, &mut status, &mut status_error);
+        }
+
+        assert_eq!(tool, Tool::Shape);
+        assert_eq!(status, Tool::Shape.description());
+        assert!(!toolbar_gradient_editor_owns_escape(false, true));
+        assert!(!toolbar_gradient_editor_owns_escape(true, false));
     }
 
     #[test]
