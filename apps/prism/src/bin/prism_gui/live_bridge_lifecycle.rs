@@ -15,13 +15,10 @@ impl PrismApp {
         let Some(registry) = &mut self.live_bridge else {
             return;
         };
-        let previous = registry.record(tab_id).map(|record| record.binding_id);
         match registry.register(tab_id, workspace) {
-            Ok(record) => {
-                if let Some(previous) = previous
-                    && previous != record.binding_id
-                {
-                    let affected = self.terminal.live_binding_rotated(previous);
+            Ok(registration) => {
+                if let Some(retired) = registration.retired_binding {
+                    let affected = self.terminal.live_binding_rotated(retired);
                     if affected > 0 {
                         self.status = format!(
                             "Project binding changed; open a new terminal session ({affected} stale)"
@@ -29,6 +26,10 @@ impl PrismApp {
                         self.status_error = false;
                     }
                 }
+                debug_assert_eq!(
+                    registry.record(tab_id).map(|record| record.binding_id),
+                    Some(registration.record.binding_id)
+                );
             }
             Err(error) => {
                 self.status = format!("Could not publish live project: {error:#}");
@@ -38,8 +39,10 @@ impl PrismApp {
     }
 
     pub(super) fn remove_live_tab(&mut self, tab_id: u64) {
-        if let Some(registry) = &mut self.live_bridge {
-            registry.remove(tab_id);
+        if let Some(registry) = &mut self.live_bridge
+            && let Some(retired) = registry.remove(tab_id)
+        {
+            self.terminal.live_project_closed(retired);
         }
     }
 

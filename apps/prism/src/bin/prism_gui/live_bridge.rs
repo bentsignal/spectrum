@@ -28,6 +28,13 @@ pub(super) struct PrismLiveRegistry {
     wake_gui: Arc<dyn Fn() + Send + Sync>,
     bindings: HashMap<u64, LiveBinding>,
     round_robin: usize,
+    #[cfg(test)]
+    fail_next_start: bool,
+}
+
+pub(super) struct LiveRegistration {
+    pub(super) record: DiscoveryRecord,
+    pub(super) retired_binding: Option<BindingId>,
 }
 
 struct LiveBinding {
@@ -68,6 +75,8 @@ impl PrismLiveRegistry {
             wake_gui,
             bindings: HashMap::new(),
             round_robin: 0,
+            #[cfg(test)]
+            fail_next_start: false,
         })
     }
 
@@ -75,7 +84,7 @@ impl PrismLiveRegistry {
         &mut self,
         tab_id: u64,
         workspace: &Workspace,
-    ) -> anyhow::Result<DiscoveryRecord> {
+    ) -> anyhow::Result<LiveRegistration> {
         if workspace.live_state()?.is_none() {
             anyhow::bail!("only durable Prism workspaces can publish a live binding");
         }
@@ -88,27 +97,51 @@ impl PrismLiveRegistry {
             .and_then(|binding| binding.lease.as_ref())
             .and_then(|lease| lease.record().ok())
             .map_or(1, |record| record.binding_epoch.saturating_add(1));
-        self.remove(tab_id);
-        let binding = LiveBinding::start(
+        let mut binding = self.start_binding(epoch, workspace)?;
+        let record = match binding
+            .lease
+            .as_ref()
+            .expect("new live binding must have a discovery lease")
+            .record()
+        {
+            Ok(record) => record,
+            Err(error) => {
+                binding.shutdown();
+                return Err(error.into());
+            }
+        };
+        let mut previous = self.bindings.insert(tab_id, binding);
+        let retired_binding = previous.as_ref().map(|binding| binding.host.binding_id());
+        if let Some(previous) = &mut previous {
+            previous.shutdown();
+        }
+        Ok(LiveRegistration {
+            record,
+            retired_binding,
+        })
+    }
+
+    fn start_binding(&mut self, epoch: u64, workspace: &Workspace) -> anyhow::Result<LiveBinding> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_start) {
+            anyhow::bail!("injected live binding start failure");
+        }
+        LiveBinding::start(
             &self.directory,
             self.instance_id,
             epoch,
             workspace,
             Arc::clone(&self.wake_gui),
-        )?;
-        let record = binding
-            .lease
-            .as_ref()
-            .expect("new live binding must have a discovery lease")
-            .record()?;
-        self.bindings.insert(tab_id, binding);
-        Ok(record)
+        )
     }
 
-    pub(super) fn remove(&mut self, tab_id: u64) {
+    pub(super) fn remove(&mut self, tab_id: u64) -> Option<BindingId> {
         if let Some(mut binding) = self.bindings.remove(&tab_id) {
+            let binding_id = binding.host.binding_id();
             binding.shutdown();
+            return Some(binding_id);
         }
+        None
     }
 
     pub(super) fn drain(
@@ -181,6 +214,11 @@ impl PrismLiveRegistry {
 
     pub(super) fn record(&self, tab_id: u64) -> Option<DiscoveryRecord> {
         self.bindings.get(&tab_id)?.lease.as_ref()?.record().ok()
+    }
+
+    #[cfg(test)]
+    fn fail_next_start(&mut self) {
+        self.fail_next_start = true;
     }
 
     pub(super) fn shutdown(&mut self) {
@@ -354,15 +392,19 @@ mod tests {
         )
         .unwrap();
         let mut registry = PrismLiveRegistry::at_root(root).unwrap();
-        let first = registry.register(7, &workspace).unwrap();
+        let first = registry.register(7, &workspace).unwrap().record;
         assert_eq!(registry.directory.records().unwrap().len(), 1);
-        let second = registry.register(7, &workspace).unwrap();
+        let second_registration = registry.register(7, &workspace).unwrap();
+        assert_eq!(second_registration.retired_binding, Some(first.binding_id));
+        let second = second_registration.record;
         assert_ne!(first.binding_id, second.binding_id);
         assert!(second.binding_epoch > first.binding_epoch);
         assert_eq!(registry.directory.records().unwrap().len(), 1);
         let moved = temporary.path().join("moved.prism");
         workspace.move_project(&moved).unwrap();
-        let moved_record = registry.register(7, &workspace).unwrap();
+        let moved_registration = registry.register(7, &workspace).unwrap();
+        assert_eq!(moved_registration.retired_binding, Some(second.binding_id));
+        let moved_record = moved_registration.record;
         assert_ne!(second.binding_id, moved_record.binding_id);
         assert!(moved_record.binding_epoch > second.binding_epoch);
         assert_eq!(
@@ -382,7 +424,9 @@ mod tests {
             SessionId::new(),
         )
         .unwrap();
-        let other_record = registry.register(8, &other).unwrap();
+        let other_registration = registry.register(8, &other).unwrap();
+        assert_eq!(other_registration.retired_binding, None);
+        let other_record = other_registration.record;
         assert_eq!(registry.directory.records().unwrap().len(), 2);
         registry.remove(8);
         let remaining = registry.directory.records().unwrap();
@@ -416,5 +460,54 @@ mod tests {
             })
         ));
         assert!(client.read_subscription_message().is_err());
+    }
+
+    #[test]
+    fn replacement_start_failure_preserves_the_old_authenticated_binding() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("discovery");
+        let project = temporary.path().join("project.prism");
+        let workspace = Workspace::create_durable(
+            prism_core::Document::new("Live", 64, 64),
+            &project,
+            Actor {
+                id: "human:test".into(),
+                display_name: "Test Human".into(),
+                kind: ActorKind::Human,
+            },
+            SessionId::new(),
+        )
+        .unwrap();
+        let mut registry = PrismLiveRegistry::at_root(root).unwrap();
+        let original = registry.register(7, &workspace).unwrap().record;
+        let capability = registry.directory.load_capability(&original).unwrap();
+
+        registry.fail_next_start();
+        assert!(registry.register(7, &workspace).is_err());
+        let surviving = registry.record(7).unwrap();
+        assert_eq!(surviving.binding_id, original.binding_id);
+        assert_eq!(surviving.binding_epoch, original.binding_epoch);
+        let records = registry.directory.records().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].binding_id, original.binding_id);
+
+        let mut client = BridgeClient::connect(
+            &ClientConfig::local(surviving.endpoint.clone()),
+            &capability,
+        )
+        .unwrap();
+        client.ping(7).unwrap();
+        let snapshot = client.subscribe(surviving.newest_event_seq).unwrap();
+        assert_eq!(snapshot.binding_id, original.binding_id);
+        assert_eq!(snapshot.binding_epoch, original.binding_epoch);
+        assert_eq!(
+            registry
+                .bindings
+                .get(&7)
+                .unwrap()
+                .server
+                .active_connection_count(),
+            1
+        );
     }
 }

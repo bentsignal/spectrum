@@ -10,14 +10,56 @@ use crate::{
     PrismLiveState, Workspace,
 };
 
+#[derive(Debug)]
+pub enum PrismLiveApplyError {
+    DefinitelyUnapplied(anyhow::Error),
+    OutcomeUnknown(anyhow::Error),
+}
+
+impl PrismLiveApplyError {
+    fn definitely_unapplied(error: impl Into<anyhow::Error>) -> Self {
+        Self::DefinitelyUnapplied(error.into())
+    }
+
+    fn outcome_unknown(error: impl Into<anyhow::Error>) -> Self {
+        Self::OutcomeUnknown(error.into())
+    }
+}
+
+impl std::fmt::Display for PrismLiveApplyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DefinitelyUnapplied(error) | Self::OutcomeUnknown(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for PrismLiveApplyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DefinitelyUnapplied(error) | Self::OutcomeUnknown(error) => error.source(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrismLiveTestFault {
+    AfterAgentMutation,
+    AfterHumanSync,
+}
+
 pub struct PrismLiveSessions {
     project_path: PathBuf,
+    #[cfg(test)]
+    test_fault: Option<PrismLiveTestFault>,
 }
 
 impl PrismLiveSessions {
     pub fn new(project_path: impl Into<PathBuf>) -> Self {
         Self {
             project_path: project_path.into(),
+            #[cfg(test)]
+            test_fault: None,
         }
     }
 
@@ -30,48 +72,63 @@ impl PrismLiveSessions {
         human: &mut Workspace,
         agent_session: SessionId,
         action: PrismLiveAction,
-    ) -> Result<PrismLiveResult> {
-        action.validate()?;
-        let human_before = durable_state(human, "bound human workspace")?;
-        self.require_same_project_path(human)?;
-        let collaboration = Workspace::collaboration(&self.project_path, agent_session)?;
-        authorize(&human_before, &collaboration, agent_session)?;
-        let mut agent = Workspace::open_session(&self.project_path, agent_session)?;
-        let agent_before = durable_state(&agent, "agent workspace")?;
-        authorize_agent_state(&human_before, &agent_before, &collaboration)?;
+    ) -> std::result::Result<PrismLiveResult, PrismLiveApplyError> {
+        action
+            .validate()
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
+        let human_before = durable_state(human, "bound human workspace")
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
+        self.require_same_project_path(human)
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
+        let collaboration = Workspace::collaboration(&self.project_path, agent_session)
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
+        authorize(&human_before, &collaboration, agent_session)
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
+        let mut agent = Workspace::open_session(&self.project_path, agent_session)
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
+        let agent_before = durable_state(&agent, "agent workspace")
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
+        authorize_agent_state(&human_before, &agent_before, &collaboration)
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
         let before = PrismLiveState::new(&human_before, &agent_before, collaboration.clone());
 
         if matches!(action, PrismLiveAction::State) {
             return Ok(PrismLiveResult::State(before));
         }
-        check_expectation(
-            action
-                .expectation()
-                .context("mutating live action lost its expectation")?,
-            &human_before,
-            &agent_before,
-            &collaboration,
-        )?;
+        let expectation = action
+            .expectation()
+            .context("mutating live action lost its expectation")
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
+        check_expectation(expectation, &human_before, &agent_before, &collaboration)
+            .map_err(PrismLiveApplyError::definitely_unapplied)?;
 
         let outputs = match action {
             PrismLiveAction::State => unreachable!(),
-            PrismLiveAction::ExecuteBatch { commands, .. } => agent.execute_batch(commands)?,
-            PrismLiveAction::Undo { .. } => vec![agent.execute(Command::Undo)?],
-            PrismLiveAction::Redo { .. } => vec![agent.execute(Command::Redo)?],
+            PrismLiveAction::ExecuteBatch { commands, .. } => agent.execute_batch(commands),
+            PrismLiveAction::Undo { .. } => agent.execute(Command::Undo).map(|output| vec![output]),
+            PrismLiveAction::Redo { .. } => agent.execute(Command::Redo).map(|output| vec![output]),
             PrismLiveAction::MoveAgentCursor { target, .. } => {
-                agent.move_to_revision(target)?;
-                Vec::new()
+                agent.move_to_revision(target).map(|_| Vec::new())
             }
-        };
+        }
+        .map_err(PrismLiveApplyError::outcome_unknown)?;
+        self.maybe_fail(PrismLiveTestFault::AfterAgentMutation)?;
 
         let sync = if collaboration.mode == CollaborationMode::Together {
-            Some(human.sync_together()?)
+            let sync = human
+                .sync_together()
+                .map_err(PrismLiveApplyError::outcome_unknown)?;
+            self.maybe_fail(PrismLiveTestFault::AfterHumanSync)?;
+            Some(sync)
         } else {
             None
         };
-        let collaboration = Workspace::collaboration(&self.project_path, agent_session)?;
-        let human_after = durable_state(human, "bound human workspace")?;
-        let agent_after = durable_state(&agent, "agent workspace")?;
+        let collaboration = Workspace::collaboration(&self.project_path, agent_session)
+            .map_err(PrismLiveApplyError::outcome_unknown)?;
+        let human_after = durable_state(human, "bound human workspace")
+            .map_err(PrismLiveApplyError::outcome_unknown)?;
+        let agent_after = durable_state(&agent, "agent workspace")
+            .map_err(PrismLiveApplyError::outcome_unknown)?;
         let committed_revision = (agent_after.cursor != agent_before.cursor
             && agent_after.revision.parent_id == Some(agent_before.cursor))
         .then(|| agent_after.revision.clone());
@@ -83,6 +140,33 @@ impl PrismLiveSessions {
             committed_revision,
             collaboration_sync: sync.map(Into::into),
         })))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_fault(&mut self, fault: PrismLiveTestFault) {
+        self.test_fault = Some(fault);
+    }
+
+    #[cfg(test)]
+    fn maybe_fail(
+        &mut self,
+        phase: PrismLiveTestFault,
+    ) -> std::result::Result<(), PrismLiveApplyError> {
+        if self.test_fault == Some(phase) {
+            self.test_fault = None;
+            return Err(PrismLiveApplyError::outcome_unknown(anyhow::anyhow!(
+                "injected Prism live failure at {phase:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(test))]
+    fn maybe_fail(
+        &mut self,
+        _phase: PrismLiveTestFault,
+    ) -> std::result::Result<(), PrismLiveApplyError> {
+        Ok(())
     }
 
     fn require_same_project_path(&self, human: &Workspace) -> Result<()> {

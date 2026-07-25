@@ -85,11 +85,15 @@ pub use live_bridge_host::{
 };
 
 mod live_bridge_sessions;
-pub use live_bridge_sessions::PrismLiveSessions;
+pub use live_bridge_sessions::{PrismLiveApplyError, PrismLiveSessions};
 
 #[cfg(test)]
 #[path = "live_bridge_tests.rs"]
 mod live_bridge_tests;
+
+#[cfg(test)]
+#[path = "live_bridge_outcome_tests.rs"]
+mod live_bridge_outcome_tests;
 
 mod shapes;
 pub use shapes::{

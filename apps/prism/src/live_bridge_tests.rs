@@ -14,15 +14,15 @@ use spectrum_revisions::{Actor, ActorKind, CollaborationMode, RevisionId, Sessio
 
 use crate::*;
 
-struct Fixture {
+pub(crate) struct Fixture {
     _directory: tempfile::TempDir,
-    path: std::path::PathBuf,
-    human: Workspace,
-    agent_session: SessionId,
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) human: Workspace,
+    pub(crate) agent_session: SessionId,
 }
 
 impl Fixture {
-    fn new(mode: CollaborationMode) -> Self {
+    pub(crate) fn new(mode: CollaborationMode) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("live.prism");
         let human_session = SessionId::new();
@@ -67,7 +67,7 @@ impl Fixture {
         )
     }
 
-    fn expectation(&self) -> PrismLiveActionExpectation {
+    pub(crate) fn expectation(&self) -> PrismLiveActionExpectation {
         let (human, agent) = self.state();
         let collaboration = Workspace::collaboration(&self.path, self.agent_session).unwrap();
         PrismLiveActionExpectation {
@@ -82,14 +82,14 @@ impl Fixture {
     }
 }
 
-fn rename(name: &str) -> Command {
+pub(crate) fn rename(name: &str) -> Command {
     Command::RenameDocument { name: name.into() }
 }
 
-struct HostHarness {
-    server: Arc<BridgeServer<PrismLiveHost>>,
-    host: Arc<PrismLiveHost>,
-    drain: PrismLiveDrain,
+pub(crate) struct HostHarness {
+    pub(crate) server: Arc<BridgeServer<PrismLiveHost>>,
+    pub(crate) host: Arc<PrismLiveHost>,
+    pub(crate) drain: PrismLiveDrain,
     binding_id: BindingId,
     project_id: spectrum_revisions::ProjectId,
     track_id: spectrum_revisions::TrackId,
@@ -97,11 +97,11 @@ struct HostHarness {
 }
 
 impl HostHarness {
-    fn new(fixture: &Fixture) -> Self {
+    pub(crate) fn new(fixture: &Fixture) -> Self {
         Self::new_with_wake(fixture, Arc::new(|| {}))
     }
 
-    fn new_with_wake(fixture: &Fixture, wake_gui: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub(crate) fn new_with_wake(fixture: &Fixture, wake_gui: Arc<dyn Fn() + Send + Sync>) -> Self {
         let human = fixture.human.live_state().unwrap().unwrap();
         let binding_id = BindingId::new();
         let (host, drain) =
@@ -129,7 +129,7 @@ impl HostHarness {
         }
     }
 
-    fn request(
+    pub(crate) fn request(
         &self,
         fixture: &Fixture,
         action: PrismLiveAction,
@@ -159,7 +159,7 @@ impl HostHarness {
         }
     }
 
-    fn round_trip(
+    pub(crate) fn round_trip(
         &mut self,
         workspace: &mut Workspace,
         request: RequestEnvelope,
@@ -178,6 +178,30 @@ impl HostHarness {
         }
         assert!(received, "live host did not enqueue within one second");
         worker.join().unwrap()
+    }
+
+    pub(crate) fn round_trip_error(
+        &mut self,
+        workspace: &mut Workspace,
+        request: RequestEnvelope,
+        interaction: PrismLiveInteractionState,
+    ) -> spectrum_live_bridge::BridgeError {
+        let server = Arc::clone(&self.server);
+        let worker = thread::spawn(move || server.handle_request(request));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut received = false;
+        while Instant::now() < deadline {
+            if self.drain.drain(workspace, interaction).received > 0 {
+                received = true;
+                break;
+            }
+            thread::sleep(Duration::from_micros(100));
+        }
+        assert!(received, "live host did not enqueue within one second");
+        worker
+            .join()
+            .unwrap()
+            .expect_err("injected post-commit failure must be non-definite")
     }
 }
 

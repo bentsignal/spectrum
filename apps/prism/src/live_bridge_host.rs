@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
         Arc, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
     time::{Duration, Instant},
@@ -17,7 +18,7 @@ use spectrum_revisions::{ActorKind, ProjectId, RevisionId, SessionId, TrackId};
 
 use crate::{
     LiveWorkspaceState, PRISM_LIVE_ACTION_FAMILY, PRISM_LIVE_ACTION_VERSION, PrismLiveAction,
-    PrismLiveResult, PrismLiveSessions, Workspace, decode_live_action,
+    PrismLiveApplyError, PrismLiveResult, PrismLiveSessions, Workspace, decode_live_action,
     live_bridge::PrismLiveCollaborationSync,
 };
 
@@ -57,6 +58,7 @@ struct PendingRequest {
 pub struct PrismLiveHost {
     state: Mutex<HostState>,
     ingress: SyncSender<PendingRequest>,
+    pending_ingress: Arc<AtomicUsize>,
     events: OnceLock<Arc<EventLog>>,
     wake_gui: Arc<dyn Fn() + Send + Sync>,
 }
@@ -64,6 +66,7 @@ pub struct PrismLiveHost {
 pub struct PrismLiveDrain {
     host: Arc<PrismLiveHost>,
     ingress: Receiver<PendingRequest>,
+    pending_ingress: Arc<AtomicUsize>,
     deferred: VecDeque<PendingRequest>,
     sessions: PrismLiveSessions,
 }
@@ -97,6 +100,7 @@ impl PrismLiveHost {
             .clone()
             .context("live binding requires a durable project path")?;
         let (sender, receiver) = mpsc::sync_channel(INGRESS_CAPACITY);
+        let pending_ingress = Arc::new(AtomicUsize::new(0));
         let host = Arc::new(Self {
             state: Mutex::new(HostState {
                 project_id: live.project_id,
@@ -108,12 +112,14 @@ impl PrismLiveHost {
                 closed: false,
             }),
             ingress: sender,
+            pending_ingress: Arc::clone(&pending_ingress),
             events: OnceLock::new(),
             wake_gui,
         });
         let drain = PrismLiveDrain {
             host: Arc::clone(&host),
             ingress: receiver,
+            pending_ingress,
             deferred: VecDeque::new(),
             sessions: PrismLiveSessions::new(project_path),
         };
@@ -127,13 +133,24 @@ impl PrismLiveHost {
     }
 
     pub fn close(&self) {
+        if self.mark_closed() {
+            self.publish_closed();
+        }
+    }
+
+    fn mark_closed(&self) -> bool {
         if let Ok(mut state) = self.state.lock()
             && !state.closed
         {
-            if let Some(events) = self.events.get() {
-                let _ = events.append(BridgeEventKind::ProjectClosed);
-            }
             state.closed = true;
+            return true;
+        }
+        false
+    }
+
+    fn publish_closed(&self) {
+        if let Some(events) = self.events.get() {
+            let _ = events.append(BridgeEventKind::ProjectClosed);
         }
     }
 
@@ -348,20 +365,27 @@ impl BridgeHost for PrismLiveHost {
             }
         };
         let (reply, response) = mpsc::sync_channel(1);
-        self.ingress
-            .try_send(PendingRequest {
-                request: request.clone(),
-                action,
-                reply: Some(reply),
-                deferred_at: None,
-            })
-            .map_err(|error| match error {
+        let state = self.state.lock().map_err(|_| BridgeError::Closed)?;
+        if state.closed {
+            return Err(BridgeError::Closed);
+        }
+        self.pending_ingress.fetch_add(1, Ordering::AcqRel);
+        if let Err(error) = self.ingress.try_send(PendingRequest {
+            request: request.clone(),
+            action,
+            reply: Some(reply),
+            deferred_at: None,
+        }) {
+            decrement_pending_ingress(&self.pending_ingress);
+            return Err(match error {
                 mpsc::TrySendError::Full(_) => BridgeError::RateLimited {
                     retry_after_millis: 10,
                     disconnect: false,
                 },
                 mpsc::TrySendError::Disconnected(_) => BridgeError::Closed,
-            })?;
+            });
+        }
+        drop(state);
         (self.wake_gui)();
         response
             .recv_timeout(GUI_REPLY_TIMEOUT)
@@ -390,8 +414,10 @@ impl PrismLiveDrain {
                 return report;
             }
         }
-        while report.received < DRAIN_COUNT_BUDGET && started.elapsed() < DRAIN_TIME_BUDGET {
-            let pending = match self.ingress.try_recv() {
+        while report.received < DRAIN_COUNT_BUDGET
+            && (report.received == 0 || started.elapsed() < DRAIN_TIME_BUDGET)
+        {
+            let pending = match self.try_receive() {
                 Ok(pending) => pending,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             };
@@ -421,11 +447,12 @@ impl PrismLiveDrain {
     }
 
     pub fn has_pending(&self) -> bool {
-        !self.deferred.is_empty()
+        self.pending_ingress.load(Ordering::Acquire) > 0 || !self.deferred.is_empty()
     }
 
     pub fn close(&mut self) {
-        while let Ok(mut pending) = self.ingress.try_recv() {
+        let publish_closed = self.host.mark_closed();
+        while let Ok(mut pending) = self.try_receive() {
             self.cancel_deferred_event(&pending);
             send_reply(
                 pending.reply.take(),
@@ -437,7 +464,21 @@ impl PrismLiveDrain {
         while let Some(pending) = self.deferred.pop_front() {
             self.cancel_deferred_event(&pending);
         }
-        self.host.close();
+        debug_assert_eq!(self.pending_ingress.load(Ordering::Acquire), 0);
+        if publish_closed {
+            self.host.publish_closed();
+        }
+    }
+
+    fn try_receive(&self) -> Result<PendingRequest, TryRecvError> {
+        let pending = self.ingress.try_recv()?;
+        decrement_pending_ingress(&self.pending_ingress);
+        Ok(pending)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_ingress_count(&self) -> usize {
+        self.pending_ingress.load(Ordering::Acquire)
     }
 
     fn handle_busy(&mut self, mut pending: PendingRequest, report: &mut PrismLiveDrainReport) {
@@ -507,6 +548,7 @@ impl PrismLiveDrain {
     ) {
         let was_deferred = pending.deferred_at.is_some();
         let result = self.apply_locked(workspace, &pending);
+        let outcome_unknown = result.is_err();
         let mutation_applied = !matches!(pending.action, PrismLiveAction::State)
             && matches!(
                 &result,
@@ -523,7 +565,7 @@ impl PrismLiveDrain {
         ) {
             report.refused += 1;
         }
-        if was_deferred && !mutation_applied {
+        if was_deferred && !mutation_applied && !outcome_unknown {
             self.cancel_deferred_event(&pending);
         }
         send_reply(pending.reply.take(), result);
@@ -538,7 +580,14 @@ impl PrismLiveDrain {
         if host.closed {
             return Err(BridgeError::Closed);
         }
-        let live = durable_state(workspace).map_err(protocol_error)?;
+        let live = match durable_state(workspace) {
+            Ok(live) => live,
+            Err(error) => {
+                return Ok(HostApplyOutcome::Applied(ResponseBody::Refused {
+                    reason: bounded_reason(&format!("{error:#}")),
+                }));
+            }
+        };
         if live.project_id != host.project_id
             || live.track_id != host.track_id
             || live.session_id != host.human_session
@@ -558,10 +607,19 @@ impl PrismLiveDrain {
             pending.action.clone(),
         ) {
             Ok(result) => result,
-            Err(error) => {
+            Err(PrismLiveApplyError::DefinitelyUnapplied(error)) => {
                 return Ok(HostApplyOutcome::Applied(ResponseBody::Refused {
                     reason: bounded_reason(&format!("{error:#}")),
                 }));
+            }
+            Err(PrismLiveApplyError::OutcomeUnknown(error)) => {
+                if let Ok(after) = durable_state(workspace) {
+                    host.human_cursor = after.cursor;
+                }
+                return Err(BridgeError::Protocol(format!(
+                    "Prism live mutation outcome is unknown; inspect current state before retrying: {}",
+                    bounded_reason(&format!("{error:#}"))
+                )));
             }
         };
         let after = durable_state(workspace).map_err(protocol_error)?;
@@ -704,6 +762,14 @@ impl PrismLiveDrain {
             });
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn inject_session_fault(
+        &mut self,
+        fault: crate::live_bridge_sessions::PrismLiveTestFault,
+    ) {
+        self.sessions.inject_fault(fault);
+    }
 }
 
 fn durable_state(workspace: &Workspace) -> Result<LiveWorkspaceState> {
@@ -742,6 +808,14 @@ fn send_reply(
     if let Some(reply) = reply {
         let _ = reply.send(result);
     }
+}
+
+fn decrement_pending_ingress(pending: &AtomicUsize) {
+    pending
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            count.checked_sub(1)
+        })
+        .expect("Prism live ingress accounting underflow");
 }
 
 fn deferred_interaction_id(request: &RequestEnvelope) -> String {
