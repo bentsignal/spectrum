@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use spectrum_revisions::{Asset, RevisionStore};
+use spectrum_revisions::{Asset, AssetId, RevisionStore};
 
 use crate::{
     Command, Document, FontAsset, Layer, LayerKind, LayerTransfer, LayerTransferFont, ShapeStroke,
-    Transform, VerifiedFontSource, apply_command,
+    Transform, VerifiedFontSource,
 };
 
 use super::validate_operations_version;
@@ -97,8 +97,9 @@ pub(super) fn hydrate_read_only_legacy_font_permissions(
 pub(super) fn replay_command(
     store: &RevisionStore,
     document: &mut Document,
-    command: Command,
+    mut command: Command,
 ) -> Result<()> {
+    validate_sampled_source_assets(store, &mut command)?;
     match command {
         Command::ImportFont { path, source_name } => {
             replay_font_import(store, document, &path, source_name.as_deref())
@@ -153,7 +154,7 @@ pub(super) fn replay_command(
             Ok(())
         }
         command => {
-            apply_command(document, command)?;
+            crate::command_apply::apply_command_trusted_embedded(document, command)?;
             Ok(())
         }
     }
@@ -165,7 +166,7 @@ fn replay_layer_transfer(
     transfer: LayerTransfer,
     index: Option<usize>,
 ) -> Result<()> {
-    transfer.validate_envelope()?;
+    transfer.validate_envelope_metadata()?;
     let LayerTransfer {
         mut layer,
         font_asset,
@@ -199,6 +200,26 @@ fn replay_layer_transfer(
     );
     document.selected = Some(id);
     Ok(())
+}
+
+fn validate_sampled_source_assets(store: &RevisionStore, command: &mut Command) -> Result<()> {
+    super::durable_sampled_sources::map_command_sampled_sources(command, |source| {
+        let reference = AssetReference::parse(&source.path)
+            .context("Clone Stamp operation has no embedded asset identity")?;
+        if reference.id.to_string() != source.content_hash {
+            bail!("Clone Stamp operation path does not match its content identity");
+        }
+        let asset = store
+            .asset_record(reference.id)?
+            .with_context(|| format!("embedded Prism asset {} is missing", reference.id))?;
+        if asset.id != reference.id || AssetId::for_bytes(&asset.bytes) != reference.id {
+            bail!(
+                "embedded Prism Clone Stamp asset {} does not match its content identity",
+                reference.id
+            );
+        }
+        source.validate_embedded_bytes(&asset.bytes)
+    })
 }
 
 fn replay_font_import(

@@ -12,6 +12,7 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
         "insert_layer",
         "add_paint_layer_with_stroke",
         "add_brush_stroke",
+        "set_clone_source",
         "lasso_selection",
         "delete_selected_pixels",
         "rename_document",
@@ -51,6 +52,10 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
     assert_eq!(
         schema["command_protocol"]["shaped_text_operations_version"],
         13
+    );
+    assert_eq!(
+        schema["command_protocol"]["clone_stamp_operations_version"],
+        14
     );
     assert_eq!(schema["paths"]["geometry_version"], 1);
     assert_eq!(

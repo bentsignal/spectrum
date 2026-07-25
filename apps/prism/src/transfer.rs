@@ -18,7 +18,8 @@ pub const PAINT_LAYER_TRANSFER_VERSION: u32 = 5;
 pub const DISSOLVE_LAYER_TRANSFER_VERSION: u32 = 6;
 pub const RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION: u32 = 7;
 pub const SHAPED_TEXT_LAYER_TRANSFER_VERSION: u32 = 8;
-pub const LAYER_TRANSFER_VERSION: u32 = SHAPED_TEXT_LAYER_TRANSFER_VERSION;
+pub const CLONE_STAMP_LAYER_TRANSFER_VERSION: u32 = 9;
+pub const LAYER_TRANSFER_VERSION: u32 = CLONE_STAMP_LAYER_TRANSFER_VERSION;
 const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
@@ -67,7 +68,10 @@ impl LayerTransfer {
             },
             _ => None,
         };
-        let version = if matches!(
+        let version = if matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
+        {
+            CLONE_STAMP_LAYER_TRANSFER_VERSION
+        } else if matches!(
             &layer.kind,
             LayerKind::Text { typography, .. }
                 if typography.shaping.engine == TextShapingEngine::HarfBuzzV1
@@ -157,6 +161,20 @@ impl LayerTransfer {
     }
 
     pub(crate) fn validate_envelope(&self) -> Result<()> {
+        self.validate_envelope_metadata()?;
+        if let LayerKind::Paint { program } = &self.layer.kind {
+            let mut validation = Ok(());
+            program.for_each_sampled_source(|source| {
+                if validation.is_ok() {
+                    validation = source.validate_asset();
+                }
+            });
+            validation?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_envelope_metadata(&self) -> Result<()> {
         if self.format != LAYER_TRANSFER_FORMAT {
             bail!("unsupported Prism layer transfer format {}", self.format);
         }
@@ -204,11 +222,19 @@ impl LayerTransfer {
         {
             bail!("Prism layer transfer versions before 8 cannot contain HarfBuzzV1 text");
         }
+        if self.version < CLONE_STAMP_LAYER_TRANSFER_VERSION
+            && matches!(&self.layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
+        {
+            bail!("Prism layer transfer versions before 9 cannot contain Clone Stamp sources");
+        }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");
         }
         validate_pixel_mask(&self.layer)?;
         match &self.layer.kind {
+            LayerKind::Paint { program } => {
+                program.validate()?;
+            }
             LayerKind::Text { typography, .. } => {
                 if typography.font_id.is_some() {
                     bail!("Prism layer transfers cannot contain a document-local font ID");

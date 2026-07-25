@@ -93,6 +93,10 @@ impl SequentialPngSource {
         &self.source_epoch
     }
 
+    pub(crate) fn source_sha256(&self) -> &str {
+        &self.source_sha256
+    }
+
     fn begin_read(&self) -> Result<FileFingerprint, SequentialPngReadError> {
         let current =
             FileFingerprint::from_file(&self.file).map_err(SequentialPngReadError::Other)?;

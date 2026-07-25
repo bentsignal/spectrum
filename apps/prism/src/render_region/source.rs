@@ -62,11 +62,25 @@ pub(super) fn layer_supports_region_reads(
                     .is_some_and(|source| source.source().info().supports_region_reads_now())
             },
         ),
+        LayerKind::Paint { program } => {
+            let mut ready = true;
+            program.for_each_sampled_source(|source| {
+                ready &= raster_sources.map_or_else(
+                    || {
+                        inspect_raster_region_source(&source.path)
+                            .is_ok_and(|inspection| inspection.info.supports_region_reads_now())
+                            || u64::from(source.width) * u64::from(source.height)
+                                <= crate::MAX_PAINT_REGION_PIXELS
+                    },
+                    |sources| sources.resolve(&source.path).is_some(),
+                );
+            });
+            ready
+        }
         LayerKind::Text { .. }
         | LayerKind::Rectangle { .. }
         | LayerKind::Ellipse { .. }
-        | LayerKind::Path { .. }
-        | LayerKind::Paint { .. } => true,
+        | LayerKind::Path { .. } => true,
     }
 }
 
@@ -112,6 +126,7 @@ pub(super) enum SourceDescriptor<'a> {
         dimensions: (u32, u32),
         adjustments: &'a spectrum_imaging::Adjustments,
         vector_mask: Option<&'a VectorMask>,
+        raster_sources: Option<&'a dyn RasterSourceResolver>,
     },
 }
 
@@ -120,7 +135,7 @@ impl<'a> SourceDescriptor<'a> {
         render_layer: &'a Layer,
         shape_scale: [f32; 2],
         font_asset: Option<&'a FontAsset>,
-        raster_sources: Option<&dyn RasterSourceResolver>,
+        raster_sources: Option<&'a dyn RasterSourceResolver>,
     ) -> Result<Self> {
         match &render_layer.kind {
             LayerKind::Raster { path, .. } => {
@@ -187,6 +202,7 @@ impl<'a> SourceDescriptor<'a> {
                 dimensions: (program.width, program.height),
                 adjustments: &render_layer.adjustments,
                 vector_mask: render_layer.vector_mask.as_ref(),
+                raster_sources,
             }),
         }
     }
@@ -398,17 +414,22 @@ impl<'a> SourceDescriptor<'a> {
                 region.width,
                 region.height,
             ),
-            Self::Paint { layer, .. } => {
+            Self::Paint {
+                layer,
+                raster_sources,
+                ..
+            } => {
                 let LayerKind::Paint { program } = &layer.kind else {
                     unreachable!("Paint source descriptor changed kind")
                 };
-                crate::paint::render_paint_region(
+                crate::paint_render::render_paint_region_with_sources(
                     program,
                     layer.pixel_mask.as_ref(),
                     region.x,
                     region.y,
                     region.width,
                     region.height,
+                    *raster_sources,
                 )
             }
         }

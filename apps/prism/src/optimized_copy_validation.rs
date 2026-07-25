@@ -240,6 +240,13 @@ impl RenderMaterialization {
             font.path = self.materialize_asset(store, &font.path, label, &mut paths)?;
             font.original_path = None;
         }
+        super::super::durable_sampled_sources::map_document_sampled_sources(
+            &mut document,
+            |source| {
+                source.path = self.materialize_asset(store, &source.path, label, &mut paths)?;
+                Ok(())
+            },
+        )?;
         Ok(document)
     }
 

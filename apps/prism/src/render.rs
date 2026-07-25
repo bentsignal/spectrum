@@ -74,6 +74,12 @@ pub fn save_document(document: &Document, path: &Path) -> Result<()> {
             }
         }
     }
+    crate::revisions::durable_sampled_sources::map_document_sampled_sources(
+        &mut portable,
+        |source| {
+            crate::sampled_source_portable::make_portable(source, &directory, &asset_directory)
+        },
+    )?;
     crate::typography::make_fonts_portable(
         &mut portable.font_assets,
         &directory,
@@ -133,6 +139,18 @@ pub fn load_document(path: &Path) -> Result<Document> {
             }
         }
     }
+    crate::revisions::durable_sampled_sources::map_document_sampled_sources(
+        &mut document,
+        |source| {
+            if source.path.is_relative() {
+                source.path = directory.join(&source.path);
+                if let Ok(canonical) = fs::canonicalize(&source.path) {
+                    source.path = canonical;
+                }
+            }
+            Ok(())
+        },
+    )?;
     crate::typography::resolve_portable_fonts(&mut document.font_assets, directory);
     crate::typography::hydrate_legacy_font_permissions(&mut document.font_assets)?;
     Ok(document)

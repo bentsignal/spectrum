@@ -15,6 +15,7 @@ pub(super) const PAINT_SNAPSHOT_VERSION: u32 = 7;
 pub(super) const DISSOLVE_SNAPSHOT_VERSION: u32 = 8;
 pub(super) const RASTER_PIXEL_MASK_SNAPSHOT_VERSION: u32 = 9;
 pub(crate) const SHAPED_TEXT_SNAPSHOT_VERSION: u32 = 10;
+pub(super) const CLONE_STAMP_SNAPSHOT_VERSION: u32 = 11;
 pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
@@ -28,6 +29,7 @@ pub(super) const DOCUMENT_LIFECYCLE_OPERATIONS_VERSION: u32 = 10;
 pub(super) const DISSOLVE_OPERATIONS_VERSION: u32 = 11;
 pub(super) const RASTER_PIXEL_MASK_OPERATIONS_VERSION: u32 = 12;
 pub(super) const SHAPED_TEXT_OPERATIONS_VERSION: u32 = 13;
+pub(super) const CLONE_STAMP_OPERATIONS_VERSION: u32 = 14;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -62,7 +64,8 @@ impl Compatibility for PrismCompatibility {
                 }
                 DISSOLVE_SNAPSHOT_VERSION
                 | RASTER_PIXEL_MASK_SNAPSHOT_VERSION
-                | SHAPED_TEXT_SNAPSHOT_VERSION => {
+                | SHAPED_TEXT_SNAPSHOT_VERSION
+                | CLONE_STAMP_SNAPSHOT_VERSION => {
                     encoding.required_capabilities.is_empty()
                         || encoding.required_capabilities == [DEFLATE_CAPABILITY]
                 }
@@ -72,13 +75,16 @@ impl Compatibility for PrismCompatibility {
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=SHAPED_TEXT_OPERATIONS_VERSION)
+            && (LEGACY_OPERATIONS_VERSION..=CLONE_STAMP_OPERATIONS_VERSION)
                 .contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands.iter().any(command_uses_clone_stamp) {
+        return CLONE_STAMP_OPERATIONS_VERSION;
+    }
     if commands.iter().any(|command| {
         matches!(
             command,
@@ -217,12 +223,30 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
     }
 }
 
+fn command_uses_clone_stamp(command: &Command) -> bool {
+    match command {
+        Command::SetCloneSource { .. } => true,
+        Command::AddPaintLayerWithStroke { stroke, .. }
+        | Command::AddBrushStroke { stroke, .. } => stroke.sampled_source().is_some(),
+        Command::InsertLayer { transfer, .. } => {
+            transfer.version >= crate::CLONE_STAMP_LAYER_TRANSFER_VERSION
+                || matches!(&transfer.layer.kind, crate::LayerKind::Paint { program } if program.contains_sampled_sources())
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn downgrade_compatible_transfers(commands: &mut [Command]) {
     for command in commands {
         if let Command::InsertLayer { transfer, .. } = command
             && transfer.validate_envelope().is_ok()
         {
             let minimal_version = if matches!(
+                &transfer.layer.kind,
+                crate::LayerKind::Paint { program } if program.contains_sampled_sources()
+            ) {
+                crate::CLONE_STAMP_LAYER_TRANSFER_VERSION
+            } else if matches!(
                 &transfer.layer.kind,
                 crate::LayerKind::Text { typography, .. }
                     if typography.shaping.engine == crate::TextShapingEngine::HarfBuzzV1
@@ -456,13 +480,13 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_advertises_operation_versions_one_through_thirteen() {
-        for version in LEGACY_OPERATIONS_VERSION..=SHAPED_TEXT_OPERATIONS_VERSION {
+    fn compatibility_advertises_every_operation_version_through_clone_stamp() {
+        for version in LEGACY_OPERATIONS_VERSION..=CLONE_STAMP_OPERATIONS_VERSION {
             assert!(
                 PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
-        for version in [0, SHAPED_TEXT_OPERATIONS_VERSION + 1] {
+        for version in [0, CLONE_STAMP_OPERATIONS_VERSION + 1] {
             assert!(
                 !PrismCompatibility
                     .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
@@ -538,7 +562,7 @@ mod tests {
         }];
         assert_eq!(
             operations_version(&compatible),
-            SHAPED_TEXT_OPERATIONS_VERSION
+            CLONE_STAMP_OPERATIONS_VERSION
         );
         assert!(
             validate_operations_version(&compatible, LAYER_TRANSFER_OPERATIONS_VERSION).is_err()

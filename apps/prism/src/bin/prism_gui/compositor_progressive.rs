@@ -90,6 +90,7 @@ fn brush_document_is_monotonic_prefix(
             != desired_program.strokes[..desired_program.strokes.len() - 1]
         || completed_stroke.style != desired_stroke.style
         || completed_stroke.clip != desired_stroke.clip
+        || completed_stroke.sampled_source_identity() != desired_stroke.sampled_source_identity()
         || !desired_stroke
             .samples
             .starts_with(completed_stroke.samples.as_ref())

@@ -63,6 +63,13 @@ impl RasterSourceSnapshot {
                 return RasterRenderMode::FallbackCapped;
             }
         }
+        if document
+            .raster_asset_paths()
+            .iter()
+            .any(|path| !self.providers.contains_key(path))
+        {
+            return RasterRenderMode::FallbackCapped;
+        }
 
         if prism_core::document_supports_region_native_zoom_with_sources(document, self) {
             RasterRenderMode::Provider {
@@ -270,15 +277,7 @@ impl RasterSourceCoordinator {
     }
 
     pub(super) fn set_tab_document(&mut self, tab_id: u64, document: &Document) {
-        let desired: HashSet<_> = document
-            .layers
-            .iter()
-            .filter(|layer| layer.visible && layer.opacity > 0.0)
-            .filter_map(|layer| match &layer.kind {
-                LayerKind::Raster { path, .. } => Some(path.clone()),
-                _ => None,
-            })
-            .collect();
+        let desired: HashSet<_> = document.raster_asset_paths().into_iter().collect();
         if self.tab_paths.get(&tab_id) == Some(&desired) {
             return;
         }

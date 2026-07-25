@@ -760,6 +760,14 @@ fn referenced_document_assets(
             .context("rewritten font asset is missing")?;
         assets.push(rewritten.asset.clone());
     }
+    let mut sampled_document = document.clone();
+    super::durable_sampled_sources::map_document_sampled_sources(
+        &mut sampled_document,
+        |source| {
+            assets.push(sampled_source_asset(store, source)?);
+            Ok(())
+        },
+    )?;
     Ok(assets)
 }
 
@@ -787,8 +795,30 @@ fn referenced_command_assets(
             }
             _ => {}
         }
+        let mut sampled_command = command.clone();
+        super::durable_sampled_sources::map_command_sampled_sources(
+            &mut sampled_command,
+            |source| {
+                assets.push(sampled_source_asset(store, source)?);
+                Ok(())
+            },
+        )?;
     }
     Ok(assets)
+}
+
+fn sampled_source_asset(
+    store: &RevisionStore,
+    source: &crate::SampledSourceSnapshot,
+) -> Result<Asset> {
+    let reference = AssetReference::parse(&source.path)
+        .context("history references a non-project Clone Stamp asset")?;
+    if reference.id.to_string() != source.content_hash {
+        bail!("Clone Stamp source path does not match its content identity");
+    }
+    let asset = source_asset(store, &source.path)?;
+    source.validate_embedded_bytes(&asset.bytes)?;
+    Ok(asset)
 }
 
 fn source_asset(store: &RevisionStore, path: &Path) -> Result<Asset> {

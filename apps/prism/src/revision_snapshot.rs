@@ -34,6 +34,14 @@ impl PreparedSnapshot {
             }
             font.original_path = None;
         }
+        super::durable_sampled_sources::map_document_sampled_sources(&mut portable, |source| {
+            let reference = AssetReference::parse(&source.path)
+                .context("Clone Stamp source is not a project asset")?;
+            if reference.id.to_string() != source.content_hash {
+                bail!("Clone Stamp source path does not match its content identity");
+            }
+            Ok(())
+        })?;
         Self::encode(portable, true, Vec::new())
     }
 
@@ -58,6 +66,19 @@ impl PreparedSnapshot {
             font.original_path = None;
             assets.push(prepared.asset);
         }
+        let mut sampled_hashes = std::collections::BTreeSet::new();
+        super::durable_sampled_sources::map_document_sampled_sources(&mut portable, |source| {
+            source.validate_asset()?;
+            let prepared = prepare_asset(&source.path)?;
+            if prepared.asset.id.to_string() != source.content_hash {
+                bail!("Clone Stamp source asset identity does not match its captured SHA-256");
+            }
+            source.path = prepared.reference.path();
+            if sampled_hashes.insert(source.content_hash.clone()) {
+                assets.push(prepared.asset);
+            }
+            Ok(())
+        })?;
         Self::encode(portable, compressed, assets)
     }
 
@@ -97,7 +118,13 @@ impl PreparedSnapshot {
         let raster_pixel_mask_schema = portable.layers.iter().any(|layer| {
             matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some()
         });
-        let snapshot_version = if shaped_text_schema {
+        let clone_stamp_schema = portable.clone_source.is_some()
+            || portable.layers.iter().any(|layer| {
+                matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
+            });
+        let snapshot_version = if clone_stamp_schema {
+            CLONE_STAMP_SNAPSHOT_VERSION
+        } else if shaped_text_schema {
             SHAPED_TEXT_SNAPSHOT_VERSION
         } else if raster_pixel_mask_schema {
             RASTER_PIXEL_MASK_SNAPSHOT_VERSION
@@ -174,7 +201,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | PAINT_SNAPSHOT_VERSION
             | DISSOLVE_SNAPSHOT_VERSION
             | RASTER_PIXEL_MASK_SNAPSHOT_VERSION
-            | SHAPED_TEXT_SNAPSHOT_VERSION,
+            | SHAPED_TEXT_SNAPSHOT_VERSION
+            | CLONE_STAMP_SNAPSHOT_VERSION,
             true,
             false,
         ) => bounded_snapshot_bytes(&payload.bytes),
@@ -186,7 +214,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | PAINT_SNAPSHOT_VERSION
             | DISSOLVE_SNAPSHOT_VERSION
             | RASTER_PIXEL_MASK_SNAPSHOT_VERSION
-            | SHAPED_TEXT_SNAPSHOT_VERSION,
+            | SHAPED_TEXT_SNAPSHOT_VERSION
+            | CLONE_STAMP_SNAPSHOT_VERSION,
             false,
             true,
         ) => inflate_snapshot(&payload.bytes),

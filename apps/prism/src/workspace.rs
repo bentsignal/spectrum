@@ -590,6 +590,19 @@ fn resolve_durable_commands(
 ) -> Result<Vec<Command>> {
     let mut candidate = document.clone();
     for command in &mut commands {
+        if let Command::SetCloneSource {
+            id,
+            document_x,
+            document_y,
+            resolved_source,
+        } = command
+            && resolved_source.is_none()
+        {
+            *resolved_source = Some(Box::new(crate::SampledSourceSnapshot::capture(
+                candidate.layer(*id)?,
+                [*document_x, *document_y],
+            )?));
+        }
         if let Command::MagicWandSelection {
             x,
             y,
@@ -610,8 +623,15 @@ fn resolve_durable_commands(
             )?));
         }
         let paint_selection = match command {
-            Command::AddBrushStroke { selection, .. }
-            | Command::AddPaintLayerWithStroke { selection, .. } => Some(selection),
+            Command::AddBrushStroke {
+                stroke, selection, ..
+            }
+            | Command::AddPaintLayerWithStroke {
+                stroke, selection, ..
+            } => {
+                *stroke = stroke.resolve_current_clone(candidate.clone_source.as_ref())?;
+                Some(selection)
+            }
             _ => None,
         };
         if let Some(selection) = paint_selection

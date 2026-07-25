@@ -1,6 +1,7 @@
 //! Prism's command-driven layered document engine.
 
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -53,9 +54,10 @@ pub use font_subset_plan::{
 
 mod transfer;
 pub use transfer::{
-    DISSOLVE_LAYER_TRANSFER_VERSION, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer,
-    LayerTransferFont, PAINT_LAYER_TRANSFER_VERSION, PATH_LAYER_TRANSFER_VERSION,
-    RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION, SHAPED_TEXT_LAYER_TRANSFER_VERSION,
+    CLONE_STAMP_LAYER_TRANSFER_VERSION, DISSOLVE_LAYER_TRANSFER_VERSION, LAYER_TRANSFER_FORMAT,
+    LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont, PAINT_LAYER_TRANSFER_VERSION,
+    PATH_LAYER_TRANSFER_VERSION, RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION,
+    SHAPED_TEXT_LAYER_TRANSFER_VERSION,
 };
 
 mod validation;
@@ -84,13 +86,19 @@ pub use paths::{
 };
 
 mod paint;
+mod paint_render;
 mod paint_selection;
+mod sampled_source;
+mod sampled_source_portable;
+mod sampled_stroke;
 pub use paint::{
     BRUSH_PROGRAM_VERSION, BrushClip, BrushMode, BrushProgram, BrushSample, BrushStroke,
     BrushStyle, MAX_BRUSH_CLIP_BYTES_PER_PROGRAM, MAX_BRUSH_DABS_PER_PROGRAM,
     MAX_BRUSH_DABS_PER_STROKE, MAX_BRUSH_SAMPLES_PER_DOCUMENT, MAX_BRUSH_SAMPLES_PER_STROKE,
     MAX_BRUSH_STROKES_PER_LAYER, MAX_PAINT_REGION_PIXELS,
 };
+pub use sampled_source::{SAMPLED_SOURCE_VERSION, SampledSourceSnapshot};
+pub use sampled_stroke::SampledBrushSource;
 
 mod lasso;
 pub use lasso::{
@@ -99,8 +107,8 @@ pub use lasso::{
     combine_selections, lasso_selection,
 };
 
-pub const PRISM_VERSION: u32 = 10;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 13;
+pub const PRISM_VERSION: u32 = 11;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 14;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
@@ -378,6 +386,8 @@ pub struct Document {
     pub font_assets: Vec<FontAsset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<Selection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_source: Option<SampledSourceSnapshot>,
     /// Bottom-to-top paint order.
     pub layers: Vec<Layer>,
     pub selected: Option<u64>,
@@ -404,6 +414,7 @@ impl Document {
             snapping_enabled: true,
             font_assets: Vec::new(),
             selection: None,
+            clone_source: None,
             layers: Vec::new(),
             selected: None,
             next_id: 1,
@@ -451,6 +462,27 @@ impl Document {
             return None;
         };
         typography.font_id.and_then(|id| self.font_asset(id).ok())
+    }
+
+    pub fn raster_asset_paths(&self) -> Vec<PathBuf> {
+        let mut paths = BTreeSet::new();
+        for layer in &self.layers {
+            match &layer.kind {
+                LayerKind::Raster { path, .. } if layer.visible && layer.opacity > 0.0 => {
+                    paths.insert(path.clone());
+                }
+                LayerKind::Paint { program } if layer.visible && layer.opacity > 0.0 => {
+                    program.for_each_sampled_source(|source| {
+                        paths.insert(source.path.clone());
+                    });
+                }
+                _ => {}
+            }
+        }
+        if let Some(source) = &self.clone_source {
+            paths.insert(source.path.clone());
+        }
+        paths.into_iter().collect()
     }
 
     pub(crate) fn validate_inline_mask_budget(&self) -> Result<()> {
@@ -541,6 +573,9 @@ impl Document {
         self.version = PRISM_VERSION;
         self.width = self.width.clamp(1, MAX_CANVAS_DIMENSION);
         self.height = self.height.clamp(1, MAX_CANVAS_DIMENSION);
+        if let Some(source) = &self.clone_source {
+            source.validate_metadata()?;
+        }
         for guide in &mut self.guides {
             guide.sanitize(self.width, self.height)?;
         }
@@ -827,6 +862,9 @@ mod pixel_mask_tests;
 #[path = "path_tests.rs"]
 mod path_tests;
 
+#[cfg(test)]
+#[path = "clone_stamp_tests.rs"]
+mod clone_stamp_tests;
 #[cfg(test)]
 #[path = "paint_limits_tests.rs"]
 mod paint_limits_tests;

@@ -20,6 +20,8 @@ mod temporary_font;
 use temporary_font::TemporaryFont;
 #[path = "benchmark/adjusted_vector.rs"]
 mod adjusted_vector;
+#[path = "benchmark/clone_stamp.rs"]
+mod clone_stamp;
 #[path = "benchmark/dissolve_preview.rs"]
 mod dissolve_preview;
 #[path = "benchmark/font_picker.rs"]
@@ -126,6 +128,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let text_preview_frame = text_preview_frame::measure()?;
     let font_picker = font_picker::measure();
     let dissolve_preview = dissolve_preview::measure()?;
+    let mut clone_stamp = clone_stamp::measure()?;
     let mut mixed_raster = mixed_raster::measure()?;
     let dissolve_preview_budget =
         dissolve_preview::budget_ms(matches!(profile, BenchmarkProfile::HostedCi));
@@ -648,6 +651,9 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         sample_summary(&mut mixed_raster.samples_16x);
     let (optimized_copy_median, optimized_copy_p95) = sample_summary(&mut optimized_copy.samples);
     let (shaped_wrap_median, shaped_wrap_p95) = sample_summary(&mut shaped_wrap.samples);
+    let (clone_viewport_median, clone_viewport_p95) =
+        sample_summary(&mut clone_stamp.viewport_samples);
+    let (clone_live_median, clone_live_p95) = sample_summary(&mut clone_stamp.live_samples);
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = vec![
         BenchmarkMetric {
@@ -814,6 +820,20 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: paint.drag_preview_p95_ms <= profile.brush_drag_preview_budget_ms(),
         },
         BenchmarkMetric {
+            name: "16k_provider_backed_clone_stamp_viewport",
+            median_ms: clone_viewport_median,
+            p95_ms: clone_viewport_p95,
+            budget_ms: profile.clone_stamp_viewport_budget_ms(),
+            pass: clone_viewport_p95 <= profile.clone_stamp_viewport_budget_ms(),
+        },
+        BenchmarkMetric {
+            name: "16k_live_clone_stamp_drag_bounded_render",
+            median_ms: clone_live_median,
+            p95_ms: clone_live_p95,
+            budget_ms: profile.clone_stamp_live_budget_ms(),
+            pass: clone_live_p95 <= profile.clone_stamp_live_budget_ms(),
+        },
+        BenchmarkMetric {
             name: "portable_harfbuzz_v1_typography_effect_raster",
             median_ms: typography_median,
             p95_ms: typography_p95,
@@ -919,6 +939,8 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             "live_brush_max_source_staging_pixels": paint.drag_preview_max_source_staging_pixels,
             "live_brush_peak_bytes": paint.drag_preview_peak_bytes,
             "live_brush_final_visible_pixels": paint.drag_preview_visible_pixels,
+            "clone_stamp_max_provider_region_pixels": clone_stamp.max_provider_region_pixels,
+            "clone_stamp_source_full_plane_bytes": clone_stamp.source_full_plane_bytes,
             "adjusted_vector_max_shadow_alpha_tile_pixels": adjusted_vector.max_shadow_alpha_tile_pixels
         },
         "metrics": metrics

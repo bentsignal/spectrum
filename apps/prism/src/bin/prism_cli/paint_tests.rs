@@ -31,6 +31,67 @@ fn stroke_json(mode: &str, x: f32, y: f32) -> Vec<u8> {
 }
 
 #[test]
+fn clone_cli_captures_one_raster_source_and_commits_resolved_stroke() {
+    let directory = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!(
+            "prism-clone-cli-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("clone.prism");
+    let source = directory.join("source.png");
+    let stroke = directory.join("stroke.json");
+    let mut image = image::RgbaImage::new(8, 8);
+    image.put_pixel(1, 1, image::Rgba([210, 40, 90, 255]));
+    image.save(&source).unwrap();
+    std::fs::write(&stroke, stroke_json("paint", 4.5, 4.5)).unwrap();
+
+    invoke(
+        &project,
+        &["init", "Clone CLI", "--width", "8", "--height", "8"],
+    )
+    .unwrap();
+    invoke(&project, &["add-image", source.to_str().unwrap()]).unwrap();
+    invoke(
+        &project,
+        &["paint", "add-layer", "--width", "8", "--height", "8"],
+    )
+    .unwrap();
+    invoke(&project, &["paint", "clone-source", "1", "1.5", "1.5"]).unwrap();
+    invoke(
+        &project,
+        &[
+            "paint",
+            "clone-stroke",
+            "2",
+            stroke.to_str().unwrap(),
+            "--no-selection",
+        ],
+    )
+    .unwrap();
+
+    let document = Workspace::load_read_only(&project).unwrap();
+    let prism_core::LayerKind::Paint { program } = &document.layer(2).unwrap().kind else {
+        panic!("clone CLI did not retain a Paint layer")
+    };
+    assert_eq!(program.version, prism_core::BRUSH_PROGRAM_VERSION);
+    assert_eq!(program.strokes.len(), 1);
+    assert_eq!(
+        program.strokes[0].style.mode,
+        prism_core::BrushMode::CloneStamp
+    );
+    assert!(program.strokes[0].sampled_source_identity().is_some());
+    let rendered = prism_core::render_layer_base(document.layer(2).unwrap(), None)
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(rendered.get_pixel(4, 4).0, [210, 40, 90, 255]);
+}
+
+#[test]
 fn paint_cli_persists_each_stroke_and_honors_no_selection() {
     let project = temporary_path("e2e", "prism");
     let selected_stroke = temporary_path("selected", "json");
