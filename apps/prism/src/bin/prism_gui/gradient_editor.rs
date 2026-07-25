@@ -173,7 +173,21 @@ fn widest_gap_stop(gradient: &ShapeGradient) -> (usize, f32, [u8; 4]) {
 }
 
 fn resolved_stop_color(original: [u8; 4], edited: [u8; 4], changed: bool) -> [u8; 4] {
-    if changed { edited } else { original }
+    if !changed {
+        return original;
+    }
+    let mut resolved = edited;
+    if edited[3] != original[3] {
+        // egui converts straight sRGB through float HSV even when the pointer only
+        // moves the alpha slider. Preserve sub-byte RGB round-trip noise while
+        // still accepting one-byte RGB edits when alpha is unchanged.
+        for channel in 0..3 {
+            if original[channel].abs_diff(edited[channel]) <= 1 {
+                resolved[channel] = original[channel];
+            }
+        }
+    }
+    resolved
 }
 
 fn kind_label(kind: GradientKind) -> &'static str {
@@ -221,6 +235,21 @@ mod tests {
         assert_eq!(
             resolved_stop_color([60, 230, 180, 210], [17, 33, 91, 128], true),
             [17, 33, 91, 128]
+        );
+        assert_eq!(
+            resolved_stop_color([68, 180, 211, 180], [68, 181, 211, 128], true),
+            [68, 180, 211, 128],
+            "an alpha-only edit must not inherit one-byte HSV round-trip noise"
+        );
+        assert_eq!(
+            resolved_stop_color([68, 180, 211, 180], [68, 181, 211, 180], true),
+            [68, 181, 211, 180],
+            "an intentional one-byte RGB edit must not be suppressed"
+        );
+        assert_eq!(
+            resolved_stop_color([68, 180, 211, 180], [71, 176, 211, 128], true),
+            [71, 176, 211, 128],
+            "a simultaneous material RGB and alpha edit must preserve both"
         );
     }
 
