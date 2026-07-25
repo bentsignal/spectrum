@@ -30,10 +30,21 @@ impl BenchmarkProfile {
         }
     }
 
-    pub(crate) fn modern_gradient_budget_ms(self) -> f64 {
+    pub(crate) fn modern_gradient_small_budget_ms(self) -> f64 {
         match self {
-            Self::Interactive => 500.0,
-            Self::HostedCi => 1_500.0,
+            // Serialized release calibration on the review workstation:
+            // radial 12.676 ms p95, angle 14.578 ms p95.
+            Self::Interactive => 30.0,
+            Self::HostedCi => 150.0,
+        }
+    }
+
+    pub(crate) fn modern_gradient_large_budget_ms(self) -> f64 {
+        match self {
+            // Serialized release calibration on the review workstation:
+            // radial 55.176 ms p95, angle 65.995 ms p95.
+            Self::Interactive => 100.0,
+            Self::HostedCi => 500.0,
         }
     }
 

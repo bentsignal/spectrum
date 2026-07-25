@@ -10,8 +10,8 @@ pub use adjustments::{
     HslBand, SpotRemoval, ToneCurve, ToneCurves,
 };
 pub use gradient::{
-    Gradient, GradientKind, GradientSampler, GradientSpread, GradientStop, GradientValidationError,
-    MAX_GRADIENT_STOPS,
+    Gradient, GradientInterpolation, GradientKind, GradientSampleStats, GradientSampler,
+    GradientSpread, GradientStop, GradientValidationError, MAX_GRADIENT_STOPS,
 };
 pub use region_source::{
     DynExactRegionSource, ExactRegionSource, RegionReadCapability, RegionReadiness,

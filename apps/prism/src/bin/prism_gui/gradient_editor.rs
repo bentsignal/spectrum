@@ -32,6 +32,14 @@ pub(super) fn gradient_editor(
                 .suffix("°"),
         );
         widget_gradient(app, &response, layer.id, &gradient);
+        let response = ui.add(egui::Slider::new(&mut gradient.offset, -2.0..=2.0).text("Offset"));
+        widget_gradient(app, &response, layer.id, &gradient);
+        let response = ui.add(
+            egui::Slider::new(&mut gradient.extent, 0.01..=4.0)
+                .text("Extent")
+                .logarithmic(true),
+        );
+        widget_gradient(app, &response, layer.id, &gradient);
     }
     if matches!(gradient.kind, GradientKind::Radial | GradientKind::Angle) {
         let response =
@@ -72,6 +80,7 @@ pub(super) fn gradient_editor(
         .size(9.0)
         .color(MUTED),
     );
+    ui.small("Premultiplied sRGB v1");
     let mut remove = None;
     for index in 0..gradient.stops.len() {
         ui.horizontal(|ui| {
@@ -121,7 +130,7 @@ pub(super) fn gradient_editor(
             .on_hover_text("Insert a stop in the widest interval")
             .clicked()
     {
-        let (index, position, color) = widest_gap_stop(&gradient.stops);
+        let (index, position, color) = widest_gap_stop(&gradient);
         gradient
             .stops
             .insert(index, GradientStop::new(position, color));
@@ -151,8 +160,9 @@ fn widget_gradient(
     );
 }
 
-fn widest_gap_stop(stops: &[GradientStop]) -> (usize, f32, [u8; 4]) {
-    let (index, pair) = stops
+fn widest_gap_stop(gradient: &ShapeGradient) -> (usize, f32, [u8; 4]) {
+    let (index, pair) = gradient
+        .stops
         .windows(2)
         .enumerate()
         .max_by(|(_, left), (_, right)| {
@@ -161,11 +171,7 @@ fn widest_gap_stop(stops: &[GradientStop]) -> (usize, f32, [u8; 4]) {
         })
         .expect("validated gradients have at least two stops");
     let position = (pair[0].position + pair[1].position) * 0.5;
-    let mut color = [0; 4];
-    for (channel, output) in color.iter_mut().enumerate() {
-        *output =
-            ((u16::from(pair[0].color[channel]) + u16::from(pair[1].color[channel])) / 2) as u8;
-    }
+    let color = gradient.sampler().sample_position(position);
     (index + 1, position, color)
 }
 
@@ -182,5 +188,59 @@ fn spread_label(spread: GradientSpread) -> &'static str {
         GradientSpread::Pad => "Pad",
         GradientSpread::Repeat => "Repeat",
         GradientSpread::Reflect => "Reflect",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widest_gap_uses_the_exact_premultiplied_render_interpolation() {
+        let gradient = ShapeGradient {
+            stops: vec![
+                GradientStop::new(0.0, [255, 0, 0, 255]),
+                GradientStop::new(1.0, [0, 0, 255, 0]),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(widest_gap_stop(&gradient), (1, 0.5, [255, 0, 0, 128]));
+    }
+
+    #[test]
+    fn inserted_stop_is_one_command_without_a_preview_interaction() {
+        let mut workspace =
+            prism_core::Workspace::new(prism_core::Document::new("Gradient", 32, 24), None);
+        workspace
+            .execute(Command::AddRectangle {
+                name: None,
+                width: 16,
+                height: 12,
+                color: [255; 4],
+                corner_radius: 0.0,
+                x: 0.0,
+                y: 0.0,
+            })
+            .unwrap();
+        let mut gradient = ShapeGradient::default();
+        let (index, position, color) = widest_gap_stop(&gradient);
+        gradient
+            .stops
+            .insert(index, GradientStop::new(position, color));
+        workspace
+            .execute(Command::SetShapeFill {
+                id: 1,
+                fill: Some(ShapeFill::Gradient(gradient.clone())),
+            })
+            .unwrap();
+        assert!(!workspace.interaction_active());
+        assert_eq!(
+            workspace.document.layer(1).unwrap().shape_fill,
+            Some(ShapeFill::Gradient(gradient))
+        );
+        workspace.execute(Command::Undo).unwrap();
+        assert!(workspace.document.layer(1).unwrap().shape_fill.is_none());
+        workspace.execute(Command::Redo).unwrap();
+        assert!(workspace.document.layer(1).unwrap().shape_fill.is_some());
     }
 }

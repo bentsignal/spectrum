@@ -1,3 +1,14 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+use image::{Rgba, RgbaImage};
+use spectrum_imaging::{
+    ExactRegionSource, PixelRegion, RegionReadCapability, RegionReadiness, RegionSourceDescriptor,
+    RegionSourceInfo, SourceSampleDepth,
+};
+
 use crate::*;
 
 struct EmptyResolver;
@@ -12,6 +23,47 @@ impl RasterSourceResolver for EmptyResolver {
     }
 }
 
+struct GradientMemorySource {
+    info: RegionSourceInfo,
+    pixels: RgbaImage,
+    reads: Arc<AtomicUsize>,
+}
+
+impl ExactRegionSource for GradientMemorySource {
+    type Error = std::convert::Infallible;
+
+    fn info(&self) -> &RegionSourceInfo {
+        &self.info
+    }
+
+    fn read_exact_region(&self, region: PixelRegion) -> Result<RgbaImage, Self::Error> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        Ok(image::imageops::crop_imm(
+            &self.pixels,
+            region.x,
+            region.y,
+            region.width,
+            region.height,
+        )
+        .to_image())
+    }
+}
+
+struct GradientMemoryResolver {
+    path: std::path::PathBuf,
+    source: ResolvedRasterSource,
+}
+
+impl RasterSourceResolver for GradientMemoryResolver {
+    fn snapshot_epoch(&self) -> u64 {
+        1
+    }
+
+    fn resolve(&self, path: &std::path::Path) -> Option<ResolvedRasterSource> {
+        (path == self.path).then(|| self.source.clone())
+    }
+}
+
 fn modern_gradient(kind: GradientKind, spread: GradientSpread) -> ShapeGradient {
     ShapeGradient {
         kind,
@@ -20,11 +72,14 @@ fn modern_gradient(kind: GradientKind, spread: GradientSpread) -> ShapeGradient 
             GradientStop::new(0.0, [245, 35, 70, 255]),
             GradientStop::new(0.23, [250, 210, 40, 190]),
             GradientStop::new(0.61, [25, 220, 180, 110]),
-            GradientStop::new(1.0, [65, 45, 240, 0]),
+            GradientStop::new(1.0, [0, 0, 0, 0]),
         ],
         center: [0.43, 0.57],
         radius: 0.46,
         spread,
+        interpolation: GradientInterpolation::PremultipliedSrgbV1,
+        offset: 0.0,
+        extent: 1.0,
     }
 }
 
@@ -112,6 +167,101 @@ fn gradient_document() -> Document {
     ];
     document.next_id = 4;
     document
+}
+
+fn metric_gradient(kind: GradientKind) -> ShapeGradient {
+    ShapeGradient {
+        kind,
+        stops: vec![
+            GradientStop::new(0.0, [0, 0, 0, 255]),
+            GradientStop::new(1.0, [255, 255, 255, 255]),
+        ],
+        center: [0.5025, 0.505],
+        radius: 0.8,
+        ..Default::default()
+    }
+}
+
+fn metric_layers(gradient: ShapeGradient) -> [Layer; 3] {
+    let rectangle = Layer {
+        id: 1,
+        shape_fill: Some(ShapeFill::Gradient(gradient.clone())),
+        kind: LayerKind::Rectangle {
+            width: 200,
+            height: 100,
+            color: [255; 4],
+            corner_radius: 0.0,
+        },
+        ..Default::default()
+    };
+    let ellipse = Layer {
+        id: 2,
+        shape_fill: Some(ShapeFill::Gradient(gradient.clone())),
+        kind: LayerKind::Ellipse {
+            width: 200,
+            height: 100,
+            color: [255; 4],
+        },
+        ..Default::default()
+    };
+    let path = Layer {
+        id: 3,
+        shape_fill: Some(ShapeFill::Gradient(gradient)),
+        kind: LayerKind::Path {
+            geometry: PathGeometry::new(
+                200,
+                100,
+                true,
+                PathFillRule::EvenOdd,
+                vec![
+                    PathAnchor::corner(0.0, 0.0),
+                    PathAnchor::corner(200.0, 0.0),
+                    PathAnchor::corner(200.0, 100.0),
+                    PathAnchor::corner(0.0, 100.0),
+                ],
+            )
+            .unwrap(),
+            color: [255; 4],
+        },
+        ..Default::default()
+    };
+    [rectangle, ellipse, path]
+}
+
+#[test]
+fn nonsquare_rectangle_ellipse_and_path_share_one_source_pixel_metric() {
+    for layer in metric_layers(metric_gradient(GradientKind::Radial)) {
+        let rendered = render_layer_preview(&layer, None).unwrap().to_rgba8();
+        assert_eq!(
+            rendered.get_pixel(140, 50),
+            rendered.get_pixel(100, 90),
+            "equal 40 px radial distances diverged for layer {}",
+            layer.id
+        );
+    }
+    for layer in metric_layers(metric_gradient(GradientKind::Angle)) {
+        let rendered = render_layer_preview(&layer, None).unwrap().to_rgba8();
+        assert_eq!(
+            rendered.get_pixel(140, 90).0,
+            [32, 32, 32, 255],
+            "physical 45-degree angle diverged for layer {}",
+            layer.id
+        );
+        assert_eq!(
+            rendered.get_pixel(100, 10).0,
+            [191, 191, 191, 255],
+            "negative-y angle diverged for layer {}",
+            layer.id
+        );
+    }
+
+    let radial = ShapeFill::Gradient(metric_gradient(GradientKind::Radial));
+    let sampler = radial.sampler(200, 100);
+    assert_eq!(sampler.sample(150.5, 50.5), sampler.sample(100.5, 0.5));
+    let angle = ShapeFill::Gradient(metric_gradient(GradientKind::Angle));
+    let sampler = angle.sampler(200, 100);
+    assert_eq!(sampler.sample(150.5, 50.5), [0, 0, 0, 255]);
+    assert_eq!(sampler.sample(100.5, 0.5), [191, 191, 191, 255]);
 }
 
 #[test]
@@ -215,6 +365,100 @@ fn modern_gradients_match_full_export_for_arbitrary_regions_and_uneven_strips() 
         );
         x += width;
     }
+}
+
+#[test]
+fn gradient_regions_match_with_a_real_exact_region_provider() {
+    let mut document = gradient_document();
+    let pixels = RgbaImage::from_fn(document.width, document.height, |x, y| {
+        Rgba([
+            ((x * 17 + y * 3) % 256) as u8,
+            ((x * 5 + y * 29) % 256) as u8,
+            ((x * 31 + y * 7) % 256) as u8,
+            255,
+        ])
+    });
+    let path = std::env::temp_dir().join(format!(
+        "prism-gradient-provider-{}-{}.png",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    pixels.save(&path).unwrap();
+    document.layers.insert(
+        0,
+        Layer {
+            id: 4,
+            name: "Provider-backed raster".into(),
+            kind: LayerKind::Raster {
+                path: path.clone(),
+                original_path: None,
+            },
+            ..Default::default()
+        },
+    );
+    document.next_id = 5;
+
+    let reads = Arc::new(AtomicUsize::new(0));
+    let source = GradientMemorySource {
+        info: RegionSourceInfo {
+            descriptor: RegionSourceDescriptor {
+                width: pixels.width(),
+                height: pixels.height(),
+                color_encoding: "rgba8".into(),
+                sample_depth: SourceSampleDepth::EightBit,
+                frame_index: 0,
+                page_index: 0,
+                decoder_contract: "prism-gradient-test-memory:v1".into(),
+            },
+            capability: RegionReadCapability::DerivedBacking,
+            readiness: RegionReadiness::Ready,
+        },
+        pixels,
+        reads: Arc::clone(&reads),
+    };
+    let resolver = GradientMemoryResolver {
+        path: path.clone(),
+        source: ResolvedRasterSource::new(
+            RasterSourceEpoch::new("gradient-provider:v1").unwrap(),
+            Arc::new(source),
+        )
+        .unwrap(),
+    };
+
+    let scale = 1.75;
+    let full = render_document_scaled(&document, scale).unwrap().to_rgba8();
+    for region in [
+        RenderRegion {
+            x: 7,
+            y: 11,
+            width: 91,
+            height: 57,
+        },
+        RenderRegion {
+            x: 103,
+            y: 19,
+            width: 73,
+            height: 109,
+        },
+    ] {
+        let oracle =
+            image::imageops::crop_imm(&full, region.x, region.y, region.width, region.height)
+                .to_image();
+        assert_eq!(
+            render_document_region_scaled_with_sources(&document, scale, region, &resolver)
+                .unwrap()
+                .to_rgba8(),
+            oracle
+        );
+    }
+    assert!(
+        reads.load(Ordering::Relaxed) > 0,
+        "the ExactRegionSource provider was not exercised"
+    );
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

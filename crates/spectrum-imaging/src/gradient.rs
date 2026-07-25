@@ -3,14 +3,16 @@
 use std::fmt;
 
 use serde::{
-    Deserialize, Deserializer, Serialize,
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{Error as _, SeqAccess, Visitor},
+    ser::SerializeStruct,
 };
 
 /// The durable upper bound for one gradient.
 pub const MAX_GRADIENT_STOPS: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GradientStop {
     pub position: f32,
     pub color: [u8; 4],
@@ -40,19 +42,24 @@ pub enum GradientSpread {
     Reflect,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GradientInterpolation {
+    #[default]
+    PremultipliedSrgbV1,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Gradient {
     pub kind: GradientKind,
     pub angle: f32,
-    #[serde(deserialize_with = "deserialize_stops")]
     pub stops: Vec<GradientStop>,
-    #[serde(skip_serializing_if = "is_default_center")]
     pub center: [f32; 2],
-    #[serde(skip_serializing_if = "is_default_radius")]
     pub radius: f32,
-    #[serde(skip_serializing_if = "is_pad")]
     pub spread: GradientSpread,
+    pub interpolation: GradientInterpolation,
+    pub offset: f32,
+    pub extent: f32,
 }
 
 impl Default for Gradient {
@@ -67,16 +74,123 @@ impl Default for Gradient {
             center: default_center(),
             radius: default_radius(),
             spread: GradientSpread::Pad,
+            interpolation: GradientInterpolation::PremultipliedSrgbV1,
+            offset: 0.0,
+            extent: 1.0,
         }
+    }
+}
+
+impl Serialize for Gradient {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let modern = self.requires_modern_encoding();
+        let mut state = serializer.serialize_struct("Gradient", 9)?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("angle", &self.angle)?;
+        state.serialize_field("stops", &self.stops)?;
+        if !is_default_center(&self.center) {
+            state.serialize_field("center", &self.center)?;
+        }
+        if !is_default_radius(&self.radius) {
+            state.serialize_field("radius", &self.radius)?;
+        }
+        if !is_pad(&self.spread) {
+            state.serialize_field("spread", &self.spread)?;
+        }
+        if modern {
+            state.serialize_field("interpolation", &self.interpolation)?;
+        }
+        if !is_zero(&self.offset) {
+            state.serialize_field("offset", &self.offset)?;
+        }
+        if !is_one(&self.extent) {
+            state.serialize_field("extent", &self.extent)?;
+        }
+        state.end()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct GradientWire {
+    kind: GradientKind,
+    angle: f32,
+    #[serde(deserialize_with = "deserialize_stops")]
+    stops: Vec<GradientStop>,
+    center: [f32; 2],
+    radius: f32,
+    spread: GradientSpread,
+    interpolation: Option<GradientInterpolation>,
+    offset: f32,
+    extent: f32,
+}
+
+impl Default for GradientWire {
+    fn default() -> Self {
+        let gradient = Gradient::default();
+        Self {
+            kind: gradient.kind,
+            angle: gradient.angle,
+            stops: gradient.stops,
+            center: gradient.center,
+            radius: gradient.radius,
+            spread: gradient.spread,
+            interpolation: None,
+            offset: gradient.offset,
+            extent: gradient.extent,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Gradient {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = GradientWire::deserialize(deserializer)?;
+        let explicit_interpolation = wire.interpolation.is_some();
+        let gradient = Self {
+            kind: wire.kind,
+            angle: wire.angle,
+            stops: wire.stops,
+            center: wire.center,
+            radius: wire.radius,
+            spread: wire.spread,
+            interpolation: wire.interpolation.unwrap_or_default(),
+            offset: wire.offset,
+            extent: wire.extent,
+        };
+        if gradient.requires_modern_encoding() && !explicit_interpolation {
+            return Err(D::Error::custom(
+                "modern gradients require an explicit interpolation contract",
+            ));
+        }
+        Ok(gradient)
     }
 }
 
 impl Gradient {
     /// Validates durable input without repairing, sorting, or dropping it.
     pub fn validate(&self) -> Result<(), GradientValidationError> {
+        match self.interpolation {
+            GradientInterpolation::PremultipliedSrgbV1 => {}
+        }
         if !self.angle.is_finite() {
             return Err(GradientValidationError::new(
                 "gradient angle must be finite",
+            ));
+        }
+        if !self.offset.is_finite() {
+            return Err(GradientValidationError::new(
+                "gradient offset must be finite",
+            ));
+        }
+        if !self.extent.is_normal() || self.extent <= 0.0 {
+            return Err(GradientValidationError::new(
+                "gradient extent must be positive, finite, and non-subnormal",
             ));
         }
         if self
@@ -119,7 +233,15 @@ impl Gradient {
 
     /// Canonicalizes representation only after strict validation succeeds.
     pub fn canonicalized(mut self) -> Self {
+        let modern = self.requires_modern_encoding();
         self.angle = self.angle.rem_euclid(360.0);
+        if modern {
+            for stop in &mut self.stops {
+                if stop.color[3] == 0 {
+                    stop.color = [0; 4];
+                }
+            }
+        }
         self
     }
 
@@ -130,10 +252,15 @@ impl Gradient {
             || self.center != default_center()
             || self.radius != default_radius()
             || self.stops.len() != 2
+            || self.offset != 0.0
+            || self.extent != 1.0
     }
 
     pub fn sampler(&self) -> GradientSampler<'_> {
-        GradientSampler { gradient: self }
+        GradientSampler {
+            gradient: self,
+            linear_direction: linear_direction(self.angle),
+        }
     }
 
     pub fn uniform_color(&self) -> Option<[u8; 4]> {
@@ -148,6 +275,19 @@ impl Gradient {
 #[derive(Clone, Copy)]
 pub struct GradientSampler<'a> {
     gradient: &'a Gradient,
+    linear_direction: [f32; 2],
+}
+
+/// Logical work performed by explicitly instrumented gradient samples.
+///
+/// Strict benchmarks use this opt-in path so normal rendering pays no
+/// synchronization or counter-update cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GradientSampleStats {
+    pub samples: u64,
+    pub stop_comparisons: u64,
+    pub temporary_bytes: u64,
+    pub source_copy_bytes: u64,
 }
 
 impl GradientSampler<'_> {
@@ -155,25 +295,84 @@ impl GradientSampler<'_> {
     ///
     /// Color and alpha come from the same premultiplied interpolation result.
     pub fn sample(&self, normalized_x: f32, normalized_y: f32) -> [u8; 4] {
+        self.sample_in_box(normalized_x, normalized_y, 1.0, 1.0)
+    }
+
+    /// Samples source-local coordinates in a rectangular shape.
+    ///
+    /// Linear gradients retain their normalized-box projection for legacy
+    /// parity. Radial and Angle gradients use source-pixel distances so a
+    /// non-square shape cannot stretch circles or rotate angle directions.
+    pub fn sample_in_box(
+        &self,
+        source_x: f32,
+        source_y: f32,
+        source_width: f32,
+        source_height: f32,
+    ) -> [u8; 4] {
+        let position = apply_spread(
+            self.project_position(source_x, source_y, source_width, source_height),
+            self.gradient.spread,
+        );
+        sample_stops(&self.gradient.stops, position)
+    }
+
+    /// Samples while recording the exact binary-search and allocation
+    /// contract used by strict performance benchmarks.
+    pub fn sample_in_box_with_stats(
+        &self,
+        source_x: f32,
+        source_y: f32,
+        source_width: f32,
+        source_height: f32,
+        stats: &mut GradientSampleStats,
+    ) -> [u8; 4] {
+        stats.samples = stats.samples.saturating_add(1);
+        let position = apply_spread(
+            self.project_position(source_x, source_y, source_width, source_height),
+            self.gradient.spread,
+        );
+        sample_stops_impl(&self.gradient.stops, position, || {
+            stats.stop_comparisons = stats.stop_comparisons.saturating_add(1);
+        })
+    }
+
+    fn project_position(
+        &self,
+        source_x: f32,
+        source_y: f32,
+        source_width: f32,
+        source_height: f32,
+    ) -> f32 {
         let gradient = self.gradient;
-        let raw = match gradient.kind {
+        match gradient.kind {
             GradientKind::Linear => {
-                let radians = gradient.angle.to_radians();
-                (normalized_x - 0.5) * radians.cos() + (normalized_y - 0.5) * radians.sin() + 0.5
+                let normalized_x = source_x / source_width.max(f32::MIN_POSITIVE);
+                let normalized_y = source_y / source_height.max(f32::MIN_POSITIVE);
+                ((normalized_x - 0.5) * self.linear_direction[0]
+                    + (normalized_y - 0.5) * self.linear_direction[1]
+                    + 0.5
+                    - gradient.offset)
+                    / gradient.extent
             }
             GradientKind::Radial => {
-                let dx = normalized_x - gradient.center[0];
-                let dy = normalized_y - gradient.center[1];
+                let metric = source_width.min(source_height).max(f32::MIN_POSITIVE);
+                let dx = (source_x - gradient.center[0] * source_width) / metric;
+                let dy = (source_y - gradient.center[1] * source_height) / metric;
                 dx.hypot(dy) / gradient.radius
             }
             GradientKind::Angle => {
-                let dx = normalized_x - gradient.center[0];
-                let dy = normalized_y - gradient.center[1];
-                dy.atan2(dx) / std::f32::consts::TAU + 0.5 - gradient.angle / 360.0
+                let dx = source_x - gradient.center[0] * source_width;
+                let dy = source_y - gradient.center[1] * source_height;
+                (angle_turn(dx, dy) - gradient.offset) / gradient.extent - gradient.angle / 360.0
             }
-        };
-        let position = apply_spread(raw, gradient.spread);
-        sample_stops(&gradient.stops, position)
+        }
+    }
+
+    /// Samples an already projected scalar using the exact render
+    /// interpolation contract.
+    pub fn sample_position(&self, position: f32) -> [u8; 4] {
+        sample_stops(&self.gradient.stops, position)
     }
 }
 
@@ -216,6 +415,37 @@ fn is_pad(value: &GradientSpread) -> bool {
     *value == GradientSpread::Pad
 }
 
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
+}
+
+fn is_one(value: &f32) -> bool {
+    *value == 1.0
+}
+
+fn linear_direction(angle: f32) -> [f32; 2] {
+    match angle {
+        0.0 | 360.0 => [1.0, 0.0],
+        90.0 => [0.0, 1.0],
+        180.0 => [-1.0, 0.0],
+        270.0 => [0.0, -1.0],
+        _ => {
+            let radians = angle.to_radians();
+            [radians.cos(), radians.sin()]
+        }
+    }
+}
+
+fn angle_turn(dx: f32, dy: f32) -> f32 {
+    if dy == 0.0 {
+        if dx < 0.0 { 0.5 } else { 0.0 }
+    } else if dx == 0.0 {
+        if dy > 0.0 { 0.25 } else { 0.75 }
+    } else {
+        (dy.atan2(dx) / std::f32::consts::TAU).rem_euclid(1.0)
+    }
+}
+
 fn apply_spread(value: f32, spread: GradientSpread) -> f32 {
     match spread {
         GradientSpread::Pad => value.clamp(0.0, 1.0),
@@ -238,6 +468,14 @@ fn apply_spread(value: f32, spread: GradientSpread) -> f32 {
 }
 
 fn sample_stops(stops: &[GradientStop], position: f32) -> [u8; 4] {
+    sample_stops_impl(stops, position, || {})
+}
+
+fn sample_stops_impl(
+    stops: &[GradientStop],
+    position: f32,
+    mut comparison: impl FnMut(),
+) -> [u8; 4] {
     let Some(first) = stops.first().copied() else {
         return [0; 4];
     };
@@ -247,7 +485,18 @@ fn sample_stops(stops: &[GradientStop], position: f32) -> [u8; 4] {
     if position <= first.position {
         return first.color;
     }
-    let index = stops.partition_point(|stop| stop.position < position);
+    let mut start_index = 0;
+    let mut end_index = stops.len();
+    while start_index < end_index {
+        let middle = start_index + (end_index - start_index) / 2;
+        comparison();
+        if stops[middle].position < position {
+            start_index = middle + 1;
+        } else {
+            end_index = middle;
+        }
+    }
+    let index = start_index;
     if index == 0 {
         return first.color;
     }
@@ -331,6 +580,23 @@ mod tests {
     }
 
     #[test]
+    fn modern_serialization_requires_an_explicit_interpolation_contract() {
+        let modern = Gradient {
+            kind: GradientKind::Radial,
+            ..Default::default()
+        };
+        let encoded = serde_json::to_string(&modern).unwrap();
+        assert!(encoded.contains(r#""interpolation":"premultiplied_srgb_v1""#));
+        assert_eq!(serde_json::from_str::<Gradient>(&encoded).unwrap(), modern);
+        assert!(
+            serde_json::from_str::<Gradient>(
+                r#"{"kind":"radial","angle":0,"stops":[{"position":0,"color":[0,0,0,255]},{"position":1,"color":[255,255,255,255]}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn deserialization_rejects_the_overflow_sentinel() {
         let stops = (0..33)
             .map(|index| {
@@ -346,6 +612,22 @@ mod tests {
     }
 
     #[test]
+    fn strict_serde_rejects_unknown_duplicate_and_unsupported_modern_fields() {
+        for value in [
+            r#"{"kind":"radial","angle":0,"raduis":0.9,"stops":[{"position":0,"color":[0,0,0,255]},{"position":1,"color":[255,255,255,255]}]}"#,
+            r#"{"kind":"radial","kind":"angle","angle":0,"stops":[{"position":0,"color":[0,0,0,255]},{"position":1,"color":[255,255,255,255]}]}"#,
+            r#"{"kind":"radial","angle":0,"interpolation":"linear_rgb_v1","stops":[{"position":0,"color":[0,0,0,255]},{"position":1,"color":[255,255,255,255]}]}"#,
+            r#"{"kind":"radial","angle":0,"stops":[{"position":0,"opacity":1,"color":[0,0,0,255]},{"position":1,"color":[255,255,255,255]}]}"#,
+            r#"{"kind":"radial","angle":0,"stops":[{"position":0,"position":0.5,"color":[0,0,0,255]},{"position":1,"color":[255,255,255,255]}]}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Gradient>(value).is_err(),
+                "strict gradient serde accepted {value}"
+            );
+        }
+    }
+
+    #[test]
     fn premultiplied_interpolation_uses_one_rgba_result() {
         let gradient = Gradient {
             stops: vec![
@@ -355,6 +637,146 @@ mod tests {
             ..Gradient::default()
         };
         assert_eq!(gradient.sampler().sample(0.5, 0.5), [255, 0, 0, 128]);
+    }
+
+    #[test]
+    fn instrumented_sampling_pins_binary_search_and_zero_copy_bounds() {
+        let gradient = Gradient {
+            kind: GradientKind::Radial,
+            stops: (0..MAX_GRADIENT_STOPS)
+                .map(|index| {
+                    GradientStop::new(
+                        index as f32 / (MAX_GRADIENT_STOPS - 1) as f32,
+                        [index as u8; 4],
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut stats = GradientSampleStats::default();
+        let sampler = gradient.sampler();
+        for y in 0..17 {
+            for x in 0..29 {
+                sampler.sample_in_box_with_stats(
+                    x as f32 + 0.5,
+                    y as f32 + 0.5,
+                    29.0,
+                    17.0,
+                    &mut stats,
+                );
+            }
+        }
+        assert_eq!(stats.samples, 29 * 17);
+        assert!(stats.stop_comparisons <= stats.samples * 6);
+        assert_eq!(stats.temporary_bytes, 0);
+        assert_eq!(stats.source_copy_bytes, 0);
+    }
+
+    #[test]
+    fn angle_zero_has_a_positive_x_seam_and_exact_center_zero() {
+        let gradient = Gradient {
+            kind: GradientKind::Angle,
+            stops: vec![
+                GradientStop::new(0.0, [0, 0, 0, 255]),
+                GradientStop::new(1.0, [255, 255, 255, 255]),
+            ],
+            ..Default::default()
+        };
+        let sampler = gradient.sampler();
+        assert_eq!(
+            sampler.sample_in_box(150.0, 50.0, 200.0, 100.0),
+            [0, 0, 0, 255]
+        );
+        assert_eq!(
+            sampler.sample_in_box(100.0, 50.0, 200.0, 100.0),
+            [0, 0, 0, 255]
+        );
+        assert_eq!(
+            sampler.sample_in_box(100.0, 75.0, 200.0, 100.0),
+            [64, 64, 64, 255]
+        );
+        assert_eq!(
+            sampler.sample_in_box(50.0, 50.0, 200.0, 100.0),
+            [128, 128, 128, 255]
+        );
+        assert_eq!(
+            sampler.sample_in_box(100.0, 25.0, 200.0, 100.0),
+            [191, 191, 191, 255]
+        );
+        assert_eq!(
+            sampler.sample_in_box(150.0, f32::from_bits(50.0_f32.to_bits() - 1), 200.0, 100.0),
+            [255, 255, 255, 255]
+        );
+    }
+
+    #[test]
+    fn angle_phase_and_spreads_have_pinned_wrap_bytes() {
+        let base = Gradient {
+            kind: GradientKind::Angle,
+            angle: 90.0,
+            stops: vec![
+                GradientStop::new(0.0, [0, 0, 0, 255]),
+                GradientStop::new(1.0, [255, 255, 255, 255]),
+            ],
+            ..Default::default()
+        };
+        for (spread, expected) in [
+            (GradientSpread::Pad, [0, 0, 0, 255]),
+            (GradientSpread::Repeat, [191, 191, 191, 255]),
+            (GradientSpread::Reflect, [64, 64, 64, 255]),
+        ] {
+            let gradient = Gradient {
+                spread,
+                ..base.clone()
+            };
+            assert_eq!(
+                gradient.sampler().sample_in_box(150.0, 50.0, 200.0, 100.0),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn cardinal_linear_directions_have_pinned_exact_bytes() {
+        let base = Gradient {
+            stops: vec![
+                GradientStop::new(0.0, [0, 0, 0, 255]),
+                GradientStop::new(1.0, [255, 255, 255, 255]),
+            ],
+            ..Default::default()
+        };
+        for (angle, point, expected) in [
+            (0.0, (1.0, 0.5), [255, 255, 255, 255]),
+            (90.0, (0.5, 1.0), [255, 255, 255, 255]),
+            (180.0, (1.0, 0.5), [0, 0, 0, 255]),
+            (270.0, (0.5, 1.0), [0, 0, 0, 255]),
+        ] {
+            let gradient = Gradient {
+                angle,
+                ..base.clone()
+            };
+            assert_eq!(gradient.sampler().sample(point.0, point.1), expected);
+        }
+    }
+
+    #[test]
+    fn modern_transparent_rgb_is_canonical_but_legacy_bytes_are_grandfathered() {
+        let legacy = Gradient {
+            stops: vec![
+                GradientStop::new(0.0, [255, 0, 0, 255]),
+                GradientStop::new(1.0, [17, 33, 91, 0]),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            legacy.clone().canonicalized().stops[1].color,
+            [17, 33, 91, 0]
+        );
+        let modern = Gradient {
+            kind: GradientKind::Radial,
+            ..legacy
+        };
+        assert_eq!(modern.canonicalized().stops[1].color, [0; 4]);
     }
 
     #[test]

@@ -15,9 +15,9 @@ pub use commands::{Command, CommandOutput, PaintSelection};
 mod effects;
 mod effects_render;
 pub use effects::{
-    DROP_SHADOW_KERNEL, DROP_SHADOW_KERNEL_TOTAL_WEIGHT, DropShadow, GradientKind, GradientSpread,
-    GradientStop, LayerStyle, MAX_DROP_SHADOW_BLUR, MAX_DROP_SHADOW_OFFSET, MAX_GRADIENT_STOPS,
-    ShapeFill, ShapeGradient, ShapeStroke,
+    DROP_SHADOW_KERNEL, DROP_SHADOW_KERNEL_TOTAL_WEIGHT, DropShadow, GradientInterpolation,
+    GradientKind, GradientSpread, GradientStop, LayerStyle, MAX_DROP_SHADOW_BLUR,
+    MAX_DROP_SHADOW_OFFSET, MAX_GRADIENT_STOPS, ShapeFill, ShapeGradient, ShapeStroke,
 };
 
 mod text;

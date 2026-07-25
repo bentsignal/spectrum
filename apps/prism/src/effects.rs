@@ -1,7 +1,8 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 pub use spectrum_imaging::{
-    Gradient as ShapeGradient, GradientKind, GradientSpread, GradientStop, MAX_GRADIENT_STOPS,
+    Gradient as ShapeGradient, GradientInterpolation, GradientKind, GradientSampler,
+    GradientSpread, GradientStop, MAX_GRADIENT_STOPS,
 };
 
 use crate::validation::require_finite;
@@ -155,12 +156,13 @@ impl ShapeFill {
         }
     }
 
-    pub(crate) fn sample(&self, x: f32, y: f32, width: u32, height: u32) -> [u8; 4] {
+    pub(crate) fn sampler(&self, width: u32, height: u32) -> ShapeFillSampler<'_> {
         match self {
-            Self::Gradient(gradient) => gradient.sampler().sample(
-                (x / width.max(1) as f32).clamp(0.0, 1.0),
-                (y / height.max(1) as f32).clamp(0.0, 1.0),
-            ),
+            Self::Gradient(gradient) => ShapeFillSampler {
+                gradient: gradient.sampler(),
+                width: width.max(1) as f32,
+                height: height.max(1) as f32,
+            },
         }
     }
 
@@ -169,9 +171,23 @@ impl ShapeFill {
             Self::Gradient(gradient) => gradient.uniform_color(),
         }
     }
+}
 
-    pub(crate) fn sample_alpha(&self, x: f32, y: f32, width: u32, height: u32) -> u8 {
-        self.sample(x, y, width, height)[3]
+#[derive(Clone, Copy)]
+pub(crate) struct ShapeFillSampler<'a> {
+    gradient: GradientSampler<'a>,
+    width: f32,
+    height: f32,
+}
+
+impl ShapeFillSampler<'_> {
+    pub(crate) fn sample(&self, x: f32, y: f32) -> [u8; 4] {
+        self.gradient.sample_in_box(
+            x.clamp(0.0, self.width),
+            y.clamp(0.0, self.height),
+            self.width,
+            self.height,
+        )
     }
 }
 

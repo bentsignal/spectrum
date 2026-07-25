@@ -40,6 +40,22 @@ fn modern_gradient_transfer_uses_v10_and_v9_fails_closed() {
         transfer.version,
         crate::MODERN_GRADIENT_LAYER_TRANSFER_VERSION
     );
+    let encoded = transfer.to_json().unwrap();
+    let forgeries = [
+        encoded.replacen(r#""kind":"radial""#, r#""kind":"radial","raduis":0.5"#, 1),
+        encoded.replacen(r#""kind":"radial""#, r#""kind":"radial","kind":"angle""#, 1),
+        encoded.replacen(r#""position":0.0"#, r#""position":0.0,"position":0.1"#, 1),
+        encoded.replacen(
+            r#""kind":"radial""#,
+            r#""kind":"radial","interpolation":"linear_rgb_v1""#,
+            1,
+        ),
+    ];
+    for forged in forgeries {
+        assert_ne!(forged, encoded);
+        assert!(LayerTransfer::from_json(&forged).is_err());
+    }
+
     let mut old = transfer;
     old.version = crate::CLONE_STAMP_LAYER_TRANSFER_VERSION;
     assert!(old.validate_envelope_metadata().is_err());

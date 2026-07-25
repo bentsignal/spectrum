@@ -81,6 +81,20 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
             .unwrap()
             .contains("mutually exclusive")
     );
+    assert_eq!(
+        schema["layer_styles"]["gradient_contract"]["interpolation"],
+        "premultiplied_srgb_v1"
+    );
+    assert_eq!(
+        schema["layer_styles"]["gradient_contract"]["structured_json_max_bytes"],
+        16_384
+    );
+    assert!(
+        schema["layer_styles"]["gradient_contract"]["strict_json"]
+            .as_str()
+            .unwrap()
+            .contains("duplicate")
+    );
     assert!(schema["gui_interactions"]["brush"].is_string());
     assert!(schema["gui_interactions"]["eraser"].is_string());
     assert!(schema["selection"].is_object());

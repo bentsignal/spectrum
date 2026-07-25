@@ -527,6 +527,36 @@ mod tests {
     }
 
     #[test]
+    fn operation_gradient_json_rejects_unknown_duplicate_and_unsupported_fields() {
+        let modern = Command::SetShapeFill {
+            id: 1,
+            fill: Some(crate::ShapeFill::Gradient(crate::ShapeGradient {
+                kind: crate::GradientKind::Radial,
+                stops: vec![
+                    crate::GradientStop::new(0.0, [255, 0, 0, 255]),
+                    crate::GradientStop::new(1.0, [0, 0, 0, 0]),
+                ],
+                ..Default::default()
+            })),
+        };
+        let encoded = serde_json::to_string(&vec![modern]).unwrap();
+        let forgeries = [
+            encoded.replacen(r#""kind":"radial""#, r#""kind":"radial","raduis":0.5"#, 1),
+            encoded.replacen(r#""kind":"radial""#, r#""kind":"radial","kind":"angle""#, 1),
+            encoded.replacen(r#""position":0.0"#, r#""position":0.0,"position":0.1"#, 1),
+            encoded.replacen(
+                r#""kind":"radial""#,
+                r#""kind":"radial","interpolation":"linear_rgb_v1""#,
+                1,
+            ),
+        ];
+        for forged in forgeries {
+            assert_ne!(forged, encoded);
+            assert!(serde_json::from_str::<Vec<Command>>(&forged).is_err());
+        }
+    }
+
+    #[test]
     fn lasso_commands_require_v9_while_paint_stays_v8() {
         let lasso = [Command::LassoSelection {
             points: LassoPath::new(vec![

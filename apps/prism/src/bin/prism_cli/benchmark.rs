@@ -596,18 +596,32 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = vec![
         BenchmarkMetric {
-            name: "8x_16k_32_stop_radial_gradient_viewport",
-            median_ms: gradient.radial_median_ms,
-            p95_ms: gradient.radial_p95_ms,
-            budget_ms: profile.modern_gradient_budget_ms(),
-            pass: gradient.radial_p95_ms <= profile.modern_gradient_budget_ms(),
+            name: "8x_16k_32_stop_radial_gradient_320x180_arbitrary_viewport",
+            median_ms: gradient.radial_small_median_ms,
+            p95_ms: gradient.radial_small_p95_ms,
+            budget_ms: profile.modern_gradient_small_budget_ms(),
+            pass: gradient.radial_small_p95_ms <= profile.modern_gradient_small_budget_ms(),
         },
         BenchmarkMetric {
-            name: "8x_16k_32_stop_angle_gradient_viewport",
-            median_ms: gradient.angle_median_ms,
-            p95_ms: gradient.angle_p95_ms,
-            budget_ms: profile.modern_gradient_budget_ms(),
-            pass: gradient.angle_p95_ms <= profile.modern_gradient_budget_ms(),
+            name: "8x_16k_32_stop_radial_gradient_640x400_uneven_strips",
+            median_ms: gradient.radial_large_median_ms,
+            p95_ms: gradient.radial_large_p95_ms,
+            budget_ms: profile.modern_gradient_large_budget_ms(),
+            pass: gradient.radial_large_p95_ms <= profile.modern_gradient_large_budget_ms(),
+        },
+        BenchmarkMetric {
+            name: "8x_16k_32_stop_angle_gradient_320x180_arbitrary_viewport",
+            median_ms: gradient.angle_small_median_ms,
+            p95_ms: gradient.angle_small_p95_ms,
+            budget_ms: profile.modern_gradient_small_budget_ms(),
+            pass: gradient.angle_small_p95_ms <= profile.modern_gradient_small_budget_ms(),
+        },
+        BenchmarkMetric {
+            name: "8x_16k_32_stop_angle_gradient_640x400_uneven_strips",
+            median_ms: gradient.angle_large_median_ms,
+            p95_ms: gradient.angle_large_p95_ms,
+            budget_ms: profile.modern_gradient_large_budget_ms(),
+            pass: gradient.angle_large_p95_ms <= profile.modern_gradient_large_budget_ms(),
         },
         BenchmarkMetric {
             name: "4096_square_contiguous_magic_wand",

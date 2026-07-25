@@ -136,7 +136,15 @@ pub(super) fn schema() -> Value {
         },
         "layer_styles": {
             "drop_shadow": "shadow <layer> [--x <px>] [--y <px>] [--blur <px>] [--color <RRGGBBAA>] [--clear]",
-            "shape_gradient": "gradient <shape> [--kind <linear|radial|angle>] [--angle <degrees>] [--spread <pad|repeat|reflect>] [--center-x <0..1>] [--center-y <0..1>] [--radius <positive normal>] (--stop <POSITION:RRGGBBAA> repeated 2..32 times | legacy --start <RRGGBBAA> and/or --end <RRGGBBAA>) [--clear]; modern --stop is mutually exclusive with legacy --start/--end",
+            "shape_gradient": "gradient <shape> (--gradient-json <bounded strict object> | [--kind <linear|radial|angle>] [--angle <degrees>] [--spread <pad|repeat|reflect>] [--center-x <0..1>] [--center-y <0..1>] [--radius <positive normal>] [--offset <finite>] [--extent <positive normal>] (--stop <POSITION:RRGGBBAA> repeated 2..32 times | legacy --start <RRGGBBAA> and/or --end <RRGGBBAA>) | --clear); structured JSON, modern --stop, legacy endpoints, and --clear are mutually exclusive surfaces",
+            "gradient_contract": {
+                "model": "spectrum_shape_gradient_v1",
+                "interpolation": "premultiplied_srgb_v1",
+                "structured_json_max_bytes": 16384,
+                "strict_json": "unknown and duplicate gradient or stop keys are rejected",
+                "geometry": "Radial and Angle use a source-local pixel metric; Linear preserves normalized-box legacy projection; angle zero begins at positive X; offset defaults to 0 and extent defaults to 1",
+                "transparent_color": "modern fully transparent stops canonicalize hidden RGB to zero; grandfathered legacy two-stop Linear bytes remain unchanged"
+            },
             "rendering": "portable CPU export and exact interactive composite preview share the same fixed-kernel shadow and shape sampler"
         },
         "selection": {

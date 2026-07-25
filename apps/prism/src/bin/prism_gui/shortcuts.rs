@@ -233,6 +233,10 @@ pub(super) fn canvas_interaction_active(
     canvas_drag_active || workspace_interaction_active
 }
 
+fn cancel_workspace_interaction_on_escape(workspace: &mut Workspace) -> bool {
+    workspace.interaction_active() && workspace.cancel_interaction()
+}
+
 fn reset_tool_after_escape(tool: &mut Tool, status: &mut String, status_error: &mut bool) {
     *tool = Tool::Move;
     *status = Tool::Move.description().into();
@@ -397,13 +401,18 @@ impl PrismApp {
             self.cancel_pen();
             self.cancel_brush();
             self.cancel_lasso();
+            let canceled_workspace = cancel_workspace_interaction_on_escape(&mut self.workspace);
             if let Some(drag) = self.drag {
-                self.workspace.cancel_interaction();
                 restore_source_override_after_cancel(
                     &mut self.layer_source_overrides,
                     &self.workspace.document,
                     drag,
                 );
+            }
+            if canceled_workspace {
+                self.sync_active_raster_sources();
+                self.layer_visual_dirty
+                    .extend(self.workspace.document.layers.iter().map(|layer| layer.id));
             }
             self.tool_palette = None;
             self.shape_palette = None;
@@ -653,6 +662,64 @@ mod tests {
         ));
         assert!(canvas_interaction_active(false, true));
         assert!(!canvas_interaction_active(false, false));
+    }
+
+    #[test]
+    fn escape_cancels_an_inspector_preview_without_bytes_or_revision() {
+        let project = std::env::temp_dir().join(format!(
+            "prism-inspector-escape-{}.prism",
+            spectrum_revisions::SessionId::new()
+        ));
+        let actor = spectrum_revisions::Actor {
+            id: "human:inspector-escape".into(),
+            display_name: "Inspector escape".into(),
+            kind: spectrum_revisions::ActorKind::Human,
+        };
+        let session = spectrum_revisions::SessionId::new();
+        let mut workspace = Workspace::create_durable(
+            Document::new("Inspector Escape", 64, 48),
+            &project,
+            actor,
+            session,
+        )
+        .unwrap();
+        workspace
+            .execute(Command::AddRectangle {
+                name: None,
+                width: 32,
+                height: 24,
+                color: [255; 4],
+                corner_radius: 0.0,
+                x: 0.0,
+                y: 0.0,
+            })
+            .unwrap();
+        workspace.save(None).unwrap();
+        let bytes_before = std::fs::read(&project).unwrap();
+        let revisions_before = workspace.history().unwrap().unwrap().revisions.len();
+        let document_before = workspace.document.clone();
+
+        workspace.begin_interaction().unwrap();
+        workspace
+            .preview(Command::SetShapeFill {
+                id: 1,
+                fill: Some(prism_core::ShapeFill::Gradient(prism_core::ShapeGradient {
+                    kind: prism_core::GradientKind::Radial,
+                    ..Default::default()
+                })),
+            })
+            .unwrap();
+        assert!(workspace.interaction_active());
+        assert!(cancel_workspace_interaction_on_escape(&mut workspace));
+        assert!(!workspace.interaction_active());
+        assert_eq!(workspace.document, document_before);
+        assert_eq!(
+            workspace.history().unwrap().unwrap().revisions.len(),
+            revisions_before
+        );
+        assert_eq!(std::fs::read(&project).unwrap(), bytes_before);
+        drop(workspace);
+        std::fs::remove_file(project).unwrap();
     }
 
     #[test]

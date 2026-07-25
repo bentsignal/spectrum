@@ -200,7 +200,7 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
     let version = payload.encoding.version;
     let plain = payload.encoding.required_capabilities.is_empty();
     let deflated = payload.encoding.required_capabilities == [DEFLATE_CAPABILITY];
-    match (version, plain, deflated) {
+    let decoded = match (version, plain, deflated) {
         (LEGACY_SNAPSHOT_VERSION, true, false) => bounded_snapshot_bytes(&payload.bytes),
         (COMPRESSED_SNAPSHOT_VERSION, false, true) => inflate_snapshot(&payload.bytes),
         (
@@ -232,7 +232,25 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             true,
         ) => inflate_snapshot(&payload.bytes),
         _ => bail!("unsupported Prism snapshot encoding"),
+    }?;
+    validate_embedded_snapshot_version(&decoded, version)?;
+    Ok(decoded)
+}
+
+fn validate_embedded_snapshot_version(bytes: &[u8], encoded_version: u32) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct VersionProbe {
+        version: u32,
     }
+    let probe: VersionProbe =
+        serde_json::from_slice(bytes).context("invalid Prism snapshot version header")?;
+    if probe.version != encoded_version {
+        bail!(
+            "Prism snapshot payload version {encoded_version} disagrees with embedded document version {}",
+            probe.version
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -258,6 +276,35 @@ mod tests {
             Vec::new(),
         );
         assert!(decode_snapshot(&unknown_capability).is_err());
+    }
+
+    #[test]
+    fn payload_version_cannot_be_bypassed_by_a_newer_embedded_document_version() {
+        let mut document = Document::new("Relabelled modern gradient", 200, 100);
+        document.version = MODERN_GRADIENT_SNAPSHOT_VERSION;
+        document.layers.push(crate::Layer {
+            id: 1,
+            shape_fill: Some(crate::ShapeFill::Gradient(crate::ShapeGradient {
+                kind: crate::GradientKind::Radial,
+                stops: vec![
+                    crate::GradientStop::new(0.0, [255, 0, 0, 255]),
+                    crate::GradientStop::new(1.0, [0; 4]),
+                ],
+                ..Default::default()
+            })),
+            kind: crate::LayerKind::Rectangle {
+                width: 200,
+                height: 100,
+                color: [255; 4],
+                corner_radius: 0.0,
+            },
+            ..Default::default()
+        });
+        let relabelled = Payload::new(
+            Encoding::new(SNAPSHOT_FAMILY, CLONE_STAMP_SNAPSHOT_VERSION),
+            serde_json::to_vec(&document).unwrap(),
+        );
+        assert!(decode_snapshot(&relabelled).is_err());
     }
 
     #[test]
