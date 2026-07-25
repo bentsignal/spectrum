@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -17,10 +17,16 @@ pub const PRISM_LIVE_ACTION_VERSION: u32 = 1;
 pub const PRISM_LIVE_APPLICATION: &str = "spectrum.prism";
 
 pub fn prism_live_discovery_root() -> Result<PathBuf> {
-    Ok(eframe::storage_dir("Spectrum")
-        .context("Spectrum could not locate its per-user application directory")?
+    Ok(prism_live_discovery_root_in(
+        &eframe::storage_dir("Spectrum")
+            .context("Spectrum could not locate its per-user application directory")?,
+    ))
+}
+
+fn prism_live_discovery_root_in(spectrum_storage: &Path) -> PathBuf {
+    spectrum_storage
         .join("LiveBridge")
-        .join("v1"))
+        .join(format!("v{}", spectrum_live_bridge::PROTOCOL_VERSION))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,4 +195,45 @@ impl From<CollaborationSync> for PrismLiveCollaborationSync {
 pub enum PrismLiveResult {
     State(PrismLiveState),
     Applied(Box<PrismLiveApplied>),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use spectrum_live_bridge::DiscoveryDirectory;
+
+    use super::*;
+
+    #[test]
+    fn protocol_discovery_roots_isolate_crash_residuals_in_both_directions() {
+        let temporary = tempfile::tempdir().unwrap();
+        let storage = temporary.path().join("Spectrum");
+        let bridge = storage.join("LiveBridge");
+        let legacy = bridge.join("v1");
+        let current = prism_live_discovery_root_in(&storage);
+        assert_eq!(current, bridge.join("v2"));
+
+        fs::create_dir_all(&legacy).unwrap();
+        let legacy_residual = legacy.join("legacy-crash.json");
+        fs::write(
+            &legacy_residual,
+            br#"{"family":"spectrum.live.discovery","protocol_min":1,"protocol_max":1}"#,
+        )
+        .unwrap();
+        let current_directory = DiscoveryDirectory::open(&current).unwrap();
+        assert!(current_directory.records().unwrap().is_empty());
+        assert!(legacy_residual.exists());
+
+        let current_residual = current.join("current-crash.json");
+        fs::write(&current_residual, b"v2 crash residual").unwrap();
+        assert_eq!(
+            fs::read_dir(&legacy)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>(),
+            vec![legacy_residual]
+        );
+        assert!(current_residual.exists());
+    }
 }

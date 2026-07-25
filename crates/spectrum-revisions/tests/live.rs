@@ -1,8 +1,8 @@
 use std::{ffi::OsString, fs, path::Path};
 
 use spectrum_revisions::{
-    Actor, ActorKind, AppendRevision, Encoding, LiveRevisionStore, NewProject, Payload, RevisionId,
-    SessionId, TrackId,
+    Actor, ActorKind, AppendRevision, Encoding, LiveRevisionStore, NewProject, Payload,
+    RevisionError, RevisionId, SessionId, TrackId,
 };
 #[cfg(target_os = "linux")]
 use spectrum_revisions::{Asset, PublishStats, PublishStrategy, RevisionStore};
@@ -161,6 +161,49 @@ fn independent_live_connections_publish_both_branches_without_visible_sidecars()
     );
     assert!(!sidecar(&fixture.canonical, "-wal").exists());
     assert!(!sidecar(&fixture.canonical, "-shm").exists());
+}
+
+#[test]
+fn mutation_error_after_commit_publishes_before_concurrent_reopen() {
+    let mut fixture = Fixture::new();
+    let observer = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
+    let committed = fixture
+        .live
+        .mutate(|store| {
+            let revision = store.append(AppendRevision {
+                track_id: fixture.track,
+                session_id: fixture.human_session,
+                expected_parent: fixture.root,
+                application_version: "1.0.0".into(),
+                label: Some("Committed before reported failure".into()),
+                command_count: 1,
+                operation_payloads: vec![payload("test.operations", b"committed-before-error")],
+                snapshots: Vec::new(),
+                assets: Vec::new(),
+            })?;
+            Err::<(), _>(RevisionError::Invalid(format!(
+                "injected failure after committed revision {}",
+                revision.id
+            )))
+        })
+        .unwrap_err();
+    assert!(committed.to_string().contains("injected failure"));
+
+    let reopened = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
+    let revisions = reopened.store().children(fixture.root).unwrap();
+    assert_eq!(revisions.len(), 1);
+    assert_eq!(
+        revisions[0].label.as_deref(),
+        Some("Committed before reported failure")
+    );
+    assert!(
+        observer
+            .store()
+            .revision(revisions[0].id)
+            .unwrap()
+            .is_some(),
+        "an already-open live observer must see the committed state"
+    );
 }
 
 #[cfg(target_os = "linux")]
