@@ -107,6 +107,8 @@ mod terminal_protocol;
 mod terminal_render;
 #[path = "prism_gui/theme.rs"]
 mod theme;
+#[path = "prism_gui/toolbar_prototypes.rs"]
+mod toolbar_prototypes;
 #[path = "prism_gui/typography_ui.rs"]
 mod typography_ui;
 use history::HistoryViewState;
@@ -145,6 +147,7 @@ struct PrismApp {
     shape_kind: chrome::ShapeKind,
     tool_palette: Option<chrome::PaletteState>,
     shape_palette: Option<chrome::PaletteState>,
+    toolbar_prototype: toolbar_prototypes::ToolbarPrototypeState,
     selection_ui: selection_ui::SelectionUiState,
     pen: pen_tool::PenState,
     brush: brush_tool::BrushState,
@@ -257,6 +260,7 @@ impl PrismApp {
             shape_kind: chrome::ShapeKind::Rectangle,
             tool_palette: None,
             shape_palette: None,
+            toolbar_prototype: toolbar_prototypes::ToolbarPrototypeState::from_environment(),
             selection_ui: selection_ui::SelectionUiState::default(),
             pen: pen_tool::PenState::default(),
             brush: brush_tool::BrushState::configured(),
@@ -623,6 +627,7 @@ impl eframe::App for PrismApp {
         self.sync_agent_collaborations(&context);
         self.poll_terminals(&context);
         self.keyboard(&context);
+        self.toolbar_prototype_banner(root);
         if self.terminal.visible() {
             self.terminal_panel(root);
         } else {

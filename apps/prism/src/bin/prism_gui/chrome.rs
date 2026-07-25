@@ -1,8 +1,8 @@
 use super::*;
 
 #[path = "chrome_shortcut.rs"]
-mod chrome_shortcut;
-use chrome_shortcut::{WORKBENCH_ACTION_SIZE, shortcut_action_button};
+pub(super) mod chrome_shortcut;
+use chrome_shortcut::shortcut_action_button;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum ShapeKind {
@@ -12,16 +12,16 @@ pub(super) enum ShapeKind {
 }
 
 impl ShapeKind {
-    const ALL: [Self; 2] = [Self::Rectangle, Self::Ellipse];
+    pub(super) const ALL: [Self; 2] = [Self::Rectangle, Self::Ellipse];
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Rectangle => "Rectangle",
             Self::Ellipse => "Ellipse",
         }
     }
 
-    fn description(self) -> &'static str {
+    pub(super) fn description(self) -> &'static str {
         match self {
             Self::Rectangle => "Draw a rectangle with editable corners, fill, and stroke.",
             Self::Ellipse => "Draw an ellipse or a standard circle.",
@@ -301,8 +301,9 @@ impl PrismApp {
     }
 
     pub(super) fn workbench_bar(&mut self, root: &mut egui::Ui) {
+        let workbench_height = self.toolbar_prototype_height(root.available_width());
         egui::Panel::top("prism-workbench")
-            .exact_size(WORKBENCH_HEIGHT)
+            .exact_size(workbench_height)
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
@@ -310,50 +311,11 @@ impl PrismApp {
                     .stroke(Stroke::new(1.0, BORDER)),
             )
             .show(root, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.label(RichText::new("TOOL").size(9.0).strong().color(SUBTLE));
-                    let label = if self.tool == Tool::Shape {
-                        format!("Shape · {}", self.shape_kind.label())
-                    } else {
-                        self.tool.label().into()
-                    };
-                    ui.label(RichText::new(label).size(12.0).strong().color(TEXT));
-                    if self.tool == Tool::Rotate {
-                        alternate_shortcut(ui, "R");
-                    } else {
-                        shortcut_key(ui, self.tool.shortcut());
-                    }
-                    if shortcut_action_button(
-                        ui,
-                        WORKBENCH_ACTION_SIZE,
-                        "Tools & Actions",
-                        shortcuts::GlobalShortcut::ToolsAndActions.label(),
-                    )
-                    .on_hover_text("Search every canvas tool and one-step action")
-                    .clicked()
-                    {
-                        self.tool_palette = Some(PaletteState::default());
-                    }
-                    ui.separator();
-                    ui.label(
-                        RichText::new(if self.tool == Tool::Shape {
-                            self.shape_kind.description()
-                        } else {
-                            self.tool.description()
-                        })
-                        .size(11.0)
-                        .color(MUTED),
-                    );
-                    if matches!(self.tool, Tool::Marquee | Tool::Lasso | Tool::MagicWand)
-                        || self.workspace.document.selection.is_some()
-                    {
-                        self.selection_workbench_controls(ui);
-                    }
-                    if matches!(self.tool, Tool::Brush | Tool::Eraser) {
-                        ui.separator();
-                        self.brush_settings_control(ui);
-                    }
-                });
+                if self.toolbar_prototype.enabled() {
+                    self.prototype_workbench_contents(ui);
+                } else {
+                    ui.horizontal_centered(|ui| self.workbench_existing_controls(ui));
+                }
             });
     }
 

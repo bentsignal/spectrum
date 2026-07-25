@@ -88,7 +88,7 @@ impl PrismApp {
         }
     }
 
-    fn shape_gradient_controls(&mut self, ui: &mut egui::Ui, layer: &Layer) {
+    pub(super) fn shape_gradient_controls(&mut self, ui: &mut egui::Ui, layer: &Layer) {
         let mut enabled = layer.shape_fill.is_some();
         if ui.checkbox(&mut enabled, "Gradient").changed() {
             self.execute(Command::SetShapeFill {
