@@ -101,11 +101,8 @@ pub(super) fn gradient_editor(
                     .max_decimals(3),
             );
             widget_gradient(app, &response, layer.id, &gradient);
-            let original_color = gradient.stops[index].color;
-            let mut edited_color = original_color;
-            let response = ui.color_edit_button_srgba_unmultiplied(&mut edited_color);
-            gradient.stops[index].color =
-                resolved_stop_color(original_color, edited_color, response.changed());
+            let response =
+                stop_color_editor(ui, (layer.id, index), &mut gradient.stops[index].color);
             widget_gradient(app, &response, layer.id, &gradient);
             if gradient.stops.len() > 2
                 && ui
@@ -172,22 +169,65 @@ fn widest_gap_stop(gradient: &ShapeGradient) -> (usize, f32, [u8; 4]) {
     (index + 1, position, color)
 }
 
-fn resolved_stop_color(original: [u8; 4], edited: [u8; 4], changed: bool) -> [u8; 4] {
-    if !changed {
-        return original;
-    }
-    let mut resolved = edited;
-    if edited[3] != original[3] {
-        // egui converts straight sRGB through float HSV even when the pointer only
-        // moves the alpha slider. Preserve sub-byte RGB round-trip noise while
-        // still accepting one-byte RGB edits when alpha is unchanged.
-        for channel in 0..3 {
-            if original[channel].abs_diff(edited[channel]) <= 1 {
-                resolved[channel] = original[channel];
+fn stop_color_editor(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    color: &mut [u8; 4],
+) -> egui::Response {
+    let mut combined = straight_srgba_swatch(ui, *color);
+    let anchor = combined.clone();
+    egui::Popup::menu(&anchor)
+        .id(ui.make_persistent_id(("gradient-stop-color", id)))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(220.0);
+            ui.label(RichText::new("Straight sRGBA · U8").size(9.0).color(MUTED));
+            for (channel, label) in ["Red", "Green", "Blue", "Alpha"].into_iter().enumerate() {
+                let mut value = color[channel];
+                let response = ui.add(egui::Slider::new(&mut value, 0..=255).text(label));
+                if response.changed() {
+                    set_stop_color_channel(color, channel, value);
+                }
+                combined = combined.union(response);
+            }
+        });
+    combined
+}
+
+fn straight_srgba_swatch(ui: &mut egui::Ui, color: [u8; 4]) -> egui::Response {
+    let size = egui::vec2(24.0, 16.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let half = rect.size() * 0.5;
+        for row in 0..2 {
+            for column in 0..2 {
+                let min = rect.min + egui::vec2(column as f32 * half.x, row as f32 * half.y);
+                let cell = egui::Rect::from_min_size(min, half);
+                let shade = if (row + column) % 2 == 0 { 72 } else { 112 };
+                ui.painter()
+                    .rect_filled(cell, 0.0, egui::Color32::from_gray(shade));
             }
         }
+        ui.painter().rect_filled(
+            rect,
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]),
+        );
+        ui.painter().rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(1.0, BORDER),
+            egui::StrokeKind::Inside,
+        );
     }
-    resolved
+    response.on_hover_text(format!(
+        "Straight sRGBA · R {} · G {} · B {} · A {}",
+        color[0], color[1], color[2], color[3]
+    ))
+}
+
+fn set_stop_color_channel(color: &mut [u8; 4], channel: usize, value: u8) {
+    color[channel] = value;
 }
 
 fn kind_label(kind: GradientKind) -> &'static str {
@@ -223,34 +263,12 @@ mod tests {
     }
 
     #[test]
-    fn translucent_stop_color_round_trips_as_straight_srgba() {
-        for original in [
-            [60, 230, 180, 210],
-            [80, 110, 255, 150],
-            [255, 0, 0, 1],
-            [0, 0, 0, 0],
-        ] {
-            assert_eq!(resolved_stop_color(original, [1, 2, 3, 4], false), original);
-        }
-        assert_eq!(
-            resolved_stop_color([60, 230, 180, 210], [17, 33, 91, 128], true),
-            [17, 33, 91, 128]
-        );
-        assert_eq!(
-            resolved_stop_color([68, 180, 211, 180], [68, 181, 211, 128], true),
-            [68, 180, 211, 128],
-            "an alpha-only edit must not inherit one-byte HSV round-trip noise"
-        );
-        assert_eq!(
-            resolved_stop_color([68, 180, 211, 180], [68, 181, 211, 180], true),
-            [68, 181, 211, 180],
-            "an intentional one-byte RGB edit must not be suppressed"
-        );
-        assert_eq!(
-            resolved_stop_color([68, 180, 211, 180], [71, 176, 211, 128], true),
-            [71, 176, 211, 128],
-            "a simultaneous material RGB and alpha edit must preserve both"
-        );
+    fn straight_srgba_channel_edits_never_round_unedited_bytes() {
+        let mut color = [68, 180, 211, 180];
+        set_stop_color_channel(&mut color, 3, 128);
+        assert_eq!(color, [68, 180, 211, 128]);
+        set_stop_color_channel(&mut color, 1, 181);
+        assert_eq!(color, [68, 181, 211, 128]);
     }
 
     #[test]
