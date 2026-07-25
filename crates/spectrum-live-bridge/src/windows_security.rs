@@ -52,7 +52,7 @@ pub(crate) fn apply_private_acl(path: &Path) -> BridgeResult<()> {
     let applied = unsafe {
         SetFileSecurityW(
             wide.as_ptr(),
-            DACL_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
             descriptor.as_ptr(),
         )
     };

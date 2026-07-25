@@ -34,9 +34,11 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    BridgeError, BridgeResult, EndpointAddress,
+    AUTH_DEADLINE, BridgeError, BridgeResult, EndpointAddress,
     windows_security::{OwnedSecurityDescriptor, current_user_only_descriptor},
 };
+
+const CLIENT_IDENTITY_MARKER: u8 = 0x53;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerIdentity {
@@ -70,7 +72,16 @@ impl LocalListener {
     pub fn accept(&self) -> BridgeResult<(LocalStream, PeerIdentity)> {
         let mut pending = self.pending.lock().map_err(|_| BridgeError::Closed)?;
         connect_overlapped(*pending)?;
-        let same_user = same_user_client(*pending)?;
+        let same_user =
+            match read_identity_marker(*pending).and_then(|()| same_user_client(*pending)) {
+                Ok(same_user) => same_user,
+                Err(error) => {
+                    unsafe {
+                        DisconnectNamedPipe(*pending);
+                    }
+                    return Err(error);
+                }
+            };
         if !same_user {
             unsafe {
                 DisconnectNamedPipe(*pending);
@@ -141,6 +152,12 @@ impl LocalStream {
         };
         if handle == INVALID_HANDLE_VALUE {
             return Err(last_error().into());
+        }
+        if let Err(error) = write_identity_marker(handle, CLIENT_IDENTITY_MARKER) {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(error);
         }
         Ok(Self::new(handle, false))
     }
@@ -378,6 +395,43 @@ fn same_user_client(pipe: HANDLE) -> BridgeResult<bool> {
     result
 }
 
+fn read_identity_marker(pipe: HANDLE) -> BridgeResult<()> {
+    let mut marker = [0_u8; 1];
+    let transferred = overlapped_io(
+        pipe,
+        Some(AUTH_DEADLINE),
+        |overlapped, transferred| unsafe {
+            ReadFile(
+                pipe,
+                marker.as_mut_ptr(),
+                marker.len() as u32,
+                transferred,
+                overlapped,
+            )
+        },
+    )?;
+    if transferred != marker.len() || marker[0] != CLIENT_IDENTITY_MARKER {
+        return Err(BridgeError::Authentication(
+            "named-pipe client did not provide the identity marker".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn write_identity_marker(pipe: HANDLE, marker: u8) -> BridgeResult<()> {
+    let transferred = overlapped_io(
+        pipe,
+        Some(AUTH_DEADLINE),
+        |overlapped, transferred| unsafe { WriteFile(pipe, &marker, 1, transferred, overlapped) },
+    )?;
+    if transferred != 1 {
+        return Err(BridgeError::Authentication(
+            "named-pipe identity marker was not written".into(),
+        ));
+    }
+    Ok(())
+}
+
 struct OwnedHandle(HANDLE);
 
 impl OwnedHandle {
@@ -525,6 +579,39 @@ mod tests {
             .expect("named pipe writes never reached the bounded timeout");
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn identity_marker_is_required_before_peer_verification() {
+        let address = address();
+        let listener =
+            LocalListener::bind(&address).expect("bind current-user-only first pipe instance");
+        let name = pipe_name(&address).unwrap();
+        let client = thread::spawn(move || {
+            let handle = unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_OVERLAPPED,
+                    ptr::null_mut(),
+                )
+            };
+            assert_ne!(handle, INVALID_HANDLE_VALUE);
+            let result = write_identity_marker(handle, CLIENT_IDENTITY_MARKER ^ 0xff);
+            unsafe {
+                CloseHandle(handle);
+            }
+            result
+        });
+        let error = match listener.accept() {
+            Ok(_) => panic!("invalid marker must fail before peer verification"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, BridgeError::Authentication(_)));
+        client.join().unwrap().unwrap();
     }
 
     #[test]
