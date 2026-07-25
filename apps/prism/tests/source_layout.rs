@@ -260,8 +260,8 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
     );
     assert_eq!(icon["supported-platforms"]["squares"], "shared");
     assert_eq!(
-        icon["fill"]["solid"],
-        "extended-srgb:0.00000,0.00392,0.01961,1.00000"
+        icon["fill"]["automatic-gradient"],
+        "extended-srgb:0.00000,0.53333,1.00000,1.00000"
     );
     let group = &icon["groups"][0];
     assert!(
@@ -272,12 +272,8 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
     assert_eq!(layers.len(), 2);
     assert_eq!(layers[0]["image-name"], "cropped-prism.png");
     assert_eq!(layers[1]["image-name"], "prism-mono.png");
-    assert!(
-        layers
-            .iter()
-            .all(|layer| layer["position"]["scale"] == 2.176
-                && layer["position"]["translation-in-points"] == serde_json::json!([0, 0]))
-    );
+    assert!(layers.iter().all(|layer| layer["position"]["scale"] == 2.56
+        && layer["position"]["translation-in-points"] == serde_json::json!([0, 0])));
 }
 
 #[test]

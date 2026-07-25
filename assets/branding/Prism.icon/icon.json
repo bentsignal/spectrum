@@ -1,6 +1,6 @@
 {
   "fill" : {
-    "solid" : "extended-srgb:0.00000,0.00392,0.01961,1.00000"
+    "automatic-gradient" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
   },
   "groups" : [
     {
@@ -15,7 +15,7 @@
             }
           ],
           "position" : {
-            "scale" : 2.176,
+            "scale" : 2.56,
             "translation-in-points" : [
               0,
               0
@@ -44,7 +44,7 @@
             }
           ],
           "position" : {
-            "scale" : 2.176,
+            "scale" : 2.56,
             "translation-in-points" : [
               0,
               0

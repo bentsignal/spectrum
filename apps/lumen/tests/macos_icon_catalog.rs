@@ -199,7 +199,7 @@ fn assert_compiled_icon(
 }
 
 #[test]
-fn native_macos_icons_compile_centered_safe_area_variants() {
+fn native_macos_icons_compile_composer_managed_enclosure_variants() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     assert_compiled_icon(
         &repository,
@@ -207,8 +207,8 @@ fn native_macos_icons_compile_centered_safe_area_variants() {
         "lumen-violet-final-clean",
         "lumen-violet-mono",
         1024,
-        "870,870",
-        "76,76",
+        "1024,1024",
+        "0,0",
     );
     assert_compiled_icon(
         &repository,
@@ -216,8 +216,8 @@ fn native_macos_icons_compile_centered_safe_area_variants() {
         "cropped-prism",
         "prism-mono",
         400,
-        "870,870",
-        "76,76",
+        "1024,1024",
+        "-1,-1",
     );
 }
 
