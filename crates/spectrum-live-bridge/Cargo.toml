@@ -1,0 +1,37 @@
+[package]
+name = "spectrum-live-bridge"
+version = "0.1.0"
+edition.workspace = true
+description = "Authenticated local live-control transport for Spectrum creative tools"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+hmac.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+spectrum-revisions = { path = "../spectrum-revisions", default-features = false }
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[[bin]]
+name = "live-bridge-benchmark"
+path = "src/bin/live-bridge-benchmark.rs"
