@@ -113,7 +113,7 @@ fn multi_preview_anchor_gesture_commits_one_durable_revision() {
         })
         .unwrap();
     let before = workspace.document.clone();
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     let middle = original
         .replacing_anchor(1, PathAnchor::corner(48.0, 12.0))
         .unwrap();

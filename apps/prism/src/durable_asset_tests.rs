@@ -538,7 +538,7 @@ fn durable_asset_commands_use_only_the_atomic_workspace_path() {
     )
     .unwrap();
 
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     assert!(
         workspace
             .preview(Command::AddRaster {

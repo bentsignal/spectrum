@@ -24,7 +24,7 @@ pub struct Workspace {
     document_generation: u64,
     interaction_before: Option<Document>,
     interaction_commands: Vec<Command>,
-    live_unusable_reason: Option<String>,
+    reopen_required_reason: Option<String>,
     #[cfg(test)]
     fail_together_after_durable_sync: bool,
     #[cfg(test)]
@@ -67,7 +67,7 @@ impl Workspace {
             document_generation: 0,
             interaction_before: None,
             interaction_commands: Vec::new(),
-            live_unusable_reason: None,
+            reopen_required_reason: None,
             #[cfg(test)]
             fail_together_after_durable_sync: false,
             #[cfg(test)]
@@ -155,9 +155,7 @@ impl Workspace {
     }
 
     pub fn live_state(&self) -> Result<Option<LiveWorkspaceState>> {
-        if let Some(reason) = &self.live_unusable_reason {
-            bail!("live binding is unusable; reopen the project: {reason}");
-        }
+        self.require_workspace_usable()?;
         self.durable
             .as_ref()
             .map(|durable| {
@@ -186,10 +184,11 @@ impl Workspace {
     }
 
     pub(crate) fn live_reopen_required(&self) -> bool {
-        self.live_unusable_reason.is_some()
+        self.reopen_required_reason.is_some()
     }
 
     pub fn checkpoint(&self) -> Result<()> {
+        self.require_workspace_usable()?;
         if let Some(durable) = &self.durable {
             durable.checkpoint()?;
         }
@@ -197,6 +196,7 @@ impl Workspace {
     }
 
     pub fn history(&self) -> Result<Option<ProjectHistory>> {
+        self.require_workspace_usable()?;
         self.durable
             .as_ref()
             .map(DurableProject::history)
@@ -204,6 +204,7 @@ impl Workspace {
     }
 
     pub fn move_to_revision(&mut self, target: spectrum_revisions::RevisionId) -> Result<bool> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_some() {
             bail!("finish the active interaction before navigating history");
         }
@@ -221,6 +222,7 @@ impl Workspace {
     }
 
     pub fn sync_together(&mut self) -> Result<spectrum_revisions::CollaborationSync> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_some() {
             return Ok(spectrum_revisions::CollaborationSync::Idle);
         }
@@ -277,7 +279,7 @@ impl Workspace {
                     .context("Together sync outcome is unknown; recovered the bound human session"))
             }
             Err(recovery_error) => {
-                self.live_unusable_reason = Some(format!("{recovery_error:#}"));
+                self.reopen_required_reason = Some(format!("{recovery_error:#}"));
                 self.bump_document_generation();
                 bail!(
                     "Together sync outcome is unknown ({error:#}); bound human recovery failed and the project must be reopened: {recovery_error:#}"
@@ -297,18 +299,25 @@ impl Workspace {
     }
 
     pub fn can_undo(&self) -> bool {
+        if self.reopen_required_reason.is_some() {
+            return false;
+        }
         self.durable
             .as_ref()
             .map_or_else(|| !self.undo.is_empty(), DurableProject::can_undo)
     }
 
     pub fn can_redo(&self) -> bool {
+        if self.reopen_required_reason.is_some() {
+            return false;
+        }
         self.durable
             .as_ref()
             .map_or_else(|| !self.redo.is_empty(), DurableProject::can_redo)
     }
 
     pub fn save(&mut self, path: Option<&Path>) -> Result<PathBuf> {
+        self.require_workspace_usable()?;
         if let Some(durable) = &self.durable {
             if path.is_some_and(|path| Some(path) != self.project_path.as_deref()) {
                 bail!("Save As for durable Prism projects is not implemented yet");
@@ -348,6 +357,7 @@ impl Workspace {
     }
 
     pub fn move_project(&mut self, destination: &Path) -> Result<PathBuf> {
+        self.require_workspace_usable()?;
         let source = self
             .project_path
             .clone()
@@ -444,6 +454,7 @@ impl Workspace {
     }
 
     pub fn execute(&mut self, command: Command) -> Result<CommandOutput> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_some() {
             bail!("finish the active interaction before executing another command");
         }
@@ -466,6 +477,7 @@ impl Workspace {
     }
 
     pub fn execute_batch(&mut self, commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_some() {
             bail!("finish the active interaction before executing another command");
         }
@@ -614,6 +626,7 @@ impl Workspace {
         &mut self,
         mutation: PreparedLiveMutation,
     ) -> Result<Vec<CommandOutput>> {
+        self.require_workspace_usable()?;
         match mutation {
             PreparedLiveMutation::Noop { outputs } => Ok(outputs),
             PreparedLiveMutation::Edit {
@@ -651,14 +664,17 @@ impl Workspace {
         }
     }
 
-    pub fn begin_interaction(&mut self) {
+    pub fn begin_interaction(&mut self) -> Result<()> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_none() {
             self.interaction_before = Some(self.document.clone());
             self.interaction_commands.clear();
         }
+        Ok(())
     }
 
     pub fn preview(&mut self, command: Command) -> Result<CommandOutput> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_none() {
             bail!("begin an interaction before applying preview commands");
         }
@@ -679,6 +695,7 @@ impl Workspace {
     }
 
     pub fn preview_batch(&mut self, mut commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
+        self.require_workspace_usable()?;
         if commands.is_empty() {
             bail!("preview command batch is empty");
         }
@@ -719,6 +736,7 @@ impl Workspace {
     }
 
     pub fn commit_interaction(&mut self) -> Result<bool> {
+        self.require_workspace_usable()?;
         let Some(before) = self.interaction_before.take() else {
             return Ok(false);
         };
@@ -777,7 +795,7 @@ impl Workspace {
             document_generation: 0,
             interaction_before: None,
             interaction_commands: Vec::new(),
-            live_unusable_reason: None,
+            reopen_required_reason: None,
             #[cfg(test)]
             fail_together_after_durable_sync: false,
             #[cfg(test)]
@@ -825,6 +843,13 @@ impl Workspace {
 
     fn bump_document_generation(&mut self) {
         self.document_generation = self.document_generation.wrapping_add(1);
+    }
+
+    fn require_workspace_usable(&self) -> Result<()> {
+        if let Some(reason) = &self.reopen_required_reason {
+            bail!("workspace is unusable; reopen the project before continuing: {reason}");
+        }
+        Ok(())
     }
 }
 
@@ -925,6 +950,7 @@ fn resolve_durable_commands(
 }
 
 fn validate_live_mutation_ready(workspace: &Workspace) -> Result<()> {
+    workspace.require_workspace_usable()?;
     if workspace.interaction_before.is_some() {
         bail!("finish the active interaction before executing another command");
     }

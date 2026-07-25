@@ -415,14 +415,14 @@ fn paragraph_width_preview_is_one_undoable_and_cancelable_revision() {
     let mut workspace = Workspace::new(document, None);
     let before = workspace.document.clone();
 
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     workspace.preview_batch(commands.clone()).unwrap();
     assert!(workspace.commit_interaction().unwrap());
     assert!(workspace.execute(Command::Undo).is_ok());
     assert_eq!(workspace.document, before);
     assert!(workspace.execute(Command::Undo).is_err());
 
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     workspace.preview_batch(commands).unwrap();
     assert!(workspace.cancel_interaction());
     assert_eq!(workspace.document, before);

@@ -82,7 +82,7 @@ pub(super) fn measure() -> Result<PathMeasurements> {
         y: 128.0,
     })?;
     let id = workspace.document.selected.expect("added path is selected");
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     let mut edit_samples = Vec::with_capacity(240);
     for frame in 0..240 {
         let started = Instant::now();

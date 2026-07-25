@@ -27,7 +27,7 @@ fn durable_workspace(label: &str) -> (Workspace, std::path::PathBuf) {
 fn preview_batch_commits_paragraph_text_as_one_undoable_interaction() {
     let (mut workspace, project) = durable_workspace("paragraph-batch");
     assert_eq!(workspace.history().unwrap().unwrap().revisions.len(), 1);
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     workspace
         .preview_batch(vec![
             Command::AddText {
@@ -83,7 +83,7 @@ fn preview_batch_commits_paragraph_text_as_one_undoable_interaction() {
 fn failed_preview_batch_is_atomic_and_cancelable() {
     let mut workspace = Workspace::new(Document::new("Paragraph", 400, 300), None);
     let before = workspace.document.clone();
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     assert!(
         workspace
             .preview_batch(vec![

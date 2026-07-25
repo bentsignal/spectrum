@@ -406,6 +406,17 @@ impl PrismApp {
         }
     }
 
+    fn begin_workspace_interaction(&mut self) -> bool {
+        match self.workspace.begin_interaction() {
+            Ok(()) => true,
+            Err(error) => {
+                self.status = format!("Could not begin interaction: {error:#}");
+                self.status_error = true;
+                false
+            }
+        }
+    }
+
     fn widget_command(&mut self, response: &egui::Response, command: Command) {
         self.widget_command_if(response, Some(command));
     }
@@ -413,7 +424,7 @@ impl PrismApp {
     fn widget_command_if(&mut self, response: &egui::Response, command: Option<Command>) {
         if response.drag_started() || response.gained_focus() {
             self.settle_inline_text_editor();
-            self.workspace.begin_interaction();
+            self.begin_workspace_interaction();
         }
         if response.changed()
             && let Some(command) = command

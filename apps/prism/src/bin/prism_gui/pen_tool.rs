@@ -186,7 +186,9 @@ impl PrismApp {
             return true;
         }
         self.pen.draft = None;
-        self.workspace.begin_interaction();
+        if !self.begin_workspace_interaction() {
+            return true;
+        }
         self.pen.edit = Some(PenEdit {
             layer_id: layer.id,
             anchor_index,

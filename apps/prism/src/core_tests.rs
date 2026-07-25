@@ -327,7 +327,7 @@ fn interaction_previews_coalesce_into_one_undo_step() {
         })
         .unwrap();
     let id = workspace.document.selected.unwrap();
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     for x in 11..=80 {
         workspace
             .preview(Command::SetTransform {
@@ -930,7 +930,7 @@ fn canceled_interaction_restores_the_document() {
         .unwrap();
     let before = workspace.document.clone();
     let id = workspace.document.selected.unwrap();
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     workspace
         .preview(Command::SetOpacity { id, opacity: 0.25 })
         .unwrap();

@@ -155,7 +155,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let workspace = workspace.expect("benchmark always records at least one command sample");
     let mut interaction_workspace = Workspace::new(workspace.document.clone(), None);
     let interaction_layer = interaction_workspace.document.layers.last().unwrap().id;
-    interaction_workspace.begin_interaction();
+    interaction_workspace.begin_interaction().unwrap();
     let mut interaction_samples = Vec::new();
     for frame in 0..240 {
         let started = Instant::now();
@@ -183,7 +183,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         shaping: Default::default(),
     })?;
     let text_layer = text_workspace.document.selected.unwrap();
-    text_workspace.begin_interaction();
+    text_workspace.begin_interaction().unwrap();
     let mut text_interaction_samples = Vec::new();
     for frame in 0..240 {
         let started = Instant::now();

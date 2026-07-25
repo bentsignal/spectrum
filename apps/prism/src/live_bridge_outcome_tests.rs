@@ -333,10 +333,19 @@ fn together_sync_commit_fault_reopens_the_human_workspace_before_reporting_unkno
 }
 
 #[test]
-fn failed_together_recovery_poisons_live_reads_and_mutations_until_project_reopen() {
+fn failed_together_recovery_poisons_every_stale_workspace_entry_until_project_reopen() {
     let mut fixture = Fixture::new(CollaborationMode::Together);
     let mut harness = HostHarness::new(&fixture);
     let human_session = fixture.human.session_id().unwrap();
+    let root = fixture
+        .human
+        .history()
+        .unwrap()
+        .unwrap()
+        .revisions
+        .first()
+        .unwrap()
+        .id;
     let request = harness.request(
         &fixture,
         PrismLiveAction::ExecuteBatch {
@@ -358,13 +367,51 @@ fn failed_together_recovery_poisons_live_reads_and_mutations_until_project_reope
     assert!(report.outcome_unknown);
     assert!(report.workspace_changed);
     assert!(report.reopen_required);
-    assert!(
+    let stale_document = fixture.human.document.clone();
+    let poisoned_generation = fixture.human.document_generation();
+    let reopen_error = |error: anyhow::Error| {
+        assert!(
+            error.to_string().contains("reopen the project"),
+            "unexpected poison error: {error:#}"
+        );
+    };
+    reopen_error(fixture.human.live_state().unwrap_err());
+    reopen_error(fixture.human.sync_together().unwrap_err());
+    reopen_error(fixture.human.history().unwrap_err());
+    reopen_error(
         fixture
             .human
-            .live_state()
-            .unwrap_err()
-            .to_string()
-            .contains("reopen the project")
+            .execute(rename("Stale direct edit"))
+            .unwrap_err(),
+    );
+    reopen_error(
+        fixture
+            .human
+            .execute_batch(vec![rename("Stale direct batch")])
+            .unwrap_err(),
+    );
+    reopen_error(fixture.human.move_to_revision(root).unwrap_err());
+    reopen_error(fixture.human.save(None).unwrap_err());
+    reopen_error(fixture.human.checkpoint().unwrap_err());
+    reopen_error(fixture.human.begin_interaction().unwrap_err());
+    reopen_error(
+        fixture
+            .human
+            .preview(rename("Stale interaction preview"))
+            .unwrap_err(),
+    );
+    reopen_error(fixture.human.commit_interaction().unwrap_err());
+    let moved = fixture.path.with_file_name("must-not-move.prism");
+    reopen_error(fixture.human.move_project(&moved).unwrap_err());
+    assert!(!moved.exists());
+    assert!(!fixture.human.can_undo());
+    assert!(!fixture.human.can_redo());
+    assert!(!fixture.human.interaction_active());
+    assert_eq!(fixture.human.document, stale_document);
+    assert_eq!(
+        fixture.human.document_generation(),
+        poisoned_generation,
+        "refused stale workspace operations must not mutate GUI-visible state"
     );
 
     let mut read = request.clone();

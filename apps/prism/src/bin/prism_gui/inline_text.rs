@@ -216,7 +216,9 @@ fn refresh_new_text_preview(
 ) -> Result<NewPreviewOutcome, String> {
     debug_assert!(editor.is_new());
     workspace.cancel_interaction();
-    workspace.begin_interaction();
+    workspace
+        .begin_interaction()
+        .map_err(|error| format!("{error:#}"))?;
     editor.preview_matches_draft = false;
     let commands = match editor.preview_commands() {
         Ok(commands) => commands,
@@ -232,7 +234,9 @@ fn refresh_new_text_preview(
         || workspace.document.layer(editor.layer_id).is_err()
     {
         workspace.cancel_interaction();
-        workspace.begin_interaction();
+        workspace
+            .begin_interaction()
+            .map_err(|error| format!("{error:#}"))?;
         return Err("Prism could not preserve the provisional text layer identity.".into());
     }
     editor.preview_matches_draft = true;
@@ -300,7 +304,9 @@ impl PrismApp {
         let creation_id = self.next_inline_text_creation_id;
         self.next_inline_text_creation_id =
             self.next_inline_text_creation_id.wrapping_add(1).max(1);
-        self.workspace.begin_interaction();
+        if !self.begin_workspace_interaction() {
+            return false;
+        }
         self.inline_text_editor = Some(InlineTextEditor::start_new(
             self.active_tab_id,
             provisional_id,
@@ -348,7 +354,9 @@ impl PrismApp {
         };
         self.settle_inline_text_editor();
         self.finish_interaction();
-        self.workspace.begin_interaction();
+        if !self.begin_workspace_interaction() {
+            return false;
+        }
         self.inline_text_editor = Some(editor);
         self.status = format!(
             "Editing text · {} to finish · Escape to cancel",
@@ -641,7 +649,7 @@ mod tests {
     fn new_text_uses_one_stable_provisional_layer_and_commits_one_revision() {
         let mut workspace = workspace_for_new_text();
         let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(123.0, 87.0), 1, None);
-        workspace.begin_interaction();
+        workspace.begin_interaction().unwrap();
 
         editor.text = "P".into();
         assert_eq!(editor.preview_commands().unwrap().len(), 1);
@@ -696,7 +704,7 @@ mod tests {
             }
         );
 
-        workspace.begin_interaction();
+        workspace.begin_interaction().unwrap();
         refresh_new_text_preview(&mut workspace, &mut editor).unwrap();
         let LayerKind::Text { typography, .. } = &workspace.document.layer(8).unwrap().kind else {
             panic!("paragraph preview should be text");
@@ -711,7 +719,7 @@ mod tests {
     fn empty_and_escape_remove_the_preview_and_restore_baseline_identity() {
         let mut workspace = workspace_for_new_text();
         let mut editor = InlineTextEditor::start_new(3, 8, Pos2::new(200.0, 160.0), 1, None);
-        workspace.begin_interaction();
+        workspace.begin_interaction().unwrap();
         editor.text = "Draft".into();
         refresh_new_text_preview(&mut workspace, &mut editor).unwrap();
         assert!(workspace.document.layer(8).is_ok());
@@ -738,7 +746,7 @@ mod tests {
     #[test]
     fn cancel_restores_the_original_text_and_commit_records_one_revision() {
         let mut canceled = workspace_with_text();
-        canceled.begin_interaction();
+        canceled.begin_interaction().unwrap();
         canceled
             .preview(Command::UpdateText {
                 id: 7,
@@ -753,7 +761,7 @@ mod tests {
         assert!(!canceled.can_undo());
 
         let mut committed = workspace_with_text();
-        committed.begin_interaction();
+        committed.begin_interaction().unwrap();
         for text in ["P", "Pr", "Preview"] {
             committed
                 .preview(Command::UpdateText {

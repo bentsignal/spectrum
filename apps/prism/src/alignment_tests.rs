@@ -265,7 +265,7 @@ fn guide_commands_clamp_validate_and_share_one_step_gestures() {
     let id = output.guide_ids[0];
     assert_eq!(workspace.document.guide(id).unwrap().position, 400.0);
 
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     for position in [320.0, 210.0, 123.0] {
         workspace
             .preview(Command::MoveGuide { id, position })
@@ -312,7 +312,7 @@ fn snapped_move_previews_commit_as_exactly_one_history_revision() {
     )
     .unwrap();
     assert_eq!(workspace.history().unwrap().unwrap().revisions.len(), 1);
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     for x in [110.0, 180.0, 200.0] {
         workspace
             .preview(Command::SetTransform {
@@ -363,7 +363,7 @@ fn guide_drag_changes_only_the_guide_and_commits_one_revision() {
     )
     .unwrap();
 
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     for position in [120.0, 180.0, 240.0] {
         workspace
             .preview(Command::MoveGuide { id: 1, position })
