@@ -18,6 +18,7 @@ use spectrum_revisions::{ActorKind, ProjectId, RevisionId, SessionId, TrackId};
 use crate::{
     LiveWorkspaceState, PRISM_LIVE_ACTION_FAMILY, PRISM_LIVE_ACTION_VERSION, PrismLiveAction,
     PrismLiveResult, PrismLiveSessions, Workspace, decode_live_action,
+    live_bridge::PrismLiveCollaborationSync,
 };
 
 const INGRESS_CAPACITY: usize = 32;
@@ -25,6 +26,10 @@ const MAX_DEFERRED: usize = 16;
 const DEFERRED_TTL: Duration = Duration::from_secs(5);
 const DRAIN_COUNT_BUDGET: usize = 8;
 const DRAIN_TIME_BUDGET: Duration = Duration::from_millis(2);
+#[cfg(not(test))]
+const GUI_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const GUI_REPLY_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrismLiveInteractionState {
@@ -173,6 +178,12 @@ impl BridgeHost for PrismLiveHost {
     }
 
     fn apply_if_current(&self, request: &RequestEnvelope) -> BridgeResult<HostApplyOutcome> {
+        if self.events.get().is_none() {
+            return Ok(HostApplyOutcome::Applied(ResponseBody::Error {
+                code: "prism_live_not_ready".into(),
+                message: "Prism live event publication is not attached".into(),
+            }));
+        }
         let action = match decode_live_action(&request.action) {
             Ok(action) => action,
             Err(error) => {
@@ -197,7 +208,15 @@ impl BridgeHost for PrismLiveHost {
                 },
                 mpsc::TrySendError::Disconnected(_) => BridgeError::Closed,
             })?;
-        response.recv().map_err(|_| BridgeError::Closed)?
+        response
+            .recv_timeout(GUI_REPLY_TIMEOUT)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => BridgeError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Prism GUI did not answer the live request within 30 seconds",
+                )),
+                mpsc::RecvTimeoutError::Disconnected => BridgeError::Closed,
+            })?
     }
 }
 
@@ -212,6 +231,9 @@ impl PrismLiveDrain {
         self.expire_deferred(&mut report);
         if interaction == PrismLiveInteractionState::Idle {
             self.release_one_deferred(workspace, &mut report);
+            if report.applied > 0 {
+                return report;
+            }
         }
         while report.received < DRAIN_COUNT_BUDGET && started.elapsed() < DRAIN_TIME_BUDGET {
             let pending = match self.ingress.try_recv() {
@@ -235,6 +257,9 @@ impl PrismLiveDrain {
                 self.handle_busy(pending, &mut report);
             } else {
                 self.apply_one(workspace, pending, &mut report);
+                if report.applied > 0 {
+                    break;
+                }
             }
         }
         report
@@ -244,10 +269,31 @@ impl PrismLiveDrain {
         !self.deferred.is_empty()
     }
 
+    pub fn close(&mut self) {
+        while let Ok(mut pending) = self.ingress.try_recv() {
+            self.cancel_deferred_event(&pending);
+            send_reply(
+                pending.reply.take(),
+                Ok(HostApplyOutcome::Applied(ResponseBody::Refused {
+                    reason: "Prism live binding closed before the request could run".into(),
+                })),
+            );
+        }
+        while let Some(pending) = self.deferred.pop_front() {
+            self.cancel_deferred_event(&pending);
+        }
+        self.host.close();
+    }
+
     fn handle_busy(&mut self, mut pending: PendingRequest, report: &mut PrismLiveDrainReport) {
         match pending.request.interaction {
             InteractionPolicy::Deferred if self.deferred.len() < MAX_DEFERRED => {
                 pending.deferred_at = Some(Instant::now());
+                if let Err(error) = self.begin_deferred_event(&pending) {
+                    send_reply(pending.reply.take(), Err(error));
+                    report.refused += 1;
+                    return;
+                }
                 send_reply(
                     pending.reply.take(),
                     Ok(HostApplyOutcome::Applied(ResponseBody::Deferred)),
@@ -291,7 +337,9 @@ impl PrismLiveDrain {
                 .deferred_at
                 .is_some_and(|created| now.duration_since(created) >= DEFERRED_TTL)
         }) {
-            self.deferred.pop_front();
+            if let Some(pending) = self.deferred.pop_front() {
+                self.cancel_deferred_event(&pending);
+            }
             report.refused += 1;
         }
     }
@@ -302,14 +350,26 @@ impl PrismLiveDrain {
         mut pending: PendingRequest,
         report: &mut PrismLiveDrainReport,
     ) {
+        let was_deferred = pending.deferred_at.is_some();
         let result = self.apply_locked(workspace, &pending);
-        if matches!(
-            &result,
-            Ok(HostApplyOutcome::Applied(ResponseBody::Applied { .. }))
-        ) {
+        let mutation_applied = !matches!(pending.action, PrismLiveAction::State)
+            && matches!(
+                &result,
+                Ok(HostApplyOutcome::Applied(ResponseBody::Applied { .. }))
+            );
+        if mutation_applied {
             report.applied += 1;
-        } else if !matches!(&result, Ok(HostApplyOutcome::Conflict(_))) {
+        } else if matches!(
+            &result,
+            Err(_)
+                | Ok(HostApplyOutcome::Applied(
+                    ResponseBody::Refused { .. } | ResponseBody::Error { .. }
+                ))
+        ) {
             report.refused += 1;
+        }
+        if was_deferred && !mutation_applied {
+            self.cancel_deferred_event(&pending);
         }
         send_reply(pending.reply.take(), result);
     }
@@ -402,7 +462,92 @@ impl PrismLiveDrain {
                 }],
             })?;
         }
+        if let Some(sync) = &applied.collaboration_sync {
+            let transition = || {
+                vec![CursorTransition {
+                    track_id: applied.after.track_id,
+                    from_revision_id: applied.before.human_cursor,
+                    to_revision_id: applied.after.human_cursor,
+                }]
+            };
+            match sync {
+                PrismLiveCollaborationSync::Advanced { .. }
+                    if applied.before.human_cursor != applied.after.human_cursor =>
+                {
+                    events.append(BridgeEventKind::CollaborationAdvanced {
+                        agent_session_id: applied.after.agent_session,
+                        source_session_id: applied.after.human_session,
+                        cursors: transition(),
+                    })?;
+                }
+                PrismLiveCollaborationSync::Split
+                    if applied.before.agent_cursor != applied.after.agent_cursor =>
+                {
+                    events.append(BridgeEventKind::CollaborationSplit {
+                        agent_session_id: applied.after.agent_session,
+                        source_session_id: applied.after.human_session,
+                        cursors: vec![CursorTransition {
+                            track_id: applied.after.track_id,
+                            from_revision_id: applied.before.agent_cursor,
+                            to_revision_id: applied.after.agent_cursor,
+                        }],
+                    })?;
+                }
+                _ => {}
+            }
+        }
+        if pending.deferred_at.is_some() {
+            let cursors = if applied.before.agent_cursor != applied.after.agent_cursor {
+                vec![CursorTransition {
+                    track_id: applied.after.track_id,
+                    from_revision_id: applied.before.agent_cursor,
+                    to_revision_id: applied.after.agent_cursor,
+                }]
+            } else {
+                vec![CursorTransition {
+                    track_id: applied.after.track_id,
+                    from_revision_id: applied.before.human_cursor,
+                    to_revision_id: applied.after.human_cursor,
+                }]
+            };
+            if cursors[0].from_revision_id != cursors[0].to_revision_id {
+                events.append(BridgeEventKind::InteractionCommitted {
+                    interaction_id: deferred_interaction_id(&pending.request),
+                    cursors,
+                })?;
+            } else {
+                events.append(BridgeEventKind::InteractionCanceled {
+                    interaction_id: deferred_interaction_id(&pending.request),
+                })?;
+            }
+        }
         Ok(())
+    }
+
+    fn begin_deferred_event(&self, pending: &PendingRequest) -> BridgeResult<()> {
+        let _state = self.host.state.lock().map_err(|_| BridgeError::Closed)?;
+        self.host
+            .events
+            .get()
+            .ok_or_else(|| BridgeError::Protocol("Prism live event log is not attached".into()))?
+            .append(BridgeEventKind::InteractionBegan {
+                interaction_id: deferred_interaction_id(&pending.request),
+                interaction_kind: "deferred_prism_action".into(),
+            })?;
+        Ok(())
+    }
+
+    fn cancel_deferred_event(&self, pending: &PendingRequest) {
+        if pending.deferred_at.is_none() {
+            return;
+        }
+        if let Ok(_state) = self.host.state.lock()
+            && let Some(events) = self.host.events.get()
+        {
+            let _ = events.append(BridgeEventKind::InteractionCanceled {
+                interaction_id: deferred_interaction_id(&pending.request),
+            });
+        }
     }
 }
 
@@ -442,4 +587,8 @@ fn send_reply(
     if let Some(reply) = reply {
         let _ = reply.send(result);
     }
+}
+
+fn deferred_interaction_id(request: &RequestEnvelope) -> String {
+    format!("deferred-request:{}", request.request_id)
 }

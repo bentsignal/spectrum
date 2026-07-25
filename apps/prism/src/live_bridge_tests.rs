@@ -479,6 +479,7 @@ fn host_applies_one_batch_and_publishes_the_exact_revision_event() {
 fn active_interaction_refuses_immediate_and_releases_one_deferred_request() {
     let mut fixture = Fixture::new(CollaborationMode::Separate);
     let mut harness = HostHarness::new(&fixture);
+    let subscription = harness.server.events().subscribe(0).unwrap();
     let immediate = harness.request(
         &fixture,
         PrismLiveAction::ExecuteBatch {
@@ -518,6 +519,10 @@ fn active_interaction_refuses_immediate_and_releases_one_deferred_request() {
     );
     assert!(matches!(response.body, ResponseBody::Deferred));
     assert!(harness.drain.has_pending());
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::InteractionBegan { .. }
+    ));
     let report = harness
         .drain
         .drain(&mut fixture.human, PrismLiveInteractionState::Idle);
@@ -530,6 +535,14 @@ fn active_interaction_refuses_immediate_and_releases_one_deferred_request() {
             .name,
         "Deferred"
     );
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::RevisionCommitted { .. }
+    ));
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::InteractionCommitted { .. }
+    ));
 
     let confirmation = harness.request(
         &fixture,
@@ -546,4 +559,79 @@ fn active_interaction_refuses_immediate_and_releases_one_deferred_request() {
         PrismLiveInteractionState::Idle,
     );
     assert!(matches!(response.body, ResponseBody::Refused { .. }));
+}
+
+#[test]
+fn closing_a_binding_cancels_deferred_work_and_wakes_waiters() {
+    let mut fixture = Fixture::new(CollaborationMode::Separate);
+    let mut harness = HostHarness::new(&fixture);
+    let subscription = harness.server.events().subscribe(0).unwrap();
+    let deferred = harness.request(
+        &fixture,
+        PrismLiveAction::ExecuteBatch {
+            expectation: fixture.expectation(),
+            command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+            commands: vec![rename("Must be canceled")],
+        },
+        InteractionPolicy::Deferred,
+    );
+    let response = harness.round_trip(
+        &mut fixture.human,
+        deferred,
+        PrismLiveInteractionState::Active,
+    );
+    assert!(matches!(response.body, ResponseBody::Deferred));
+    harness.drain.close();
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::InteractionBegan { .. }
+    ));
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::InteractionCanceled { .. }
+    ));
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::ProjectClosed
+    ));
+    assert_ne!(
+        Workspace::open_session(&fixture.path, fixture.agent_session)
+            .unwrap()
+            .document
+            .name,
+        "Must be canceled"
+    );
+}
+
+#[test]
+fn timed_out_gui_request_becomes_unknown_before_late_mutation() {
+    let mut fixture = Fixture::new(CollaborationMode::Separate);
+    let mut harness = HostHarness::new(&fixture);
+    let request = harness.request(
+        &fixture,
+        PrismLiveAction::ExecuteBatch {
+            expectation: fixture.expectation(),
+            command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+            commands: vec![rename("Late but observable")],
+        },
+        InteractionPolicy::Immediate,
+    );
+    let server = Arc::clone(&harness.server);
+    let sent = request.clone();
+    let worker = thread::spawn(move || server.handle_request(sent));
+    assert!(worker.join().unwrap().is_err());
+
+    let report = harness
+        .drain
+        .drain(&mut fixture.human, PrismLiveInteractionState::Idle);
+    assert_eq!(report.applied, 1);
+    let replay = harness.server.handle_request(request).unwrap();
+    assert!(matches!(replay.body, ResponseBody::OutcomeUnknown));
+    assert_eq!(
+        Workspace::open_session(&fixture.path, fixture.agent_session)
+            .unwrap()
+            .document
+            .name,
+        "Late but observable"
+    );
 }
