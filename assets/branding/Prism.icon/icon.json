@@ -1,13 +1,14 @@
 {
   "fill" : {
-    "automatic-gradient" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
+    "solid" : "extended-srgb:0.00000,0.00000,0.00000,0.00000"
   },
   "groups" : [
     {
       "layers" : [
         {
-          "image-name" : "cropped-prism.png",
-          "name" : "cropped-prism",
+          "glass" : false,
+          "image-name" : "prism-app-icon.png",
+          "name" : "prism-app-icon",
           "opacity-specializations" : [
             {
               "appearance" : "tinted",
@@ -15,7 +16,7 @@
             }
           ],
           "position" : {
-            "scale" : 2.56,
+            "scale" : 1,
             "translation-in-points" : [
               0,
               0
@@ -23,6 +24,7 @@
           }
         },
         {
+          "blend-mode" : "screen",
           "fill-specializations" : [
             {
               "appearance" : "tinted",
@@ -55,6 +57,13 @@
       "shadow" : {
         "kind" : "neutral",
         "opacity" : 0.6
+      },
+      "position" : {
+        "scale" : 0.8046875,
+        "translation-in-points" : [
+          0,
+          0
+        ]
       },
       "translucency" : {
         "enabled" : true,
