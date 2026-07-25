@@ -315,6 +315,35 @@ fn toolbar_review_package_has_a_distinct_identity_and_embedded_provenance() {
 }
 
 #[test]
+fn toolbar_gradient_editor_preserves_its_nested_visual_stop_picker() {
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/toolbar_prototypes.rs");
+    let toolbar = fs::read_to_string(source).unwrap();
+    let start = toolbar
+        .find("fn shape_gradient_toolbar_control")
+        .expect("toolbar gradient control should exist");
+    let end = toolbar[start..]
+        .find("fn toolbar_context_kind")
+        .map(|offset| start + offset)
+        .expect("toolbar context helper should follow the gradient control");
+    let control = &toolbar[start..end];
+
+    assert!(
+        control.contains("egui::Area::new"),
+        "the gradient editor needs a floating area so its stop swatches can own the sole popup"
+    );
+    assert!(control.contains("egui::Popup::is_any_open"));
+    assert!(
+        control.contains("nested_popup_was_open"),
+        "Escape must dismiss the nested picker before its containing editor"
+    );
+    assert!(
+        !control.contains("Popup::from_toggle_button_response") && !control.contains("menu_button"),
+        "any popup parent is replaced when the visual stop picker opens"
+    );
+}
+
+#[test]
 fn bundled_ubuntu_license_is_exact_and_installed_by_every_native_package() {
     use sha2::{Digest, Sha256};
 

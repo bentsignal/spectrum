@@ -10,6 +10,7 @@ const NARROW_WORKBENCH_HEIGHT: f32 = 88.0;
 const VERY_NARROW_WORKBENCH_HEIGHT: f32 = 122.0;
 const GRADIENT_POPOVER_WIDTH: f32 = 340.0;
 const GRADIENT_POPOVER_HEIGHT: f32 = 480.0;
+const GRADIENT_POPOVER_MARGIN: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum ToolbarOverflowPrototype {
@@ -59,12 +60,20 @@ enum ScrollEdge {
     End,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct GradientEditorPanelState {
+    layer_id: u64,
+    anchor: egui::Pos2,
+    trigger_rect: egui::Rect,
+}
+
 #[derive(Debug)]
 pub(super) struct ToolbarPrototypeState {
     enabled: bool,
     selected: ToolbarOverflowPrototype,
     forced_width: Option<f32>,
     scroll_edge: Option<ScrollEdge>,
+    gradient_editor_panel: Option<GradientEditorPanelState>,
 }
 
 impl ToolbarPrototypeState {
@@ -85,6 +94,7 @@ impl ToolbarPrototypeState {
             selected,
             forced_width,
             scroll_edge: None,
+            gradient_editor_panel: None,
         }
     }
 
@@ -228,6 +238,11 @@ fn presentation_for(
     }
 }
 
+fn prototype_widths(available_width: f32, forced_width: Option<f32>) -> (f32, f32) {
+    let presentation_width = forced_width.unwrap_or(available_width);
+    (presentation_width.min(available_width), presentation_width)
+}
+
 impl PrismApp {
     pub(super) fn toolbar_prototype_height(&self, available_width: f32) -> f32 {
         if !self.toolbar_prototype.enabled() {
@@ -290,7 +305,7 @@ impl PrismApp {
                         if ui
                             .selectable_label(self.toolbar_prototype.forced_width == width, label)
                             .on_hover_text(
-                                "Constrain the real toolbar UI for deterministic comparison when native window resize is unavailable",
+                                "Model this responsive width while keeping rendering inside the native review window",
                             )
                             .clicked()
                         {
@@ -334,21 +349,20 @@ impl PrismApp {
     }
 
     pub(super) fn prototype_workbench_contents(&mut self, ui: &mut egui::Ui) {
-        let available_width = self
-            .toolbar_prototype
-            .forced_width
-            .unwrap_or_else(|| ui.available_width())
-            .min(ui.available_width());
+        let context = ui.ctx().clone();
+        let (allocation_width, presentation_width) =
+            prototype_widths(ui.available_width(), self.toolbar_prototype.forced_width);
         if self.toolbar_prototype.forced_width.is_some() {
             let height = ui.available_height();
             ui.allocate_ui_with_layout(
-                Vec2::new(available_width, height),
+                Vec2::new(allocation_width, height),
                 egui::Layout::left_to_right(egui::Align::Center),
-                |ui| self.prototype_workbench_contents_at_width(ui, available_width),
+                |ui| self.prototype_workbench_contents_at_width(ui, presentation_width),
             );
         } else {
-            self.prototype_workbench_contents_at_width(ui, available_width);
+            self.prototype_workbench_contents_at_width(ui, presentation_width);
         }
+        self.toolbar_gradient_editor_panel(&context);
     }
 
     fn prototype_workbench_contents_at_width(&mut self, ui: &mut egui::Ui, available_width: f32) {
@@ -575,29 +589,91 @@ impl PrismApp {
 
     fn shape_gradient_toolbar_control(&mut self, ui: &mut egui::Ui, layer: &Layer) {
         let summary = gradient_summary(layer);
-        ui.menu_button(summary, |ui| {
-            ui.set_min_width(GRADIENT_POPOVER_WIDTH);
-            ui.label(
-                RichText::new("GRADIENT EDITOR")
-                    .size(9.0)
-                    .strong()
-                    .color(SUBTLE),
-            );
-            ui.label(
-                RichText::new("Full visual stop editing · Escape or click away to close")
-                    .size(9.0)
-                    .color(MUTED),
-            );
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .id_salt(("toolbar-gradient-editor", layer.id))
-                .max_height(GRADIENT_POPOVER_HEIGHT)
-                .show(ui, |ui| self.shape_gradient_controls(ui, layer));
-        })
-        .response
-        .on_hover_text(
+        let response = ui.button(summary);
+        let panel = GradientEditorPanelState {
+            layer_id: layer.id,
+            anchor: response.rect.left_bottom(),
+            trigger_rect: response.rect,
+        };
+        if response.clicked() {
+            let already_open = self
+                .toolbar_prototype
+                .gradient_editor_panel
+                .is_some_and(|open| open.layer_id == layer.id);
+            self.toolbar_prototype.gradient_editor_panel = (!already_open).then_some(panel);
+        } else if self
+            .toolbar_prototype
+            .gradient_editor_panel
+            .is_some_and(|open| open.layer_id == layer.id)
+        {
+            self.toolbar_prototype.gradient_editor_panel = Some(panel);
+        }
+        response.on_hover_text(
             "Open the complete gradient editor, including each stop's visual color picker",
         );
+    }
+
+    fn toolbar_gradient_editor_panel(&mut self, context: &egui::Context) {
+        let Some(panel) = self.toolbar_prototype.gradient_editor_panel else {
+            return;
+        };
+        let Some(layer) = self
+            .selected_layer()
+            .filter(|layer| layer.id == panel.layer_id)
+            .cloned()
+        else {
+            self.toolbar_prototype.gradient_editor_panel = None;
+            return;
+        };
+        let position = gradient_panel_position(panel.anchor, context.content_rect());
+        let nested_popup_was_open = egui::Popup::is_any_open(context);
+        let surface = egui::Area::new(egui::Id::new((
+            "toolbar-gradient-editor-panel",
+            panel.layer_id,
+        )))
+        .order(egui::Order::Foreground)
+        .fixed_pos(position)
+        .constrain(true)
+        .show(context, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_min_width(GRADIENT_POPOVER_WIDTH);
+                ui.set_max_width(GRADIENT_POPOVER_WIDTH);
+                ui.set_max_height(GRADIENT_POPOVER_HEIGHT);
+                ui.label(
+                    RichText::new("GRADIENT EDITOR")
+                        .size(9.0)
+                        .strong()
+                        .color(SUBTLE),
+                );
+                ui.label(
+                    RichText::new(
+                        "Full visual stop editing · Escape, click away, or toggle to close",
+                    )
+                    .size(9.0)
+                    .color(MUTED),
+                );
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt(("toolbar-gradient-editor", layer.id))
+                    .max_height(GRADIENT_POPOVER_HEIGHT - 54.0)
+                    .show(ui, |ui| self.shape_gradient_controls(ui, &layer));
+            });
+        });
+        let escape = context.input(|input| input.key_pressed(egui::Key::Escape));
+        let pressed_outside = context.input(|input| {
+            input.pointer.any_pressed()
+                && input.pointer.interact_pos().is_some_and(|position| {
+                    !surface.response.rect.contains(position)
+                        && !panel.trigger_rect.contains(position)
+                })
+        });
+        if gradient_panel_should_close(
+            escape,
+            pressed_outside,
+            nested_popup_was_open || egui::Popup::is_any_open(context),
+        ) {
+            self.toolbar_prototype.gradient_editor_panel = None;
+        }
     }
 
     fn toolbar_context_kind(&self) -> ContextKind {
@@ -624,6 +700,26 @@ impl PrismApp {
             _ => ContextKind::None,
         }
     }
+}
+
+fn gradient_panel_position(anchor: egui::Pos2, viewport: egui::Rect) -> egui::Pos2 {
+    let minimum = viewport.min + egui::vec2(GRADIENT_POPOVER_MARGIN, GRADIENT_POPOVER_MARGIN);
+    let maximum = egui::pos2(
+        (viewport.right() - GRADIENT_POPOVER_WIDTH - GRADIENT_POPOVER_MARGIN).max(minimum.x),
+        (viewport.bottom() - GRADIENT_POPOVER_HEIGHT - GRADIENT_POPOVER_MARGIN).max(minimum.y),
+    );
+    egui::pos2(
+        anchor.x.clamp(minimum.x, maximum.x),
+        anchor.y.clamp(minimum.y, maximum.y),
+    )
+}
+
+fn gradient_panel_should_close(
+    escape: bool,
+    pressed_outside: bool,
+    nested_popup_open: bool,
+) -> bool {
+    (escape || pressed_outside) && !nested_popup_open
 }
 
 fn gradient_summary(layer: &Layer) -> String {
@@ -755,6 +851,13 @@ mod tests {
     }
 
     #[test]
+    fn forced_width_drives_presentation_without_escaping_the_native_window() {
+        assert_eq!(prototype_widths(1_224.0, None), (1_224.0, 1_224.0));
+        assert_eq!(prototype_widths(1_224.0, Some(980.0)), (980.0, 980.0));
+        assert_eq!(prototype_widths(1_224.0, Some(1_920.0)), (1_224.0, 1_920.0));
+    }
+
+    #[test]
     fn gradient_editor_is_always_an_explicit_popover_never_inline_or_clipped() {
         for prototype in ToolbarOverflowPrototype::ALL {
             for width in [980.0, 1_200.0, 1_920.0] {
@@ -766,6 +869,45 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn gradient_panel_position_is_bounded_at_every_review_width() {
+        for width in [980.0, 1_200.0, 1_920.0] {
+            let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1_080.0));
+            for anchor in [
+                egui::pos2(-200.0, -200.0),
+                egui::pos2(width * 0.5, 40.0),
+                egui::pos2(width + 200.0, 1_280.0),
+            ] {
+                let position = gradient_panel_position(anchor, viewport);
+                assert!(position.x >= viewport.left() + GRADIENT_POPOVER_MARGIN);
+                assert!(position.y >= viewport.top() + GRADIENT_POPOVER_MARGIN);
+                assert!(
+                    position.x + GRADIENT_POPOVER_WIDTH
+                        <= viewport.right() - GRADIENT_POPOVER_MARGIN
+                );
+                assert!(
+                    position.y + GRADIENT_POPOVER_HEIGHT
+                        <= viewport.bottom() - GRADIENT_POPOVER_MARGIN
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gradient_panel_dismissal_yields_to_the_nested_visual_picker() {
+        assert!(gradient_panel_should_close(true, false, false));
+        assert!(gradient_panel_should_close(false, true, false));
+        assert!(!gradient_panel_should_close(false, false, false));
+        assert!(
+            !gradient_panel_should_close(true, false, true),
+            "the first Escape belongs to the nested picker"
+        );
+        assert!(
+            !gradient_panel_should_close(false, true, true),
+            "an outside click first dismisses the nested picker without losing its editor"
+        );
     }
 
     #[test]
