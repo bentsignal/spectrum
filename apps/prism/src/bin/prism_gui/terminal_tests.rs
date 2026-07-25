@@ -128,6 +128,57 @@ fn terminal_polling_bursts_only_while_visible_and_active() {
 }
 
 #[test]
+fn terminal_shortcut_help_is_on_demand_without_persistent_help_rows() {
+    let guidance = terminal_rail_guidance(shortcuts::SHORTCUT_LABELS);
+    assert_eq!(
+        guidance.persistent_rows,
+        [format!("{}  editor", shortcuts::SHORTCUT_LABELS.terminal)]
+    );
+    assert_eq!(
+        guidance.on_demand_rows,
+        [
+            shortcuts::SHORTCUT_LABELS.terminal_meta.to_owned(),
+            shortcuts::SHORTCUT_LABELS.terminal_clipboard.to_owned(),
+            "Shift+PageUp/PageDown scroll".to_owned(),
+        ]
+    );
+    for help in &guidance.on_demand_rows {
+        assert!(!guidance.persistent_rows[0].contains(help));
+    }
+}
+
+#[test]
+fn existing_terminal_footer_exposes_on_demand_help_accessibly() {
+    use egui::accesskit::{Action, Role};
+
+    let context = egui::Context::default();
+    context.enable_accesskit();
+    let guidance = terminal_rail_guidance(shortcuts::SHORTCUT_LABELS);
+    let expected_label = format!(
+        "{}. Terminal shortcuts: {}",
+        guidance.persistent_rows[0],
+        guidance.on_demand_rows.join("; ")
+    );
+    let mut semantics = None;
+    let _ = context.run_ui(egui::RawInput::default(), |ui| {
+        let response = terminal_guidance_footer(ui, &guidance);
+        response.request_focus();
+        semantics = context.accesskit_node_builder(response.id, |node| {
+            (
+                node.role(),
+                node.label().map(str::to_owned),
+                node.supports_action(Action::Click),
+                node.supports_action(Action::Focus),
+            )
+        });
+    });
+    assert_eq!(
+        semantics,
+        Some((Role::Button, Some(expected_label), true, true))
+    );
+}
+
+#[test]
 fn parser_queries_write_bounded_replies_back_through_the_portable_backend() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let backend = QueryBackend {

@@ -360,6 +360,54 @@ struct TerminalLaunch {
     context: TerminalContext,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct TerminalRailGuidance {
+    persistent_rows: [String; 1],
+    on_demand_rows: [String; 3],
+}
+
+fn terminal_rail_guidance(labels: shortcuts::ShortcutLabels) -> TerminalRailGuidance {
+    TerminalRailGuidance {
+        persistent_rows: [format!("{}  editor", labels.terminal)],
+        on_demand_rows: [
+            labels.terminal_meta.to_owned(),
+            labels.terminal_clipboard.to_owned(),
+            "Shift+PageUp/PageDown scroll".to_owned(),
+        ],
+    }
+}
+
+fn terminal_guidance_footer(ui: &mut egui::Ui, guidance: &TerminalRailGuidance) -> egui::Response {
+    let response = ui.add(
+        egui::Label::new(
+            RichText::new(&guidance.persistent_rows[0])
+                .size(10.0)
+                .color(SUBTLE),
+        )
+        .sense(egui::Sense::click()),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!(
+                "{}. Terminal shortcuts: {}",
+                guidance.persistent_rows[0],
+                guidance.on_demand_rows.join("; ")
+            ),
+        )
+    });
+    let response = response.on_hover_text(guidance.on_demand_rows.join("\n"));
+    egui::Popup::menu(&response)
+        .align(egui::RectAlign::TOP_START)
+        .show(|ui| {
+            for row in &guidance.on_demand_rows {
+                ui.label(RichText::new(row).size(10.0));
+            }
+        });
+    response
+}
+
 impl PrismApp {
     #[cfg(not(target_os = "macos"))]
     pub(super) fn terminal_status_control(&mut self, ui: &mut egui::Ui) {
@@ -514,6 +562,7 @@ impl PrismApp {
         let mut hide = false;
         let mut cancel_close = false;
         let mut confirm_close = None;
+        let guidance = terminal_rail_guidance(shortcuts::SHORTCUT_LABELS);
         egui::Panel::right("terminal-session-rail")
             .default_size(SESSION_RAIL_WIDTH)
             .min_size(SESSION_RAIL_WIDTH)
@@ -611,26 +660,7 @@ impl PrismApp {
                     });
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(
-                        RichText::new(format!("{}  editor", shortcuts::SHORTCUT_LABELS.terminal))
-                            .size(10.0)
-                            .color(SUBTLE),
-                    );
-                    ui.label(
-                        RichText::new(shortcuts::SHORTCUT_LABELS.terminal_meta)
-                            .size(10.0)
-                            .color(SUBTLE),
-                    );
-                    ui.label(
-                        RichText::new(shortcuts::SHORTCUT_LABELS.terminal_clipboard)
-                            .size(10.0)
-                            .color(SUBTLE),
-                    );
-                    ui.label(
-                        RichText::new("Shift+PageUp/PageDown scroll")
-                            .size(10.0)
-                            .color(SUBTLE),
-                    );
+                    terminal_guidance_footer(ui, &guidance);
                     if let Some(session) = self.terminal.sessions.get(self.terminal.active)
                         && let Some((message, is_error)) = &session.message
                     {
