@@ -471,9 +471,29 @@ impl DurableProject {
     }
 
     pub fn sync_together(&mut self) -> Result<(CollaborationSync, Option<Document>)> {
-        let sync = self
-            .store
-            .mutate(|store| store.sync_together(self.session_id))?;
+        self.sync_together_inner(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_together_after_durable_commit(
+        &mut self,
+    ) -> Result<(CollaborationSync, Option<Document>)> {
+        self.sync_together_inner(true)
+    }
+
+    fn sync_together_inner(
+        &mut self,
+        fail_after_commit: bool,
+    ) -> Result<(CollaborationSync, Option<Document>)> {
+        let sync = self.store.mutate(|store| {
+            let sync = store.sync_together(self.session_id)?;
+            if fail_after_commit {
+                return Err(spectrum_revisions::RevisionError::Invalid(
+                    "injected failure after Together sync database commit".into(),
+                ));
+            }
+            Ok(sync)
+        })?;
         if let CollaborationSync::Advanced { to, .. } = &sync {
             self.cursor = *to;
             let (document, snapshot_tail) = self.load(*to)?;

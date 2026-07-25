@@ -609,8 +609,8 @@ mod tests {
         let binding_id = BindingId::new();
         DiscoveryRecord {
             family: DISCOVERY_FAMILY.into(),
-            protocol_min: 1,
-            protocol_max: 1,
+            protocol_min: PROTOCOL_VERSION,
+            protocol_max: PROTOCOL_VERSION,
             application: "test-host".into(),
             project_id: ProjectId::new(),
             canonical_project_path: root.join("project.test"),

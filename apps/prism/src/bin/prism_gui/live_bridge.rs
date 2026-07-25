@@ -201,13 +201,25 @@ impl PrismLiveRegistry {
         tab_id: u64,
         workspace: &mut Workspace,
         interaction: PrismLiveInteractionState,
-    ) -> PrismLiveDrainReport {
+    ) -> (PrismLiveDrainReport, Option<BindingId>) {
         let Some(binding) = self.bindings.get_mut(&tab_id) else {
-            return PrismLiveDrainReport::default();
+            return (PrismLiveDrainReport::default(), None);
         };
         let report = binding.drain.drain(workspace, interaction);
         binding.refresh_discovery();
+        let retired = self.retire_if_reopen_required(tab_id, report);
+        (report, retired)
+    }
+
+    fn retire_if_reopen_required(
+        &mut self,
+        tab_id: u64,
+        report: PrismLiveDrainReport,
+    ) -> Option<BindingId> {
         report
+            .reopen_required
+            .then(|| self.remove(tab_id))
+            .flatten()
     }
 
     pub(super) fn observe(
@@ -245,17 +257,24 @@ impl PrismLiveRegistry {
         Ok(changed)
     }
 
-    pub(super) fn ordered_tabs(&mut self, tabs: &[u64]) -> Vec<u64> {
+    pub(super) fn next_pending_tab(&mut self, tabs: &[u64]) -> Option<u64> {
         if tabs.is_empty() {
-            return Vec::new();
+            return None;
         }
         let start = self.round_robin % tabs.len();
-        self.round_robin = (start + 1) % tabs.len();
-        tabs[start..]
-            .iter()
-            .chain(&tabs[..start])
-            .copied()
-            .collect()
+        for offset in 0..tabs.len() {
+            let index = (start + offset) % tabs.len();
+            let tab_id = tabs[index];
+            if self
+                .bindings
+                .get(&tab_id)
+                .is_some_and(|binding| binding.drain.has_pending())
+            {
+                self.round_robin = (index + 1) % tabs.len();
+                return Some(tab_id);
+            }
+        }
+        None
     }
 
     pub(super) fn has_pending(&self) -> bool {
@@ -440,8 +459,15 @@ fn spawn_accept_worker(
 
 #[cfg(test)]
 mod tests {
-    use spectrum_live_bridge::{BridgeClient, BridgeEventKind, ClientConfig, ServerMessage};
-    use spectrum_revisions::{Actor, ActorKind, SessionId};
+    use std::sync::atomic::AtomicUsize;
+
+    use prism_core::{PrismLiveAction, PrismLiveActionExpectation};
+    use spectrum_live_bridge::{
+        ActionEnvelope, BridgeClient, BridgeEventKind, BridgeHost, ClientConfig, ExpectedCursor,
+        HostApplyOutcome, InteractionPolicy, PROTOCOL_FAMILY, RequestEnvelope, RequestId,
+        ResponseBody, ServerMessage,
+    };
+    use spectrum_revisions::{Actor, ActorKind, CollaborationMode, SessionId};
 
     use super::*;
     use crate::TerminalDock;
@@ -633,5 +659,248 @@ mod tests {
             BridgeClient::connect(&ClientConfig::local(original.endpoint.clone()), &capability)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn recovery_required_report_retires_discovery_and_stales_bound_terminals() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("discovery");
+        let project = temporary.path().join("project.prism");
+        let workspace = Workspace::create_durable(
+            prism_core::Document::new("Live", 64, 64),
+            &project,
+            Actor {
+                id: "human:test".into(),
+                display_name: "Test Human".into(),
+                kind: ActorKind::Human,
+            },
+            SessionId::new(),
+        )
+        .unwrap();
+        let mut registry = PrismLiveRegistry::at_root(root).unwrap();
+        let record = registry.register(7, &workspace).unwrap().record;
+        let mut terminal = TerminalDock::new(true);
+        terminal.new_session(crate::terminal::terminal_launch(
+            &workspace,
+            Some(record.binding_id),
+        ));
+
+        assert_eq!(
+            registry.retire_if_reopen_required(
+                7,
+                PrismLiveDrainReport {
+                    reopen_required: true,
+                    ..PrismLiveDrainReport::default()
+                }
+            ),
+            Some(record.binding_id)
+        );
+        assert!(registry.record(7).is_none());
+        assert!(registry.directory.records().unwrap().is_empty());
+        assert_eq!(terminal.live_binding_unavailable(record.binding_id), 1);
+        assert!(
+            terminal.sessions[0]
+                .message
+                .as_ref()
+                .unwrap()
+                .0
+                .contains("reopen the project")
+        );
+    }
+
+    #[test]
+    fn one_coalesced_wake_drains_a_thirty_two_tab_flood_with_global_frame_fairness() {
+        let temporary = tempfile::tempdir().unwrap();
+        let wake_armed = Arc::new(AtomicBool::new(false));
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let raw_wake_count = Arc::new(AtomicUsize::new(0));
+        let registry_wake_armed = Arc::clone(&wake_armed);
+        let registry_wake_count = Arc::clone(&wake_count);
+        let registry_raw_wake_count = Arc::clone(&raw_wake_count);
+        let mut registry = PrismLiveRegistry::at_root_with_wake(
+            temporary.path().join("discovery"),
+            Arc::new(move || {
+                registry_raw_wake_count.fetch_add(1, Ordering::AcqRel);
+                if !registry_wake_armed.swap(true, Ordering::AcqRel) {
+                    registry_wake_count.fetch_add(1, Ordering::AcqRel);
+                }
+            }),
+        )
+        .unwrap();
+        let tab_ids = (0..MAX_LIVE_BINDINGS as u64).collect::<Vec<_>>();
+        let mut workspaces = Vec::with_capacity(tab_ids.len());
+        let mut workers = Vec::with_capacity(tab_ids.len() * 2);
+
+        for tab_id in &tab_ids {
+            let path = temporary.path().join(format!("fair-{tab_id}.prism"));
+            let human_session = SessionId::new();
+            let workspace = Workspace::create_durable(
+                prism_core::Document::new(format!("Fair {tab_id}"), 8, 8),
+                &path,
+                Actor {
+                    id: format!("human:{tab_id}"),
+                    display_name: format!("Human {tab_id}"),
+                    kind: ActorKind::Human,
+                },
+                human_session,
+            )
+            .unwrap();
+            let collaboration = Workspace::start_collaboration(
+                &path,
+                Some(human_session),
+                Actor {
+                    id: format!("agent:{tab_id}"),
+                    display_name: format!("Agent {tab_id}"),
+                    kind: ActorKind::Agent,
+                },
+                CollaborationMode::Separate,
+            )
+            .unwrap();
+            let record = registry.register(*tab_id, &workspace).unwrap().record;
+            let host = Arc::clone(&registry.bindings.get(tab_id).unwrap().host);
+            let request = fairness_request(
+                &workspace,
+                &record,
+                collaboration.agent_session,
+                *tab_id,
+                false,
+            );
+            workers.push(thread::spawn(move || {
+                host.apply_if_current(&request).unwrap()
+            }));
+            let host = Arc::clone(&registry.bindings.get(tab_id).unwrap().host);
+            let request = fairness_request(
+                &workspace,
+                &record,
+                collaboration.agent_session,
+                *tab_id,
+                true,
+            );
+            workers.push(thread::spawn(move || {
+                host.apply_if_current(&request).unwrap()
+            }));
+            workspaces.push(workspace);
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline
+            && raw_wake_count.load(Ordering::Acquire) < MAX_LIVE_BINDINGS * 2
+        {
+            thread::yield_now();
+        }
+        assert_eq!(
+            raw_wake_count.load(Ordering::Acquire),
+            MAX_LIVE_BINDINGS * 2
+        );
+        assert!(
+            registry
+                .bindings
+                .values()
+                .all(|binding| binding.drain.has_pending()),
+            "all thirty-two bindings must be pending before the frame audit"
+        );
+        assert_eq!(wake_count.load(Ordering::Acquire), 1);
+
+        let mut serviced = Vec::new();
+        while registry.has_pending() {
+            let tab_id = registry.next_pending_tab(&tab_ids).unwrap();
+            let (report, retired) = registry.drain(
+                tab_id,
+                &mut workspaces[tab_id as usize],
+                PrismLiveInteractionState::Idle,
+            );
+            assert!(retired.is_none());
+            assert!((1..=2).contains(&report.received));
+            serviced.push(tab_id);
+            if serviced.len() < tab_ids.len() {
+                assert!(
+                    registry.has_pending(),
+                    "the GUI must request a follow-up frame after the coalesced wake"
+                );
+            }
+        }
+        assert_eq!(&serviced[..tab_ids.len()], tab_ids.as_slice());
+        assert!(serviced.len() <= tab_ids.len() * 2);
+        assert_eq!(wake_count.load(Ordering::Acquire), 1);
+
+        let responses = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            responses
+                .iter()
+                .filter(|outcome| matches!(
+                    outcome,
+                    HostApplyOutcome::Applied(ResponseBody::Applied { .. })
+                ))
+                .count(),
+            MAX_LIVE_BINDINGS
+        );
+        assert_eq!(
+            responses
+                .iter()
+                .filter(|outcome| matches!(
+                    outcome,
+                    HostApplyOutcome::Applied(ResponseBody::Refused { .. })
+                ))
+                .count(),
+            MAX_LIVE_BINDINGS
+        );
+    }
+
+    fn fairness_request(
+        workspace: &Workspace,
+        record: &DiscoveryRecord,
+        agent_session: SessionId,
+        tab_id: u64,
+        refusal: bool,
+    ) -> RequestEnvelope {
+        let human = workspace.live_state().unwrap().unwrap();
+        let agent =
+            Workspace::open_session(workspace.project_path.as_deref().unwrap(), agent_session)
+                .unwrap()
+                .live_state()
+                .unwrap()
+                .unwrap();
+        let (interaction, action) = if refusal {
+            (
+                InteractionPolicy::RequireUserConfirmation,
+                PrismLiveAction::ExecuteBatch {
+                    expectation: PrismLiveActionExpectation {
+                        agent_revision: agent.cursor,
+                        source_revision: None,
+                    },
+                    command_version: prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+                    commands: vec![prism_core::Command::RenameDocument {
+                        name: format!("Refused {tab_id}"),
+                    }],
+                },
+            )
+        } else {
+            (InteractionPolicy::Immediate, PrismLiveAction::State)
+        };
+        RequestEnvelope {
+            protocol: PROTOCOL_FAMILY.into(),
+            version: PROTOCOL_VERSION,
+            request_id: RequestId::new(),
+            binding_id: record.binding_id,
+            binding_epoch: record.binding_epoch,
+            project_id: record.project_id,
+            application: prism_core::PRISM_LIVE_APPLICATION.into(),
+            session_id: agent_session,
+            expected_cursors: vec![ExpectedCursor {
+                track_id: human.track_id,
+                revision_id: human.cursor,
+            }],
+            actor_label: format!("Agent {tab_id}"),
+            interaction,
+            action: ActionEnvelope {
+                family: prism_core::PRISM_LIVE_ACTION_FAMILY.into(),
+                version: prism_core::PRISM_LIVE_ACTION_VERSION,
+                capabilities: Vec::new(),
+                action: serde_json::to_value(action).unwrap(),
+            },
+        }
     }
 }

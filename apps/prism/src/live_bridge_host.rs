@@ -79,6 +79,7 @@ pub struct PrismLiveDrainReport {
     pub refused: usize,
     pub workspace_changed: bool,
     pub outcome_unknown: bool,
+    pub reopen_required: bool,
 }
 
 impl PrismLiveHost {
@@ -555,6 +556,7 @@ impl PrismLiveDrain {
         let workspace_changed = workspace.document_generation() != generation_before;
         report.workspace_changed |= workspace_changed;
         report.outcome_unknown |= outcome_unknown;
+        report.reopen_required |= workspace.live_reopen_required();
         let mutation_applied = !matches!(pending.action, PrismLiveAction::State)
             && matches!(
                 &result,

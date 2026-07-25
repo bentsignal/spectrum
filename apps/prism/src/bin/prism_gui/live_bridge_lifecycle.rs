@@ -6,10 +6,13 @@ use super::*;
 enum LiveRefreshKind {
     Applied,
     OutcomeUnknown,
+    ReopenRequired,
 }
 
 fn live_refresh_kind(report: prism_core::PrismLiveDrainReport) -> Option<LiveRefreshKind> {
-    if report.workspace_changed && report.outcome_unknown {
+    if report.reopen_required {
+        Some(LiveRefreshKind::ReopenRequired)
+    } else if report.workspace_changed && report.outcome_unknown {
         Some(LiveRefreshKind::OutcomeUnknown)
     } else if report.applied > 0 || report.workspace_changed {
         Some(LiveRefreshKind::Applied)
@@ -69,25 +72,26 @@ impl PrismApp {
         let Some(registry) = &mut self.live_bridge else {
             return;
         };
-        let order = registry.ordered_tabs(&self.tab_ids);
         let mut active_refresh = None;
         let mut inactive_applied = Vec::new();
-        for tab_id in order {
-            let report = if tab_id == self.active_tab_id {
+        if let Some(tab_id) = registry.next_pending_tab(&self.tab_ids) {
+            let (report, retired) = if tab_id == self.active_tab_id {
                 registry.drain(tab_id, &mut self.workspace, interaction)
             } else {
-                let Some(workspace) = self.inactive_workspaces.get_mut(&tab_id) else {
-                    continue;
-                };
-                registry.drain(tab_id, workspace, PrismLiveInteractionState::Idle)
+                self.inactive_workspaces.get_mut(&tab_id).map_or_else(
+                    || (prism_core::PrismLiveDrainReport::default(), None),
+                    |workspace| registry.drain(tab_id, workspace, PrismLiveInteractionState::Idle),
+                )
             };
+            if let Some(retired) = retired {
+                self.terminal.live_binding_unavailable(retired);
+            }
             if let Some(refresh) = live_refresh_kind(report) {
                 if tab_id == self.active_tab_id {
                     active_refresh = Some(refresh);
                 } else {
                     inactive_applied.push(tab_id);
                 }
-                break;
             }
         }
         let pending = registry.has_pending();
@@ -106,6 +110,12 @@ impl PrismApp {
                 LiveRefreshKind::OutcomeUnknown => {
                     self.status =
                         "Live agent outcome is unknown; refreshed the current project state".into();
+                    self.status_error = true;
+                }
+                LiveRefreshKind::ReopenRequired => {
+                    self.status =
+                        "Live project recovery failed; reopen the project before using live tools"
+                            .into();
                     self.status_error = true;
                 }
             }
@@ -184,6 +194,13 @@ mod tests {
                 ..PrismLiveDrainReport::default()
             }),
             None
+        );
+        assert_eq!(
+            live_refresh_kind(PrismLiveDrainReport {
+                reopen_required: true,
+                ..PrismLiveDrainReport::default()
+            }),
+            Some(LiveRefreshKind::ReopenRequired)
         );
     }
 }

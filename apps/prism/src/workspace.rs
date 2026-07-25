@@ -24,6 +24,11 @@ pub struct Workspace {
     document_generation: u64,
     interaction_before: Option<Document>,
     interaction_commands: Vec<Command>,
+    live_unusable_reason: Option<String>,
+    #[cfg(test)]
+    fail_together_after_durable_sync: bool,
+    #[cfg(test)]
+    fail_together_recovery_open: bool,
 }
 
 pub(crate) enum PreparedLiveMutation {
@@ -62,6 +67,11 @@ impl Workspace {
             document_generation: 0,
             interaction_before: None,
             interaction_commands: Vec::new(),
+            live_unusable_reason: None,
+            #[cfg(test)]
+            fail_together_after_durable_sync: false,
+            #[cfg(test)]
+            fail_together_recovery_open: false,
         }
     }
 
@@ -145,6 +155,9 @@ impl Workspace {
     }
 
     pub fn live_state(&self) -> Result<Option<LiveWorkspaceState>> {
+        if let Some(reason) = &self.live_unusable_reason {
+            bail!("live binding is unusable; reopen the project: {reason}");
+        }
         self.durable
             .as_ref()
             .map(|durable| {
@@ -170,6 +183,10 @@ impl Workspace {
     /// Process-local identity that changes when a different document replaces this workspace.
     pub fn document_identity(&self) -> u64 {
         self.document_identity
+    }
+
+    pub(crate) fn live_reopen_required(&self) -> bool {
+        self.live_unusable_reason.is_some()
     }
 
     pub fn checkpoint(&self) -> Result<()> {
@@ -210,13 +227,73 @@ impl Workspace {
         let Some(durable) = &mut self.durable else {
             return Ok(spectrum_revisions::CollaborationSync::Idle);
         };
-        let (sync, document) = durable.sync_together()?;
+        #[cfg(test)]
+        let result = if std::mem::take(&mut self.fail_together_after_durable_sync) {
+            durable.fail_together_after_durable_commit()
+        } else {
+            durable.sync_together()
+        };
+        #[cfg(not(test))]
+        let result = durable.sync_together();
+        let (sync, document) = match result {
+            Ok(result) => result,
+            Err(error) => return self.recover_after_together_sync_error(error),
+        };
         if let Some(document) = document {
             self.document = document;
             self.dirty = false;
             self.bump_document_generation();
         }
         Ok(sync)
+    }
+
+    fn recover_after_together_sync_error(
+        &mut self,
+        error: anyhow::Error,
+    ) -> Result<spectrum_revisions::CollaborationSync> {
+        let path = self
+            .project_path
+            .clone()
+            .context("Together sync failed and the durable project path is missing")?;
+        let session_id = self
+            .session_id()
+            .context("Together sync failed and the bound human session is missing")?;
+        #[cfg(test)]
+        let recovered = if std::mem::take(&mut self.fail_together_recovery_open) {
+            Err(anyhow::anyhow!(
+                "injected bound human recovery-open failure"
+            ))
+        } else {
+            Self::open_session(&path, session_id)
+        };
+        #[cfg(not(test))]
+        let recovered = Self::open_session(&path, session_id);
+        match recovered {
+            Ok(mut recovered) => {
+                recovered.document_identity = self.document_identity;
+                recovered.document_generation = self.document_generation.wrapping_add(1);
+                *self = recovered;
+                Err(error
+                    .context("Together sync outcome is unknown; recovered the bound human session"))
+            }
+            Err(recovery_error) => {
+                self.live_unusable_reason = Some(format!("{recovery_error:#}"));
+                self.bump_document_generation();
+                bail!(
+                    "Together sync outcome is unknown ({error:#}); bound human recovery failed and the project must be reopened: {recovery_error:#}"
+                )
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_together_sync_after_durable_commit(&mut self) {
+        self.fail_together_after_durable_sync = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_together_recovery_open(&mut self) {
+        self.fail_together_recovery_open = true;
     }
 
     pub fn can_undo(&self) -> bool {
@@ -700,6 +777,11 @@ impl Workspace {
             document_generation: 0,
             interaction_before: None,
             interaction_commands: Vec::new(),
+            live_unusable_reason: None,
+            #[cfg(test)]
+            fail_together_after_durable_sync: false,
+            #[cfg(test)]
+            fail_together_recovery_open: false,
         }
     }
 

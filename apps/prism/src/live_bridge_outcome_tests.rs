@@ -5,7 +5,7 @@ use std::{
 };
 
 use spectrum_live_bridge::{
-    BridgeEventKind, BridgeHost, HostApplyOutcome, InteractionPolicy, ResponseBody,
+    BridgeEventKind, BridgeHost, HostApplyOutcome, InteractionPolicy, RequestId, ResponseBody,
 };
 use spectrum_revisions::CollaborationMode;
 
@@ -296,6 +296,103 @@ fn post_human_sync_failure_is_unknown_with_both_committed_cursors_observable() {
         harness.server.handle_request(request).unwrap().body,
         ResponseBody::OutcomeUnknown
     ));
+}
+
+#[test]
+fn together_sync_commit_fault_reopens_the_human_workspace_before_reporting_unknown() {
+    let mut fixture = Fixture::new(CollaborationMode::Together);
+    let mut harness = HostHarness::new(&fixture);
+    let request = harness.request(
+        &fixture,
+        PrismLiveAction::ExecuteBatch {
+            expectation: fixture.expectation(),
+            command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+            commands: vec![rename("Recovered Together commit")],
+        },
+        InteractionPolicy::Immediate,
+    );
+    fixture.human.fail_next_together_sync_after_durable_commit();
+
+    let (error, report) =
+        harness.round_trip_error(&mut fixture.human, request, PrismLiveInteractionState::Idle);
+    assert!(error.to_string().contains("inspect current state"));
+    assert!(report.outcome_unknown);
+    assert!(report.workspace_changed);
+    assert_eq!(fixture.human.document.name, "Recovered Together commit");
+    let agent = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
+    let human_state = fixture.human.live_state().unwrap().unwrap();
+    let agent_state = agent.live_state().unwrap().unwrap();
+    assert_eq!(human_state.cursor, agent_state.cursor);
+    let collaboration = Workspace::collaboration(&fixture.path, fixture.agent_session).unwrap();
+    assert_eq!(collaboration.followed_revision, human_state.cursor);
+    assert!(matches!(
+        fixture.human.sync_together().unwrap(),
+        spectrum_revisions::CollaborationSync::Waiting(_)
+    ));
+    assert_eq!(fixture.human.document.name, "Recovered Together commit");
+}
+
+#[test]
+fn failed_together_recovery_poisons_live_reads_and_mutations_until_project_reopen() {
+    let mut fixture = Fixture::new(CollaborationMode::Together);
+    let mut harness = HostHarness::new(&fixture);
+    let human_session = fixture.human.session_id().unwrap();
+    let request = harness.request(
+        &fixture,
+        PrismLiveAction::ExecuteBatch {
+            expectation: fixture.expectation(),
+            command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+            commands: vec![rename("Durable but unavailable")],
+        },
+        InteractionPolicy::Immediate,
+    );
+    fixture.human.fail_next_together_sync_after_durable_commit();
+    fixture.human.fail_next_together_recovery_open();
+
+    let (error, report) = harness.round_trip_error(
+        &mut fixture.human,
+        request.clone(),
+        PrismLiveInteractionState::Idle,
+    );
+    assert!(error.to_string().contains("inspect current state"));
+    assert!(report.outcome_unknown);
+    assert!(report.workspace_changed);
+    assert!(report.reopen_required);
+    assert!(
+        fixture
+            .human
+            .live_state()
+            .unwrap_err()
+            .to_string()
+            .contains("reopen the project")
+    );
+
+    let mut read = request.clone();
+    read.request_id = RequestId::new();
+    read.action.action = serde_json::to_value(PrismLiveAction::State).unwrap();
+    let read_response =
+        harness.round_trip(&mut fixture.human, read, PrismLiveInteractionState::Idle);
+    assert!(matches!(read_response.body, ResponseBody::Refused { .. }));
+
+    let mut mutation = request;
+    mutation.request_id = RequestId::new();
+    let mutation_response = harness.round_trip(
+        &mut fixture.human,
+        mutation,
+        PrismLiveInteractionState::Idle,
+    );
+    assert!(matches!(
+        mutation_response.body,
+        ResponseBody::Refused { .. }
+    ));
+    assert_ne!(fixture.human.document.name, "Durable but unavailable");
+    assert_eq!(
+        Workspace::open_session(&fixture.path, human_session)
+            .unwrap()
+            .document
+            .name,
+        "Durable but unavailable"
+    );
 }
 
 #[test]
