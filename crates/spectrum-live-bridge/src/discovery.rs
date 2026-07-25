@@ -383,8 +383,7 @@ fn atomic_publish(path: &Path, bytes: &[u8]) -> BridgeResult<()> {
         drop(file);
         #[cfg(windows)]
         apply_private_acl(&temporary)?;
-        fs::rename(&temporary, path)?;
-        File::open(parent)?.sync_all()?;
+        durable_replace(&temporary, path)?;
         secure_owned_file(path)?;
         Ok(())
     })();
@@ -392,6 +391,43 @@ fn atomic_publish(path: &Path, bytes: &[u8]) -> BridgeResult<()> {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+#[cfg(unix)]
+fn durable_replace(source: &Path, destination: &Path) -> BridgeResult<()> {
+    fs::rename(source, destination)?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| BridgeError::Protocol("publication path has no parent".into()))?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn durable_replace(source: &Path, destination: &Path) -> BridgeResult<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 fn secure_read(path: &Path, maximum: usize) -> BridgeResult<Zeroizing<Vec<u8>>> {
@@ -743,5 +779,37 @@ mod tests {
         crate::windows_security::verify_private_acl(&root).unwrap();
         crate::windows_security::verify_private_acl(&published.record_path).unwrap();
         crate::windows_security::verify_private_acl(&published.capability_path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_through_refresh_preserves_acl_and_failed_replace_cleans_temporary() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("records");
+        let directory = DiscoveryDirectory::open(&root).unwrap();
+        let capability = Capability::generate().unwrap();
+        let mut published = directory
+            .publish(record(&root, &capability), &capability)
+            .unwrap();
+
+        published.refresh(7, 9).unwrap();
+        let refreshed: DiscoveryRecord =
+            serde_json::from_slice(&fs::read(&published.record_path).unwrap()).unwrap();
+        assert_eq!(
+            (refreshed.oldest_event_seq, refreshed.newest_event_seq),
+            (7, 9)
+        );
+        crate::windows_security::verify_private_acl(&published.record_path).unwrap();
+
+        let blocked = root.join("blocked.json");
+        fs::create_dir(&blocked).unwrap();
+        assert!(atomic_publish(&blocked, b"cannot replace a directory").is_err());
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".bridge-")
+        }));
     }
 }
