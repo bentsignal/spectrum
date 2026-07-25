@@ -201,15 +201,13 @@ mod tests {
     use super::*;
     use crate::{BrushSample, BrushStroke, BrushStyle, SampledSourceSnapshot, Transform};
 
-    fn test_directory(label: &str) -> PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+    fn test_directory(label: &str) -> tempfile::TempDir {
+        let temporary_root =
+            fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+        tempfile::Builder::new()
+            .prefix(&format!("prism-export-{label}-"))
+            .tempdir_in(temporary_root)
             .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "prism-export-{label}-{}-{stamp}",
-            std::process::id()
-        ))
     }
 
     fn sampled_document(source: &Path) -> Document {
@@ -253,8 +251,8 @@ mod tests {
 
     #[test]
     fn sampled_source_hardlink_and_symlink_aliases_are_refused_without_mutation() {
-        let directory = test_directory("aliases");
-        fs::create_dir_all(&directory).unwrap();
+        let directory_guard = test_directory("aliases");
+        let directory = directory_guard.path();
         let source = directory.join("sampled.png");
         RgbaImage::from_pixel(4, 4, Rgba([17, 31, 47, 255]))
             .save(&source)
@@ -284,13 +282,12 @@ mod tests {
             fs::metadata(&source).unwrap().permissions().mode(),
             before_mode
         );
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
     fn destination_hardlink_swap_before_atomic_replace_never_writes_source_inode() {
-        let directory = test_directory("race");
-        fs::create_dir_all(&directory).unwrap();
+        let directory_guard = test_directory("race");
+        let directory = directory_guard.path();
         let source = directory.join("sampled.png");
         RgbaImage::from_pixel(4, 4, Rgba([91, 52, 13, 255]))
             .save(&source)
@@ -326,11 +323,10 @@ mod tests {
         let output = image::open(&destination).unwrap();
         assert_eq!((output.width(), output.height()), (4, 4));
         assert!(
-            fs::read_dir(&directory)
+            fs::read_dir(directory)
                 .unwrap()
                 .flatten()
                 .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp"))
         );
-        fs::remove_dir_all(directory).unwrap();
     }
 }

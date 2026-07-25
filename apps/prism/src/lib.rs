@@ -649,6 +649,11 @@ impl Document {
             );
         }
         let source_version = self.version;
+        if self.layers.iter().any(|layer| {
+            matches!(&layer.kind, LayerKind::Paint { program } if program.contains_current_clone_marker())
+        }) {
+            bail!("Prism snapshots cannot contain the authoring-only CurrentClone marker");
+        }
         let contains_clone_schema = self.clone_source.is_some()
             || !self.sampled_sources.is_empty()
             || self.layers.iter().any(|layer| {

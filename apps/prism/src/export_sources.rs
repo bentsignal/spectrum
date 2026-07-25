@@ -259,17 +259,13 @@ mod tests {
 
     use super::*;
 
-    fn test_directory() -> PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+    fn test_directory() -> tempfile::TempDir {
+        let temporary_root =
+            fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+        tempfile::Builder::new()
+            .prefix("prism-export-provider-")
+            .tempdir_in(temporary_root)
             .unwrap()
-            .as_nanos();
-        fs::canonicalize(std::env::temp_dir())
-            .unwrap_or_else(|_| std::env::temp_dir())
-            .join(format!(
-                "prism-export-provider-{}-{stamp}",
-                std::process::id()
-            ))
     }
 
     fn write_nonuniform_tiff(path: &Path, width: u32, height: u32) {
@@ -310,8 +306,8 @@ mod tests {
 
     #[test]
     fn derived_clone_full_region_and_encoded_export_share_exact_provider() {
-        let directory = test_directory();
-        fs::create_dir_all(&directory).unwrap();
+        let directory_guard = test_directory();
+        let directory = directory_guard.path();
         let source = directory.join("source.tiff");
         write_nonuniform_tiff(&source, 64, 48);
         let mut document = Document::new("Derived export", 32, 24);
@@ -391,13 +387,12 @@ mod tests {
         let export = directory.join("export.png");
         export_document_with_sources(&workspace.document, &export, 92, &providers).unwrap();
         assert_eq!(image::open(export).unwrap().to_rgba8(), full);
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
     fn relative_preparation_resolves_canonical_transformed_masked_raster_export() {
-        let directory = test_directory();
-        fs::create_dir_all(&directory).unwrap();
+        let directory_guard = test_directory();
+        let directory = directory_guard.path();
         let source = directory.join("source.tiff");
         write_nonuniform_tiff(&source, 64, 48);
         let canonical = fs::canonicalize(&source).unwrap();
@@ -444,13 +439,12 @@ mod tests {
         let export = directory.join("masked-export.png");
         export_document_with_sources(&document, &export, 92, &providers).unwrap();
         assert_eq!(image::open(export).unwrap().to_rgba8(), expected);
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
     fn canonical_aliases_with_conflicting_sampled_digests_fail_closed() {
-        let directory = test_directory();
-        fs::create_dir_all(&directory).unwrap();
+        let directory_guard = test_directory();
+        let directory = directory_guard.path();
         let source = directory.join("source.tiff");
         write_nonuniform_tiff(&source, 8, 8);
         let canonical = fs::canonicalize(&source).unwrap();
@@ -502,6 +496,5 @@ mod tests {
             Err(error) => error,
         };
         assert!(format!("{error:#}").contains("multiple exact content identities"));
-        fs::remove_dir_all(directory).unwrap();
     }
 }

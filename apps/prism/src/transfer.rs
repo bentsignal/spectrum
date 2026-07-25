@@ -213,6 +213,10 @@ impl LayerTransfer {
                 self.version
             );
         }
+        if matches!(&self.layer.kind, LayerKind::Paint { program } if program.contains_current_clone_marker())
+        {
+            bail!("Prism layer transfers cannot contain the authoring-only CurrentClone marker");
+        }
         if self.version == 1 && (!self.layer.style.is_empty() || self.layer.shape_fill.is_some()) {
             bail!("Prism layer transfer version 1 cannot contain layer styles or shape fills");
         }

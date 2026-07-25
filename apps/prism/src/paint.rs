@@ -519,6 +519,12 @@ impl BrushProgram {
         height: u32,
         strokes: Arc<[BrushStroke]>,
     ) -> Result<Self> {
+        if strokes
+            .iter()
+            .any(|stroke| matches!(stroke.source, Some(SampledBrushSource::CurrentClone)))
+        {
+            bail!("Paint programs cannot contain the authoring-only CurrentClone marker");
+        }
         if !(LEGACY_BRUSH_PROGRAM_VERSION..=BRUSH_PROGRAM_VERSION).contains(&version) {
             bail!("unsupported BrushProgram version {version}");
         }

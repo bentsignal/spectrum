@@ -1,5 +1,79 @@
 use super::*;
 
+fn document_with_authoring_only_clone_marker() -> Document {
+    let paint_stroke = BrushStroke::new(
+        BrushStyle::default(),
+        [BrushSample {
+            x: 3.5,
+            y: 3.5,
+            pressure: 1.0,
+        }],
+    )
+    .unwrap();
+    let mut program = BrushProgram::new(8, 8)
+        .unwrap()
+        .append(paint_stroke)
+        .unwrap();
+    let strokes = Arc::make_mut(&mut program.strokes);
+    strokes[0] = strokes[0].as_current_clone().unwrap();
+    let mut document = Document::new("Forged CurrentClone snapshot", 8, 8);
+    document.layers.push(Layer {
+        id: 1,
+        name: "Forged Paint".into(),
+        kind: LayerKind::Paint { program },
+        ..Layer::default()
+    });
+    document.next_id = 2;
+    document
+}
+
+#[test]
+fn authoring_only_current_clone_is_rejected_from_every_snapshot_version() {
+    for version in [7, 10, 11] {
+        let mut forged = document_with_authoring_only_clone_marker();
+        forged.version = version;
+        let error = forged.migrate().unwrap_err();
+        assert!(
+            format!("{error:#}").contains("authoring-only CurrentClone"),
+            "snapshot v{version} returned {error:#}"
+        );
+
+        let encoded = serde_json::to_string(&forged).unwrap();
+        let error = serde_json::from_str::<Document>(&encoded).unwrap_err();
+        assert!(
+            error.to_string().contains("authoring-only CurrentClone"),
+            "encoded snapshot v{version} returned {error}"
+        );
+    }
+}
+
+#[test]
+fn authoring_only_current_clone_is_rejected_from_every_paint_transfer_version() {
+    for version in [5, 9] {
+        let document = document_with_authoring_only_clone_marker();
+        let mut transfer = LayerTransfer {
+            format: LAYER_TRANSFER_FORMAT.into(),
+            version,
+            layer: document.layers[0].clone(),
+            font_asset: None,
+            sampled_sources: std::collections::BTreeMap::new(),
+        };
+        transfer.layer.id = 0;
+        let error = transfer.to_json().unwrap_err();
+        assert!(
+            format!("{error:#}").contains("authoring-only CurrentClone"),
+            "transfer v{version} returned {error:#}"
+        );
+
+        let encoded = serde_json::to_string(&transfer).unwrap();
+        let error = LayerTransfer::from_json(&encoded).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("authoring-only CurrentClone"),
+            "encoded transfer v{version} returned {error:#}"
+        );
+    }
+}
+
 #[test]
 fn forged_v14_current_clone_operation_is_rejected_before_replay() {
     use sha2::{Digest, Sha256};

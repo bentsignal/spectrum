@@ -2941,6 +2941,7 @@ dependencies = [
  "spectrum-imaging",
  "spectrum-revisions",
  "spectrum-terminal",
+ "tempfile",
  "tiff",
  "tiny-skia",
  "ttf-parser 0.21.1",
