@@ -4,7 +4,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Document, FontAsset, FontSlant, Layer, LayerKind, MAX_CANVAS_DIMENSION, TextShapingEngine,
+    Document, FontAsset, FontSlant, Layer, LayerKind, MAX_CANVAS_DIMENSION, SampledSourceId,
+    SampledSourceSnapshot, TextShapingEngine,
     effects::{validate_layer_style, validate_shape_fill},
     validation::{
         require_finite, validate_adjustments, validate_mask, validate_shape_stroke,
@@ -34,6 +35,8 @@ pub struct LayerTransfer {
     pub layer: Layer,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_asset: Option<LayerTransferFont>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub sampled_sources: std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,6 +71,23 @@ impl LayerTransfer {
             },
             _ => None,
         };
+        let mut sampled_sources = std::collections::BTreeMap::new();
+        if let LayerKind::Paint { program } = &layer.kind {
+            let mut missing = None;
+            program.for_each_sampled_source_id(|source_id| {
+                if let Some(source) = document.sampled_sources.get(source_id) {
+                    sampled_sources.insert(source_id.clone(), source.clone());
+                } else {
+                    missing = Some(source_id.clone());
+                }
+            });
+            if let Some(missing) = missing {
+                bail!(
+                    "Paint layer references missing sampled source {}",
+                    missing.as_str()
+                );
+            }
+        }
         let version = if matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
         {
             CLONE_STAMP_LAYER_TRANSFER_VERSION
@@ -97,6 +117,7 @@ impl LayerTransfer {
             version,
             layer,
             font_asset,
+            sampled_sources,
         })
     }
 
@@ -125,6 +146,7 @@ impl LayerTransfer {
         let Self {
             mut layer,
             font_asset,
+            sampled_sources,
             ..
         } = self;
         sanitize_layer(&mut layer)?;
@@ -138,6 +160,18 @@ impl LayerTransfer {
                 unreachable!("the transfer envelope rejects fonts on non-text layers")
             }
             _ => {}
+        }
+        for (source_id, source) in sampled_sources {
+            if source.stable_id()? != source_id {
+                bail!("transferred sampled-source key does not match its stable identity");
+            }
+            if let Some(existing) = document.sampled_sources.get(&source_id) {
+                if existing != &source {
+                    bail!("transferred sampled source collides with different metadata");
+                }
+            } else {
+                document.sampled_sources.insert(source_id, source);
+            }
         }
 
         let id = document.allocate_id();
@@ -157,19 +191,14 @@ impl LayerTransfer {
             layer,
         );
         document.selected = Some(id);
+        document.validate_sampled_source_registry()?;
         Ok(id)
     }
 
     pub(crate) fn validate_envelope(&self) -> Result<()> {
         self.validate_envelope_metadata()?;
-        if let LayerKind::Paint { program } = &self.layer.kind {
-            let mut validation = Ok(());
-            program.for_each_sampled_source(|source| {
-                if validation.is_ok() {
-                    validation = source.validate_asset();
-                }
-            });
-            validation?;
+        for source in self.sampled_sources.values() {
+            source.validate_asset()?;
         }
         Ok(())
     }
@@ -226,6 +255,49 @@ impl LayerTransfer {
             && matches!(&self.layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
         {
             bail!("Prism layer transfer versions before 9 cannot contain Clone Stamp sources");
+        }
+        let mut referenced = std::collections::BTreeSet::new();
+        if let LayerKind::Paint { program } = &self.layer.kind {
+            program.for_each_sampled_source_id(|id| {
+                referenced.insert(id.clone());
+            });
+        }
+        let supplied = self.sampled_sources.keys().cloned().collect();
+        if referenced != supplied {
+            bail!("Prism layer transfer sampled-source registry is missing or ambiguous");
+        }
+        let inline_mask_bytes =
+            self.sampled_sources
+                .values()
+                .try_fold(0usize, |total, source| {
+                    total
+                        .checked_add(
+                            source
+                                .pixel_mask
+                                .as_ref()
+                                .map_or(0, |mask| mask.alpha.len()),
+                        )
+                        .context("transferred sampled-source inline mask byte count overflows")
+                })?;
+        if inline_mask_bytes > crate::MAX_SAMPLED_SOURCE_INLINE_MASK_BYTES {
+            bail!("Prism layer transfer sampled-source masks exceed their aggregate limit");
+        }
+        let metadata_bytes =
+            self.sampled_sources
+                .iter()
+                .try_fold(0usize, |total, (id, source)| {
+                    source.validate_metadata()?;
+                    if source.stable_id()? != *id {
+                        bail!("transferred sampled-source key does not match its stable identity");
+                    }
+                    total
+                        .checked_add(serde_json::to_vec(source)?.len())
+                        .context("transferred sampled-source metadata byte count overflows")
+                })?;
+        if self.sampled_sources.len() > crate::MAX_SAMPLED_SOURCES_PER_DOCUMENT
+            || metadata_bytes > crate::MAX_SAMPLED_SOURCE_METADATA_BYTES
+        {
+            bail!("Prism layer transfer sampled-source registry exceeds its aggregate limits");
         }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");

@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -92,6 +93,37 @@ fn paint_program(document: &Document, id: u64) -> &BrushProgram {
     program
 }
 
+fn render_paint(document: &Document, id: u64, width: u32, height: u32) -> RgbaImage {
+    crate::paint_render::render_paint_region_with_sources(
+        paint_program(document, id),
+        document.layer(id).unwrap().pixel_mask.as_ref(),
+        PixelRegion {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+        &document.sampled_sources,
+        None,
+    )
+    .unwrap()
+}
+
+struct SingleResolver {
+    path: PathBuf,
+    source: ResolvedRasterSource,
+}
+
+impl RasterSourceResolver for SingleResolver {
+    fn snapshot_epoch(&self) -> u64 {
+        1
+    }
+
+    fn resolve(&self, path: &Path) -> Option<ResolvedRasterSource> {
+        (path == self.path).then(|| self.source.clone())
+    }
+}
+
 #[test]
 fn clone_stamp_applies_source_alpha_mask_and_destination_selection_once() {
     let directory = test_directory("alpha-selection");
@@ -118,15 +150,7 @@ fn clone_stamp_applies_source_alpha_mask_and_destination_selection_once() {
         })
         .unwrap()
         .layer_ids[0];
-    let rendered = crate::paint_render::render_paint_region(
-        paint_program(&workspace.document, paint_id),
-        None,
-        0,
-        0,
-        8,
-        8,
-    )
-    .unwrap();
+    let rendered = render_paint(&workspace.document, paint_id, 8, 8);
     assert_eq!(rendered.get_pixel(4, 4).0, [200, 50, 10, 64]);
     assert_eq!(rendered.get_pixel(3, 4).0, [0; 4]);
     assert_eq!(rendered.get_pixel(5, 4).0, [0; 4]);
@@ -157,15 +181,7 @@ fn clone_stamp_is_transparent_outside_source_and_never_feeds_back_destination_da
         })
         .unwrap()
         .layer_ids[0];
-    let rendered = crate::paint_render::render_paint_region(
-        paint_program(&workspace.document, paint_id),
-        None,
-        0,
-        0,
-        8,
-        8,
-    )
-    .unwrap();
+    let rendered = render_paint(&workspace.document, paint_id, 8, 8);
     assert_eq!(rendered.get_pixel(1, 3).0, [0; 4]);
     assert_eq!(rendered.get_pixel(3, 3).0, [20, 30, 200, 255]);
     assert_eq!(rendered.get_pixel(4, 3).0, [40, 30, 190, 255]);
@@ -197,10 +213,10 @@ fn clone_source_inverse_maps_transforms_and_rejects_unsupported_inputs() {
             resolved_source: None,
         })
         .unwrap();
+    let active = workspace.document.clone_source.as_ref().unwrap();
     let anchor = workspace
         .document
-        .clone_source
-        .as_ref()
+        .sampled_source(active)
         .unwrap()
         .anchor_local;
     assert!((anchor[0] - local[0]).abs() < 0.001);
@@ -242,6 +258,111 @@ fn clone_source_inverse_maps_transforms_and_rejects_unsupported_inputs() {
 }
 
 #[test]
+fn clone_mapping_freezes_full_source_and_destination_affines() {
+    let directory = test_directory("affine");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("source.png");
+    write_source(&source);
+    let mut document = source_document(&source);
+    document.layers[0].transform = Transform {
+        x: 11.0,
+        y: -7.0,
+        scale_x: 1.75,
+        scale_y: 0.65,
+        rotation: 71.0,
+    };
+    let source_anchor = [2.5, 3.5];
+    let source_document = local_to_document(source_anchor, (8, 8), document.layers[0].transform);
+    let mut workspace = Workspace::new(document, None);
+    workspace
+        .execute(Command::SetCloneSource {
+            id: 1,
+            document_x: source_document[0],
+            document_y: source_document[1],
+            resolved_source: None,
+        })
+        .unwrap();
+    let paint_id = workspace
+        .execute(Command::AddPaintLayer {
+            name: None,
+            width: 8,
+            height: 8,
+        })
+        .unwrap()
+        .layer_ids[0];
+    workspace
+        .execute(Command::SetTransform {
+            id: paint_id,
+            transform: Transform {
+                x: -4.0,
+                y: 9.0,
+                scale_x: 0.8,
+                scale_y: 1.4,
+                rotation: 23.0,
+            },
+        })
+        .unwrap();
+    workspace
+        .execute(Command::AddBrushStroke {
+            id: paint_id,
+            stroke: clone_stroke(vec![sample(4.5, 4.5), sample(5.5, 4.5)], 1.0),
+            selection: PaintSelection::None,
+        })
+        .unwrap();
+    let mapping = paint_program(&workspace.document, paint_id).strokes[0]
+        .sampled_source_mapping()
+        .unwrap();
+    let mapped_anchor = mapping.map([4.5, 4.5]);
+    assert!((mapped_anchor[0] - source_anchor[0]).abs() < 0.001);
+    assert!((mapped_anchor[1] - source_anchor[1]).abs() < 0.001);
+    assert!(mapping.xy.abs() > 0.01);
+    assert!(mapping.yx.abs() > 0.01);
+    assert!((mapping.xx * mapping.yy - mapping.xy * mapping.yx).abs() > 0.01);
+}
+
+#[test]
+fn clone_provider_must_authenticate_the_exact_captured_digest() {
+    let directory = test_directory("provider-identity");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("source.png");
+    write_source(&source);
+    let snapshot =
+        SampledSourceSnapshot::capture(&source_document(&source).layers[0], [1.5, 1.5]).unwrap();
+    let region = PixelRegion {
+        x: 1,
+        y: 1,
+        width: 2,
+        height: 2,
+    };
+    let wrong = SequentialPngSource::open(&source, SequentialPngLimits::default()).unwrap();
+    let wrong = SingleResolver {
+        path: source.clone(),
+        source: ResolvedRasterSource::new_authenticated(
+            wrong.source_epoch().clone(),
+            "00".repeat(32),
+            Arc::new(wrong),
+        )
+        .unwrap(),
+    };
+    let error =
+        crate::sampled_source::sampled_source_region(&snapshot, region, Some(&wrong)).unwrap_err();
+    assert!(format!("{error:#}").contains("authenticated"));
+
+    let exact = SequentialPngSource::open(&source, SequentialPngLimits::default()).unwrap();
+    let digest = exact.source_sha256().to_owned();
+    let exact = SingleResolver {
+        path: source,
+        source: ResolvedRasterSource::new_authenticated(
+            exact.source_epoch().clone(),
+            digest,
+            Arc::new(exact),
+        )
+        .unwrap(),
+    };
+    assert!(crate::sampled_source::sampled_source_region(&snapshot, region, Some(&exact)).is_ok());
+}
+
+#[test]
 fn durable_clone_survives_source_mutation_deletion_undo_redo_reopen_and_transfer() {
     let directory = test_directory("durable");
     fs::create_dir_all(&directory).unwrap();
@@ -278,15 +399,7 @@ fn durable_clone_survives_source_mutation_deletion_undo_redo_reopen_and_transfer
         })
         .unwrap()
         .layer_ids[0];
-    let baseline = crate::paint_render::render_paint_region(
-        paint_program(&workspace.document, paint_id),
-        None,
-        0,
-        0,
-        8,
-        8,
-    )
-    .unwrap();
+    let baseline = render_paint(&workspace.document, paint_id, 8, 8);
     workspace
         .execute(Command::MoveLayer { id: 1, index: 1 })
         .unwrap();
@@ -301,50 +414,20 @@ fn durable_clone_survives_source_mutation_deletion_undo_redo_reopen_and_transfer
         .unwrap();
     workspace.execute(Command::RemoveLayer { id: 1 }).unwrap();
     fs::remove_file(&source).unwrap();
-    let after = crate::paint_render::render_paint_region(
-        paint_program(&workspace.document, paint_id),
-        None,
-        0,
-        0,
-        8,
-        8,
-    )
-    .unwrap();
+    let after = render_paint(&workspace.document, paint_id, 8, 8);
     assert_eq!(after, baseline);
 
     workspace.execute(Command::Undo).unwrap();
     workspace.execute(Command::Undo).unwrap();
     workspace.execute(Command::Undo).unwrap();
-    assert_eq!(
-        crate::paint_render::render_paint_region(
-            paint_program(&workspace.document, paint_id),
-            None,
-            0,
-            0,
-            8,
-            8,
-        )
-        .unwrap(),
-        baseline
-    );
+    assert_eq!(render_paint(&workspace.document, paint_id, 8, 8), baseline);
     workspace.execute(Command::Redo).unwrap();
     workspace.execute(Command::Redo).unwrap();
     workspace.execute(Command::Redo).unwrap();
     drop(workspace);
 
     let reopened = Workspace::open(&project).unwrap();
-    assert_eq!(
-        crate::paint_render::render_paint_region(
-            paint_program(&reopened.document, paint_id),
-            None,
-            0,
-            0,
-            8,
-            8,
-        )
-        .unwrap(),
-        baseline
-    );
+    assert_eq!(render_paint(&reopened.document, paint_id, 8, 8), baseline);
     let transfer = LayerTransfer::from_document(&reopened.document, paint_id).unwrap();
     assert_eq!(transfer.version, CLONE_STAMP_LAYER_TRANSFER_VERSION);
     let decoded = LayerTransfer::from_json(&transfer.to_json().unwrap()).unwrap();
@@ -527,21 +610,128 @@ fn durable_repeated_clone_strokes_deduplicate_the_captured_asset() {
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(clone_operation_versions, vec![13]);
-    let v10_snapshots: u32 = connection
+    assert_eq!(clone_operation_versions, vec![14]);
+    let v11_snapshots: u32 = connection
         .query_row(
-            "SELECT count(*) FROM snapshots WHERE version = 10",
+            "SELECT count(*) FROM snapshots WHERE version = 11",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(v10_snapshots, 1);
+    assert_eq!(v11_snapshots, 1);
     let distinct_references = paint_program(&workspace.document, paint_id)
         .strokes
         .iter()
-        .map(|stroke| stroke.sampled_source().unwrap().path.clone())
+        .map(|stroke| stroke.sampled_source_id().unwrap().clone())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(distinct_references.len(), 1);
+    assert_eq!(workspace.document.sampled_sources.len(), 1);
+    let serialized = serde_json::to_string(&workspace.document).unwrap();
+    assert_eq!(serialized.matches("\"source_layer_name\"").count(), 1);
+    assert!(serialized.len() < 128 * 1024);
+}
+
+#[test]
+fn clone_envelopes_fail_closed_for_old_versions_and_ambiguous_transfers() {
+    let directory = test_directory("envelopes");
+    fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("source.png");
+    write_source(&source);
+    let mut workspace = Workspace::new(source_document(&source), None);
+    workspace
+        .execute(Command::SetCloneSource {
+            id: 1,
+            document_x: 1.5,
+            document_y: 1.5,
+            resolved_source: None,
+        })
+        .unwrap();
+    let paint_id = workspace
+        .execute(Command::AddPaintLayerWithStroke {
+            name: None,
+            width: 8,
+            height: 8,
+            stroke: clone_stroke(vec![sample(4.5, 4.5)], 1.0),
+            selection: PaintSelection::None,
+        })
+        .unwrap()
+        .layer_ids[0];
+
+    let mut old_snapshot = workspace.document.clone();
+    old_snapshot.version = 10;
+    assert!(
+        format!("{:#}", old_snapshot.migrate().unwrap_err())
+            .contains("cannot contain Clone Stamp state")
+    );
+
+    let transfer = LayerTransfer::from_document(&workspace.document, paint_id).unwrap();
+    assert_eq!(transfer.version, 9);
+    let mut old_transfer = transfer.clone();
+    old_transfer.version = 8;
+    assert!(old_transfer.to_json().is_err());
+
+    let mut ambiguous = transfer;
+    let mut extra = ambiguous.sampled_sources.values().next().unwrap().clone();
+    extra.anchor_local[0] += 1.0;
+    ambiguous
+        .sampled_sources
+        .insert(extra.stable_id().unwrap(), extra);
+    assert!(format!("{:#}", ambiguous.to_json().unwrap_err()).contains("missing or ambiguous"));
+}
+
+#[cfg(unix)]
+#[test]
+fn portable_clone_publication_is_verified_atomic_and_no_replace() {
+    use std::os::unix::fs::symlink;
+
+    let directory = test_directory("portable-publication");
+    let source_directory = directory.join("outside");
+    let project_directory = directory.join("project");
+    let asset_directory = project_directory.join("assets");
+    fs::create_dir_all(&source_directory).unwrap();
+    fs::create_dir_all(&asset_directory).unwrap();
+    let source = source_directory.join("source.png");
+    write_source(&source);
+    let snapshot =
+        SampledSourceSnapshot::capture(&source_document(&source).layers[0], [1.5, 1.5]).unwrap();
+    let destination = asset_directory.join(format!("sampled-{}.png", snapshot.content_hash));
+    let attacker = directory.join("attacker.png");
+    RgbaImage::from_pixel(8, 8, Rgba([1, 2, 3, 255]))
+        .save(&attacker)
+        .unwrap();
+    let attacker_bytes = fs::read(&attacker).unwrap();
+    symlink(&attacker, &destination).unwrap();
+    let mut raced = snapshot.clone();
+    assert!(
+        crate::sampled_source_portable::make_portable(
+            &mut raced,
+            &project_directory,
+            &asset_directory,
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(&attacker).unwrap(), attacker_bytes);
+    fs::remove_file(&destination).unwrap();
+
+    let mut published = snapshot.clone();
+    crate::sampled_source_portable::make_portable(
+        &mut published,
+        &project_directory,
+        &asset_directory,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(project_directory.join(&published.path)).unwrap(),
+        fs::read(&source).unwrap()
+    );
+    let mut reused = snapshot;
+    crate::sampled_source_portable::make_portable(
+        &mut reused,
+        &project_directory,
+        &asset_directory,
+    )
+    .unwrap();
+    assert_eq!(reused.path, published.path);
 }
 
 #[test]
@@ -597,31 +787,20 @@ fn together_collaboration_materializes_clone_assets_for_the_follower() {
         human.sync_together().unwrap(),
         spectrum_revisions::CollaborationSync::Advanced { .. }
     ));
-    let agent_pixels = crate::paint_render::render_paint_region(
-        paint_program(&agent.document, paint_id),
-        None,
-        0,
-        0,
-        8,
-        8,
-    )
-    .unwrap();
-    let human_pixels = crate::paint_render::render_paint_region(
-        paint_program(&human.document, paint_id),
-        None,
-        0,
-        0,
-        8,
-        8,
-    )
-    .unwrap();
+    let agent_pixels = render_paint(&agent.document, paint_id, 8, 8);
+    let human_pixels = render_paint(&human.document, paint_id, 8, 8);
     assert_eq!(human_pixels, agent_pixels);
     assert_ne!(
-        paint_program(&human.document, paint_id).strokes[0]
-            .sampled_source()
+        human
+            .document
+            .sampled_source(
+                paint_program(&human.document, paint_id).strokes[0]
+                    .sampled_source_id()
+                    .unwrap()
+            )
             .unwrap()
             .path,
-        source
+        source,
     );
 }
 
@@ -669,6 +848,7 @@ fn optimized_copy_preserves_clone_history_and_exact_sampled_pixels() {
                 color: [255; 4],
                 x: 0.0,
                 y: 0.0,
+                shaping: TextShaping::default(),
             },
             Command::SetTextTypography {
                 id: text_id,
@@ -706,15 +886,7 @@ fn optimized_copy_preserves_clone_history_and_exact_sampled_pixels() {
         .find(|layer| layer.name == "Clone result")
         .unwrap()
         .id;
-    let expected = crate::paint_render::render_paint_region(
-        paint_program(&workspace.document, paint_id),
-        None,
-        0,
-        0,
-        16,
-        16,
-    )
-    .unwrap();
+    let expected = render_paint(&workspace.document, paint_id, 16, 16);
     fs::remove_file(source_image).unwrap();
     drop(workspace);
 
@@ -728,15 +900,7 @@ fn optimized_copy_preserves_clone_history_and_exact_sampled_pixels() {
         .find(|layer| layer.name == "Clone result")
         .unwrap()
         .id;
-    let actual = crate::paint_render::render_paint_region(
-        paint_program(&reopened.document, optimized_paint_id),
-        None,
-        0,
-        0,
-        16,
-        16,
-    )
-    .unwrap();
+    let actual = render_paint(&reopened.document, optimized_paint_id, 16, 16);
     assert_eq!(actual, expected);
 }
 

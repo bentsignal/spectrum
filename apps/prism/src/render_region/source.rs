@@ -5,7 +5,7 @@ use image::{Rgba, RgbaImage};
 
 use crate::{
     FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
-    ResolvedRasterSource, TextTypography, VectorMask,
+    ResolvedRasterSource, SampledSourceId, SampledSourceSnapshot, TextTypography, VectorMask,
     raster_region::inspect_raster_region_source,
     shapes::ShapeSampler,
     text_render::{measure_text_with_typography, render_text_region},
@@ -48,6 +48,7 @@ impl Error for DynSourceReadError {
 
 pub(super) fn layer_supports_region_reads(
     layer: &Layer,
+    sampled_sources: &std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>,
     raster_sources: Option<&dyn RasterSourceResolver>,
 ) -> bool {
     match &layer.kind {
@@ -64,7 +65,11 @@ pub(super) fn layer_supports_region_reads(
         ),
         LayerKind::Paint { program } => {
             let mut ready = true;
-            program.for_each_sampled_source(|source| {
+            program.for_each_sampled_source_id(|source_id| {
+                let Some(source) = sampled_sources.get(source_id) else {
+                    ready = false;
+                    return;
+                };
                 ready &= raster_sources.map_or_else(
                     || {
                         inspect_raster_region_source(&source.path)
@@ -127,6 +132,7 @@ pub(super) enum SourceDescriptor<'a> {
         adjustments: &'a spectrum_imaging::Adjustments,
         vector_mask: Option<&'a VectorMask>,
         raster_sources: Option<&'a dyn RasterSourceResolver>,
+        sampled_sources: &'a std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>,
     },
 }
 
@@ -135,6 +141,7 @@ impl<'a> SourceDescriptor<'a> {
         render_layer: &'a Layer,
         shape_scale: [f32; 2],
         font_asset: Option<&'a FontAsset>,
+        sampled_sources: &'a std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>,
         raster_sources: Option<&'a dyn RasterSourceResolver>,
     ) -> Result<Self> {
         match &render_layer.kind {
@@ -203,6 +210,7 @@ impl<'a> SourceDescriptor<'a> {
                 adjustments: &render_layer.adjustments,
                 vector_mask: render_layer.vector_mask.as_ref(),
                 raster_sources,
+                sampled_sources,
             }),
         }
     }
@@ -417,6 +425,7 @@ impl<'a> SourceDescriptor<'a> {
             Self::Paint {
                 layer,
                 raster_sources,
+                sampled_sources,
                 ..
             } => {
                 let LayerKind::Paint { program } = &layer.kind else {
@@ -425,10 +434,8 @@ impl<'a> SourceDescriptor<'a> {
                 crate::paint_render::render_paint_region_with_sources(
                     program,
                     layer.pixel_mask.as_ref(),
-                    region.x,
-                    region.y,
-                    region.width,
-                    region.height,
+                    region.into(),
+                    sampled_sources,
                     *raster_sources,
                 )
             }

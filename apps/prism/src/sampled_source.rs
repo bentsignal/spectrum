@@ -20,8 +20,22 @@ use crate::{
     validation::{validate_adjustments, validate_transform},
 };
 
-pub const SAMPLED_SOURCE_VERSION: u32 = 1;
+pub const SAMPLED_SOURCE_VERSION: u32 = 2;
 pub const MAX_SAMPLED_SOURCE_NAME_CHARS: usize = 256;
+pub const MAX_SAMPLED_SOURCES_PER_DOCUMENT: usize = 1_024;
+pub const MAX_SAMPLED_SOURCE_METADATA_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_SAMPLED_SOURCE_INLINE_MASK_BYTES: usize = 16 * 1024 * 1024;
+pub type SampledSourceRegistry = std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SampledSourceId(String);
+
+impl SampledSourceId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SampledSourceSnapshot {
@@ -33,6 +47,7 @@ pub struct SampledSourceSnapshot {
     pub width: u32,
     pub height: u32,
     pub anchor_local: [f32; 2],
+    pub source_transform: Transform,
     pub adjustments: Adjustments,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pixel_mask: Option<PixelMask>,
@@ -79,6 +94,7 @@ impl SampledSourceSnapshot {
             width: dimensions.0,
             height: dimensions.1,
             anchor_local,
+            source_transform: layer.transform,
             adjustments: layer.adjustments.clone(),
             pixel_mask: layer.pixel_mask.clone(),
             vector_mask: layer.vector_mask.clone(),
@@ -118,6 +134,7 @@ impl SampledSourceSnapshot {
         if !self.anchor_local[0].is_finite() || !self.anchor_local[1].is_finite() {
             bail!("sampled source anchor must be finite");
         }
+        validate_transform(self.source_transform)?;
         if self.anchor_local[0] < 0.0
             || self.anchor_local[1] < 0.0
             || self.anchor_local[0] >= self.width as f32
@@ -158,6 +175,15 @@ impl SampledSourceSnapshot {
         self.validate_embedded_bytes(&bytes)
     }
 
+    pub(crate) fn stable_id(&self) -> Result<SampledSourceId> {
+        self.validate_metadata()?;
+        let mut canonical = self.clone();
+        canonical.path.clear();
+        Ok(SampledSourceId(hex_sha256(&serde_json::to_vec(
+            &canonical,
+        )?)))
+    }
+
     pub(crate) fn validate_embedded_bytes(&self, bytes: &[u8]) -> Result<()> {
         self.validate_metadata()?;
         if hex_sha256(bytes) != self.content_hash {
@@ -175,6 +201,95 @@ impl SampledSourceSnapshot {
 
     pub(crate) fn set_asset_path(&mut self, path: PathBuf) {
         self.path = path;
+    }
+}
+
+/// Frozen destination-local to sampled-source-local affine mapping.
+///
+/// Coefficients map pixel centers as:
+/// `source_x = xx * destination_x + xy * destination_y + tx` and
+/// `source_y = yx * destination_x + yy * destination_y + ty`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SampledSourceMapping {
+    pub xx: f32,
+    pub xy: f32,
+    pub yx: f32,
+    pub yy: f32,
+    pub tx: f32,
+    pub ty: f32,
+}
+
+impl SampledSourceMapping {
+    pub(crate) fn capture(
+        source: &SampledSourceSnapshot,
+        destination_anchor: [f32; 2],
+        destination_dimensions: (u32, u32),
+        destination_transform: Transform,
+    ) -> Result<Self> {
+        validate_transform(destination_transform)?;
+        if !destination_anchor.iter().all(|value| value.is_finite()) {
+            bail!("Clone Stamp destination anchor must be finite");
+        }
+        let source_anchor_document = local_to_document(
+            source.anchor_local,
+            (source.width, source.height),
+            source.source_transform,
+        );
+        let destination_anchor_document = local_to_document(
+            destination_anchor,
+            destination_dimensions,
+            destination_transform,
+        );
+        let map = |point: [f32; 2]| -> Result<[f32; 2]> {
+            let destination_document =
+                local_to_document(point, destination_dimensions, destination_transform);
+            let source_document = [
+                source_anchor_document[0] + destination_document[0]
+                    - destination_anchor_document[0],
+                source_anchor_document[1] + destination_document[1]
+                    - destination_anchor_document[1],
+            ];
+            document_to_local(
+                source_document,
+                (source.width, source.height),
+                source.source_transform,
+            )
+            .context("Clone Stamp affine mapping is singular")
+        };
+        let origin = map([0.0, 0.0])?;
+        let x_basis = map([1.0, 0.0])?;
+        let y_basis = map([0.0, 1.0])?;
+        let mapping = Self {
+            xx: x_basis[0] - origin[0],
+            xy: y_basis[0] - origin[0],
+            yx: x_basis[1] - origin[1],
+            yy: y_basis[1] - origin[1],
+            tx: origin[0],
+            ty: origin[1],
+        };
+        mapping.validate()?;
+        Ok(mapping)
+    }
+
+    pub(crate) fn validate(self) -> Result<Self> {
+        if ![self.xx, self.xy, self.yx, self.yy, self.tx, self.ty]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            bail!("Clone Stamp destination-to-source mapping must be finite");
+        }
+        let determinant = self.xx * self.yy - self.xy * self.yx;
+        if !determinant.is_finite() || determinant.abs() <= 1.0e-8 {
+            bail!("Clone Stamp destination-to-source mapping must be invertible");
+        }
+        Ok(self)
+    }
+
+    pub(crate) fn map(self, point: [f32; 2]) -> [f32; 2] {
+        [
+            self.xx * point[0] + self.xy * point[1] + self.tx,
+            self.yx * point[0] + self.yy * point[1] + self.ty,
+        ]
     }
 }
 
@@ -238,6 +353,11 @@ fn read_base_region(
     raster_sources: Option<&dyn RasterSourceResolver>,
 ) -> Result<RgbaImage, SourceReadError> {
     if let Some(provider) = raster_sources.and_then(|resolver| resolver.resolve(&source.path)) {
+        if provider.content_sha256() != Some(source.content_hash.as_str()) {
+            return Err(SourceReadError::message(
+                "resolved Clone Stamp provider is not authenticated to the captured SHA-256",
+            ));
+        }
         let descriptor = &provider.source().info().descriptor;
         if (descriptor.width, descriptor.height) != (source.width, source.height) {
             return Err(SourceReadError::message(
@@ -351,6 +471,22 @@ fn document_to_local(
         (dx * cos - dy * sin + center[0]) / transform.scale_x,
         (dx * sin + dy * cos + center[1]) / transform.scale_y,
     ])
+}
+
+fn local_to_document(point: [f32; 2], dimensions: (u32, u32), transform: Transform) -> [f32; 2] {
+    let center = [
+        dimensions.0 as f32 * transform.scale_x * 0.5,
+        dimensions.1 as f32 * transform.scale_y * 0.5,
+    ];
+    let scaled = [
+        point[0] * transform.scale_x - center[0],
+        point[1] * transform.scale_y - center[1],
+    ];
+    let (sin, cos) = crate::rotation_sin_cos(transform.rotation);
+    [
+        transform.x + center[0] + scaled[0] * cos - scaled[1] * sin,
+        transform.y + center[1] + scaled[0] * sin + scaled[1] * cos,
+    ]
 }
 
 fn image_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32)> {

@@ -86,7 +86,7 @@ pub(super) fn schema() -> Value {
             "program_version": prism_core::BRUSH_PROGRAM_VERSION,
             "cli": "paint add-layer --width <px> --height <px>; paint stroke <layer> <stroke.json> [--no-selection]; paint clone-source <raster-layer> <document-x> <document-y>; paint clone-stroke <paint-layer> <stroke.json> [--no-selection]",
             "modes": ["paint", "erase", "clone_stamp"],
-            "clone_stamp": "clone-source inverse-maps one document point into a Raster layer and captures its exact embedded bytes, identity, dimensions, non-geometric Develop adjustments, pixel mask, and vector mask; every clone-stroke embeds that immutable snapshot, samples transparent outside it, and clips only its destination against the current selection",
+            "clone_stamp": "clone-source inverse-maps one document point into a Raster layer and interns its exact embedded bytes, identity, dimensions, transform, non-geometric Develop adjustments, pixel mask, and vector mask once in the document registry; every clone-stroke references that stable source identity with a frozen destination-to-source affine mapping, samples transparent outside it, and clips only its destination against the current selection",
             "pressure_v1": "pressure multiplies both dab diameter and coverage; mouse input records 1.0",
             "rendering": "ordered source-over Paint and destination-out Erase strokes share one global-coordinate tiled CPU sampler across preview, region render, and export",
             "selection": "the current rectangular or soft-alpha selection is baked into Paint-local stroke clip coordinates when the stroke commits",

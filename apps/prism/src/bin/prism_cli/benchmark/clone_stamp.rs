@@ -1,24 +1,13 @@
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Instant,
-};
+use std::time::Instant;
 
 use anyhow::{Result, bail};
-use image::{Rgba, RgbaImage};
 use prism_core::{
     BrushMode, BrushSample, BrushStroke, BrushStyle, Command, Document, Layer, LayerKind,
-    PaintSelection, RasterSourceEpoch, RasterSourceResolver, RenderRegion, ResolvedRasterSource,
-    Workspace, preview_paint_command, render_document_region_scaled_with_sources_and_stats,
+    PaintSelection, RenderRegion, Workspace, preview_paint_command,
+    render_document_region_scaled_with_sources_and_stats,
 };
-use spectrum_imaging::{
-    ExactRegionSource, PixelRegion, RegionReadCapability, RegionReadiness, RegionRequestError,
-    RegionSourceDescriptor, RegionSourceInfo, SourceSampleDepth, validate_region_request,
-};
+
+use super::raster_fixture::PreparedRasterFixture;
 
 const SOURCE_SIZE: u32 = 16_384;
 const REGION_WIDTH: u32 = 640;
@@ -34,7 +23,7 @@ pub(super) struct CloneStampMeasurements {
 }
 
 pub(super) fn measure() -> Result<CloneStampMeasurements> {
-    let fixture = SolidRasterFixture::new(SOURCE_SIZE, SOURCE_SIZE)?;
+    let (fixture, _) = PreparedRasterFixture::prepare(SOURCE_SIZE, SOURCE_SIZE)?;
     let mut document = Document::new("Clone Stamp benchmark", SOURCE_SIZE, SOURCE_SIZE);
     document.background = [0; 4];
     document.layers.push(Layer {
@@ -42,7 +31,7 @@ pub(super) fn measure() -> Result<CloneStampMeasurements> {
         visible: false,
         name: "Immutable source".into(),
         kind: LayerKind::Raster {
-            path: fixture.path.clone(),
+            path: fixture.source_path().to_owned(),
             original_path: None,
         },
         ..Layer::default()
@@ -102,7 +91,7 @@ pub(super) fn measure() -> Result<CloneStampMeasurements> {
     if final_pixels.as_deref() != Some(final_render.to_rgba8().as_raw()) {
         bail!("live Clone Stamp release did not match its final preview pixels");
     }
-    let max_provider_region_pixels = fixture.max_region_pixels.load(Ordering::Relaxed);
+    let max_provider_region_pixels = fixture.max_region_pixels();
     if max_provider_region_pixels == 0
         || max_provider_region_pixels > u64::from(REGION_WIDTH) * u64::from(REGION_HEIGHT)
     {
@@ -157,119 +146,12 @@ fn validate_render(
     Ok(())
 }
 
-struct SolidRasterFixture {
-    path: PathBuf,
-    source: ResolvedRasterSource,
-    max_region_pixels: Arc<AtomicU64>,
-}
-
-impl SolidRasterFixture {
-    fn new(width: u32, height: u32) -> Result<Self> {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let root =
-            std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
-        let path = root.join(format!("prism-clone-benchmark-{stamp}.png"));
-        write_solid_png(&path, width, height)?;
-        let max_region_pixels = Arc::new(AtomicU64::new(0));
-        let source = ResolvedRasterSource::new(
-            RasterSourceEpoch::new(format!("solid-black-{width}x{height}"))?,
-            Arc::new(SolidSource::new(
-                width,
-                height,
-                Arc::clone(&max_region_pixels),
-            )),
-        )?;
-        Ok(Self {
-            path,
-            source,
-            max_region_pixels,
-        })
-    }
-}
-
-impl RasterSourceResolver for SolidRasterFixture {
-    fn snapshot_epoch(&self) -> u64 {
-        1
-    }
-
-    fn resolve(&self, path: &Path) -> Option<ResolvedRasterSource> {
-        (path == self.path).then(|| self.source.clone())
-    }
-}
-
-impl Drop for SolidRasterFixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-fn write_solid_png(path: &Path, width: u32, height: u32) -> Result<()> {
-    let file = std::fs::File::create(path)?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
-    encoder.set_color(png::ColorType::Grayscale);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header()?;
-    let mut stream = writer.stream_writer()?;
-    let row = vec![0; width as usize];
-    for _ in 0..height {
-        stream.write_all(&row)?;
-    }
-    stream.finish()?;
-    Ok(())
-}
-
-struct SolidSource {
-    info: RegionSourceInfo,
-    max_region_pixels: Arc<AtomicU64>,
-}
-
-impl SolidSource {
-    fn new(width: u32, height: u32, max_region_pixels: Arc<AtomicU64>) -> Self {
-        Self {
-            info: RegionSourceInfo {
-                descriptor: RegionSourceDescriptor {
-                    width,
-                    height,
-                    color_encoding: "l8".into(),
-                    sample_depth: SourceSampleDepth::EightBit,
-                    frame_index: 0,
-                    page_index: 0,
-                    decoder_contract: "prism-benchmark-solid-l8".into(),
-                },
-                capability: RegionReadCapability::SequentialBounded,
-                readiness: RegionReadiness::Ready,
-            },
-            max_region_pixels,
-        }
-    }
-}
-
-impl ExactRegionSource for SolidSource {
-    type Error = RegionRequestError;
-
-    fn info(&self) -> &RegionSourceInfo {
-        &self.info
-    }
-
-    fn read_exact_region(&self, region: PixelRegion) -> Result<RgbaImage, Self::Error> {
-        validate_region_request(&self.info.descriptor, region, 4_096 * 4_096)?;
-        let pixels = u64::from(region.width) * u64::from(region.height);
-        self.max_region_pixels.fetch_max(pixels, Ordering::Relaxed);
-        Ok(RgbaImage::from_pixel(
-            region.width,
-            region.height,
-            Rgba([0, 0, 0, 255]),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "the exact 16K DerivedBackingCache fixture runs in prism benchmark --strict"]
     fn clone_stamp_benchmark_is_provider_backed_and_bounded() {
         let measured = measure().unwrap();
         assert!(measured.source_full_plane_bytes > 1_000_000_000);

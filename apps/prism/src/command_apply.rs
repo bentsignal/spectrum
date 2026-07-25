@@ -310,7 +310,8 @@ fn apply_command_inner(
             if source.source_layer_id != id {
                 bail!("resolved Clone Stamp source does not match requested layer {id}");
             }
-            document.clone_source = Some(source);
+            let source_id = document.intern_sampled_source(source)?;
+            document.clone_source = Some(source_id);
             Ok(output(
                 "set_clone_source",
                 "captured immutable Clone Stamp source",
@@ -339,8 +340,19 @@ fn apply_command_inner(
                 PaintSelection::None => None,
                 PaintSelection::Snapshot { .. } => validated_snapshot.as_ref(),
             };
-            let stroke = stroke.resolve_current_clone(document.clone_source.as_ref())?;
-            if let Some(source) = stroke.sampled_source() {
+            let current_clone = document.clone_source.as_ref().and_then(|source_id| {
+                document
+                    .sampled_sources
+                    .get(source_id)
+                    .map(|source| (source_id, source))
+            });
+            let stroke = stroke.resolve_current_clone(
+                current_clone,
+                (width, height),
+                Transform::default(),
+            )?;
+            if let Some(source_id) = stroke.sampled_source_id() {
+                let source = document.sampled_source(source_id)?;
                 if sampled_sources_are_verified_embedded_assets {
                     source.validate_metadata()?;
                 } else {
@@ -415,8 +427,19 @@ fn apply_command_inner(
                 PaintSelection::None => None,
                 PaintSelection::Snapshot { .. } => validated_snapshot.as_ref(),
             };
-            let stroke = stroke.resolve_current_clone(document.clone_source.as_ref())?;
-            if let Some(source) = stroke.sampled_source() {
+            let current_clone = document.clone_source.as_ref().and_then(|source_id| {
+                document
+                    .sampled_sources
+                    .get(source_id)
+                    .map(|source| (source_id, source))
+            });
+            let stroke = stroke.resolve_current_clone(
+                current_clone,
+                (program.width, program.height),
+                transform,
+            )?;
+            if let Some(source_id) = stroke.sampled_source_id() {
+                let source = document.sampled_source(source_id)?;
                 if sampled_sources_are_verified_embedded_assets {
                     source.validate_metadata()?;
                 } else {

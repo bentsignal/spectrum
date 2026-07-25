@@ -201,7 +201,11 @@ fn document_supports_region_native_zoom_impl(
     document.layers.iter().all(|layer| {
         !layer.visible
             || layer.opacity <= 0.0
-            || crate::render_region::supports_bounded_source(layer, raster_sources)
+            || crate::render_region::supports_bounded_source(
+                layer,
+                &document.sampled_sources,
+                raster_sources,
+            )
     })
 }
 
@@ -371,6 +375,7 @@ pub(super) fn render_document_region_scaled_untiled(
                 previous_coverage.as_ref(),
                 region,
                 font_asset,
+                &document.sampled_sources,
                 raster_sources,
                 stats,
             )?
@@ -585,10 +590,7 @@ pub fn render_layer_preview_from_base(
     Ok(DynamicImage::ImageRgba8(image))
 }
 
-/// Decodes or rasterizes a layer without development adjustments or raster
-/// pixel masks. Keeping this result cached avoids repeatedly decoding large
-/// linked images during sliders and lets masks follow the exact adjustment
-/// geometry independently.
+/// Decodes or rasterizes a layer without development adjustments or pixel masks.
 pub fn render_layer_base(layer: &Layer, max_size: Option<u32>) -> Result<DynamicImage> {
     render_layer_base_scaled(layer, max_size, [1.0; 2])
 }
@@ -652,6 +654,9 @@ fn render_layer_base_scaled_with_font_limits(
             DynamicImage::ImageRgba8(render_shape(layer, shape_scale)?)
         }
         LayerKind::Paint { program } => {
+            if program.contains_sampled_sources() {
+                bail!("Clone Stamp layer previews require their document sampled-source registry");
+            }
             let mut base_layer = layer.clone();
             base_layer.visible = true;
             base_layer.opacity = 1.0;

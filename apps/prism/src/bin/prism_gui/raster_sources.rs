@@ -506,7 +506,12 @@ fn prepare_source(
                 Err(error) => return PreparationOutcome::Failed(format!("{error:#}")),
             };
             let source_epoch = source.source_epoch().clone();
-            match ResolvedRasterSource::new(source_epoch, Arc::new(source)) {
+            let source_sha256 = source.source_sha256().to_owned();
+            match ResolvedRasterSource::new_authenticated(
+                source_epoch,
+                source_sha256,
+                Arc::new(source),
+            ) {
                 Ok(source) => PreparationOutcome::Ready(source),
                 Err(error) => PreparationOutcome::Failed(format!("{error:#}")),
             }
@@ -535,7 +540,11 @@ fn prepared_outcome(
                 Err(error) => return PreparationOutcome::Failed(format!("{error:#}")),
             };
             let source = Arc::new(backing);
-            let source = match ResolvedRasterSource::new(source_epoch, source) {
+            let source = match ResolvedRasterSource::new_authenticated(
+                source_epoch,
+                identity.source_sha256().to_owned(),
+                source,
+            ) {
                 Ok(source) => source,
                 Err(error) => return PreparationOutcome::Failed(format!("{error:#}")),
             };

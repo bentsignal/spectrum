@@ -15,7 +15,7 @@ pub(super) const PAINT_SNAPSHOT_VERSION: u32 = 7;
 pub(super) const DISSOLVE_SNAPSHOT_VERSION: u32 = 8;
 pub(super) const RASTER_PIXEL_MASK_SNAPSHOT_VERSION: u32 = 9;
 pub(crate) const SHAPED_TEXT_SNAPSHOT_VERSION: u32 = 10;
-pub(super) const CLONE_STAMP_SNAPSHOT_VERSION: u32 = 11;
+pub(crate) const CLONE_STAMP_SNAPSHOT_VERSION: u32 = 11;
 pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
@@ -227,9 +227,12 @@ fn command_uses_clone_stamp(command: &Command) -> bool {
     match command {
         Command::SetCloneSource { .. } => true,
         Command::AddPaintLayerWithStroke { stroke, .. }
-        | Command::AddBrushStroke { stroke, .. } => stroke.sampled_source().is_some(),
+        | Command::AddBrushStroke { stroke, .. } => {
+            stroke.style.mode == crate::BrushMode::CloneStamp || stroke.source.is_some()
+        }
         Command::InsertLayer { transfer, .. } => {
             transfer.version >= crate::CLONE_STAMP_LAYER_TRANSFER_VERSION
+                || !transfer.sampled_sources.is_empty()
                 || matches!(&transfer.layer.kind, crate::LayerKind::Paint { program } if program.contains_sampled_sources())
         }
         _ => false,
@@ -307,6 +310,7 @@ mod tests {
                 version,
                 layer,
                 font_asset: None,
+                sampled_sources: Default::default(),
             }),
             index: None,
         }]
@@ -368,6 +372,32 @@ mod tests {
             validate_operations_version(&commands, RASTER_PIXEL_MASK_OPERATIONS_VERSION).is_err()
         );
         assert!(validate_operations_version(&commands, SHAPED_TEXT_OPERATIONS_VERSION).is_ok());
+    }
+
+    #[test]
+    fn authoring_clone_marker_requires_v14_and_cannot_smuggle_into_v13() {
+        let stroke = crate::BrushStroke::new(
+            crate::BrushStyle::default(),
+            [crate::BrushSample {
+                x: 1.5,
+                y: 1.5,
+                pressure: 1.0,
+            }],
+        )
+        .unwrap()
+        .as_current_clone()
+        .unwrap();
+        let commands = [Command::AddBrushStroke {
+            id: 1,
+            stroke,
+            selection: crate::PaintSelection::None,
+        }];
+        assert_eq!(
+            operations_version(&commands),
+            CLONE_STAMP_OPERATIONS_VERSION
+        );
+        assert!(validate_operations_version(&commands, SHAPED_TEXT_OPERATIONS_VERSION).is_err());
+        assert!(validate_operations_version(&commands, CLONE_STAMP_OPERATIONS_VERSION).is_ok());
     }
 
     #[test]
@@ -555,6 +585,7 @@ mod tests {
             version: LAYER_TRANSFER_VERSION,
             layer: Layer::default(),
             font_asset: None,
+            sampled_sources: Default::default(),
         };
         let mut compatible = [Command::InsertLayer {
             transfer: Box::new(transfer.clone()),
@@ -606,6 +637,7 @@ mod tests {
                         ..Layer::default()
                     },
                     font_asset: None,
+                    sampled_sources: Default::default(),
                 }),
                 index: None,
             }];
@@ -766,6 +798,7 @@ mod tests {
                 ..Layer::default()
             },
             font_asset: None,
+            sampled_sources: Default::default(),
         };
         let mut commands = [Command::InsertLayer {
             transfer: Box::new(transfer),

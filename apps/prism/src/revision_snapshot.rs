@@ -83,6 +83,7 @@ impl PreparedSnapshot {
     }
 
     fn encode(mut portable: Document, compressed: bool, assets: Vec<Asset>) -> Result<Self> {
+        portable.validate_sampled_source_registry()?;
         let shaped_text_schema = portable.layers.iter().any(|layer| {
             matches!(
                 &layer.kind,
@@ -119,6 +120,7 @@ impl PreparedSnapshot {
             matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some()
         });
         let clone_stamp_schema = portable.clone_source.is_some()
+            || !portable.sampled_sources.is_empty()
             || portable.layers.iter().any(|layer| {
                 matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
             });

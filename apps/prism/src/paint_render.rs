@@ -6,7 +6,7 @@ use spectrum_imaging::PixelRegion;
 
 use crate::{
     BrushMode, BrushProgram, BrushStroke, MAX_PAINT_REGION_PIXELS, PixelMask, RasterSourceResolver,
-    sampled_source::sampled_source_region,
+    SampledSourceId, SampledSourceSnapshot, sampled_source::sampled_source_region,
 };
 
 #[cfg(test)]
@@ -18,18 +18,33 @@ pub(crate) fn render_paint_region(
     width: u32,
     height: u32,
 ) -> Result<RgbaImage> {
-    render_paint_region_with_sources(program, pixel_mask, x, y, width, height, None)
+    render_paint_region_with_sources(
+        program,
+        pixel_mask,
+        PixelRegion {
+            x,
+            y,
+            width,
+            height,
+        },
+        &Default::default(),
+        None,
+    )
 }
 
 pub(crate) fn render_paint_region_with_sources(
     program: &BrushProgram,
     pixel_mask: Option<&PixelMask>,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
+    region: PixelRegion,
+    sampled_sources: &std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>,
     raster_sources: Option<&dyn RasterSourceResolver>,
 ) -> Result<RgbaImage> {
+    let PixelRegion {
+        x,
+        y,
+        width,
+        height,
+    } = region;
     let pixels = u64::from(width) * u64::from(height);
     if width == 0 || height == 0 || pixels > MAX_PAINT_REGION_PIXELS {
         bail!("Paint render region exceeds the bounded 4096-square limit");
@@ -44,7 +59,7 @@ pub(crate) fn render_paint_region_with_sources(
     let mut output = RgbaImage::new(width, height);
     for stroke in program.strokes.iter() {
         let requested = (x, y, width, height);
-        let sampled = stage_sampled_source(stroke, requested, raster_sources)?;
+        let sampled = stage_sampled_source(stroke, requested, sampled_sources, raster_sources)?;
         let mut tiles = BTreeMap::<(u32, u32), Vec<u8>>::new();
         for_each_dab(stroke, |dab| {
             for_dab_tiles(dab, stroke.style.size, requested, |key, tile| {
@@ -114,15 +129,18 @@ pub(crate) fn render_paint_region_with_sources(
 }
 
 struct StagedSampledSource {
-    destination_shift: [i64; 2],
+    mapping: crate::SampledSourceMapping,
     region: PixelRegion,
     image: RgbaImage,
 }
 
 impl StagedSampledSource {
     fn pixel(&self, destination_x: u32, destination_y: u32) -> Option<[u8; 4]> {
-        let source_x = i64::from(destination_x) + self.destination_shift[0];
-        let source_y = i64::from(destination_y) + self.destination_shift[1];
+        let source = self
+            .mapping
+            .map([destination_x as f32 + 0.5, destination_y as f32 + 0.5]);
+        let source_x = source[0].floor() as i64;
+        let source_y = source[1].floor() as i64;
         if source_x < i64::from(self.region.x)
             || source_y < i64::from(self.region.y)
             || source_x >= i64::from(self.region.x + self.region.width)
@@ -144,30 +162,61 @@ impl StagedSampledSource {
 fn stage_sampled_source(
     stroke: &BrushStroke,
     requested: (u32, u32, u32, u32),
+    sampled_sources: &std::collections::BTreeMap<SampledSourceId, SampledSourceSnapshot>,
     raster_sources: Option<&dyn RasterSourceResolver>,
 ) -> Result<Option<StagedSampledSource>> {
     if stroke.style.mode != BrushMode::CloneStamp {
         return Ok(None);
     }
-    let source = stroke
-        .sampled_source()
+    let source_id = stroke
+        .sampled_source_id()
         .ok_or_else(|| anyhow::anyhow!("Clone Stamp stroke has no resolved sampled source"))?;
-    let first = stroke.samples[0];
-    let destination_shift = [
-        (source.anchor_local[0] - first.x + 0.5).floor() as i64,
-        (source.anchor_local[1] - first.y + 0.5).floor() as i64,
+    let source = sampled_sources
+        .get(source_id)
+        .ok_or_else(|| anyhow::anyhow!("Clone Stamp stroke references a missing sampled source"))?;
+    let mapping = stroke
+        .sampled_source_mapping()
+        .ok_or_else(|| anyhow::anyhow!("Clone Stamp stroke has no affine source mapping"))?
+        .validate()?;
+    let left = requested.0 as f32 + 0.5;
+    let top = requested.1 as f32 + 0.5;
+    let right = (requested.0 + requested.2) as f32 - 0.5;
+    let bottom = (requested.1 + requested.3) as f32 - 0.5;
+    let mapped = [
+        mapping.map([left, top]),
+        mapping.map([right, top]),
+        mapping.map([left, bottom]),
+        mapping.map([right, bottom]),
     ];
-    let source_left = i64::from(requested.0) + destination_shift[0];
-    let source_top = i64::from(requested.1) + destination_shift[1];
-    let source_right = i64::from(requested.0 + requested.2) + destination_shift[0];
-    let source_bottom = i64::from(requested.1 + requested.3) + destination_shift[1];
+    let source_left = mapped
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min)
+        .floor() as i64;
+    let source_top = mapped
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min)
+        .floor() as i64;
+    let source_right = mapped
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::NEG_INFINITY, f32::max)
+        .floor() as i64
+        + 1;
+    let source_bottom = mapped
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::NEG_INFINITY, f32::max)
+        .floor() as i64
+        + 1;
     let left = source_left.clamp(0, i64::from(source.width)) as u32;
     let top = source_top.clamp(0, i64::from(source.height)) as u32;
     let right = source_right.clamp(0, i64::from(source.width)) as u32;
     let bottom = source_bottom.clamp(0, i64::from(source.height)) as u32;
     if right <= left || bottom <= top {
         return Ok(Some(StagedSampledSource {
-            destination_shift,
+            mapping,
             region: PixelRegion {
                 x: 0,
                 y: 0,
@@ -185,7 +234,7 @@ fn stage_sampled_source(
     };
     let image = sampled_source_region(source, region, raster_sources)?;
     Ok(Some(StagedSampledSource {
-        destination_shift,
+        mapping,
         region,
         image,
     }))

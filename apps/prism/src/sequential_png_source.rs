@@ -93,7 +93,7 @@ impl SequentialPngSource {
         &self.source_epoch
     }
 
-    pub(crate) fn source_sha256(&self) -> &str {
+    pub fn source_sha256(&self) -> &str {
         &self.source_sha256
     }
 

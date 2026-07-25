@@ -85,7 +85,9 @@ fn clone_cli_captures_one_raster_source_and_commits_resolved_stroke() {
         prism_core::BrushMode::CloneStamp
     );
     assert!(program.strokes[0].sampled_source_identity().is_some());
-    let rendered = prism_core::render_layer_base(document.layer(2).unwrap(), None)
+    let mut rendered_document = document.clone();
+    rendered_document.layer_mut(1).unwrap().visible = false;
+    let rendered = prism_core::render_document(&rendered_document, None)
         .unwrap()
         .to_rgba8();
     assert_eq!(rendered.get_pixel(4, 4).0, [210, 40, 90, 255]);

@@ -5,8 +5,9 @@ use spectrum_imaging::AdjustmentPatch;
 
 use crate::{
     Alignment, AlignmentReference, BlendMode, BrushStroke, GuideOrientation, LassoPath, LayerMask,
-    LayerStyle, LayerTransfer, PathGeometry, Selection, SelectionCombineMode, ShapeFill,
-    SampledSourceSnapshot, ShapeStroke, TextShaping, TextTypography, Transform, VectorMask,
+    LayerStyle, LayerTransfer, PathGeometry, SampledSourceSnapshot, Selection,
+    SelectionCombineMode, ShapeFill, ShapeStroke, TextShaping, TextTypography, Transform,
+    VectorMask,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

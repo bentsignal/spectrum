@@ -624,12 +624,43 @@ fn resolve_durable_commands(
         }
         let paint_selection = match command {
             Command::AddBrushStroke {
-                stroke, selection, ..
-            }
-            | Command::AddPaintLayerWithStroke {
-                stroke, selection, ..
+                id,
+                stroke,
+                selection,
             } => {
-                *stroke = stroke.resolve_current_clone(candidate.clone_source.as_ref())?;
+                let layer = candidate.layer(*id)?;
+                let crate::LayerKind::Paint { program } = &layer.kind else {
+                    bail!("layer {id} is not a Paint layer");
+                };
+                *stroke = stroke.resolve_current_clone(
+                    candidate.clone_source.as_ref().and_then(|source_id| {
+                        candidate
+                            .sampled_sources
+                            .get(source_id)
+                            .map(|source| (source_id, source))
+                    }),
+                    (program.width, program.height),
+                    layer.transform,
+                )?;
+                Some(selection)
+            }
+            Command::AddPaintLayerWithStroke {
+                stroke,
+                selection,
+                width,
+                height,
+                ..
+            } => {
+                *stroke = stroke.resolve_current_clone(
+                    candidate.clone_source.as_ref().and_then(|source_id| {
+                        candidate
+                            .sampled_sources
+                            .get(source_id)
+                            .map(|source| (source_id, source))
+                    }),
+                    (*width, *height),
+                    crate::Transform::default(),
+                )?;
                 Some(selection)
             }
             _ => None,

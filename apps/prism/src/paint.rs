@@ -4,7 +4,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 
-use crate::{SampledBrushSource, SampledSourceSnapshot};
+use crate::{
+    SampledBrushSource, SampledSourceId, SampledSourceMapping, SampledSourceSnapshot, Transform,
+};
 
 #[cfg(test)]
 pub(crate) use crate::paint_render::render_paint_region;
@@ -214,11 +216,22 @@ impl BrushStroke {
         source: SampledSourceSnapshot,
     ) -> Result<Self> {
         style.mode = BrushMode::CloneStamp;
+        let samples = samples.into();
+        let first = samples
+            .first()
+            .context("a Clone Stamp stroke requires a destination anchor")?;
+        let mapping = SampledSourceMapping::capture(
+            &source,
+            [first.x, first.y],
+            (source.width, source.height),
+            Transform::default(),
+        )?;
+        let source_id = source.stable_id()?;
         Self::from_parts(
             style,
-            samples.into(),
+            samples,
             None,
-            Some(SampledBrushSource::resolved_clone(source)),
+            Some(SampledBrushSource::resolved_clone(source_id, mapping)),
             None,
             false,
         )
@@ -236,8 +249,8 @@ impl BrushStroke {
         match (style.mode, &source) {
             (BrushMode::CloneStamp, Some(SampledBrushSource::CurrentClone))
                 if allow_current_source => {}
-            (BrushMode::CloneStamp, Some(SampledBrushSource::CloneStamp { source })) => {
-                source.validate_metadata()?;
+            (BrushMode::CloneStamp, Some(SampledBrushSource::CloneStamp { mapping, .. })) => {
+                mapping.validate()?;
             }
             (BrushMode::CloneStamp, _) => {
                 bail!("Clone Stamp strokes require one immutable sampled source")
@@ -305,17 +318,31 @@ impl BrushStroke {
 
     pub(crate) fn resolve_current_clone(
         &self,
-        current: Option<&SampledSourceSnapshot>,
+        current: Option<(&SampledSourceId, &SampledSourceSnapshot)>,
+        destination_dimensions: (u32, u32),
+        destination_transform: Transform,
     ) -> Result<Self> {
         if self.style.mode != BrushMode::CloneStamp {
             return Ok(self.clone());
         }
         let source = match &self.source {
-            Some(SampledBrushSource::CurrentClone) => Some(SampledBrushSource::resolved_clone(
-                current
-                    .context("set a Clone Stamp source before painting")?
-                    .clone(),
-            )),
+            Some(SampledBrushSource::CurrentClone) => {
+                let (source_id, current) =
+                    current.context("set a Clone Stamp source before painting")?;
+                let first = self
+                    .samples
+                    .first()
+                    .context("a Clone Stamp stroke requires a destination anchor")?;
+                Some(SampledBrushSource::resolved_clone(
+                    source_id.clone(),
+                    SampledSourceMapping::capture(
+                        current,
+                        [first.x, first.y],
+                        destination_dimensions,
+                        destination_transform,
+                    )?,
+                ))
+            }
             Some(source @ SampledBrushSource::CloneStamp { .. }) => Some(source.clone()),
             None => bail!("Clone Stamp strokes require one immutable sampled source"),
         };
@@ -342,18 +369,16 @@ impl BrushStroke {
         )
     }
 
-    pub(crate) fn sampled_source(&self) -> Option<&SampledSourceSnapshot> {
-        self.source.as_ref().and_then(SampledBrushSource::source)
-    }
-
-    pub(crate) fn sampled_source_mut(&mut self) -> Option<&mut SampledSourceSnapshot> {
-        self.source
-            .as_mut()
-            .and_then(SampledBrushSource::source_mut)
+    pub(crate) fn sampled_source_id(&self) -> Option<&SampledSourceId> {
+        self.source.as_ref().and_then(SampledBrushSource::source_id)
     }
 
     pub fn sampled_source_identity(&self) -> Option<[u8; 32]> {
         self.source.as_ref().map(SampledBrushSource::identity)
+    }
+
+    pub(crate) fn sampled_source_mapping(&self) -> Option<SampledSourceMapping> {
+        self.source.as_ref().and_then(SampledBrushSource::mapping)
     }
 
     pub(crate) fn interval(&self) -> f32 {
@@ -601,36 +626,15 @@ impl BrushProgram {
     pub(crate) fn contains_sampled_sources(&self) -> bool {
         self.strokes
             .iter()
-            .any(|stroke| stroke.sampled_source().is_some())
+            .any(|stroke| stroke.sampled_source_id().is_some())
     }
 
-    pub(crate) fn for_each_sampled_source(&self, mut visit: impl FnMut(&SampledSourceSnapshot)) {
+    pub(crate) fn for_each_sampled_source_id(&self, mut visit: impl FnMut(&SampledSourceId)) {
         for stroke in self.strokes.iter() {
-            if let Some(source) = stroke.sampled_source() {
-                visit(source);
+            if let Some(source_id) = stroke.sampled_source_id() {
+                visit(source_id);
             }
         }
-    }
-
-    pub(crate) fn map_sampled_sources(
-        &self,
-        mut map: impl FnMut(&mut SampledSourceSnapshot) -> Result<()>,
-    ) -> Result<Self> {
-        let mut strokes = self.strokes.to_vec();
-        for stroke in &mut strokes {
-            if let Some(source) = stroke.sampled_source_mut() {
-                map(source)?;
-                *stroke = BrushStroke::from_parts(
-                    stroke.style,
-                    Arc::clone(&stroke.samples),
-                    stroke.clip.clone(),
-                    stroke.source.clone(),
-                    Some((self.width, self.height)),
-                    false,
-                )?;
-            }
-        }
-        Self::from_parts(self.version, self.width, self.height, strokes.into())
     }
 
     fn compute_identity(&self) -> [u8; 32] {

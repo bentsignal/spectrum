@@ -31,8 +31,8 @@ pub(crate) use durable_edit::PreparedEdit;
 pub(crate) mod durable_sampled_sources;
 #[path = "revision_encoding.rs"]
 mod revision_encoding;
-pub(crate) use revision_encoding::SHAPED_TEXT_SNAPSHOT_VERSION;
 use revision_encoding::*;
+pub(crate) use revision_encoding::{CLONE_STAMP_SNAPSHOT_VERSION, SHAPED_TEXT_SNAPSHOT_VERSION};
 #[path = "revision_snapshot.rs"]
 mod revision_snapshot;
 use revision_snapshot::*;

@@ -170,8 +170,21 @@ fn replay_layer_transfer(
     let LayerTransfer {
         mut layer,
         font_asset,
+        sampled_sources,
         ..
     } = transfer;
+    for (source_id, source) in sampled_sources {
+        if source.stable_id()? != source_id {
+            bail!("stored layer transfer sampled-source identity is invalid");
+        }
+        if let Some(existing) = document.sampled_sources.get(&source_id) {
+            if existing != &source {
+                bail!("stored layer transfer sampled source collides with document state");
+            }
+        } else {
+            document.sampled_sources.insert(source_id, source);
+        }
+    }
     let transferred_font_id = font_asset
         .map(|font| replay_transferred_font(store, document, font))
         .transpose()?;

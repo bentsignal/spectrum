@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::{Command, Document, LayerKind, SampledSourceSnapshot};
+use crate::{Command, Document, SampledSourceSnapshot};
 
 pub(super) fn command_has_sampled_sources(command: &Command) -> bool {
     match command {
@@ -8,11 +8,7 @@ pub(super) fn command_has_sampled_sources(command: &Command) -> bool {
             resolved_source: Some(_),
             ..
         } => true,
-        Command::AddBrushStroke { stroke, .. }
-        | Command::AddPaintLayerWithStroke { stroke, .. } => stroke.sampled_source().is_some(),
-        Command::InsertLayer { transfer, .. } => {
-            matches!(&transfer.layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
-        }
+        Command::InsertLayer { transfer, .. } => !transfer.sampled_sources.is_empty(),
         _ => false,
     }
 }
@@ -26,16 +22,9 @@ pub(super) fn map_command_sampled_sources(
             resolved_source: Some(source),
             ..
         } => map(source),
-        Command::AddBrushStroke { stroke, .. }
-        | Command::AddPaintLayerWithStroke { stroke, .. } => {
-            if let Some(source) = stroke.sampled_source_mut() {
-                map(source)?;
-            }
-            Ok(())
-        }
         Command::InsertLayer { transfer, .. } => {
-            if let LayerKind::Paint { program } = &mut transfer.layer.kind {
-                *program = program.map_sampled_sources(map)?;
+            for source in transfer.sampled_sources.values_mut() {
+                map(source)?;
             }
             Ok(())
         }
@@ -47,13 +36,8 @@ pub(crate) fn map_document_sampled_sources(
     document: &mut Document,
     mut map: impl FnMut(&mut SampledSourceSnapshot) -> Result<()>,
 ) -> Result<()> {
-    if let Some(source) = &mut document.clone_source {
+    for source in document.sampled_sources.values_mut() {
         map(source)?;
-    }
-    for layer in &mut document.layers {
-        if let LayerKind::Paint { program } = &mut layer.kind {
-            *program = program.map_sampled_sources(&mut map)?;
-        }
     }
     Ok(())
 }
