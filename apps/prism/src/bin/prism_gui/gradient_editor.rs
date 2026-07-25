@@ -101,14 +101,11 @@ pub(super) fn gradient_editor(
                     .max_decimals(3),
             );
             widget_gradient(app, &response, layer.id, &gradient);
-            let mut color = Color32::from_rgba_unmultiplied(
-                gradient.stops[index].color[0],
-                gradient.stops[index].color[1],
-                gradient.stops[index].color[2],
-                gradient.stops[index].color[3],
-            );
-            let response = ui.color_edit_button_srgba(&mut color);
-            gradient.stops[index].color = color.to_array();
+            let original_color = gradient.stops[index].color;
+            let mut edited_color = original_color;
+            let response = ui.color_edit_button_srgba_unmultiplied(&mut edited_color);
+            gradient.stops[index].color =
+                resolved_stop_color(original_color, edited_color, response.changed());
             widget_gradient(app, &response, layer.id, &gradient);
             if gradient.stops.len() > 2
                 && ui
@@ -175,6 +172,10 @@ fn widest_gap_stop(gradient: &ShapeGradient) -> (usize, f32, [u8; 4]) {
     (index + 1, position, color)
 }
 
+fn resolved_stop_color(original: [u8; 4], edited: [u8; 4], changed: bool) -> [u8; 4] {
+    if changed { edited } else { original }
+}
+
 fn kind_label(kind: GradientKind) -> &'static str {
     match kind {
         GradientKind::Linear => "Linear",
@@ -205,6 +206,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(widest_gap_stop(&gradient), (1, 0.5, [255, 0, 0, 128]));
+    }
+
+    #[test]
+    fn translucent_stop_color_round_trips_as_straight_srgba() {
+        for original in [
+            [60, 230, 180, 210],
+            [80, 110, 255, 150],
+            [255, 0, 0, 1],
+            [0, 0, 0, 0],
+        ] {
+            assert_eq!(resolved_stop_color(original, [1, 2, 3, 4], false), original);
+        }
+        assert_eq!(
+            resolved_stop_color([60, 230, 180, 210], [17, 33, 91, 128], true),
+            [17, 33, 91, 128]
+        );
     }
 
     #[test]
