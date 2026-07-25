@@ -1,9 +1,11 @@
-//! Candidate cross-platform, in-process font subsetting with conservative runtime checks.
+//! Bounded in-process OpenType shaping and candidate font subsetting.
 //!
-//! This crate deliberately exposes an engine seam rather than a general export command.
-//! Prism's optimized-copy transaction may use a passing artifact only after its own
-//! history, asset, and exact-render checks. Passing these checks is not proof of broad
-//! production conformance.
+//! [`HarfBuzzShaper`] shapes one already-resolved font run and deliberately leaves
+//! bidi paragraph resolution, fallback, line breaking, and editing behavior to
+//! higher layers. The subset API remains an engine seam rather than a general
+//! export command. Prism's optimized-copy transaction may use a passing artifact
+//! only after its own history, asset, and exact-render checks. Passing these checks
+//! is not proof of broad production subsetting conformance.
 //! Callers must retain the immutable source snapshot, provenance, and font-license
 //! decision; OS/2 embedding bits are technical metadata, not legal advice.
 
@@ -13,13 +15,18 @@ mod error;
 mod glyf;
 mod limits;
 mod sfnt;
-mod shaping;
+pub mod shaping;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use hb_subset::{Blob, Flags, FontFace, SubsetInput};
 
-pub use error::SubsetError;
+pub use error::{ShapeError, SubsetError};
+pub use shaping::{
+    GlyphFlags, HarfBuzzShaper, MAX_SHAPE_FEATURES, MAX_SHAPE_GLYPHS, MAX_SHAPE_SCALARS,
+    MAX_SHAPE_TEXT_BYTES, OpenTypeFeature, Script, ShapeRequest, ShapedGlyph, ShapedRun,
+    TextDirection, TextShaper,
+};
 
 /// One cmap format 14 base/selector mapping requested from the candidate engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
