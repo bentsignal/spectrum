@@ -22,11 +22,11 @@ use crate::{
     live_bridge::LumenLiveCollaborationSync,
 };
 
-const INGRESS_CAPACITY: usize = 32;
-const MAX_DEFERRED: usize = 16;
-const DEFERRED_TTL: Duration = Duration::from_secs(5);
-const DRAIN_COUNT_BUDGET: usize = 8;
-const DRAIN_TIME_BUDGET: Duration = Duration::from_millis(2);
+pub const LUMEN_LIVE_INGRESS_CAPACITY: usize = 32;
+pub const LUMEN_LIVE_MAX_DEFERRED: usize = 16;
+pub const LUMEN_LIVE_DEFERRED_TTL: Duration = Duration::from_secs(5);
+pub const LUMEN_LIVE_DRAIN_COUNT_BUDGET: usize = 8;
+pub const LUMEN_LIVE_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(2);
 #[cfg(not(test))]
 const GUI_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
@@ -61,12 +61,22 @@ struct PendingRequest {
     action: LumenLiveAction,
     reply: Option<SyncSender<BridgeResult<HostApplyOutcome>>>,
     deferred_at: Option<Instant>,
+    retained_bytes: usize,
+    retained_total: Arc<AtomicUsize>,
+}
+
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        self.retained_total
+            .fetch_sub(self.retained_bytes, Ordering::AcqRel);
+    }
 }
 
 pub struct LumenLiveHost {
     state: Mutex<HostState>,
     ingress: SyncSender<PendingRequest>,
     pending_ingress: Arc<AtomicUsize>,
+    retained_request_bytes: Arc<AtomicUsize>,
     events: OnceLock<Arc<EventLog>>,
     wake_gui: Arc<dyn Fn() + Send + Sync>,
 }
@@ -82,6 +92,7 @@ pub struct LumenLiveDrain {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LumenLiveDrainReport {
     pub received: usize,
+    pub last_receive_started_after: Duration,
     pub applied: usize,
     pub deferred: usize,
     pub refused: usize,
@@ -110,8 +121,9 @@ impl LumenLiveHost {
             .catalog_path
             .clone()
             .context("live binding requires a durable project path")?;
-        let (sender, receiver) = mpsc::sync_channel(INGRESS_CAPACITY);
+        let (sender, receiver) = mpsc::sync_channel(LUMEN_LIVE_INGRESS_CAPACITY);
         let pending_ingress = Arc::new(AtomicUsize::new(0));
+        let retained_request_bytes = Arc::new(AtomicUsize::new(0));
         let host = Arc::new(Self {
             state: Mutex::new(HostState {
                 project_id: live.project_id,
@@ -124,6 +136,7 @@ impl LumenLiveHost {
             }),
             ingress: sender,
             pending_ingress: Arc::clone(&pending_ingress),
+            retained_request_bytes: Arc::clone(&retained_request_bytes),
             events: OnceLock::new(),
             wake_gui,
         });
@@ -170,6 +183,10 @@ impl LumenLiveHost {
             .lock()
             .expect("Lumen live host state poisoned")
             .binding_id
+    }
+
+    pub fn retained_request_bytes(&self) -> usize {
+        self.retained_request_bytes.load(Ordering::Acquire)
     }
 
     pub fn observe_workspace(&self, workspace: &Workspace) -> Result<bool> {
@@ -349,16 +366,21 @@ impl BridgeHost for LumenLiveHost {
             }
         };
         let (reply, response) = mpsc::sync_channel(1);
+        let retained_bytes = retained_request_bytes(request, &action);
         let state = self.state.lock().map_err(|_| BridgeError::Closed)?;
         if state.closed {
             return Err(BridgeError::Closed);
         }
         self.pending_ingress.fetch_add(1, Ordering::AcqRel);
+        self.retained_request_bytes
+            .fetch_add(retained_bytes, Ordering::AcqRel);
         if let Err(error) = self.ingress.try_send(PendingRequest {
             request: request.clone(),
             action,
             reply: Some(reply),
             deferred_at: None,
+            retained_bytes,
+            retained_total: Arc::clone(&self.retained_request_bytes),
         }) {
             decrement_pending_ingress(&self.pending_ingress);
             return Err(match error {
@@ -398,19 +420,24 @@ impl LumenLiveDrain {
                 return report;
             }
         }
-        while report.received < DRAIN_COUNT_BUDGET
-            && (report.received == 0 || started.elapsed() < DRAIN_TIME_BUDGET)
-        {
-            let pending = match self.try_receive() {
+        loop {
+            let receive_started_after = started.elapsed();
+            if report.received >= LUMEN_LIVE_DRAIN_COUNT_BUDGET
+                || (report.received > 0 && receive_started_after >= LUMEN_LIVE_DRAIN_TIME_BUDGET)
+            {
+                break;
+            }
+            let mut pending = match self.try_receive() {
                 Ok(pending) => pending,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             };
             report.received += 1;
+            report.last_receive_started_after = receive_started_after;
             if pending.request.interaction == InteractionPolicy::RequireUserConfirmation
                 && !matches!(pending.action, LumenLiveAction::State)
             {
                 send_reply(
-                    pending.reply,
+                    pending.reply.take(),
                     Ok(HostApplyOutcome::Applied(ResponseBody::Refused {
                         reason: "Lumen does not yet provide live-action confirmation UI".into(),
                     })),
@@ -460,14 +487,17 @@ impl LumenLiveDrain {
         Ok(pending)
     }
 
-    #[cfg(test)]
-    pub(crate) fn pending_ingress_count(&self) -> usize {
+    pub fn pending_ingress_count(&self) -> usize {
         self.pending_ingress.load(Ordering::Acquire)
+    }
+
+    pub fn deferred_count(&self) -> usize {
+        self.deferred.len()
     }
 
     fn handle_busy(&mut self, mut pending: PendingRequest, report: &mut LumenLiveDrainReport) {
         match pending.request.interaction {
-            InteractionPolicy::Deferred if self.deferred.len() < MAX_DEFERRED => {
+            InteractionPolicy::Deferred if self.deferred.len() < LUMEN_LIVE_MAX_DEFERRED => {
                 pending.deferred_at = Some(Instant::now());
                 if let Err(error) = self.begin_deferred_event(&pending) {
                     send_reply(pending.reply.take(), Err(error));
@@ -515,7 +545,7 @@ impl LumenLiveDrain {
         while self.deferred.front().is_some_and(|pending| {
             pending
                 .deferred_at
-                .is_some_and(|created| now.duration_since(created) >= DEFERRED_TTL)
+                .is_some_and(|created| now.duration_since(created) >= LUMEN_LIVE_DEFERRED_TTL)
         }) {
             if let Some(pending) = self.deferred.pop_front() {
                 self.cancel_deferred_event(&pending);
@@ -824,6 +854,12 @@ fn decrement_pending_ingress(pending: &AtomicUsize) {
             count.checked_sub(1)
         })
         .expect("Lumen live ingress accounting underflow");
+}
+
+fn retained_request_bytes(request: &RequestEnvelope, action: &LumenLiveAction) -> usize {
+    std::mem::size_of::<PendingRequest>()
+        + serde_json::to_vec(request).map_or(0, |encoded| encoded.len())
+        + serde_json::to_vec(action).map_or(0, |encoded| encoded.len())
 }
 
 fn deferred_interaction_id(request: &RequestEnvelope) -> String {

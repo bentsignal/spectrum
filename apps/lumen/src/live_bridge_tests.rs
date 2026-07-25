@@ -10,9 +10,11 @@ use spectrum_revisions::{Actor, ActorKind, CollaborationMode, SessionId};
 
 use crate::{
     AdjustmentPatch, Command, LUMEN_COMMAND_OPERATIONS_VERSION, LUMEN_LIVE_ACTION_FAMILY,
-    LUMEN_LIVE_ACTION_VERSION, LUMEN_LIVE_APPLICATION, LumenLiveAction, LumenLiveActionExpectation,
-    LumenLiveApplyError, LumenLiveHost, LumenLiveInteractionState, LumenLiveResult,
-    LumenLiveSessions, LumenLiveTestFault, Project, Workspace,
+    LUMEN_LIVE_ACTION_VERSION, LUMEN_LIVE_APPLICATION, LUMEN_LIVE_DEFERRED_TTL,
+    LUMEN_LIVE_DRAIN_COUNT_BUDGET, LUMEN_LIVE_INGRESS_CAPACITY, LUMEN_LIVE_MAX_DEFERRED,
+    LumenLiveAction, LumenLiveActionExpectation, LumenLiveApplyError, LumenLiveHost,
+    LumenLiveInteractionState, LumenLiveResult, LumenLiveSessions, LumenLiveTestFault, Project,
+    Workspace,
 };
 
 struct Fixture {
@@ -117,13 +119,35 @@ fn actor(id: &str, name: &str, kind: ActorKind) -> Actor {
 }
 
 fn wait_for_ingress(drain: &crate::LumenLiveDrain) {
+    wait_for_ingress_count(drain, 1);
+}
+
+fn wait_for_ingress_count(drain: &crate::LumenLiveDrain, expected: usize) {
     for _ in 0..100 {
-        if drain.pending_ingress_count() > 0 {
+        if drain.pending_ingress_count() >= expected {
             return;
         }
         thread::sleep(Duration::from_millis(1));
     }
-    panic!("live request did not reach the GUI ingress queue");
+    panic!(
+        "live ingress reached {}, expected {expected}",
+        drain.pending_ingress_count()
+    );
+}
+
+fn drain_until_received(
+    drain: &mut crate::LumenLiveDrain,
+    workspace: &mut Workspace,
+    interaction: LumenLiveInteractionState,
+) -> crate::LumenLiveDrainReport {
+    for _ in 0..100 {
+        let report = drain.drain(workspace, interaction);
+        if report.received > 0 {
+            return report;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    panic!("live request never became available to the GUI drain");
 }
 
 #[test]
@@ -536,6 +560,143 @@ fn active_interaction_refuses_immediate_and_releases_one_deferred_action() {
         BridgeEventKind::InteractionCommitted { .. }
     ));
     assert!(subscription.try_next().unwrap().is_none());
+}
+
+#[test]
+fn saturated_ingress_rate_limits_overflow_and_respects_the_drain_count_budget() {
+    let mut fixture = Fixture::new(CollaborationMode::Separate);
+    let (host, mut drain) = LumenLiveHost::new(&fixture.human, BindingId::new(), 1).unwrap();
+    host.attach_events(Arc::new(EventLog::new())).unwrap();
+    let workers = (0..=LUMEN_LIVE_INGRESS_CAPACITY)
+        .map(|_| {
+            let state = request(
+                &fixture,
+                &host,
+                InteractionPolicy::Immediate,
+                LumenLiveAction::State,
+            );
+            let worker_host = Arc::clone(&host);
+            thread::spawn(move || worker_host.apply_if_current(&state))
+        })
+        .collect::<Vec<_>>();
+    for _ in 0..100 {
+        if drain.pending_ingress_count() == LUMEN_LIVE_INGRESS_CAPACITY
+            && workers.iter().any(std::thread::JoinHandle::is_finished)
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(drain.pending_ingress_count(), LUMEN_LIVE_INGRESS_CAPACITY);
+    assert!(workers.iter().any(std::thread::JoinHandle::is_finished));
+    assert!(host.retained_request_bytes() > 0);
+    let mut received = 0;
+    while drain.pending_ingress_count() > 0 {
+        let report = drain.drain(&mut fixture.human, LumenLiveInteractionState::Idle);
+        assert!(report.received <= LUMEN_LIVE_DRAIN_COUNT_BUDGET);
+        received += report.received;
+    }
+    let mut applied = 0;
+    let mut rate_limited = 0;
+    for worker in workers {
+        match worker.join().unwrap() {
+            Ok(HostApplyOutcome::Applied(ResponseBody::Applied { .. })) => applied += 1,
+            Err(BridgeError::RateLimited { .. }) => rate_limited += 1,
+            _ => panic!("unexpected saturated ingress outcome"),
+        }
+    }
+    assert_eq!(received, LUMEN_LIVE_INGRESS_CAPACITY);
+    assert_eq!(applied, LUMEN_LIVE_INGRESS_CAPACITY);
+    assert_eq!(rate_limited, 1);
+    assert_eq!(host.retained_request_bytes(), 0);
+}
+
+#[test]
+fn deferred_queue_refuses_overflow_expires_at_ttl_and_releases_one_per_idle_drain() {
+    let mut fixture = Fixture::new(CollaborationMode::Separate);
+    let (host, mut drain) = LumenLiveHost::new(&fixture.human, BindingId::new(), 1).unwrap();
+    host.attach_events(Arc::new(EventLog::new())).unwrap();
+    let expectation = fixture.expectation();
+    let photo_id = fixture.photo_id;
+    let action = || LumenLiveAction::ExecuteBatch {
+        expectation: expectation.clone(),
+        command_version: LUMEN_COMMAND_OPERATIONS_VERSION,
+        commands: vec![Command::Adjust {
+            id: photo_id,
+            patch: AdjustmentPatch {
+                exposure: Some(0.5),
+                ..Default::default()
+            },
+        }],
+    };
+    let workers = (0..LUMEN_LIVE_MAX_DEFERRED)
+        .map(|_| {
+            let deferred = request(&fixture, &host, InteractionPolicy::Deferred, action());
+            let worker_host = Arc::clone(&host);
+            thread::spawn(move || worker_host.apply_if_current(&deferred))
+        })
+        .collect::<Vec<_>>();
+    wait_for_ingress_count(&drain, LUMEN_LIVE_MAX_DEFERRED);
+    while drain.pending_ingress_count() > 0 {
+        let report = drain.drain(&mut fixture.human, LumenLiveInteractionState::Active);
+        assert!(report.received <= LUMEN_LIVE_DRAIN_COUNT_BUDGET);
+    }
+    for worker in workers {
+        assert!(matches!(
+            worker.join().unwrap().unwrap(),
+            HostApplyOutcome::Applied(ResponseBody::Deferred)
+        ));
+    }
+    assert_eq!(drain.deferred_count(), LUMEN_LIVE_MAX_DEFERRED);
+    assert!(host.retained_request_bytes() > 0);
+
+    let overflow = request(&fixture, &host, InteractionPolicy::Deferred, action());
+    let worker_host = Arc::clone(&host);
+    let overflow_worker = thread::spawn(move || worker_host.apply_if_current(&overflow));
+    let overflow_report = drain_until_received(
+        &mut drain,
+        &mut fixture.human,
+        LumenLiveInteractionState::Active,
+    );
+    assert_eq!(overflow_report.refused, 1);
+    assert!(matches!(
+        overflow_worker.join().unwrap().unwrap(),
+        HostApplyOutcome::Applied(ResponseBody::Refused { .. })
+    ));
+
+    thread::sleep(LUMEN_LIVE_DEFERRED_TTL + Duration::from_millis(10));
+    let expired = drain.drain(&mut fixture.human, LumenLiveInteractionState::Active);
+    assert_eq!(expired.refused, LUMEN_LIVE_MAX_DEFERRED);
+    assert_eq!(drain.deferred_count(), 0);
+    assert_eq!(host.retained_request_bytes(), 0);
+
+    let workers = (0..2)
+        .map(|_| {
+            let deferred = request(&fixture, &host, InteractionPolicy::Deferred, action());
+            let worker_host = Arc::clone(&host);
+            thread::spawn(move || worker_host.apply_if_current(&deferred))
+        })
+        .collect::<Vec<_>>();
+    wait_for_ingress_count(&drain, 2);
+    let mut deferred = 0;
+    while drain.pending_ingress_count() > 0 {
+        deferred += drain
+            .drain(&mut fixture.human, LumenLiveInteractionState::Active)
+            .deferred;
+    }
+    assert_eq!(deferred, 2);
+    for worker in workers {
+        assert!(matches!(
+            worker.join().unwrap().unwrap(),
+            HostApplyOutcome::Applied(ResponseBody::Deferred)
+        ));
+    }
+    assert_eq!(drain.deferred_count(), 2);
+    drain.drain(&mut fixture.human, LumenLiveInteractionState::Idle);
+    assert_eq!(drain.deferred_count(), 1);
+    drain.drain(&mut fixture.human, LumenLiveInteractionState::Idle);
+    assert_eq!(drain.deferred_count(), 0);
+    assert_eq!(host.retained_request_bytes(), 0);
 }
 
 #[test]

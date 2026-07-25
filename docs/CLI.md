@@ -64,8 +64,12 @@ cargo run --release -p lumen-photo --bin lumen -- benchmark
 The JSON report separates aspirational targets from conservative regression
 budgets. It measures p95 tone-curve command plus atomic catalog-save latency,
 p95 1800×1200 preview rendering, a 12-photo 2400×1600 JPEG batch import, and a
-complete 6000×4000 (24 MP) JPEG export. Pass `--raw-import` with a locally
-accessible ARW to additionally measure the metadata-only RAW import path.
+complete 6000×4000 (24 MP) JPEG export. It also measures authenticated Lumen
+live-state planning and one-photo mutation latency, then exercises the real app
+host at its 32-request ingress and 16-request deferred limits, including
+overflow refusal, five-second expiry, one-item idle-frame release, and retained
+request bytes. Pass `--raw-import` with a locally accessible ARW to additionally
+measure the metadata-only RAW import path.
 Pass `--strict` to return a nonzero exit code if a budget is missed. The default
 `interactive` profile protects workstation feel. Linux CI uses
 `--profile hosted-ci`, calibrated to the slower shared two-core runner with
@@ -77,6 +81,9 @@ headroom for host jitter, after building the release binary.
 | 1800×1200 curve preview (p95) | 16.7 ms | 50 ms | 125 ms | Fluid locally; CI catches relative regressions on slower shared CPUs |
 | 12-photo JPEG batch import (p95) | 50 ms | 250 ms | 500 ms | Import bookkeeping remains effectively immediate |
 | 24 MP JPEG export | 2 s | 5 s | 5 s | Fast single export; bounded batch wait |
+| Authenticated live state planning (p95) | 25 ms | 35 ms | 75 ms | The target stays explicit while the strict local ceiling covers the observed 11-run 16.43–28.94 ms distribution |
+| One-photo durable live mutation (p95) | 50 ms | 75 ms | 150 ms | Exact cursor recheck, one revision, collaboration advance, and GUI refresh remain bounded |
+| Live-host queues and fairness | 8 dequeues or 2 ms | 32 ingress / 16 deferred / 1 MiB retained requests | Same | Strict mode saturates actual queues and derives pass/fail from refusal, expiry, fairness, and measured retained bytes |
 
 Source generation and benchmark warm-up are excluded from measured intervals.
 The generated pixel pattern, dimensions, curve, quality, and sample counts are
