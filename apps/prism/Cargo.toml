@@ -33,6 +33,8 @@ flate2.workspace = true
 fontdue.workspace = true
 fs2.workspace = true
 image.workspace = true
+icu_locale.workspace = true
+icu_locale_core.workspace = true
 png.workspace = true
 lumen-photo = { path = "../lumen" }
 rfd.workspace = true
@@ -46,6 +48,10 @@ spectrum-terminal = { path = "../../crates/spectrum-terminal" }
 sha2.workspace = true
 ttf-parser.workspace = true
 tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
+unicode-bidi.workspace = true
+unicode-linebreak.workspace = true
+unicode-script.workspace = true
+unicode-segmentation.workspace = true
 vt100.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

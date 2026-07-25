@@ -3,7 +3,7 @@ use std::{collections::HashSet, hint::black_box, time::Instant};
 use anyhow::{Result, bail};
 use prism_core::{
     Document, FontAsset, Layer, LayerKind, LayerPreviewSchedule, TextGeometry,
-    TextPreviewFrameCache, TextTypography, measure_text_geometry_with_typography,
+    TextPreviewFrameCache, TextShaping, TextTypography, measure_text_geometry_with_typography,
 };
 
 use super::{TemporaryFont, sample_summary};
@@ -24,6 +24,7 @@ pub(super) fn measure() -> Result<Measurement> {
     let cold_edit_text = "Cold imported text edit ".repeat(128);
     let cold_edit_typography = TextTypography {
         font_id: Some(font.id),
+        shaping: TextShaping::harfbuzz_v1(Some("en"))?,
         ..TextTypography::default()
     };
     let mut cold_edit_samples = Vec::with_capacity(9);
@@ -47,6 +48,7 @@ pub(super) fn measure() -> Result<Measurement> {
             color: [255; 4],
             typography: TextTypography {
                 font_id: Some(font.id),
+                shaping: TextShaping::harfbuzz_v1(Some("en"))?,
                 ..TextTypography::default()
             },
         },

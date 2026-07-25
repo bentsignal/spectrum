@@ -30,6 +30,7 @@ fn text(document: &mut Document, value: &str, x: f32, y: f32) -> u64 {
             color: [255; 4],
             x,
             y,
+            shaping: Default::default(),
         })
         .unwrap()
         .layer_ids[0];

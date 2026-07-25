@@ -1,6 +1,6 @@
 use spectrum_fonts::{
     HarfBuzzShaper, MAX_SHAPE_FEATURES, MAX_SHAPE_SCALARS, MAX_SHAPE_TEXT_BYTES, OpenTypeFeature,
-    Script, ShapeRequest, TextDirection,
+    Script, ShapeRequest, TextDirection, VariationCoordinate,
 };
 use ttf_parser::Face;
 
@@ -82,10 +82,64 @@ fn utf8_clusters_and_combining_mark_positioning_are_preserved() {
         vec![0, 1],
         "character-level clusters must report UTF-8 byte offsets"
     );
+    assert_eq!(run.glyphs()[0].cluster_end, 1);
+    assert_eq!(run.glyphs()[1].cluster_end, 3);
     assert!(
         run.glyphs()[1].x_offset != 0 || run.glyphs()[1].y_offset != 0,
         "fixture must exercise mark positioning"
     );
+}
+
+#[test]
+fn item_ranges_shape_with_full_context_and_absolute_cluster_ranges() {
+    let shaper = HarfBuzzShaper::new(LAYOUT_TRUE_TYPE, 0).expect("layout fixture opens");
+    let text = "xffiAVy";
+    let run = shaper
+        .shape(
+            &ShapeRequest::new(text)
+                .item_range(1..6)
+                .direction(TextDirection::LeftToRight)
+                .script(Script::from_iso15924(*b"Latn").unwrap()),
+        )
+        .expect("interior item shapes");
+    assert_eq!(run.item_range(), 1..6);
+    assert_eq!(run.source_text_bytes(), text.len() as u32);
+    assert!(
+        run.glyphs()
+            .iter()
+            .all(|glyph| glyph.cluster >= 1 && glyph.cluster_end <= 6)
+    );
+    assert!(run.glyphs().windows(2).all(|pair| {
+        pair[0].cluster <= pair[1].cluster && pair[0].cluster_end <= pair[1].cluster_end
+    }));
+    assert_ne!(run.face_identity(), [0; 32]);
+    assert!(run.ascender() > 0);
+    assert!(run.descender() <= 0);
+}
+
+#[test]
+fn invalid_item_ranges_and_noncanonical_variations_fail_closed() {
+    let shaper = HarfBuzzShaper::new(RICH_TRUE_TYPE, 0).expect("rich fixture opens");
+    assert!(
+        shaper
+            .shape(&ShapeRequest::new("\u{e9}x").item_range(1..3))
+            .unwrap_err()
+            .to_string()
+            .contains("UTF-8")
+    );
+    assert!(
+        shaper
+            .shape(&ShapeRequest::new("A").item_range(0..0))
+            .unwrap_err()
+            .to_string()
+            .contains("non-empty")
+    );
+    assert!(VariationCoordinate::new(*b"wght", f32::NAN).is_err());
+    let duplicate = ShapeRequest::new("A").variations([
+        VariationCoordinate::new(*b"wght", 400.0).unwrap(),
+        VariationCoordinate::new(*b"wght", 700.0).unwrap(),
+    ]);
+    assert!(duplicate.is_err());
 }
 
 #[test]

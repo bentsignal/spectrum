@@ -52,6 +52,7 @@ pub(super) fn measure() -> Result<OptimizedCopyMeasurement> {
         color: [255; 4],
         x: 16.0,
         y: 24.0,
+        shaping: Default::default(),
     })?;
     workspace.execute(Command::SetTextTypography {
         id: workspace

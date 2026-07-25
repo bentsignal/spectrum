@@ -5,6 +5,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use icu_locale::LocaleCanonicalizer;
+use icu_locale_core::Locale;
 use serde::{Deserialize, Serialize};
 
 use crate::{FontSourceSnapshot, VerifiedFontSource};
@@ -266,6 +268,75 @@ pub enum TextAlignment {
     Right,
 }
 
+/// Permanently versioned text layout engines.
+///
+/// Existing data defaults to `LegacyCharV1`; a future dependency or Unicode
+/// update must introduce another enum variant instead of changing
+/// `HarfBuzzV1` output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextShapingEngine {
+    #[default]
+    LegacyCharV1,
+    HarfBuzzV1,
+}
+
+/// Serialized shaping policy for one text layer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextShaping {
+    pub engine: TextShapingEngine,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
+impl TextShaping {
+    pub fn harfbuzz_v1(language: Option<&str>) -> Result<Self> {
+        Self {
+            engine: TextShapingEngine::HarfBuzzV1,
+            language: language.map(str::to_owned),
+        }
+        .validated()
+    }
+
+    pub fn resolved_language(&self) -> &str {
+        self.language.as_deref().unwrap_or("und")
+    }
+
+    pub(crate) fn is_legacy_default(&self) -> bool {
+        self.engine == TextShapingEngine::LegacyCharV1 && self.language.is_none()
+    }
+
+    pub(crate) fn validated(mut self) -> Result<Self> {
+        match self.engine {
+            TextShapingEngine::LegacyCharV1 => {
+                if self.language.is_some() {
+                    bail!("LegacyCharV1 text cannot carry a shaping language");
+                }
+            }
+            TextShapingEngine::HarfBuzzV1 => {
+                if let Some(language) = self.language.take() {
+                    if language.is_empty() || language.len() > 63 {
+                        bail!("text shaping language must contain between 1 and 63 bytes");
+                    }
+                    let mut locale = language.parse::<Locale>().map_err(|_| {
+                        anyhow::anyhow!("text shaping language is not valid BCP-47")
+                    })?;
+                    LocaleCanonicalizer::new_extended().canonicalize(&mut locale);
+                    let canonical = locale.to_string();
+                    if canonical.len() > 63 {
+                        bail!("canonical text shaping language exceeds 63 bytes");
+                    }
+                    if canonical != "und" {
+                        self.language = Some(canonical);
+                    }
+                }
+            }
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextEffects {
@@ -292,6 +363,8 @@ impl Default for TextEffects {
 #[serde(default)]
 pub struct TextTypography {
     pub font_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "TextShaping::is_legacy_default")]
+    pub shaping: TextShaping,
     pub alignment: TextAlignment,
     /// Line-spacing multiplier. `1.25` exactly preserves Prism's legacy spacing.
     pub line_height: f32,
@@ -306,6 +379,7 @@ impl Default for TextTypography {
     fn default() -> Self {
         Self {
             font_id: None,
+            shaping: TextShaping::default(),
             alignment: TextAlignment::Left,
             line_height: 1.25,
             tracking: 0.0,
@@ -316,14 +390,15 @@ impl Default for TextTypography {
 }
 
 impl TextTypography {
-    pub(crate) fn sanitized(mut self) -> Self {
+    pub(crate) fn validated_and_sanitized(mut self) -> Result<Self> {
+        self.shaping = self.shaping.validated()?;
         self.line_height = self.line_height.clamp(0.5, 4.0);
         self.tracking = self.tracking.clamp(-100.0, 500.0);
         self.box_width = self.box_width.map(|width| width.clamp(1.0, 100_000.0));
         self.effects.outline_width = self.effects.outline_width.clamp(0.0, 128.0);
         self.effects.shadow_offset_x = self.effects.shadow_offset_x.clamp(-2_048.0, 2_048.0);
         self.effects.shadow_offset_y = self.effects.shadow_offset_y.clamp(-2_048.0, 2_048.0);
-        self
+        Ok(self)
     }
 
     /// Scales document-pixel typography values for a higher-resolution raster.

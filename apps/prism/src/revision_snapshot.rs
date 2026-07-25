@@ -62,6 +62,13 @@ impl PreparedSnapshot {
     }
 
     fn encode(mut portable: Document, compressed: bool, assets: Vec<Asset>) -> Result<Self> {
+        let shaped_text_schema = portable.layers.iter().any(|layer| {
+            matches!(
+                &layer.kind,
+                LayerKind::Text { typography, .. }
+                    if typography.shaping.engine == crate::TextShapingEngine::HarfBuzzV1
+            )
+        });
         let color_selection_schema = portable
             .selection
             .as_ref()
@@ -90,7 +97,9 @@ impl PreparedSnapshot {
         let raster_pixel_mask_schema = portable.layers.iter().any(|layer| {
             matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some()
         });
-        let snapshot_version = if raster_pixel_mask_schema {
+        let snapshot_version = if shaped_text_schema {
+            SHAPED_TEXT_SNAPSHOT_VERSION
+        } else if raster_pixel_mask_schema {
             RASTER_PIXEL_MASK_SNAPSHOT_VERSION
         } else if dissolve_schema {
             DISSOLVE_SNAPSHOT_VERSION
@@ -164,7 +173,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | PATH_SNAPSHOT_VERSION
             | PAINT_SNAPSHOT_VERSION
             | DISSOLVE_SNAPSHOT_VERSION
-            | RASTER_PIXEL_MASK_SNAPSHOT_VERSION,
+            | RASTER_PIXEL_MASK_SNAPSHOT_VERSION
+            | SHAPED_TEXT_SNAPSHOT_VERSION,
             true,
             false,
         ) => bounded_snapshot_bytes(&payload.bytes),
@@ -175,7 +185,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | PATH_SNAPSHOT_VERSION
             | PAINT_SNAPSHOT_VERSION
             | DISSOLVE_SNAPSHOT_VERSION
-            | RASTER_PIXEL_MASK_SNAPSHOT_VERSION,
+            | RASTER_PIXEL_MASK_SNAPSHOT_VERSION
+            | SHAPED_TEXT_SNAPSHOT_VERSION,
             false,
             true,
         ) => inflate_snapshot(&payload.bytes),

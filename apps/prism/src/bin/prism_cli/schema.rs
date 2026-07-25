@@ -37,7 +37,8 @@ pub(super) fn schema() -> Value {
             "lasso_operations_version": 9,
             "document_lifecycle_operations_version": 10,
             "dissolve_operations_version": 11,
-            "raster_pixel_mask_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "raster_pixel_mask_operations_version": 12,
+            "shaped_text_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "document_lifecycle": {
@@ -131,6 +132,16 @@ pub(super) fn schema() -> Value {
             "history": "each completed Selection-tool drag, lasso drag, magic wand click, clear, fill, delete, or crop is one command and one durable revision"
         },
         "typography": {
+            "layout_engines": ["legacy-v1", "harfbuzz-v1"],
+            "new_text_default": "harfbuzz-v1; existing text with no shaping field remains legacy-v1 pixel-exact",
+            "cli": "add-text accepts --layout <legacy-v1|harfbuzz-v1> [--language <BCP47>]; typography <layer> upgrades or changes the same durable policy",
+            "harfbuzz_v1_policy": {
+                "engine": "bundled in-process HarfBuzz 8.2.2 with default OpenType features and default variation axes",
+                "unicode_data": {"bidi": "16.0", "line_break": "15.0", "grapheme": "17.0", "script": "17.0"},
+                "language": "canonical BCP-47; omitted or und resolves deterministically to und",
+                "fallback": "whole extended grapheme clusters resolve against the exact primary font snapshot, then bundled Ubuntu Light; operating-system fonts and locale are never consulted",
+                "rasterization": "glyph IDs are rasterized from indexed ttf-parser outlines through tiny-skia"
+            },
             "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot and transactionally embeds those exact bytes as a content-addressed project asset; installable, editable, preview/print, and restricted embedding classes, including bitmap-only flags, import directly for local text, while malformed, unparseable, oversized, or unsafe sources fail closed; Windows final-handle proof rejects junction and 8.3 aliases unless the normalized handle path exactly matches",
             "source_snapshot": "font-source <font-id> reads one full-font blob directly from an immutable SQLite view that ignores live caches and recovery sidecars, verifies its deterministic SHA-256 identity and embedding metadata, and reports proof without modifying the project; --session is rejected",
             "subset_plan": "font-subset-plan <font-id> immutably replays the current document, derives exact Unicode and per-line shaping requirements, runs the fail-closed in-process candidate in memory, and reports deterministic candidate identity/reduction or blockers without emitting bytes or modifying the project; --session is rejected",
@@ -150,7 +161,7 @@ pub(super) fn schema() -> Value {
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
-            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed",
+            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed; v7 preserves raster pixel masks; v8 preserves HarfBuzzV1 text",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
         "color": "RRGGBB or RRGGBBAA",
@@ -195,7 +206,7 @@ fn command_examples() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn schema_advertises_dissolve_v11_and_raster_pixel_mask_v12() {
+    fn schema_advertises_dissolve_v11_raster_masks_v12_and_shaped_text_v13() {
         let schema = super::schema();
         assert_eq!(
             schema["command_protocol"]["dissolve_operations_version"],
@@ -206,8 +217,16 @@ mod tests {
             12
         );
         assert_eq!(
+            schema["command_protocol"]["shaped_text_operations_version"],
+            13
+        );
+        assert_eq!(
             schema["command_protocol"]["supported_operation_versions"],
-            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+        );
+        assert_eq!(
+            schema["typography"]["harfbuzz_v1_policy"]["engine"],
+            "bundled in-process HarfBuzz 8.2.2 with default OpenType features and default variation axes"
         );
     }
 }

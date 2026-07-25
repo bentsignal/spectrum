@@ -242,6 +242,10 @@ fn typography_cli_parses_face_paragraph_and_effect_controls() {
         "700",
         "--style",
         "Bold",
+        "--layout",
+        "harfbuzz-v1",
+        "--language",
+        "iw-IL",
         "--align",
         "right",
         "--line-height",
@@ -265,12 +269,62 @@ fn typography_cli_parses_face_paragraph_and_effect_controls() {
     assert_eq!(arguments.family.as_deref(), Some("Hack"));
     assert_eq!(arguments.weight, Some(700));
     assert_eq!(arguments.style.as_deref(), Some("Bold"));
+    assert_eq!(
+        arguments.layout,
+        Some(typography::CliTextLayout::HarfbuzzV1)
+    );
+    assert_eq!(arguments.language.as_deref(), Some("iw-IL"));
     assert_eq!(arguments.line_height, Some(0.8));
     assert_eq!(arguments.tracking, Some(-2.0));
     assert_eq!(arguments.box_width, Some(420.0));
     assert_eq!(arguments.outline_width, Some(2.0));
     assert_eq!(arguments.shadow_x, Some(4.0));
     assert_eq!(arguments.shadow_y, Some(6.0));
+}
+
+#[test]
+fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_downgrade() {
+    let project = temporary_project("shaped-text-cli");
+    let project_arg = project.to_str().unwrap();
+    for arguments in [
+        vec!["init", "Shaped CLI", "--width", "320", "--height", "180"],
+        vec!["add-text", "office العربية", "--language", "iw-IL"],
+    ] {
+        let mut cli = vec!["prism", "--project", project_arg];
+        cli.extend(arguments);
+        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+    }
+    let document = Workspace::load_read_only(&project).unwrap();
+    let prism_core::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind else {
+        panic!("CLI did not create text");
+    };
+    assert_eq!(
+        typography.shaping.engine,
+        prism_core::TextShapingEngine::HarfBuzzV1
+    );
+    assert_eq!(typography.shaping.language.as_deref(), Some("he-IL"));
+
+    run(Cli::try_parse_from([
+        "prism",
+        "--project",
+        project_arg,
+        "typography",
+        "1",
+        "--layout",
+        "legacy-v1",
+    ])
+    .unwrap())
+    .unwrap();
+    let document = Workspace::load_read_only(&project).unwrap();
+    let prism_core::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind else {
+        panic!("CLI text disappeared");
+    };
+    assert_eq!(
+        typography.shaping.engine,
+        prism_core::TextShapingEngine::LegacyCharV1
+    );
+    assert_eq!(typography.shaping.language, None);
+    std::fs::remove_file(project).unwrap();
 }
 
 #[test]
@@ -301,6 +355,7 @@ fn bundled_font_output_is_truthful_and_legacy_family_automation_remains_compatib
             color: [255; 4],
             x: 0.0,
             y: 0.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let output = typography::font_list(&workspace.document, None);
@@ -398,6 +453,7 @@ fn durable_font_subset_plan_replays_tail_text_without_writes() {
             color: [255; 4],
             x: 20.0,
             y: 30.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let layer_id = workspace.document.selected.unwrap();
@@ -672,6 +728,7 @@ fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
             color: [255, 255, 255, 255],
             x: 20.0,
             y: 30.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let layer_id = source_workspace.document.selected.unwrap();

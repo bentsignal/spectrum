@@ -1,23 +1,30 @@
+//! RAII boundary around the pinned bundled HarfBuzz C API.
+
 use std::{
+    collections::BTreeSet,
     ffi::{CStr, c_char},
     ptr, slice,
     str::FromStr,
 };
 
 use hb_subset::{Blob, FontFace, Language, sys};
+use sha2::{Digest, Sha256};
 use ttf_parser::Face;
 
 use super::{
     GlyphFlags, MAX_SHAPE_GLYPHS, OpenTypeFeature, Script, ShapeRequest, ShapedGlyph, ShapedRun,
-    TextDirection, validate_request,
+    TextDirection, VariationCoordinate, validate_request,
 };
 use crate::ShapeError;
 
 pub(super) struct NativeShaper<'font> {
-    _face: FontFace<'font>,
-    font: HbFont,
+    face: FontFace<'font>,
     face_index: u32,
     units_per_em: u16,
+    ascender: i16,
+    descender: i16,
+    line_gap: i16,
+    face_identity: [u8; 32],
     glyph_count: u32,
 }
 
@@ -31,6 +38,9 @@ impl<'font> NativeShaper<'font> {
         let parsed = Face::parse(bytes, face_index)
             .map_err(|_| ShapeError::new("font face is not valid OpenType data"))?;
         let units_per_em = parsed.units_per_em();
+        let ascender = parsed.ascender();
+        let descender = parsed.descender();
+        let line_gap = parsed.line_gap();
         let parsed_glyph_count = u32::from(parsed.number_of_glyphs());
         if parsed_glyph_count == 0 {
             return Err(ShapeError::new("font face contains no glyphs"));
@@ -53,12 +63,18 @@ impl<'font> NativeShaper<'font> {
                 "font parsers disagree about face units-per-em",
             ));
         }
-        let font = HbFont::new(&face, units_per_em)?;
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        hasher.update(face_index.to_be_bytes());
+        let face_identity = hasher.finalize().into();
         Ok(Self {
-            _face: face,
-            font,
+            face,
             face_index,
             units_per_em,
+            ascender,
+            descender,
+            line_gap,
+            face_identity,
             glyph_count: parsed_glyph_count,
         })
     }
@@ -74,11 +90,18 @@ impl<'font> NativeShaper<'font> {
     pub(super) fn shape(&self, request: &ShapeRequest<'_>) -> Result<ShapedRun, ShapeError> {
         validate_request(request)?;
         let text = request.text();
+        let item = request.selected_item_range();
         let text_length =
             i32::try_from(text.len()).map_err(|_| ShapeError::new("shaping text is too long"))?;
-        let scalar_count = u32::try_from(text.chars().count())
+        let item_start = u32::try_from(item.start)
+            .map_err(|_| ShapeError::new("shaping item start is out of range"))?;
+        let item_length = i32::try_from(item.end - item.start)
+            .map_err(|_| ShapeError::new("shaping item length is out of range"))?;
+        let scalar_count = u32::try_from(text[item.clone()].chars().count())
             .map_err(|_| ShapeError::new("shaping scalar count is out of range"))?;
         let buffer = HbBuffer::new()?;
+        let font = HbFont::new(&self.face, self.units_per_em)?;
+        font.set_variations(request.variation_coordinates())?;
         let language_text = request.requested_language().unwrap_or("und");
         let language = Language::from_str(language_text)
             .map_err(|_| ShapeError::new("could not intern shaping language"))?;
@@ -105,8 +128,8 @@ impl<'font> NativeShaper<'font> {
                 buffer.0,
                 text.as_ptr().cast::<c_char>(),
                 text_length,
-                0,
-                text_length,
+                item_start,
+                item_length,
             );
             if sys::hb_buffer_allocation_successful(buffer.0) == 0 {
                 return Err(ShapeError::new("HarfBuzz could not allocate shaping input"));
@@ -127,7 +150,7 @@ impl<'font> NativeShaper<'font> {
                 raw_features.as_ptr()
             };
             sys::hb_shape(
-                self.font.0,
+                font.0,
                 buffer.0,
                 features,
                 u32::try_from(raw_features.len())
@@ -143,7 +166,7 @@ impl<'font> NativeShaper<'font> {
         let direction = resolved_direction(unsafe { sys::hb_buffer_get_direction(buffer.0) })?;
         let script = resolved_script(unsafe { sys::hb_buffer_get_script(buffer.0) });
         let language = resolved_language(unsafe { sys::hb_buffer_get_language(buffer.0) })?;
-        let glyphs = self.read_glyphs(&buffer, text)?;
+        let glyphs = self.read_glyphs(&buffer, text, item.clone())?;
         Ok(ShapedRun {
             glyphs,
             direction,
@@ -153,13 +176,25 @@ impl<'font> NativeShaper<'font> {
             script_was_guessed: request.requested_script().is_none(),
             language_was_defaulted: request.requested_language().is_none(),
             units_per_em: self.units_per_em,
+            ascender: self.ascender,
+            descender: self.descender,
+            line_gap: self.line_gap,
             face_index: self.face_index,
+            face_identity: self.face_identity,
             source_text_bytes: u32::try_from(text.len())
                 .map_err(|_| ShapeError::new("shaping text is too long"))?,
+            item_start,
+            item_end: u32::try_from(item.end)
+                .map_err(|_| ShapeError::new("shaping item end is out of range"))?,
         })
     }
 
-    fn read_glyphs(&self, buffer: &HbBuffer, text: &str) -> Result<Vec<ShapedGlyph>, ShapeError> {
+    fn read_glyphs(
+        &self,
+        buffer: &HbBuffer,
+        text: &str,
+        item: std::ops::Range<usize>,
+    ) -> Result<Vec<ShapedGlyph>, ShapeError> {
         unsafe {
             let mut info_length = 0_u32;
             let infos = sys::hb_buffer_get_glyph_infos(buffer.0, &mut info_length);
@@ -176,6 +211,15 @@ impl<'font> NativeShaper<'font> {
             }
             let infos = slice::from_raw_parts(infos, length);
             let positions = slice::from_raw_parts(positions, length);
+            let mut cluster_boundaries = infos
+                .iter()
+                .map(|info| info.cluster)
+                .collect::<BTreeSet<_>>();
+            cluster_boundaries.insert(
+                u32::try_from(item.end)
+                    .map_err(|_| ShapeError::new("shaping item end is out of range"))?,
+            );
+            let cluster_boundaries = cluster_boundaries.into_iter().collect::<Vec<_>>();
             infos
                 .iter()
                 .zip(positions)
@@ -189,14 +233,25 @@ impl<'font> NativeShaper<'font> {
                     }
                     let cluster = usize::try_from(info.cluster)
                         .map_err(|_| ShapeError::new("shaping cluster is out of range"))?;
-                    if cluster >= text.len() || !text.is_char_boundary(cluster) {
+                    if cluster < item.start
+                        || cluster >= item.end
+                        || !text.is_char_boundary(cluster)
+                    {
                         return Err(ShapeError::new(
                             "shaping produced an invalid UTF-8 byte cluster",
                         ));
                     }
+                    let cluster_end = cluster_boundaries
+                        .iter()
+                        .copied()
+                        .find(|boundary| *boundary > info.cluster)
+                        .ok_or_else(|| {
+                            ShapeError::new("shaping produced an unterminated source cluster")
+                        })?;
                     Ok(ShapedGlyph {
                         glyph_id,
                         cluster: info.cluster,
+                        cluster_end,
                         flags: GlyphFlags::from_bits(
                             sys::hb_glyph_info_get_glyph_flags(info) as u32
                         )?,
@@ -300,6 +355,31 @@ impl HbFont {
             sys::hb_font_set_scale(font.0, scale, scale);
         }
         Ok(font)
+    }
+
+    fn set_variations(&self, coordinates: &[VariationCoordinate]) -> Result<(), ShapeError> {
+        let raw = coordinates
+            .iter()
+            .copied()
+            .map(|coordinate| sys::hb_variation_t {
+                tag: u32::from_be_bytes(coordinate.tag()),
+                value: coordinate.value(),
+            })
+            .collect::<Vec<_>>();
+        let length = u32::try_from(raw.len())
+            .map_err(|_| ShapeError::new("variable-font coordinate count is out of range"))?;
+        unsafe {
+            sys::hb_font_set_variations(
+                self.0,
+                if raw.is_empty() {
+                    ptr::null()
+                } else {
+                    raw.as_ptr()
+                },
+                length,
+            );
+        }
+        Ok(())
     }
 }
 

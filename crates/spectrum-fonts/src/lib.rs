@@ -24,8 +24,8 @@ use hb_subset::{Blob, Flags, FontFace, SubsetInput};
 pub use error::{ShapeError, SubsetError};
 pub use shaping::{
     GlyphFlags, HarfBuzzShaper, MAX_SHAPE_FEATURES, MAX_SHAPE_GLYPHS, MAX_SHAPE_SCALARS,
-    MAX_SHAPE_TEXT_BYTES, OpenTypeFeature, Script, ShapeRequest, ShapedGlyph, ShapedRun,
-    TextDirection, TextShaper,
+    MAX_SHAPE_TEXT_BYTES, MAX_VARIATION_COORDINATES, OpenTypeFeature, Script, ShapeRequest,
+    ShapedGlyph, ShapedRun, TextDirection, TextShaper, VariationCoordinate,
 };
 
 /// One cmap format 14 base/selector mapping requested from the candidate engine.

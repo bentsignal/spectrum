@@ -878,3 +878,7 @@ impl SourceIdentity {
 #[cfg(test)]
 #[path = "optimized_copy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "optimized_copy_publish_tests.rs"]
+mod publish_tests;

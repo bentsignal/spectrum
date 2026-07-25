@@ -6,9 +6,9 @@ use std::{
 
 use crate::{
     Command, Document, FontAsset, FontEmbeddingPermission, FontSourceSnapshot, LayerKind,
-    TextAlignment, TextEffects, TextTypography, Workspace, analyze_all_font_usage,
-    analyze_font_usage, font_usage, render_document, render_layer_base_scaled_with_font,
-    save_document,
+    TextAlignment, TextEffects, TextShaping, TextShapingEngine, TextTypography, Workspace,
+    analyze_all_font_usage, analyze_font_usage, font_usage, render_document,
+    render_layer_base_scaled_with_font, save_document,
 };
 
 fn test_directory(label: &str) -> PathBuf {
@@ -60,6 +60,140 @@ fn old_text_json_migrates_without_losing_guides_or_text() {
 }
 
 #[test]
+fn shaping_policy_is_versioned_canonical_and_legacy_json_stays_unchanged() {
+    let legacy = TextTypography::default();
+    let legacy_json = serde_json::to_value(&legacy).unwrap();
+    assert!(
+        legacy_json.get("shaping").is_none(),
+        "legacy typography must not introduce a new serialized field"
+    );
+    assert_eq!(
+        serde_json::from_value::<TextTypography>(legacy_json).unwrap(),
+        legacy
+    );
+
+    let canonical = TextShaping::harfbuzz_v1(Some("iw-IL")).unwrap();
+    assert_eq!(canonical.engine, TextShapingEngine::HarfBuzzV1);
+    assert_eq!(canonical.language.as_deref(), Some("he-IL"));
+    assert_eq!(
+        TextShaping::harfbuzz_v1(Some("und")).unwrap().language,
+        None
+    );
+    assert!(TextShaping::harfbuzz_v1(Some("en--US")).is_err());
+    assert!(
+        TextTypography {
+            shaping: TextShaping {
+                engine: TextShapingEngine::LegacyCharV1,
+                language: Some("en".into()),
+            },
+            ..Default::default()
+        }
+        .validated_and_sanitized()
+        .is_err()
+    );
+
+    let command = Command::AddText {
+        text: "Legacy".into(),
+        name: None,
+        font_size: 12.0,
+        color: [255; 4],
+        x: 0.0,
+        y: 0.0,
+        shaping: TextShaping::default(),
+    };
+    assert!(
+        serde_json::to_value(command)
+            .unwrap()
+            .get("shaping")
+            .is_none(),
+        "legacy AddText operation bytes remain schema-compatible"
+    );
+
+    let mut forged = Document::new("Forged", 40, 40);
+    forged.version = 9;
+    forged.layers.push(crate::Layer {
+        id: 1,
+        kind: LayerKind::Text {
+            text: "new policy in old envelope".into(),
+            font_size: 12.0,
+            color: [255; 4],
+            typography: TextTypography {
+                shaping: TextShaping::harfbuzz_v1(None).unwrap(),
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    });
+    assert!(
+        forged
+            .migrate()
+            .unwrap_err()
+            .to_string()
+            .contains("version 9")
+    );
+}
+
+#[test]
+fn shaped_text_uses_v10_snapshot_and_v13_operations_and_replays_exactly() {
+    let directory = test_directory("shaped-envelopes");
+    fs::create_dir_all(&directory).unwrap();
+    let project = directory.join("shaped.prism");
+    let mut workspace = Workspace::create_durable(
+        Document::new("Shaped", 420, 240),
+        &project,
+        test_actor(),
+        spectrum_revisions::SessionId::new(),
+    )
+    .unwrap();
+    workspace
+        .execute(Command::AddText {
+            text: "office العربية A\u{301}V".into(),
+            name: None,
+            font_size: 44.0,
+            color: [240, 225, 205, 255],
+            x: 20.0,
+            y: 30.0,
+            shaping: TextShaping::harfbuzz_v1(Some("ar")).unwrap(),
+        })
+        .unwrap();
+    let text_id = workspace.document.selected.unwrap();
+    for index in 0..99 {
+        workspace
+            .execute(Command::RenameLayer {
+                id: text_id,
+                name: format!("Shaped {index}"),
+            })
+            .unwrap();
+    }
+    let expected = workspace.document.clone();
+    workspace.save(None).unwrap();
+    drop(workspace);
+
+    let connection = rusqlite::Connection::open(&project).unwrap();
+    let operation_version: u32 = connection
+        .query_row(
+            "SELECT version FROM operation_payloads WHERE instr(CAST(bytes AS TEXT), 'add_text') > 0 LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let shaped_snapshots: u32 = connection
+        .query_row(
+            "SELECT count(*) FROM snapshots WHERE version = 10",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(operation_version, 13);
+    assert_eq!(shaped_snapshots, 1);
+    drop(connection);
+
+    let reopened = Workspace::open(&project).unwrap();
+    assert_eq!(reopened.document, expected);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn imported_font_and_typography_round_trip_inside_durable_project() {
     let directory = test_directory("portable-font");
     fs::create_dir_all(&directory).unwrap();
@@ -95,6 +229,7 @@ fn imported_font_and_typography_round_trip_inside_durable_project() {
             color: [240, 220, 180, 255],
             x: 30.0,
             y: 40.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let layer_id = workspace.document.selected.unwrap();
@@ -405,6 +540,7 @@ fn assert_font_permission_round_trip(
             color: [255; 4],
             x: 30.0,
             y: 40.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let layer_id = workspace.document.selected.unwrap();
@@ -595,6 +731,7 @@ fn typography_command_rejects_unknown_font_ids_and_sanitizes_metrics() {
             color: [255; 4],
             x: 0.0,
             y: 0.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let id = workspace.document.selected.unwrap();
@@ -651,6 +788,7 @@ fn imported_font_id_changes_shared_preview_and_export_pixels() {
             color: [238, 214, 151, 255],
             x: 24.0,
             y: 20.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let layer_id = workspace.document.selected.unwrap();
@@ -663,6 +801,7 @@ fn imported_font_id_changes_shared_preview_and_export_pixels() {
                 line_height: 1.45,
                 tracking: 2.0,
                 box_width: Some(360.0),
+                shaping: Default::default(),
                 effects: TextEffects {
                     outline_width: 2.0,
                     shadow_offset_x: 5.0,
@@ -719,6 +858,7 @@ fn font_usage_analysis_is_sorted_deduplicated_and_non_mutating() {
                 color: [255; 4],
                 x: 0.0,
                 y: 0.0,
+                shaping: Default::default(),
             })
             .unwrap();
         let id = workspace.document.selected.unwrap();

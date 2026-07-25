@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use prism_core::{
     BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
     LayerStyle, RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment, TextEffects,
-    TextTypography, Transform, Workspace, region_source_scales, render_document,
+    TextShaping, TextTypography, Transform, Workspace, region_source_scales, render_document,
     render_document_region_scaled, render_document_region_scaled_with_sources_and_stats,
     render_document_region_scaled_with_stats, render_layer_base_scaled,
     render_layer_base_scaled_with_font, render_solid_color,
@@ -174,6 +174,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         color: [255, 255, 255, 255],
         x: 100.0,
         y: 100.0,
+        shaping: Default::default(),
     })?;
     let text_layer = text_workspace.document.selected.unwrap();
     text_workspace.begin_interaction();
@@ -239,6 +240,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
                 line_height: 1.35,
                 tracking: 2.0,
                 box_width: Some(720.0),
+                shaping: TextShaping::harfbuzz_v1(Some("en"))?,
                 effects: TextEffects {
                     outline_width: 2.0,
                     shadow_offset_x: 4.0,
@@ -801,7 +803,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: paint.drag_preview_p95_ms <= profile.brush_drag_preview_budget_ms(),
         },
         BenchmarkMetric {
-            name: "portable_typography_effect_raster",
+            name: "portable_harfbuzz_v1_typography_effect_raster",
             median_ms: typography_median,
             p95_ms: typography_p95,
             budget_ms: 75.0,

@@ -105,6 +105,7 @@ fn style_and_fill_commands_validate_layer_kind_and_undo_separately() {
             color: [255; 4],
             x: 0.0,
             y: 0.0,
+            shaping: Default::default(),
         })
         .unwrap();
     assert!(

@@ -498,6 +498,7 @@ fn imported_typography_effect_region_matches_rotated_export_crop() {
                 line_height: 1.55,
                 tracking: 2.5,
                 box_width: Some(330.0),
+                shaping: Default::default(),
                 effects: TextEffects {
                     outline_width: 3.0,
                     outline_color: [26, 41, 66, 220],

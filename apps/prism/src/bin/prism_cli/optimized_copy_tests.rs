@@ -67,6 +67,7 @@ fn optimized_copy_cli_dispatches_end_to_end_without_mutating_the_source() {
             color: [255; 4],
             x: 4.0,
             y: 4.0,
+            shaping: Default::default(),
         })
         .unwrap();
     workspace
