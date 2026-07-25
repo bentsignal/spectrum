@@ -242,9 +242,18 @@ fn synchronized_visual_stop_color(
     cached
         .filter(|state| state.srgba == srgba)
         .unwrap_or_else(|| VisualStopColorState {
-            hsva: egui::ecolor::Hsva::from_srgba_unmultiplied(srgba),
+            hsva: hsva_from_straight_srgba(srgba),
             srgba,
         })
+}
+
+fn hsva_from_straight_srgba([red, green, blue, alpha]: [u8; 4]) -> egui::ecolor::Hsva {
+    egui::ecolor::Hsva::from_rgba_unmultiplied(
+        egui::ecolor::linear_f32_from_gamma_u8(red),
+        egui::ecolor::linear_f32_from_gamma_u8(green),
+        egui::ecolor::linear_f32_from_gamma_u8(blue),
+        egui::ecolor::linear_f32_from_linear_u8(alpha),
+    )
 }
 
 impl VisualStopColorState {
@@ -252,7 +261,7 @@ impl VisualStopColorState {
         if channel == 3 {
             self.hsva.a = f32::from(srgba[3]) / 255.0;
         } else {
-            self.hsva = egui::ecolor::Hsva::from_srgba_unmultiplied(srgba);
+            self.hsva = hsva_from_straight_srgba(srgba);
         }
         self.srgba = srgba;
     }
@@ -424,9 +433,39 @@ mod tests {
     #[test]
     fn visual_picker_alpha_edits_preserve_straight_rgb_bytes() {
         let color = [68, 180, 211, 180];
-        let mut visual = egui::ecolor::Hsva::from_srgba_unmultiplied(color);
+        let mut visual = hsva_from_straight_srgba(color);
         visual.a = 128.0 / 255.0;
         assert_eq!(visual.to_srgba_unmultiplied(), [68, 180, 211, 128]);
+    }
+
+    #[test]
+    fn visual_picker_preserves_hidden_straight_rgb_at_zero_and_low_alpha() {
+        for alpha in [0, 1, 2, 8] {
+            let color = [17, 33, 91, alpha];
+            let state = synchronized_visual_stop_color(None, color);
+            assert_eq!(state.srgba, color);
+            assert_eq!(
+                state.hsva.to_srgba_unmultiplied(),
+                color,
+                "opening the popup must not premultiply hidden RGB at alpha {alpha}"
+            );
+        }
+    }
+
+    #[test]
+    fn transparent_exact_alpha_then_spectrum_edit_keeps_the_hidden_color_basis() {
+        let transparent = [17, 33, 91, 0];
+        let mut state = synchronized_visual_stop_color(None, transparent);
+        assert!(state.hsva.v > 0.0, "transparent blue must not become black");
+
+        state.synchronize_exact_channel([17, 33, 91, 96], 3);
+        assert_eq!(state.hsva.to_srgba_unmultiplied(), [17, 33, 91, 96]);
+
+        state.hsva.h = (state.hsva.h + 0.125).fract();
+        let spectrum_edit = state.hsva.to_srgba_unmultiplied();
+        assert_eq!(spectrum_edit[3], 96);
+        assert_ne!(&spectrum_edit[..3], &[0, 0, 0]);
+        assert_eq!(spectrum_edit.iter().take(3).copied().max(), Some(91));
     }
 
     #[test]
