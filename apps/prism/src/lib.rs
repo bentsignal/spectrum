@@ -1,7 +1,6 @@
 //! Prism's command-driven layered document engine.
 
 use std::{
-    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -85,18 +84,27 @@ pub use paths::{
     PathSourceBounds, VectorMask, apply_vector_mask_to_image, path_source_bounds,
 };
 
+mod document_export;
+mod export_sources;
 mod paint;
 mod paint_render;
 mod paint_selection;
+mod raster_requirements;
 mod sampled_source;
 mod sampled_source_portable;
 mod sampled_stroke;
+pub use document_export::{export_document, export_document_with_sources};
+pub use export_sources::{
+    PreparedRasterSources, default_raster_backing_cache_root, prepare_export_raster_sources,
+    raster_backing_cache_root,
+};
 pub use paint::{
     BRUSH_PROGRAM_VERSION, BrushClip, BrushMode, BrushProgram, BrushSample, BrushStroke,
     BrushStyle, MAX_BRUSH_CLIP_BYTES_PER_PROGRAM, MAX_BRUSH_DABS_PER_PROGRAM,
     MAX_BRUSH_DABS_PER_STROKE, MAX_BRUSH_SAMPLES_PER_DOCUMENT, MAX_BRUSH_SAMPLES_PER_STROKE,
     MAX_BRUSH_STROKES_PER_LAYER, MAX_PAINT_REGION_PIXELS,
 };
+pub use raster_requirements::RasterAssetRequirement;
 pub use sampled_source::{
     MAX_SAMPLED_SOURCE_INLINE_MASK_BYTES, MAX_SAMPLED_SOURCE_METADATA_BYTES,
     MAX_SAMPLED_SOURCES_PER_DOCUMENT, SAMPLED_SOURCE_VERSION, SampledSourceId,
@@ -471,33 +479,6 @@ impl Document {
         typography.font_id.and_then(|id| self.font_asset(id).ok())
     }
 
-    pub fn raster_asset_paths(&self) -> Vec<PathBuf> {
-        let mut paths = BTreeSet::new();
-        for layer in &self.layers {
-            match &layer.kind {
-                LayerKind::Raster { path, .. } if layer.visible && layer.opacity > 0.0 => {
-                    paths.insert(path.clone());
-                }
-                LayerKind::Paint { program } if layer.visible && layer.opacity > 0.0 => {
-                    program.for_each_sampled_source_id(|source_id| {
-                        if let Some(source) = self.sampled_sources.get(source_id) {
-                            paths.insert(source.path.clone());
-                        }
-                    });
-                }
-                _ => {}
-            }
-        }
-        if let Some(source) = self
-            .clone_source
-            .as_ref()
-            .and_then(|source_id| self.sampled_sources.get(source_id))
-        {
-            paths.insert(source.path.clone());
-        }
-        paths.into_iter().collect()
-    }
-
     pub fn sampled_source(&self, id: &SampledSourceId) -> Result<&SampledSourceSnapshot> {
         self.sampled_sources
             .get(id)
@@ -853,10 +834,11 @@ pub use raster_region::{RasterRegionInspection, inspect_raster_region_source};
 pub use raster_sources::{RasterSourceEpoch, RasterSourceResolver, ResolvedRasterSource};
 pub use render::{
     RegionRenderStats, RenderRegion, document_supports_region_native_zoom,
-    document_supports_region_native_zoom_with_sources, export_document, load_document,
-    render_document, render_document_region_scaled, render_document_region_scaled_with_sources,
+    document_supports_region_native_zoom_with_sources, load_document, render_document,
+    render_document_region_scaled, render_document_region_scaled_with_sources,
     render_document_region_scaled_with_sources_and_stats, render_document_region_scaled_with_stats,
-    render_document_scaled, render_document_thumbnail, render_layer_base, render_layer_base_scaled,
+    render_document_scaled, render_document_scaled_with_sources, render_document_thumbnail,
+    render_document_with_sources, render_layer_base, render_layer_base_scaled,
     render_layer_base_scaled_with_font, render_layer_preview, render_layer_preview_from_base,
     render_layer_preview_scaled, render_layer_preview_scaled_with_font, render_solid_color,
     save_document,

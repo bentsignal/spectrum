@@ -918,3 +918,6 @@ fn local_to_document(local: [f32; 2], dimensions: (u32, u32), transform: Transfo
         transform.y + center[1] + dx * sin + dy * cos,
     ]
 }
+
+#[path = "clone_stamp_followup_tests.rs"]
+mod followup_tests;

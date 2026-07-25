@@ -1,11 +1,10 @@
 use std::{
     fs,
-    io::BufWriter,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
-use image::{DynamicImage, GenericImageView, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
+use image::{DynamicImage, GenericImageView, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
 use crate::{
@@ -164,6 +163,18 @@ pub fn render_document(document: &Document, max_size: Option<u32>) -> Result<Dyn
     render_document_scaled(document, scale)
 }
 
+pub fn render_document_with_sources(
+    document: &Document,
+    max_size: Option<u32>,
+    raster_sources: &dyn RasterSourceResolver,
+) -> Result<DynamicImage> {
+    let longest = document.width.max(document.height) as f32;
+    let scale = max_size
+        .filter(|size| *size > 0)
+        .map_or(1.0, |size| (size as f32 / longest).min(1.0));
+    render_document_scaled_with_sources(document, scale, raster_sources)
+}
+
 /// A physical-pixel subregion of a scaled Prism document.
 ///
 /// Interactive clients use regions to keep preview allocation proportional to
@@ -228,6 +239,30 @@ pub fn render_document_scaled(document: &Document, scale: f32) -> Result<Dynamic
         },
         false,
         None,
+        &mut RegionRenderStats::default(),
+    )
+}
+
+pub fn render_document_scaled_with_sources(
+    document: &Document,
+    scale: f32,
+    raster_sources: &dyn RasterSourceResolver,
+) -> Result<DynamicImage> {
+    let (canvas_width, canvas_height) = scaled_document_dimensions(document, scale)?;
+    if canvas_width > crate::MAX_CANVAS_DIMENSION || canvas_height > crate::MAX_CANVAS_DIMENSION {
+        bail!("scaled document exceeds Prism's maximum canvas dimension");
+    }
+    render_document_region_scaled_impl(
+        document,
+        scale,
+        RenderRegion {
+            x: 0,
+            y: 0,
+            width: canvas_width,
+            height: canvas_height,
+        },
+        false,
+        Some(raster_sources),
         &mut RegionRenderStats::default(),
     )
 }
@@ -364,7 +399,8 @@ pub(super) fn render_document_region_scaled_untiled(
         // complete exports. Rasterizing a full intermediate here would put AA
         // through a second transform and could differ at viewport tile edges.
         if (bound_fallback_layers
-            || matches!(layer.kind, LayerKind::Path { .. } | LayerKind::Paint { .. }))
+            || matches!(layer.kind, LayerKind::Path { .. } | LayerKind::Paint { .. })
+            || (raster_sources.is_some() && matches!(layer.kind, LayerKind::Raster { .. })))
             && crate::render_region::composite_bounded_source_region(
                 &mut canvas,
                 &mut coverage,
@@ -871,83 +907,6 @@ pub(crate) fn composite_blended_pixel(
     }
     output[3] = (output_alpha * 255.0).round() as u8;
     canvas.put_pixel(x, y, Rgba(output));
-}
-
-pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
-    }
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if !matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
-        bail!("export path must end in .png, .jpg, or .jpeg");
-    }
-    let destination = if path.exists() {
-        fs::canonicalize(path)?
-    } else {
-        let parent = fs::canonicalize(
-            path.parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new(".")),
-        )?;
-        parent.join(path.file_name().context("export path needs a file name")?)
-    };
-    for layer in &document.layers {
-        if let LayerKind::Raster {
-            path: source,
-            original_path,
-        } = &layer.kind
-        {
-            let overwrites_source = fs::canonicalize(source).ok().as_ref() == Some(&destination);
-            let overwrites_original = original_path.as_ref().is_some_and(|original| {
-                fs::canonicalize(original).ok().as_ref() == Some(&destination)
-            });
-            if overwrites_source || overwrites_original {
-                bail!(
-                    "refusing to overwrite raster source {}; choose a new export path",
-                    if overwrites_original {
-                        original_path.as_ref().unwrap_or(source)
-                    } else {
-                        source
-                    }
-                    .display()
-                );
-            }
-        }
-    }
-    let image = render_document(document, None)?;
-    let file =
-        fs::File::create(path).with_context(|| format!("could not create {}", path.display()))?;
-    let writer = BufWriter::new(file);
-    match extension.as_str() {
-        "jpg" | "jpeg" => {
-            let rgb = image.to_rgb8();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(writer, quality.clamp(1, 100))
-                .write_image(
-                    &rgb,
-                    rgb.width(),
-                    rgb.height(),
-                    image::ExtendedColorType::Rgb8,
-                )?;
-        }
-        "png" => {
-            let rgba = image.to_rgba8();
-            image::codecs::png::PngEncoder::new(writer).write_image(
-                &rgba,
-                rgba.width(),
-                rgba.height(),
-                image::ExtendedColorType::Rgba8,
-            )?;
-        }
-        _ => unreachable!("extension was validated before rendering"),
-    }
-    Ok(())
 }
 
 #[cfg(test)]

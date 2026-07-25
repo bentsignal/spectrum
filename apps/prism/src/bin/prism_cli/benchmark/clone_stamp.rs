@@ -3,8 +3,8 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use prism_core::{
     BrushMode, BrushSample, BrushStroke, BrushStyle, Command, Document, Layer, LayerKind,
-    PaintSelection, RenderRegion, Workspace, preview_paint_command,
-    render_document_region_scaled_with_sources_and_stats,
+    PaintSelection, RenderRegion, Workspace, export_document_with_sources, preview_paint_command,
+    render_document_region_scaled_with_sources_and_stats, render_document_with_sources,
 };
 
 use super::raster_fixture::PreparedRasterFixture;
@@ -91,6 +91,7 @@ pub(super) fn measure() -> Result<CloneStampMeasurements> {
     if final_pixels.as_deref() != Some(final_render.to_rgba8().as_raw()) {
         bail!("live Clone Stamp release did not match its final preview pixels");
     }
+    validate_full_export(&fixture)?;
     let max_provider_region_pixels = fixture.max_region_pixels();
     if max_provider_region_pixels == 0
         || max_provider_region_pixels > u64::from(REGION_WIDTH) * u64::from(REGION_HEIGHT)
@@ -103,6 +104,92 @@ pub(super) fn measure() -> Result<CloneStampMeasurements> {
         max_provider_region_pixels,
         source_full_plane_bytes: u64::from(SOURCE_SIZE) * u64::from(SOURCE_SIZE) * 4,
     })
+}
+
+fn validate_full_export(fixture: &PreparedRasterFixture) -> Result<()> {
+    let mut document = Document::new("Large Clone export", REGION_WIDTH, REGION_HEIGHT);
+    document.background = [0; 4];
+    document.layers.push(Layer {
+        id: 1,
+        visible: false,
+        name: "16K Derived source".into(),
+        kind: LayerKind::Raster {
+            path: fixture.source_path().to_owned(),
+            original_path: None,
+        },
+        ..Layer::default()
+    });
+    document.next_id = 2;
+    let mut workspace = Workspace::new(document, None);
+    workspace.execute(Command::SetCloneSource {
+        id: 1,
+        document_x: 7_680.5,
+        document_y: 7_900.5,
+        resolved_source: None,
+    })?;
+    workspace.execute(Command::AddPaintLayerWithStroke {
+        name: Some("Clone".into()),
+        width: REGION_WIDTH,
+        height: REGION_HEIGHT,
+        stroke: BrushStroke::new(
+            BrushStyle {
+                mode: BrushMode::Paint,
+                color: [0; 4],
+                size: 180.0,
+                hardness: 0.82,
+                opacity: 1.0,
+                spacing: 0.12,
+            },
+            [
+                BrushSample {
+                    x: 310.0,
+                    y: 130.0,
+                    pressure: 1.0,
+                },
+                BrushSample {
+                    x: 430.0,
+                    y: 270.0,
+                    pressure: 1.0,
+                },
+            ],
+        )?
+        .as_current_clone()?,
+        selection: PaintSelection::None,
+    })?;
+    let export = std::env::temp_dir().join(format!(
+        "prism-strict-clone-export-{}-{}.png",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let full = render_document_with_sources(&workspace.document, None, fixture)?.to_rgba8();
+    let (region, stats) = render_document_region_scaled_with_sources_and_stats(
+        &workspace.document,
+        1.0,
+        RenderRegion {
+            x: 0,
+            y: 0,
+            width: REGION_WIDTH,
+            height: REGION_HEIGHT,
+        },
+        fixture,
+    )?;
+    if stats.fallback_decode_bytes != 0 {
+        bail!("large DerivedBacking Clone full export regressed to full-source decode");
+    }
+    let region = region.to_rgba8();
+    export_document_with_sources(&workspace.document, &export, 92, fixture)?;
+    let encoded = image::open(&export)?.to_rgba8();
+    let _ = std::fs::remove_file(export);
+    if full.dimensions() != (REGION_WIDTH, REGION_HEIGHT)
+        || !full.pixels().any(|pixel| pixel[3] > 0)
+        || full != region
+        || full != encoded
+    {
+        bail!("large DerivedBacking Clone full, region, and encoded exports were not exact");
+    }
+    Ok(())
 }
 
 fn clone_command(sample_count: usize) -> Result<Command> {

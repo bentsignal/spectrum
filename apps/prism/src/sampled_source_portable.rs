@@ -22,10 +22,6 @@ pub(crate) fn make_portable(
             source.path.display()
         )
     })?;
-    if let Ok(relative) = canonical.strip_prefix(directory) {
-        source.path = relative.to_owned();
-        return Ok(());
-    }
     fs::create_dir_all(asset_directory)?;
     let extension = canonical
         .extension()

@@ -629,6 +629,12 @@ impl BrushProgram {
             .any(|stroke| stroke.sampled_source_id().is_some())
     }
 
+    pub(crate) fn contains_current_clone_marker(&self) -> bool {
+        self.strokes
+            .iter()
+            .any(|stroke| matches!(stroke.source, Some(SampledBrushSource::CurrentClone)))
+    }
+
     pub(crate) fn for_each_sampled_source_id(&self, mut visit: impl FnMut(&SampledSourceId)) {
         for stroke in self.strokes.iter() {
             if let Some(source_id) = stroke.sampled_source_id() {

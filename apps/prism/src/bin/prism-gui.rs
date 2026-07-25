@@ -13,7 +13,7 @@ use eframe::egui::{
 use prism_core::{
     Alignment, AlignmentReference, BlendMode, Command, Document, GuideOrientation, Layer,
     LayerKind, LayerMask, LayerPreviewSchedule, ShapeStroke, TextPreviewFrameCache, Transform,
-    Workspace, export_document,
+    Workspace, export_document_with_sources,
 };
 use spectrum_imaging::AdjustmentPatch;
 
@@ -470,7 +470,13 @@ impl PrismApp {
         else {
             return;
         };
-        match export_document(&self.workspace.document, &path, 92) {
+        let raster_sources = self.raster_sources.snapshot();
+        match export_document_with_sources(
+            &self.workspace.document,
+            &path,
+            92,
+            raster_sources.as_ref(),
+        ) {
             Ok(()) => {
                 self.status = format!("Exported {}", path.display());
                 self.status_error = false;

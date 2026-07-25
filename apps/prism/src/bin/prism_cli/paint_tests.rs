@@ -45,6 +45,7 @@ fn clone_cli_captures_one_raster_source_and_commits_resolved_stroke() {
     let project = directory.join("clone.prism");
     let source = directory.join("source.png");
     let stroke = directory.join("stroke.json");
+    let export = directory.join("clone-export.png");
     let mut image = image::RgbaImage::new(8, 8);
     image.put_pixel(1, 1, image::Rgba([210, 40, 90, 255]));
     image.save(&source).unwrap();
@@ -91,6 +92,13 @@ fn clone_cli_captures_one_raster_source_and_commits_resolved_stroke() {
         .unwrap()
         .to_rgba8();
     assert_eq!(rendered.get_pixel(4, 4).0, [210, 40, 90, 255]);
+    invoke(&project, &["visibility", "1", "false"]).unwrap();
+    invoke(
+        &project,
+        &["export", export.to_str().unwrap(), "--quality", "92"],
+    )
+    .unwrap();
+    assert_eq!(image::open(export).unwrap().to_rgba8(), rendered);
 }
 
 #[test]

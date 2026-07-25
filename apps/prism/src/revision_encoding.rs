@@ -285,6 +285,9 @@ pub(super) fn validate_operations_version(
     commands: &[Command],
     encoded_version: u32,
 ) -> Result<()> {
+    if commands.iter().any(command_contains_current_clone_marker) {
+        bail!("Prism durable operations cannot contain the authoring-only CurrentClone marker");
+    }
     let required_version = operations_version(commands);
     if required_version > encoded_version {
         bail!(
@@ -292,6 +295,20 @@ pub(super) fn validate_operations_version(
         );
     }
     Ok(())
+}
+
+fn command_contains_current_clone_marker(command: &Command) -> bool {
+    match command {
+        Command::AddPaintLayerWithStroke { stroke, .. }
+        | Command::AddBrushStroke { stroke, .. } => {
+            matches!(stroke.source, Some(crate::SampledBrushSource::CurrentClone))
+        }
+        Command::InsertLayer { transfer, .. } => matches!(
+            &transfer.layer.kind,
+            crate::LayerKind::Paint { program } if program.contains_current_clone_marker()
+        ),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -375,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn authoring_clone_marker_requires_v14_and_cannot_smuggle_into_v13() {
+    fn authoring_clone_marker_is_v14_semantics_but_no_durable_envelope_accepts_it() {
         let stroke = crate::BrushStroke::new(
             crate::BrushStyle::default(),
             [crate::BrushSample {
@@ -397,7 +414,7 @@ mod tests {
             CLONE_STAMP_OPERATIONS_VERSION
         );
         assert!(validate_operations_version(&commands, SHAPED_TEXT_OPERATIONS_VERSION).is_err());
-        assert!(validate_operations_version(&commands, CLONE_STAMP_OPERATIONS_VERSION).is_ok());
+        assert!(validate_operations_version(&commands, CLONE_STAMP_OPERATIONS_VERSION).is_err());
     }
 
     #[test]
