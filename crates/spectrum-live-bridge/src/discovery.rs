@@ -100,6 +100,15 @@ impl DiscoveryDirectory {
         &self.root
     }
 
+    /// Return the authenticated local endpoint reserved for a binding.
+    ///
+    /// Applications must use this instead of reproducing platform-specific
+    /// endpoint naming. [`DiscoveryDirectory::publish`] verifies the exact
+    /// same mapping before making a binding discoverable.
+    pub fn endpoint_for(&self, binding_id: BindingId) -> EndpointAddress {
+        self.expected_endpoint(binding_id)
+    }
+
     pub fn publish(
         &self,
         mut record: DiscoveryRecord,
@@ -946,5 +955,19 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".bridge-")
         }));
+    }
+
+    #[test]
+    fn public_endpoint_mapping_is_the_mapping_publication_accepts() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("records");
+        let directory = DiscoveryDirectory::open(&root).unwrap();
+        let capability = Capability::generate().unwrap();
+        let record = record(&root, &capability);
+        let endpoint = directory.endpoint_for(record.binding_id);
+        assert_eq!(record.endpoint, endpoint);
+
+        let published = directory.publish(record, &capability).unwrap();
+        assert_eq!(published.record().endpoint, endpoint);
     }
 }
