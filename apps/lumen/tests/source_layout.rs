@@ -171,6 +171,7 @@ fn lumen_branding_is_wired_to_runtime_and_native_packages() {
     assert!(plist.contains("<string>Lumen.icns</string>"));
     assert!(plist.contains("<key>CFBundleIconName</key><string>Lumen</string>"));
     assert!(macos.contains("assets/branding/Lumen.icon"));
+    assert!(macos.contains("scripts/stamp-macos-bundle.sh"));
     assert!(linux.contains("com.bentsignal.Lumen.png"));
     assert!(windows.contains("Lumen.png"));
 
@@ -181,10 +182,18 @@ fn lumen_branding_is_wired_to_runtime_and_native_packages() {
     let embedded = fs::read(native_icon.join("Assets/lumen-violet-final-clean.png")).unwrap();
     assert_eq!(source, embedded, "Icon Composer must preserve approved art");
     assert_eq!(icon["supported-platforms"]["squares"], "shared");
+    assert_eq!(
+        icon["fill"]["solid"],
+        "extended-srgb:0.00000,0.01176,0.03529,1.00000"
+    );
     let layers = icon["groups"][0]["layers"].as_array().unwrap();
     assert_eq!(layers.len(), 2);
     assert_eq!(layers[0]["image-name"], "lumen-violet-final-clean.png");
     assert_eq!(layers[1]["image-name"], "lumen-violet-mono.png");
+    assert!(layers.iter().all(|layer| {
+        layer["position"]["scale"] == 0.85
+            && layer["position"]["translation-in-points"] == serde_json::json!([0, 0])
+    }));
     assert!(icon["groups"][0].get("position").is_none());
 }
 

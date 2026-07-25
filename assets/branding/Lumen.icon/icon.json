@@ -1,6 +1,6 @@
 {
   "fill" : {
-    "automatic-gradient" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
+    "solid" : "extended-srgb:0.00000,0.01176,0.03529,1.00000"
   },
   "groups" : [
     {
@@ -8,6 +8,13 @@
         {
           "image-name" : "lumen-violet-final-clean.png",
           "name" : "lumen-violet-final-clean",
+          "position" : {
+            "scale" : 0.85,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          },
           "opacity-specializations" : [
             {
               "appearance" : "tinted",
@@ -27,6 +34,13 @@
           "glass" : false,
           "image-name" : "lumen-violet-mono.png",
           "name" : "lumen-violet-mono",
+          "position" : {
+            "scale" : 0.85,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          },
           "opacity-specializations" : [
             {
               "value" : 0

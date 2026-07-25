@@ -168,6 +168,7 @@ mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 install -m 0755 "$repo_root/target/release/lumen-gui" "$bundle/Contents/MacOS/lumen-gui"
 install -m 0755 "$repo_root/target/release/lumen" "$bundle/Contents/MacOS/lumen"
 install -m 0644 "$repo_root/packaging/macos/Info.plist" "$bundle/Contents/Info.plist"
+"$repo_root/scripts/stamp-macos-bundle.sh" "$bundle/Contents/Info.plist"
 "$repo_root/scripts/package-macos-icon.sh" \
   "$repo_root/assets/branding/Lumen.icon" \
   "$bundle/Contents/Resources/Lumen.icns"

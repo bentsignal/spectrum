@@ -167,6 +167,7 @@ mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 install -m 0755 "$repo_root/target/release/prism-gui" "$bundle/Contents/MacOS/prism-gui"
 install -m 0755 "$repo_root/target/release/prism" "$bundle/Contents/MacOS/prism"
 install -m 0644 "$repo_root/packaging/prism/macos/Info.plist" "$bundle/Contents/Info.plist"
+"$repo_root/scripts/stamp-macos-bundle.sh" "$bundle/Contents/Info.plist"
 "$repo_root/scripts/package-macos-icon.sh" \
   "$repo_root/assets/branding/Prism.icon" \
   "$bundle/Contents/Resources/Prism.icns"

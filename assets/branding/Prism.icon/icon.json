@@ -1,6 +1,6 @@
 {
   "fill" : {
-    "automatic-gradient" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
+    "solid" : "extended-srgb:0.00000,0.00392,0.01961,1.00000"
   },
   "groups" : [
     {
@@ -9,7 +9,7 @@
           "image-name" : "cropped-prism.png",
           "name" : "cropped-prism",
           "position" : {
-            "scale" : 2.56,
+            "scale" : 2.176,
             "translation-in-points" : [
               0,
               0
@@ -35,7 +35,7 @@
           "image-name" : "prism-mono.png",
           "name" : "prism-mono",
           "position" : {
-            "scale" : 2.56,
+            "scale" : 2.176,
             "translation-in-points" : [
               0,
               0
