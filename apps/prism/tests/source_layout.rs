@@ -245,6 +245,7 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
     assert!(plist.contains("<key>CFBundleIconName</key>"));
     assert!(plist.contains("<string>Prism</string>"));
     assert!(macos.contains("assets/branding/Prism.icon"));
+    assert!(macos.contains("scripts/stamp-macos-bundle.sh"));
     assert!(linux.contains("com.bentsignal.Prism.png"));
     assert!(windows.contains("Prism.png"));
 
@@ -258,6 +259,10 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
         "Icon Composer must preserve the approved crop"
     );
     assert_eq!(icon["supported-platforms"]["squares"], "shared");
+    assert_eq!(
+        icon["fill"]["solid"],
+        "extended-srgb:0.00000,0.00392,0.01961,1.00000"
+    );
     let group = &icon["groups"][0];
     assert!(
         group.get("position").is_none(),
@@ -270,7 +275,8 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
     assert!(
         layers
             .iter()
-            .all(|layer| layer["position"]["scale"] == 2.56)
+            .all(|layer| layer["position"]["scale"] == 2.176
+                && layer["position"]["translation-in-points"] == serde_json::json!([0, 0]))
     );
 }
 
