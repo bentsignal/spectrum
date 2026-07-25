@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use spectrum_live_bridge::ActionEnvelope;
@@ -12,6 +14,14 @@ use crate::{
 
 pub const PRISM_LIVE_ACTION_FAMILY: &str = "spectrum.prism.live";
 pub const PRISM_LIVE_ACTION_VERSION: u32 = 1;
+pub const PRISM_LIVE_APPLICATION: &str = "spectrum.prism";
+
+pub fn prism_live_discovery_root() -> Result<PathBuf> {
+    Ok(eframe::storage_dir("Spectrum")
+        .context("Spectrum could not locate its per-user application directory")?
+        .join("LiveBridge")
+        .join("v1"))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

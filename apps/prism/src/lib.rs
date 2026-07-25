@@ -74,9 +74,9 @@ pub use workspace::{LiveWorkspaceState, Workspace};
 
 mod live_bridge;
 pub use live_bridge::{
-    PRISM_LIVE_ACTION_FAMILY, PRISM_LIVE_ACTION_VERSION, PrismLiveAction,
+    PRISM_LIVE_ACTION_FAMILY, PRISM_LIVE_ACTION_VERSION, PRISM_LIVE_APPLICATION, PrismLiveAction,
     PrismLiveActionExpectation, PrismLiveApplied, PrismLiveResult, PrismLiveState,
-    decode_live_action,
+    decode_live_action, prism_live_discovery_root,
 };
 
 mod live_bridge_host;

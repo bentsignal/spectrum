@@ -51,6 +51,12 @@ use inspector_controls::*;
 mod lasso_tool;
 #[path = "prism_gui/layers.rs"]
 mod layers;
+#[path = "prism_gui/live_bridge.rs"]
+mod live_bridge;
+#[path = "prism_gui/live_bridge_gestures.rs"]
+mod live_bridge_gestures;
+#[path = "prism_gui/live_bridge_lifecycle.rs"]
+mod live_bridge_lifecycle;
 #[cfg(target_os = "macos")]
 #[path = "prism_gui/macos.rs"]
 mod macos;
@@ -95,6 +101,7 @@ mod theme;
 #[path = "prism_gui/typography_ui.rs"]
 mod typography_ui;
 use history::HistoryViewState;
+use live_bridge::PrismLiveRegistry;
 use preview_cache::*;
 use project_lifecycle::{MoveProjectDialog, NewDocumentDialog};
 use raster_sources::*;
@@ -163,6 +170,7 @@ struct PrismApp {
     startup_project_ready_at: std::time::Instant,
     collaboration_poll_at: std::time::Instant,
     workspace_initialized: bool,
+    live_bridge: Option<PrismLiveRegistry>,
     terminal: TerminalDock,
     #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
     native_terminal: native_terminal::NativeTerminalHost,
@@ -238,6 +246,19 @@ impl PrismApp {
         let initial_workspace =
             initial_project.and_then(|path| project_lifecycle::open_local_workspace(path).ok());
         let workspace_initialized = initial_workspace.is_some();
+        let mut live_bridge_error = None;
+        let mut live_bridge = match PrismLiveRegistry::new(creation.egui_ctx.clone()) {
+            Ok(registry) => Some(registry),
+            Err(error) => {
+                live_bridge_error = Some(format!("Live bridge unavailable: {error:#}"));
+                None
+            }
+        };
+        if let (Some(registry), Some(workspace)) = (&mut live_bridge, &initial_workspace)
+            && let Err(error) = registry.register(1, workspace)
+        {
+            live_bridge_error = Some(format!("Could not publish live project: {error:#}"));
+        }
         let mut app = Self {
             workspace: initial_workspace.unwrap_or_default(),
             tab_ids: vec![1],
@@ -298,6 +319,7 @@ impl PrismApp {
                 + std::time::Duration::from_millis(250),
             collaboration_poll_at: std::time::Instant::now(),
             workspace_initialized,
+            live_bridge,
             terminal: TerminalDock::new(
                 #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
                 native_terminal_ready,
@@ -314,6 +336,10 @@ impl PrismApp {
                 app.status = format!("Could not open project {}", path.display());
                 app.status_error = true;
             }
+        }
+        if let Some(error) = live_bridge_error {
+            app.status = error;
+            app.status_error = true;
         }
         app.sync_active_raster_sources();
         #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
@@ -433,6 +459,7 @@ impl PrismApp {
         self.drag = None;
         self.smart_guides = SmartGuides::default();
         self.alignment_reference = None;
+        self.register_live_tab(id);
     }
 
     fn activate_tab(&mut self, id: u64) {
@@ -580,6 +607,7 @@ impl eframe::App for PrismApp {
             self.status_error = true;
         }
         self.receive_open_documents(&context);
+        self.drain_live_bridges(&context);
         self.sync_agent_collaborations(&context);
         self.poll_terminals(&context);
         self.keyboard(&context);
@@ -600,6 +628,7 @@ impl eframe::App for PrismApp {
         }
         self.dialogs(&context);
         self.handle_layer_clipboard_events(&context);
+        self.observe_live_bridges();
         #[cfg(target_os = "macos")]
         self.sync_native_menu_state(&context);
         self.composite_preview.poll(&context);
@@ -613,6 +642,9 @@ impl eframe::App for PrismApp {
             let _ = workspace.checkpoint();
         }
         self.terminal.shutdown();
+        if let Some(live_bridge) = &mut self.live_bridge {
+            live_bridge.shutdown();
+        }
         #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
         self.native_terminal.shutdown();
     }

@@ -80,6 +80,15 @@ impl BrushState {
         self.clear_transient_preview();
         true
     }
+
+    pub(super) fn live_interaction_active(&self) -> bool {
+        self.gesture.is_some()
+            || self.preview.is_some()
+            || self.preview_key.is_some()
+            || self.settling_layer_id.is_some()
+            || self.color_picker_open
+            || self.committing_preview
+    }
 }
 
 pub(super) fn brush_display_document<'a>(

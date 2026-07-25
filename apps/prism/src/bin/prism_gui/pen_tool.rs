@@ -32,6 +32,10 @@ enum AnchorPart {
 }
 
 impl PenState {
+    pub(super) fn live_interaction_active(&self) -> bool {
+        self.draft.is_some() || self.edit.is_some()
+    }
+
     pub(super) fn copied_mask(&self) -> Option<&PathGeometry> {
         self.copied_mask.as_ref()
     }

@@ -69,7 +69,7 @@ pub(super) struct TerminalTab {
     pub(super) id: u64,
     pub(super) title: String,
     context_title: String,
-    context: TerminalContext,
+    pub(super) context: TerminalContext,
     pub(super) process: Option<TerminalSession>,
     pub(super) parser: vt100::Parser<TerminalCallbacks>,
     pub(super) size: TerminalSize,
@@ -297,7 +297,7 @@ impl TerminalDock {
         self.visible
     }
 
-    fn new_session(&mut self, launch: TerminalLaunch) {
+    pub(super) fn new_session(&mut self, launch: TerminalLaunch) {
         let id = self.next_id;
         self.next_id += 1;
         self.sessions.push(TerminalTab::spawn(
@@ -309,6 +309,56 @@ impl TerminalDock {
         self.active = self.sessions.len() - 1;
         self.focus_terminal = true;
         self.pending_close = None;
+    }
+
+    pub(super) fn live_binding_rotated(
+        &mut self,
+        previous: spectrum_live_bridge::BindingId,
+    ) -> usize {
+        self.mark_live_binding_stale(
+            previous,
+            "This project’s authenticated live binding changed. Existing commands fail closed; open a new terminal session to continue.",
+        )
+    }
+
+    pub(super) fn live_project_closed(
+        &mut self,
+        retired: spectrum_live_bridge::BindingId,
+    ) -> usize {
+        self.mark_live_binding_stale(
+            retired,
+            "This project was closed. Its authenticated live binding is retired; reopen the project and open a new terminal session to continue.",
+        )
+    }
+
+    pub(super) fn live_binding_unavailable(
+        &mut self,
+        retired: spectrum_live_bridge::BindingId,
+    ) -> usize {
+        self.mark_live_binding_stale(
+            retired,
+            "This project is running without a usable live binding. Existing commands fail closed; reopen the project and open a new terminal session to continue.",
+        )
+    }
+
+    fn mark_live_binding_stale(
+        &mut self,
+        binding: spectrum_live_bridge::BindingId,
+        message: &str,
+    ) -> usize {
+        let binding = binding.to_string();
+        let mut affected = 0;
+        for session in &mut self.sessions {
+            if session
+                .context
+                .environment("PRISM_LIVE_BINDING_ID")
+                .is_some_and(|value| value == std::ffi::OsStr::new(&binding))
+            {
+                session.message = Some((message.into(), true));
+                affected += 1;
+            }
+        }
+        affected
     }
 
     fn request_close(&mut self, index: usize) {
@@ -355,7 +405,7 @@ impl TerminalDock {
     }
 }
 
-struct TerminalLaunch {
+pub(super) struct TerminalLaunch {
     title: String,
     context: TerminalContext,
 }
@@ -427,7 +477,10 @@ impl PrismApp {
         self.terminal.visible = !self.terminal.visible;
         if self.terminal.visible {
             if self.terminal.sessions.is_empty() {
-                let launch = terminal_launch(&self.workspace);
+                let binding = self
+                    .live_binding_record(self.active_tab_id)
+                    .map(|record| record.binding_id);
+                let launch = terminal_launch(&self.workspace, binding);
                 self.terminal.new_session(launch);
             }
             self.terminal.focus_terminal = true;
@@ -673,7 +726,11 @@ impl PrismApp {
                 });
             });
         if new_session {
-            self.terminal.new_session(terminal_launch(&self.workspace));
+            let binding = self
+                .live_binding_record(self.active_tab_id)
+                .map(|record| record.binding_id);
+            self.terminal
+                .new_session(terminal_launch(&self.workspace, binding));
         }
         if let Some(index) = interrupt {
             self.terminal.sessions[index].interrupt();
@@ -760,7 +817,10 @@ fn terminal_poll_interval(visible: bool, recently_active: bool) -> std::time::Du
     std::time::Duration::from_millis(if visible && recently_active { 16 } else { 250 })
 }
 
-fn terminal_launch(workspace: &Workspace) -> TerminalLaunch {
+pub(super) fn terminal_launch(
+    workspace: &Workspace,
+    live_binding: Option<spectrum_live_bridge::BindingId>,
+) -> TerminalLaunch {
     let project_path = workspace.project_path.as_deref().map(|path| {
         std::fs::canonicalize(path).unwrap_or_else(|_| {
             if path.is_absolute() {
@@ -792,6 +852,17 @@ fn terminal_launch(workspace: &Workspace) -> TerminalLaunch {
         context = context
             .with_env("SPECTRUM_SESSION", &session)
             .with_env("PRISM_SESSION", &session);
+    }
+    if project.is_some() || live_binding.is_some() {
+        context = context
+            .with_env("SPECTRUM_LIVE_MODE", "required")
+            .with_env("PRISM_LIVE_MODE", "required");
+    }
+    if let Some(binding) = live_binding {
+        let binding = binding.to_string();
+        context = context
+            .with_env("SPECTRUM_LIVE_BINDING_ID", &binding)
+            .with_env("PRISM_LIVE_BINDING_ID", &binding);
     }
     if let Ok(executable) = std::env::current_exe()
         && let Some(directory) = executable.parent()

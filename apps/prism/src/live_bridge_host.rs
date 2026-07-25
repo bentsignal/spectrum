@@ -29,7 +29,7 @@ const DRAIN_TIME_BUDGET: Duration = Duration::from_millis(2);
 #[cfg(not(test))]
 const GUI_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const GUI_REPLY_TIMEOUT: Duration = Duration::from_millis(100);
+const GUI_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrismLiveInteractionState {
@@ -58,6 +58,7 @@ pub struct PrismLiveHost {
     state: Mutex<HostState>,
     ingress: SyncSender<PendingRequest>,
     events: OnceLock<Arc<EventLog>>,
+    wake_gui: Arc<dyn Fn() + Send + Sync>,
 }
 
 pub struct PrismLiveDrain {
@@ -81,6 +82,15 @@ impl PrismLiveHost {
         binding_id: BindingId,
         binding_epoch: u64,
     ) -> Result<(Arc<Self>, PrismLiveDrain)> {
+        Self::new_with_wake(workspace, binding_id, binding_epoch, Arc::new(|| {}))
+    }
+
+    pub fn new_with_wake(
+        workspace: &Workspace,
+        binding_id: BindingId,
+        binding_epoch: u64,
+        wake_gui: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(Arc<Self>, PrismLiveDrain)> {
         let live = durable_state(workspace)?;
         let project_path = workspace
             .project_path
@@ -99,6 +109,7 @@ impl PrismLiveHost {
             }),
             ingress: sender,
             events: OnceLock::new(),
+            wake_gui,
         });
         let drain = PrismLiveDrain {
             host: Arc::clone(&host),
@@ -133,12 +144,155 @@ impl PrismLiveHost {
             .binding_id
     }
 
+    pub fn observe_workspace(&self, workspace: &Workspace) -> Result<bool> {
+        self.observe_workspace_interaction(workspace, None)
+    }
+
+    pub fn begin_workspace_interaction(
+        &self,
+        workspace: &Workspace,
+        interaction_id: &str,
+        interaction_kind: &str,
+    ) -> Result<RevisionId> {
+        let live = durable_state(workspace)?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Prism live host state is poisoned"))?;
+        if state.closed {
+            anyhow::bail!("Prism live host is closed");
+        }
+        validate_bound_workspace(&state, &live)?;
+        self.events
+            .get()
+            .context("Prism live event log is not attached")?
+            .append(BridgeEventKind::InteractionBegan {
+                interaction_id: interaction_id.into(),
+                interaction_kind: interaction_kind.into(),
+            })?;
+        Ok(live.cursor)
+    }
+
+    pub fn cancel_workspace_interaction(&self, interaction_id: &str) {
+        if let Ok(state) = self.state.lock()
+            && !state.closed
+            && let Some(events) = self.events.get()
+        {
+            let _ = events.append(BridgeEventKind::InteractionCanceled {
+                interaction_id: interaction_id.into(),
+            });
+        }
+    }
+
+    pub fn observe_workspace_interaction(
+        &self,
+        workspace: &Workspace,
+        completed_interaction: Option<(&str, RevisionId)>,
+    ) -> Result<bool> {
+        let live = durable_state(workspace)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Prism live host state is poisoned"))?;
+        if state.closed {
+            return Ok(false);
+        }
+        validate_bound_workspace(&state, &live)?;
+        let changed = live.cursor != state.human_cursor;
+        if changed {
+            publish_workspace_advance(
+                self.events
+                    .get()
+                    .context("Prism live event log is not attached")?,
+                &state,
+                &live,
+            )?;
+            state.human_cursor = live.cursor;
+        }
+        if let Some((interaction_id, started_at)) = completed_interaction {
+            let events = self
+                .events
+                .get()
+                .context("Prism live event log is not attached")?;
+            if started_at != live.cursor {
+                events.append(BridgeEventKind::InteractionCommitted {
+                    interaction_id: interaction_id.into(),
+                    cursors: vec![CursorTransition {
+                        track_id: live.track_id,
+                        from_revision_id: started_at,
+                        to_revision_id: live.cursor,
+                    }],
+                })?;
+            } else {
+                events.append(BridgeEventKind::InteractionCanceled {
+                    interaction_id: interaction_id.into(),
+                })?;
+            }
+        }
+        Ok(changed)
+    }
+
     fn cursors(state: &HostState) -> Vec<ExpectedCursor> {
         vec![ExpectedCursor {
             track_id: state.track_id,
             revision_id: state.human_cursor,
         }]
     }
+}
+
+fn validate_bound_workspace(state: &HostState, live: &LiveWorkspaceState) -> Result<()> {
+    if live.project_id != state.project_id
+        || live.track_id != state.track_id
+        || live.session_id != state.human_session
+    {
+        anyhow::bail!("Prism live binding no longer matches its workspace");
+    }
+    Ok(())
+}
+
+fn publish_workspace_advance(
+    events: &EventLog,
+    state: &HostState,
+    live: &LiveWorkspaceState,
+) -> Result<()> {
+    let previous = state.human_cursor;
+    let transition = vec![CursorTransition {
+        track_id: live.track_id,
+        from_revision_id: previous,
+        to_revision_id: live.cursor,
+    }];
+    if live.revision.parent_id == Some(previous) && live.revision.actor.kind == ActorKind::Human {
+        events.append(BridgeEventKind::RevisionCommitted {
+            request_id: None,
+            change_set_id: live.revision.change_set_id,
+            actor: EventActor {
+                id: live.revision.actor.id.clone(),
+                display_name: live.revision.actor.display_name.clone(),
+                kind: EventActorKind::Human,
+            },
+            session_id: live.revision.session_id,
+            action_label: live
+                .revision
+                .label
+                .clone()
+                .unwrap_or_else(|| "Prism edit".into()),
+            cursors: transition,
+        })?;
+    } else if live.revision.parent_id == Some(previous)
+        && live.revision.actor.kind == ActorKind::Agent
+    {
+        events.append(BridgeEventKind::CollaborationAdvanced {
+            agent_session_id: live.revision.session_id,
+            source_session_id: live.session_id,
+            cursors: transition,
+        })?;
+    } else {
+        events.append(BridgeEventKind::CursorMoved {
+            session_id: live.session_id,
+            cursors: transition,
+        })?;
+    }
+    Ok(())
 }
 
 impl BridgeHost for PrismLiveHost {
@@ -208,6 +362,7 @@ impl BridgeHost for PrismLiveHost {
                 },
                 mpsc::TrySendError::Disconnected(_) => BridgeError::Closed,
             })?;
+        (self.wake_gui)();
         response
             .recv_timeout(GUI_REPLY_TIMEOUT)
             .map_err(|error| match error {

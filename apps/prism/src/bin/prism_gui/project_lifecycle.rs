@@ -194,6 +194,7 @@ impl PrismApp {
                 |workspace| workspace.document.name.clone(),
             )
         };
+        self.remove_live_tab(id);
         self.tab_ids.remove(position);
         if id == self.active_tab_id {
             let replacement_id = self.tab_ids[position.min(self.tab_ids.len() - 1)];
@@ -363,6 +364,7 @@ impl PrismApp {
                         self.cancel_brush();
                         self.workspace = workspace;
                         self.sync_active_raster_sources();
+                        self.rotate_active_live_binding();
                     }
                     Err(error) => {
                         self.status = format!("Could not create local project: {error:#}");
@@ -401,6 +403,7 @@ impl PrismApp {
                 self.cancel_brush();
                 self.workspace = workspace;
                 self.sync_active_raster_sources();
+                self.rotate_active_live_binding();
                 self.status = format!("Opened {}", path.display());
                 self.status_error = false;
             }
@@ -523,6 +526,7 @@ impl PrismApp {
             let destination = directory.join(file_name);
             match self.workspace.move_project(&destination) {
                 Ok(path) => {
+                    self.rotate_active_live_binding();
                     self.status = format!("Project now lives at {}", path.display());
                     self.status_error = false;
                 }

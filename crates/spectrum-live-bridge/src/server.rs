@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     thread,
@@ -72,6 +72,7 @@ pub struct BridgeServer<H> {
     replayed_client_nonces: Mutex<HashSet<[u8; 32]>>,
     authenticated_connections: AtomicUsize,
     inbound_queued: Arc<AtomicUsize>,
+    closed: AtomicBool,
 }
 
 impl<H: BridgeHost> BridgeServer<H> {
@@ -87,6 +88,7 @@ impl<H: BridgeHost> BridgeServer<H> {
             replayed_client_nonces: Mutex::new(HashSet::new()),
             authenticated_connections: AtomicUsize::new(0),
             inbound_queued: Arc::new(AtomicUsize::new(0)),
+            closed: AtomicBool::new(false),
         }
     }
 
@@ -95,6 +97,9 @@ impl<H: BridgeHost> BridgeServer<H> {
     }
 
     pub fn serve_connection(&self, mut stream: LocalStream) -> BridgeResult<()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(BridgeError::Closed);
+        }
         let _slot = self.reserve_connection()?;
         self.authenticate(&mut stream)?;
         stream.set_read_timeout(Some(crate::IDLE_TIMEOUT))?;
@@ -126,6 +131,9 @@ impl<H: BridgeHost> BridgeServer<H> {
     }
 
     pub fn handle_request(&self, request: RequestEnvelope) -> BridgeResult<ResponseEnvelope> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(BridgeError::Closed);
+        }
         request.validate()?;
         self.validate_binding(&request)?;
         let mut state = self.mutations.lock().map_err(|_| BridgeError::Closed)?;
@@ -217,6 +225,11 @@ impl<H: BridgeHost> BridgeServer<H> {
         self.authenticated_connections.load(Ordering::Acquire)
     }
 
+    /// Stop accepting application work and wake active connection loops.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
     fn authenticate(&self, stream: &mut LocalStream) -> BridgeResult<()> {
         stream.set_read_timeout(Some(AUTH_DEADLINE))?;
         stream.set_write_timeout(Some(AUTH_DEADLINE))?;
@@ -267,6 +280,9 @@ impl<H: BridgeHost> BridgeServer<H> {
         let mut input_closed = false;
 
         loop {
+            if self.closed.load(Ordering::Acquire) {
+                return Ok(());
+            }
             match receiver.recv_timeout(CONNECTION_POLL) {
                 Ok(Inbound::Message { message, charge }) => {
                     drop(charge);

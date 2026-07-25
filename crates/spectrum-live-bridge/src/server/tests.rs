@@ -167,6 +167,17 @@ fn setup() -> (Arc<MockHost>, BridgeServer<MockHost>, RequestEnvelope) {
 }
 
 #[test]
+fn closing_server_refuses_new_application_work() {
+    let (host, server, request) = setup();
+    server.close();
+    assert!(matches!(
+        server.handle_request(request),
+        Err(BridgeError::Closed)
+    ));
+    assert_eq!(host.calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn exact_retry_is_applied_once_across_concurrent_callers() {
     let (host, server, request) = setup();
     let server = Arc::new(server);

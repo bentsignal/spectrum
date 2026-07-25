@@ -88,6 +88,7 @@ fn rename(name: &str) -> Command {
 
 struct HostHarness {
     server: Arc<BridgeServer<PrismLiveHost>>,
+    host: Arc<PrismLiveHost>,
     drain: PrismLiveDrain,
     binding_id: BindingId,
     project_id: spectrum_revisions::ProjectId,
@@ -97,9 +98,14 @@ struct HostHarness {
 
 impl HostHarness {
     fn new(fixture: &Fixture) -> Self {
+        Self::new_with_wake(fixture, Arc::new(|| {}))
+    }
+
+    fn new_with_wake(fixture: &Fixture, wake_gui: Arc<dyn Fn() + Send + Sync>) -> Self {
         let human = fixture.human.live_state().unwrap().unwrap();
         let binding_id = BindingId::new();
-        let (host, drain) = PrismLiveHost::new(&fixture.human, binding_id, 1).unwrap();
+        let (host, drain) =
+            PrismLiveHost::new_with_wake(&fixture.human, binding_id, 1, wake_gui).unwrap();
         let server = Arc::new(BridgeServer::new(
             ServerConfig {
                 application: "spectrum.prism".into(),
@@ -114,6 +120,7 @@ impl HostHarness {
         host.attach_events(Arc::clone(server.events())).unwrap();
         Self {
             server,
+            host,
             drain,
             binding_id,
             project_id: human.project_id,
@@ -403,6 +410,78 @@ fn external_agent_advance_invalidates_the_old_expectation_without_overwrite() {
 }
 
 #[test]
+fn full_state_plan_keeps_its_exact_cursor_and_cannot_overwrite_a_later_edit() {
+    let mut fixture = Fixture::new(CollaborationMode::Separate);
+    let mut seed = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
+    seed.execute(Command::AddText {
+        text: "Plan me".into(),
+        name: None,
+        font_size: 32.0,
+        color: [255; 4],
+        x: 10.0,
+        y: 10.0,
+    })
+    .unwrap();
+    let layer_id = seed.document.selected.unwrap();
+    drop(seed);
+
+    let planned = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
+    let planned_state = planned.live_state().unwrap().unwrap();
+    let LayerKind::Text {
+        typography: planned_typography,
+        ..
+    } = &planned.document.layer(layer_id).unwrap().kind
+    else {
+        panic!("planned layer must be text");
+    };
+    let mut planned_typography = planned_typography.clone();
+    planned_typography.tracking = 24.0;
+    let planned_action = PrismLiveAction::ExecuteBatch {
+        expectation: PrismLiveActionExpectation {
+            agent_revision: planned_state.cursor,
+            source_revision: None,
+        },
+        command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+        commands: vec![Command::SetTextTypography {
+            id: layer_id,
+            typography: planned_typography,
+        }],
+    };
+    drop(planned);
+
+    let mut external = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
+    let LayerKind::Text {
+        typography: external_typography,
+        ..
+    } = &external.document.layer(layer_id).unwrap().kind
+    else {
+        panic!("external layer must be text");
+    };
+    let mut external_typography = external_typography.clone();
+    external_typography.line_height = 2.0;
+    external
+        .execute(Command::SetTextTypography {
+            id: layer_id,
+            typography: external_typography,
+        })
+        .unwrap();
+    drop(external);
+
+    let mut sessions = fixture.sessions();
+    assert!(
+        sessions
+            .apply(&mut fixture.human, fixture.agent_session, planned_action,)
+            .is_err()
+    );
+    let current = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
+    let LayerKind::Text { typography, .. } = &current.document.layer(layer_id).unwrap().kind else {
+        panic!("current layer must be text");
+    };
+    assert_eq!(typography.line_height, 2.0);
+    assert_eq!(typography.tracking, 0.0);
+}
+
+#[test]
 fn durable_expected_parent_rejects_two_writers_opened_at_one_agent_cursor() {
     let fixture = Fixture::new(CollaborationMode::Separate);
     let mut winner = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
@@ -432,6 +511,97 @@ fn host_rechecks_the_human_cursor_on_the_gui_thread_before_mutation() {
     assert_eq!(fixture.human.document.name, "Direct human edit");
     let agent = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
     assert_ne!(agent.document.name, "Must conflict");
+}
+
+#[test]
+fn ingress_wakes_an_idle_gui_before_waiting_for_its_reply() {
+    let mut fixture = Fixture::new(CollaborationMode::Separate);
+    let (wake, awakened) = std::sync::mpsc::sync_channel(1);
+    let mut harness = HostHarness::new_with_wake(
+        &fixture,
+        Arc::new(move || {
+            let _ = wake.try_send(());
+        }),
+    );
+    let request = harness.request(
+        &fixture,
+        PrismLiveAction::ExecuteBatch {
+            expectation: fixture.expectation(),
+            command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+            commands: vec![rename("Woken")],
+        },
+        InteractionPolicy::Immediate,
+    );
+    let server = Arc::clone(&harness.server);
+    let worker = thread::spawn(move || server.handle_request(request));
+
+    awakened
+        .recv_timeout(Duration::from_millis(100))
+        .expect("idle GUI must be woken immediately after ingress accepts work");
+    let report = harness
+        .drain
+        .drain(&mut fixture.human, PrismLiveInteractionState::Idle);
+    assert_eq!(report.applied, 1);
+    assert!(matches!(
+        worker.join().unwrap().unwrap().body,
+        ResponseBody::Applied { .. }
+    ));
+}
+
+#[test]
+fn local_gui_gesture_events_share_the_exact_observed_revision() {
+    let mut fixture = Fixture::new(CollaborationMode::Separate);
+    let harness = HostHarness::new(&fixture);
+    let subscription = harness.server.events().subscribe(0).unwrap();
+    let started_at = harness
+        .host
+        .begin_workspace_interaction(&fixture.human, "gesture:1", "prism_gui_gesture")
+        .unwrap();
+    fixture.human.execute(rename("Gesture commit")).unwrap();
+    assert!(
+        harness
+            .host
+            .observe_workspace_interaction(&fixture.human, Some(("gesture:1", started_at)),)
+            .unwrap()
+    );
+
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::InteractionBegan { interaction_id, .. } if interaction_id == "gesture:1"
+    ));
+    let revision = subscription.try_next().unwrap().unwrap();
+    let BridgeEventKind::RevisionCommitted { cursors, .. } = revision.event else {
+        panic!("expected exact gesture revision");
+    };
+    let committed = subscription.try_next().unwrap().unwrap();
+    let BridgeEventKind::InteractionCommitted {
+        interaction_id,
+        cursors: gesture_cursors,
+    } = committed.event
+    else {
+        panic!("expected gesture terminal event");
+    };
+    assert_eq!(interaction_id, "gesture:1");
+    assert_eq!(gesture_cursors, cursors);
+
+    let unchanged = harness
+        .host
+        .begin_workspace_interaction(&fixture.human, "gesture:2", "prism_gui_gesture")
+        .unwrap();
+    assert!(
+        !harness
+            .host
+            .observe_workspace_interaction(&fixture.human, Some(("gesture:2", unchanged)),)
+            .unwrap()
+    );
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::InteractionBegan { interaction_id, .. } if interaction_id == "gesture:2"
+    ));
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::InteractionCanceled { interaction_id } if interaction_id == "gesture:2"
+    ));
 }
 
 #[test]
