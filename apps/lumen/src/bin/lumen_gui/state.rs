@@ -306,8 +306,17 @@ impl LumenApp {
                     self.remember_catalog(opened);
                     self.reset_catalog_view(true);
                     self.reset_terminal_for_workspace();
-                    self.status = "Opened Lumen project".into();
-                    self.error = false;
+                    match self.register_live_catalog() {
+                        Ok(()) => {
+                            self.status = "Opened Lumen project".into();
+                            self.error = false;
+                        }
+                        Err(error) => {
+                            self.status =
+                                format!("Opened project, but live bridge is unavailable: {error}");
+                            self.error = true;
+                        }
+                    }
                 }
                 Err(error) => {
                     self.status = format!("Could not open project: {error:#}");
@@ -327,8 +336,17 @@ impl LumenApp {
                 }
                 self.reset_catalog_view(true);
                 self.reset_terminal_for_workspace();
-                self.status = "Created a new Lumen project".into();
-                self.error = false;
+                match self.register_live_catalog() {
+                    Ok(()) => {
+                        self.status = "Created a new Lumen project".into();
+                        self.error = false;
+                    }
+                    Err(error) => {
+                        self.status =
+                            format!("Created project, but live bridge is unavailable: {error}");
+                        self.error = true;
+                    }
+                }
             }
             Err(error) => {
                 self.status = format!("Could not create project: {error:#}");
@@ -358,8 +376,19 @@ impl LumenApp {
             Ok(path) => {
                 self.remember_catalog(path.clone());
                 self.reset_terminal_for_workspace();
-                self.status = format!("Moved project to {}", path.display());
-                self.error = false;
+                match self.register_live_catalog() {
+                    Ok(()) => {
+                        self.status = format!("Moved project to {}", path.display());
+                        self.error = false;
+                    }
+                    Err(error) => {
+                        self.status = format!(
+                            "Moved project to {}, but live bridge is unavailable: {error}",
+                            path.display()
+                        );
+                        self.error = true;
+                    }
+                }
             }
             Err(error) => {
                 self.status = format!("Could not move project: {error:#}");

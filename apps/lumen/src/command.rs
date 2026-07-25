@@ -11,6 +11,10 @@ use crate::{
     engine::{ExportFormat, RenderOptions, batch_destination, export_photo},
 };
 
+mod live_workspace;
+mod replay;
+pub(crate) use replay::apply_replay_command;
+
 /// Complete application command surface shared by the GUI, CLI, and agents.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case")]
@@ -947,22 +951,6 @@ impl Workspace {
             photo.adjustments = adjustments.sanitized();
         }
         Ok(())
-    }
-}
-
-pub(crate) fn apply_replay_command(project: &mut Project, command: Command) -> Result<()> {
-    let before = project.clone();
-    let mut workspace = Workspace::new(std::mem::take(project), None);
-    workspace.legacy_photo_history = false;
-    match workspace.execute_in_memory(command) {
-        Ok(_) => {
-            *project = workspace.project;
-            Ok(())
-        }
-        Err(error) => {
-            *project = before;
-            Err(error)
-        }
     }
 }
 

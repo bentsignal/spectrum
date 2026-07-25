@@ -279,6 +279,8 @@ pub(super) fn benchmark(
         );
         let navigation_metrics =
             navigation_switch_metrics(&navigation_photos, &source_path, profile)?;
+        let live_metrics =
+            super::benchmark_live_bridge::live_bridge_metrics(&directory, &import_source, profile)?;
         let raw_import_metric = raw_import.map(|path| -> Result<serde_json::Value> {
             let mut samples = Vec::with_capacity(3);
             for _ in 0..3 {
@@ -302,6 +304,9 @@ pub(super) fn benchmark(
             && navigation_metrics
                 .iter()
                 .all(|metric| metric["pass"].as_bool() == Some(true))
+            && live_metrics
+                .iter()
+                .all(|metric| metric["pass"].as_bool() == Some(true))
             && raw_import_metric
                 .as_ref()
                 .is_none_or(|metric| metric["pass"].as_bool() == Some(true))
@@ -314,6 +319,7 @@ pub(super) fn benchmark(
             export,
         ];
         metrics.extend(navigation_metrics);
+        metrics.extend(live_metrics);
         if let Some(metric) = raw_import_metric {
             metrics.push(metric);
         }
