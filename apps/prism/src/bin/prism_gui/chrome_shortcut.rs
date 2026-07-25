@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) const WORKBENCH_ACTION_SIZE: Vec2 = Vec2::new(148.0, CONTROL_HEIGHT);
+pub(crate) const WORKBENCH_ACTION_SIZE: Vec2 = Vec2::new(148.0, CONTROL_HEIGHT);
 
 fn shortcut_button_shortcut_rect(rect: Rect) -> Rect {
     let width = if cfg!(target_os = "macos") {
@@ -14,7 +14,7 @@ fn shortcut_button_shortcut_rect(rect: Rect) -> Rect {
     )
 }
 
-pub(super) fn shortcut_action_button(
+pub(crate) fn shortcut_action_button(
     ui: &mut egui::Ui,
     size: Vec2,
     label: &str,

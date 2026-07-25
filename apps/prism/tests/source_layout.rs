@@ -281,6 +281,98 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
 }
 
 #[test]
+fn toolbar_review_package_has_a_distinct_identity_and_embedded_provenance() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repository = manifest.join("../..");
+    let production_plist =
+        fs::read_to_string(repository.join("packaging/prism/macos/Info.plist")).unwrap();
+    let review =
+        fs::read_to_string(repository.join("scripts/package-prism-toolbar-review-macos.sh"))
+            .unwrap();
+
+    assert!(production_plist.contains("<string>Prism</string>"));
+    assert!(production_plist.contains("<string>com.bentsignal.prism</string>"));
+    assert!(!production_plist.contains("Toolbar Review"));
+    assert!(!production_plist.contains("toolbar-review"));
+
+    for required in [
+        "Prism Toolbar Review.app",
+        "Prism Toolbar Review",
+        "com.bentsignal.prism.toolbar-review",
+        "SpectrumReviewPrototype",
+        "SpectrumReviewSourceCommit",
+        "SpectrumReviewDependencyCommit",
+        "c926fd4a3c7bb6b034e9278cc1e99edbf12bc3fa",
+        "codesign --verify --deep --strict",
+    ] {
+        assert!(
+            review.contains(required),
+            "review package must contain {required:?}"
+        );
+    }
+    assert!(review.contains("bash \"$repo_root/scripts/package-prism-macos.sh\""));
+    assert!(review.contains("mv \"$production_bundle\" \"$review_bundle\""));
+}
+
+#[test]
+fn toolbar_gradient_editor_preserves_its_nested_visual_stop_picker() {
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/toolbar_prototypes.rs");
+    let toolbar = fs::read_to_string(source).unwrap();
+    let start = toolbar
+        .find("fn shape_gradient_toolbar_control")
+        .expect("toolbar gradient control should exist");
+    let end = toolbar[start..]
+        .find("fn toolbar_context_kind")
+        .map(|offset| start + offset)
+        .expect("toolbar context helper should follow the gradient control");
+    let control = &toolbar[start..end];
+
+    assert!(
+        control.contains("egui::Area::new"),
+        "the gradient editor needs a floating area so its stop swatches can own the sole popup"
+    );
+    assert!(control.contains("egui::Popup::is_any_open"));
+    assert!(
+        control.contains("nested_popup_was_open"),
+        "Escape must dismiss the nested picker before its containing editor"
+    );
+    assert!(
+        !control.contains("Popup::from_toggle_button_response") && !control.contains("menu_button"),
+        "any popup parent is replaced when the visual stop picker opens"
+    );
+}
+
+#[test]
+fn toolbar_gradient_editor_owns_escape_before_global_tool_reset() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/prism_gui/shortcuts.rs");
+    let shortcuts = fs::read_to_string(source).unwrap();
+    let keyboard_start = shortcuts
+        .find("pub(super) fn keyboard")
+        .expect("keyboard shortcut routing should exist");
+    let keyboard_end = shortcuts[keyboard_start..]
+        .find("\n    }\n}\n\n#[cfg(test)]")
+        .map(|offset| keyboard_start + offset)
+        .expect("keyboard shortcut routing should end before its tests");
+    let keyboard = &shortcuts[keyboard_start..keyboard_end];
+    let gradient_owner = keyboard
+        .find("toolbar_gradient_editor_owns_escape")
+        .expect("the floating gradient editor should own Escape");
+    let global_reset = keyboard
+        .find("reset_tool_after_escape")
+        .expect("the global Escape fallback should still reset the active tool");
+
+    assert!(
+        gradient_owner < global_reset,
+        "the gradient editor must route Escape before the global tool reset"
+    );
+    assert!(
+        keyboard.contains("input.key_pressed(egui::Key::Escape)"),
+        "the editor owner must observe Escape without consuming it before nested popup handling"
+    );
+}
+
+#[test]
 fn bundled_ubuntu_license_is_exact_and_installed_by_every_native_package() {
     use sha2::{Digest, Sha256};
 
