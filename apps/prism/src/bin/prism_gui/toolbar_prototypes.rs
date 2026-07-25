@@ -8,6 +8,8 @@ const PROTOTYPE_ENV: &str = "PRISM_TOOLBAR_OVERFLOW_PROTOTYPES";
 const PROTOTYPE_WIDTH_ENV: &str = "PRISM_TOOLBAR_PROTOTYPE_WIDTH";
 const NARROW_WORKBENCH_HEIGHT: f32 = 88.0;
 const VERY_NARROW_WORKBENCH_HEIGHT: f32 = 122.0;
+const GRADIENT_POPOVER_WIDTH: f32 = 340.0;
+const GRADIENT_POPOVER_HEIGHT: f32 = 480.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum ToolbarOverflowPrototype {
@@ -68,7 +70,7 @@ pub(super) struct ToolbarPrototypeState {
 impl ToolbarPrototypeState {
     pub(super) fn from_environment() -> Self {
         let value = std::env::var(PROTOTYPE_ENV).ok();
-        let enabled = value.is_some();
+        let enabled = prototype_enabled(value.as_deref());
         let selected = match value.as_deref().map(str::trim) {
             Some("B" | "b" | "scroll") => ToolbarOverflowPrototype::ScrollRail,
             Some("C" | "c" | "wrap") => ToolbarOverflowPrototype::AdaptiveWrap,
@@ -91,6 +93,13 @@ impl ToolbarPrototypeState {
     }
 }
 
+fn prototype_enabled(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(str::trim),
+        Some("0" | "false" | "off" | "disabled")
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContextKind {
     None,
@@ -102,6 +111,80 @@ enum ContextKind {
     Text,
     TextWithSelection,
     Brush,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolbarControl {
+    ShapeKind,
+    GradientEditor,
+    Paragraph,
+    Selection,
+    Brush,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectedLayerKind {
+    Shape,
+    Text,
+    Other,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControlAccess {
+    Inline,
+    MoreMenu,
+    ScrollRail,
+    Wrapped,
+    GradientPopover,
+    MoreMenuThenGradientPopover,
+}
+
+fn control_manifest(
+    tool: Tool,
+    selected_layer: Option<SelectedLayerKind>,
+    has_selection: bool,
+) -> Vec<ToolbarControl> {
+    let mut controls = Vec::with_capacity(3);
+    if tool == Tool::Shape {
+        controls.push(ToolbarControl::ShapeKind);
+        if selected_layer == Some(SelectedLayerKind::Shape) {
+            controls.push(ToolbarControl::GradientEditor);
+        }
+    }
+    if tool == Tool::Text && selected_layer == Some(SelectedLayerKind::Text) {
+        controls.push(ToolbarControl::Paragraph);
+    }
+    if matches!(tool, Tool::Marquee | Tool::Lasso | Tool::MagicWand) || has_selection {
+        controls.push(ToolbarControl::Selection);
+    }
+    if matches!(tool, Tool::Brush | Tool::Eraser) {
+        controls.push(ToolbarControl::Brush);
+    }
+    controls
+}
+
+fn selected_layer_kind(layer: &Layer) -> SelectedLayerKind {
+    match &layer.kind {
+        LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => SelectedLayerKind::Shape,
+        LayerKind::Path { geometry, .. } if geometry.closed() => SelectedLayerKind::Shape,
+        LayerKind::Text { .. } => SelectedLayerKind::Text,
+        _ => SelectedLayerKind::Other,
+    }
+}
+
+#[cfg(test)]
+fn access_for(presentation: ResponsivePresentation, control: ToolbarControl) -> ControlAccess {
+    match (presentation, control) {
+        (ResponsivePresentation::MoreMenu, ToolbarControl::GradientEditor) => {
+            ControlAccess::MoreMenuThenGradientPopover
+        }
+        (_, ToolbarControl::GradientEditor) => ControlAccess::GradientPopover,
+        (ResponsivePresentation::Inline, _) => ControlAccess::Inline,
+        (ResponsivePresentation::MoreMenu, _) => ControlAccess::MoreMenu,
+        (ResponsivePresentation::ScrollRail, _) => ControlAccess::ScrollRail,
+        (ResponsivePresentation::Wrapped { .. }, _) => ControlAccess::Wrapped,
+    }
 }
 
 impl ContextKind {
@@ -446,43 +529,75 @@ impl PrismApp {
     }
 
     pub(super) fn workbench_contextual_controls(&mut self, ui: &mut egui::Ui) {
-        if self.tool == Tool::Shape {
-            ui.separator();
-            egui::ComboBox::from_id_salt("toolbar-shape-kind")
-                .selected_text(self.shape_kind.label())
-                .show_ui(ui, |ui| {
-                    for shape in ShapeKind::ALL {
-                        ui.selectable_value(&mut self.shape_kind, shape, shape.label());
-                    }
-                });
-            if let Some(layer) = self.selected_layer().cloned()
-                && matches!(
-                    layer.kind,
-                    LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. }
-                )
-            {
-                self.shape_gradient_controls(ui, &layer);
+        let selected_layer = self.selected_layer().cloned();
+        let selected_kind = selected_layer.as_ref().map(selected_layer_kind);
+        let manifest = control_manifest(
+            self.tool,
+            selected_kind,
+            self.workspace.document.selection.is_some(),
+        );
+        for control in manifest {
+            match control {
+                ToolbarControl::ShapeKind => {
+                    ui.separator();
+                    egui::ComboBox::from_id_salt("toolbar-shape-kind")
+                        .selected_text(self.shape_kind.label())
+                        .show_ui(ui, |ui| {
+                            for shape in ShapeKind::ALL {
+                                ui.selectable_value(&mut self.shape_kind, shape, shape.label());
+                            }
+                        });
+                }
+                ToolbarControl::GradientEditor => {
+                    let layer = selected_layer
+                        .as_ref()
+                        .expect("gradient manifest requires a selected shape");
+                    self.shape_gradient_toolbar_control(ui, layer);
+                }
+                ToolbarControl::Paragraph => {
+                    let layer = selected_layer
+                        .as_ref()
+                        .expect("paragraph manifest requires selected text");
+                    let LayerKind::Text { typography, .. } = &layer.kind else {
+                        unreachable!("paragraph manifest requires selected text");
+                    };
+                    ui.separator();
+                    self.paragraph_controls(ui, layer.id, typography);
+                }
+                ToolbarControl::Selection => self.selection_workbench_controls(ui),
+                ToolbarControl::Brush => {
+                    ui.separator();
+                    self.brush_settings_control(ui);
+                }
             }
         }
-        if self.tool == Tool::Text {
+    }
+
+    fn shape_gradient_toolbar_control(&mut self, ui: &mut egui::Ui, layer: &Layer) {
+        let summary = gradient_summary(layer);
+        ui.menu_button(summary, |ui| {
+            ui.set_min_width(GRADIENT_POPOVER_WIDTH);
+            ui.label(
+                RichText::new("GRADIENT EDITOR")
+                    .size(9.0)
+                    .strong()
+                    .color(SUBTLE),
+            );
+            ui.label(
+                RichText::new("Full visual stop editing · Escape or click away to close")
+                    .size(9.0)
+                    .color(MUTED),
+            );
             ui.separator();
-            if let Some(layer) = self.selected_layer().cloned()
-                && let LayerKind::Text { typography, .. } = &layer.kind
-            {
-                self.paragraph_controls(ui, layer.id, typography);
-            } else {
-                ui.label(RichText::new("Select a text layer for paragraph controls").color(MUTED));
-            }
-        }
-        if matches!(self.tool, Tool::Marquee | Tool::Lasso | Tool::MagicWand)
-            || self.workspace.document.selection.is_some()
-        {
-            self.selection_workbench_controls(ui);
-        }
-        if matches!(self.tool, Tool::Brush | Tool::Eraser) {
-            ui.separator();
-            self.brush_settings_control(ui);
-        }
+            egui::ScrollArea::vertical()
+                .id_salt(("toolbar-gradient-editor", layer.id))
+                .max_height(GRADIENT_POPOVER_HEIGHT)
+                .show(ui, |ui| self.shape_gradient_controls(ui, layer));
+        })
+        .response
+        .on_hover_text(
+            "Open the complete gradient editor, including each stop's visual color picker",
+        );
     }
 
     fn toolbar_context_kind(&self) -> ContextKind {
@@ -511,12 +626,94 @@ impl PrismApp {
     }
 }
 
+fn gradient_summary(layer: &Layer) -> String {
+    let Some(prism_core::ShapeFill::Gradient(gradient)) = &layer.shape_fill else {
+        return "Gradient · Off".into();
+    };
+    let kind = match gradient.kind {
+        prism_core::GradientKind::Linear => "Linear",
+        prism_core::GradientKind::Radial => "Radial",
+        prism_core::GradientKind::Angle => "Angle",
+    };
+    format!("Gradient · {kind} · {} stops", gradient.stops.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn every_narrow_strategy_exposes_the_complete_context_manifest() {
+    fn review_harness_is_visible_by_default_and_has_an_explicit_off_gate() {
+        assert!(prototype_enabled(None));
+        assert!(prototype_enabled(Some("A")));
+        assert!(prototype_enabled(Some("B")));
+        assert!(prototype_enabled(Some("C")));
+        for off in ["0", "false", "off", "disabled"] {
+            assert!(!prototype_enabled(Some(off)));
+        }
+    }
+
+    #[test]
+    fn actual_control_manifest_covers_every_supported_context_in_source_order() {
+        assert_eq!(
+            control_manifest(Tool::MagicWand, Some(SelectedLayerKind::Other), false),
+            [ToolbarControl::Selection]
+        );
+        assert_eq!(
+            control_manifest(Tool::Shape, Some(SelectedLayerKind::Shape), false),
+            [ToolbarControl::ShapeKind, ToolbarControl::GradientEditor]
+        );
+        assert_eq!(
+            control_manifest(Tool::Shape, Some(SelectedLayerKind::Shape), true),
+            [
+                ToolbarControl::ShapeKind,
+                ToolbarControl::GradientEditor,
+                ToolbarControl::Selection,
+            ]
+        );
+        assert_eq!(
+            control_manifest(Tool::Text, Some(SelectedLayerKind::Text), true),
+            [ToolbarControl::Paragraph, ToolbarControl::Selection]
+        );
+        assert_eq!(
+            control_manifest(Tool::Brush, Some(SelectedLayerKind::Other), false),
+            [ToolbarControl::Brush]
+        );
+    }
+
+    #[test]
+    fn all_manifest_controls_have_a_reachable_path_at_review_widths() {
+        let contexts = [
+            (ContextKind::MagicWand, vec![ToolbarControl::Selection]),
+            (
+                ContextKind::ShapeWithSelection,
+                vec![
+                    ToolbarControl::ShapeKind,
+                    ToolbarControl::GradientEditor,
+                    ToolbarControl::Selection,
+                ],
+            ),
+            (
+                ContextKind::TextWithSelection,
+                vec![ToolbarControl::Paragraph, ToolbarControl::Selection],
+            ),
+        ];
+        for prototype in ToolbarOverflowPrototype::ALL {
+            for width in [980.0, 1_200.0, 1_920.0] {
+                for (context, manifest) in &contexts {
+                    let presentation = presentation_for(prototype, width, *context);
+                    let access: Vec<_> = manifest
+                        .iter()
+                        .map(|control| access_for(presentation, *control))
+                        .collect();
+                    assert_eq!(access.len(), manifest.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn layout_matrix_is_stable_at_980_1200_and_1920() {
         for context in [
             ContextKind::Selection,
             ContextKind::Lasso,
@@ -524,23 +721,23 @@ mod tests {
             ContextKind::ShapeWithSelection,
             ContextKind::TextWithSelection,
         ] {
-            assert_eq!(
-                presentation_for(ToolbarOverflowPrototype::TrailingMore, 980.0, context),
-                ResponsivePresentation::MoreMenu
-            );
-            assert_eq!(
-                presentation_for(ToolbarOverflowPrototype::ScrollRail, 980.0, context),
-                ResponsivePresentation::ScrollRail
-            );
-            assert_eq!(
-                presentation_for(ToolbarOverflowPrototype::AdaptiveWrap, 980.0, context),
-                ResponsivePresentation::Wrapped { rows: 3 }
-            );
+            for width in [980.0, 1_200.0] {
+                assert_eq!(
+                    presentation_for(ToolbarOverflowPrototype::TrailingMore, width, context),
+                    ResponsivePresentation::MoreMenu
+                );
+                assert_eq!(
+                    presentation_for(ToolbarOverflowPrototype::ScrollRail, width, context),
+                    ResponsivePresentation::ScrollRail
+                );
+                assert_eq!(
+                    presentation_for(ToolbarOverflowPrototype::AdaptiveWrap, width, context),
+                    ResponsivePresentation::Wrapped {
+                        rows: if width < 1_080.0 { 3 } else { 2 }
+                    }
+                );
+            }
         }
-    }
-
-    #[test]
-    fn wide_layout_is_identical_inline_presentation_for_every_prototype() {
         for prototype in ToolbarOverflowPrototype::ALL {
             for context in [
                 ContextKind::None,
@@ -554,6 +751,89 @@ mod tests {
                     ResponsivePresentation::Inline
                 );
             }
+        }
+    }
+
+    #[test]
+    fn gradient_editor_is_always_an_explicit_popover_never_inline_or_clipped() {
+        for prototype in ToolbarOverflowPrototype::ALL {
+            for width in [980.0, 1_200.0, 1_920.0] {
+                let presentation =
+                    presentation_for(prototype, width, ContextKind::ShapeWithSelection);
+                assert!(matches!(
+                    access_for(presentation, ToolbarControl::GradientEditor),
+                    ControlAccess::GradientPopover | ControlAccess::MoreMenuThenGradientPopover
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn closed_paths_receive_gradient_access_and_open_paths_do_not() {
+        use prism_core::{PathAnchor, PathFillRule, PathGeometry};
+
+        let path = |closed| {
+            PathGeometry::new(
+                20,
+                20,
+                closed,
+                PathFillRule::EvenOdd,
+                vec![
+                    PathAnchor::corner(2.0, 2.0),
+                    PathAnchor::corner(18.0, 2.0),
+                    PathAnchor::corner(10.0, 18.0),
+                ],
+            )
+            .unwrap()
+        };
+        let closed = Layer {
+            kind: LayerKind::Path {
+                geometry: path(true),
+                color: [255; 4],
+            },
+            ..Default::default()
+        };
+        let open = Layer {
+            kind: LayerKind::Path {
+                geometry: path(false),
+                color: [255; 4],
+            },
+            ..Default::default()
+        };
+        assert_eq!(selected_layer_kind(&closed), SelectedLayerKind::Shape);
+        assert_eq!(selected_layer_kind(&open), SelectedLayerKind::Other);
+        assert!(
+            control_manifest(Tool::Shape, Some(selected_layer_kind(&closed)), false)
+                .contains(&ToolbarControl::GradientEditor)
+        );
+        assert!(
+            !control_manifest(Tool::Shape, Some(selected_layer_kind(&open)), false)
+                .contains(&ToolbarControl::GradientEditor)
+        );
+    }
+
+    #[test]
+    fn gradient_summary_reports_state_kind_and_stop_count_truthfully() {
+        let disabled = Layer::default();
+        assert_eq!(gradient_summary(&disabled), "Gradient · Off");
+        for (kind, expected) in [
+            (prism_core::GradientKind::Linear, "Linear"),
+            (prism_core::GradientKind::Radial, "Radial"),
+            (prism_core::GradientKind::Angle, "Angle"),
+        ] {
+            let mut layer = Layer::default();
+            let mut gradient = prism_core::ShapeGradient {
+                kind,
+                ..Default::default()
+            };
+            gradient
+                .stops
+                .push(prism_core::GradientStop::new(0.5, [128, 64, 32, 255]));
+            layer.shape_fill = Some(prism_core::ShapeFill::Gradient(gradient));
+            assert_eq!(
+                gradient_summary(&layer),
+                format!("Gradient · {expected} · 3 stops")
+            );
         }
     }
 

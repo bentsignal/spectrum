@@ -281,6 +281,40 @@ fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
 }
 
 #[test]
+fn toolbar_review_package_has_a_distinct_identity_and_embedded_provenance() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repository = manifest.join("../..");
+    let production_plist =
+        fs::read_to_string(repository.join("packaging/prism/macos/Info.plist")).unwrap();
+    let review =
+        fs::read_to_string(repository.join("scripts/package-prism-toolbar-review-macos.sh"))
+            .unwrap();
+
+    assert!(production_plist.contains("<string>Prism</string>"));
+    assert!(production_plist.contains("<string>com.bentsignal.prism</string>"));
+    assert!(!production_plist.contains("Toolbar Review"));
+    assert!(!production_plist.contains("toolbar-review"));
+
+    for required in [
+        "Prism Toolbar Review.app",
+        "Prism Toolbar Review",
+        "com.bentsignal.prism.toolbar-review",
+        "SpectrumReviewPrototype",
+        "SpectrumReviewSourceCommit",
+        "SpectrumReviewDependencyCommit",
+        "c926fd4a3c7bb6b034e9278cc1e99edbf12bc3fa",
+        "codesign --verify --deep --strict",
+    ] {
+        assert!(
+            review.contains(required),
+            "review package must contain {required:?}"
+        );
+    }
+    assert!(review.contains("bash \"$repo_root/scripts/package-prism-macos.sh\""));
+    assert!(review.contains("mv \"$production_bundle\" \"$review_bundle\""));
+}
+
+#[test]
 fn bundled_ubuntu_license_is_exact_and_installed_by_every_native_package() {
     use sha2::{Digest, Sha256};
 
