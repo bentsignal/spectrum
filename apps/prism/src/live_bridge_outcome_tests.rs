@@ -126,6 +126,72 @@ fn close_drains_accounted_ingress_to_zero_and_rejects_late_admission() {
 }
 
 #[test]
+fn precommit_invalid_batch_and_undo_root_are_cached_refusals_without_history_change() {
+    let mut fixture = Fixture::new(CollaborationMode::Separate);
+    let mut harness = HostHarness::new(&fixture);
+    let history_before = Workspace::open_session(&fixture.path, fixture.agent_session)
+        .unwrap()
+        .history()
+        .unwrap()
+        .unwrap()
+        .revisions
+        .len();
+    let invalid = harness.request(
+        &fixture,
+        PrismLiveAction::ExecuteBatch {
+            expectation: fixture.expectation(),
+            command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+            commands: vec![crate::Command::SetOpacity {
+                id: u64::MAX,
+                opacity: 0.5,
+            }],
+        },
+        InteractionPolicy::Immediate,
+    );
+    let invalid_response = harness.round_trip(
+        &mut fixture.human,
+        invalid.clone(),
+        PrismLiveInteractionState::Idle,
+    );
+    assert!(matches!(
+        invalid_response.body,
+        ResponseBody::Refused { .. }
+    ));
+    assert!(matches!(
+        harness.server.handle_request(invalid).unwrap().body,
+        ResponseBody::Refused { .. }
+    ));
+
+    let undo = harness.request(
+        &fixture,
+        PrismLiveAction::Undo {
+            expectation: fixture.expectation(),
+        },
+        InteractionPolicy::Immediate,
+    );
+    let undo_response = harness.round_trip(
+        &mut fixture.human,
+        undo.clone(),
+        PrismLiveInteractionState::Idle,
+    );
+    assert!(matches!(undo_response.body, ResponseBody::Refused { .. }));
+    assert!(matches!(
+        harness.server.handle_request(undo).unwrap().body,
+        ResponseBody::Refused { .. }
+    ));
+    assert_eq!(
+        Workspace::open_session(&fixture.path, fixture.agent_session)
+            .unwrap()
+            .history()
+            .unwrap()
+            .unwrap()
+            .revisions
+            .len(),
+        history_before
+    );
+}
+
+#[test]
 fn post_agent_commit_failure_is_unknown_and_exact_retry_cannot_duplicate_intent() {
     let mut fixture = Fixture::new(CollaborationMode::Separate);
     let mut harness = HostHarness::new(&fixture);
@@ -149,12 +215,14 @@ fn post_agent_commit_failure_is_unknown_and_exact_retry_cannot_duplicate_intent(
         .drain
         .inject_session_fault(PrismLiveTestFault::AfterAgentMutation);
 
-    let error = harness.round_trip_error(
+    let (error, report) = harness.round_trip_error(
         &mut fixture.human,
         request.clone(),
         PrismLiveInteractionState::Idle,
     );
     assert!(error.to_string().contains("inspect current state"));
+    assert!(report.outcome_unknown);
+    assert!(!report.workspace_changed);
     let agent = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
     assert_eq!(agent.document.name, "Committed before fault");
     assert_eq!(
@@ -205,12 +273,14 @@ fn post_human_sync_failure_is_unknown_with_both_committed_cursors_observable() {
         .drain
         .inject_session_fault(PrismLiveTestFault::AfterHumanSync);
 
-    let error = harness.round_trip_error(
+    let (error, report) = harness.round_trip_error(
         &mut fixture.human,
         request.clone(),
         PrismLiveInteractionState::Idle,
     );
     assert!(error.to_string().contains("inspect current state"));
+    assert!(report.outcome_unknown);
+    assert!(report.workspace_changed);
     assert_eq!(fixture.human.document.name, "Synced before fault");
     let agent = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
     assert_eq!(agent.document.name, "Synced before fault");
@@ -279,8 +349,12 @@ fn deferred_post_commit_unknown_never_claims_the_interaction_was_canceled() {
             .body,
         ResponseBody::Applied { .. }
     ));
+    assert!(matches!(
+        subscription.try_next().unwrap().unwrap().event,
+        BridgeEventKind::InteractionOutcomeUnknown { .. }
+    ));
     assert!(
         subscription.try_next().unwrap().is_none(),
-        "an unknown post-commit outcome must not publish InteractionCanceled"
+        "deferred interaction must have exactly one terminal event"
     );
 }

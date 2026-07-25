@@ -185,23 +185,25 @@ impl HostHarness {
         workspace: &mut Workspace,
         request: RequestEnvelope,
         interaction: PrismLiveInteractionState,
-    ) -> spectrum_live_bridge::BridgeError {
+    ) -> (spectrum_live_bridge::BridgeError, PrismLiveDrainReport) {
         let server = Arc::clone(&self.server);
         let worker = thread::spawn(move || server.handle_request(request));
         let deadline = Instant::now() + Duration::from_secs(1);
-        let mut received = false;
+        let mut report = None;
         while Instant::now() < deadline {
-            if self.drain.drain(workspace, interaction).received > 0 {
-                received = true;
+            let drained = self.drain.drain(workspace, interaction);
+            if drained.received > 0 {
+                report = Some(drained);
                 break;
             }
             thread::sleep(Duration::from_micros(100));
         }
-        assert!(received, "live host did not enqueue within one second");
-        worker
+        let report = report.expect("live host did not enqueue within one second");
+        let error = worker
             .join()
             .unwrap()
-            .expect_err("injected post-commit failure must be non-definite")
+            .expect_err("injected post-commit failure must be non-definite");
+        (error, report)
     }
 }
 
@@ -737,6 +739,10 @@ fn active_interaction_refuses_immediate_and_releases_one_deferred_request() {
         subscription.try_next().unwrap().unwrap().event,
         BridgeEventKind::InteractionCommitted { .. }
     ));
+    assert!(
+        subscription.try_next().unwrap().is_none(),
+        "committed deferred interaction must have exactly one terminal event"
+    );
 
     let confirmation = harness.request(
         &fixture,
@@ -788,6 +794,10 @@ fn closing_a_binding_cancels_deferred_work_and_wakes_waiters() {
         subscription.try_next().unwrap().unwrap().event,
         BridgeEventKind::ProjectClosed
     ));
+    assert!(
+        subscription.try_next().unwrap().is_none(),
+        "canceled deferred interaction must have exactly one terminal event"
+    );
     assert_ne!(
         Workspace::open_session(&fixture.path, fixture.agent_session)
             .unwrap()

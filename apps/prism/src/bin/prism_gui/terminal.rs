@@ -337,7 +337,7 @@ impl TerminalDock {
     ) -> usize {
         self.mark_live_binding_stale(
             retired,
-            "This project is running without a usable live binding. Existing commands fail closed; reopen the project and open a new terminal session to continue.",
+            "This project moved or reopened without a usable live binding. Existing commands fail closed; restore the live binding and open a new terminal session to continue.",
         )
     }
 

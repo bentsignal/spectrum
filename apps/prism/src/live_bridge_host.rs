@@ -77,6 +77,8 @@ pub struct PrismLiveDrainReport {
     pub applied: usize,
     pub deferred: usize,
     pub refused: usize,
+    pub workspace_changed: bool,
+    pub outcome_unknown: bool,
 }
 
 impl PrismLiveHost {
@@ -547,8 +549,12 @@ impl PrismLiveDrain {
         report: &mut PrismLiveDrainReport,
     ) {
         let was_deferred = pending.deferred_at.is_some();
+        let generation_before = workspace.document_generation();
         let result = self.apply_locked(workspace, &pending);
         let outcome_unknown = result.is_err();
+        let workspace_changed = workspace.document_generation() != generation_before;
+        report.workspace_changed |= workspace_changed;
+        report.outcome_unknown |= outcome_unknown;
         let mutation_applied = !matches!(pending.action, PrismLiveAction::State)
             && matches!(
                 &result,
@@ -567,6 +573,8 @@ impl PrismLiveDrain {
         }
         if was_deferred && !mutation_applied && !outcome_unknown {
             self.cancel_deferred_event(&pending);
+        } else if was_deferred && outcome_unknown {
+            self.outcome_unknown_deferred_event(&pending);
         }
         send_reply(pending.reply.take(), result);
     }
@@ -624,8 +632,8 @@ impl PrismLiveDrain {
         };
         let after = durable_state(workspace).map_err(protocol_error)?;
         host.human_cursor = after.cursor;
-        self.publish_events(&result, pending)?;
         let value = serde_json::to_value(&result).map_err(BridgeError::Json)?;
+        self.publish_events(&result, pending)?;
         Ok(HostApplyOutcome::Applied(ResponseBody::Applied {
             result: value,
             cursors: PrismLiveHost::cursors(&host),
@@ -758,6 +766,16 @@ impl PrismLiveDrain {
             && let Some(events) = self.host.events.get()
         {
             let _ = events.append(BridgeEventKind::InteractionCanceled {
+                interaction_id: deferred_interaction_id(&pending.request),
+            });
+        }
+    }
+
+    fn outcome_unknown_deferred_event(&self, pending: &PendingRequest) {
+        if let Ok(_state) = self.host.state.lock()
+            && let Some(events) = self.host.events.get()
+        {
+            let _ = events.append(BridgeEventKind::InteractionOutcomeUnknown {
                 interaction_id: deferred_interaction_id(&pending.request),
             });
         }

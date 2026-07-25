@@ -32,10 +32,25 @@ pub(super) struct PrismLiveRegistry {
     fail_next_start: bool,
 }
 
+#[derive(Debug)]
 pub(super) struct LiveRegistration {
     pub(super) record: DiscoveryRecord,
     pub(super) retired_binding: Option<BindingId>,
 }
+
+#[derive(Debug)]
+pub(super) struct LiveRegistrationFailure {
+    error: anyhow::Error,
+    pub(super) retired_binding: Option<BindingId>,
+}
+
+impl std::fmt::Display for LiveRegistrationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for LiveRegistrationFailure {}
 
 struct LiveBinding {
     server: Arc<BridgeServer<PrismLiveHost>>,
@@ -84,12 +99,29 @@ impl PrismLiveRegistry {
         &mut self,
         tab_id: u64,
         workspace: &Workspace,
-    ) -> anyhow::Result<LiveRegistration> {
-        if workspace.live_state()?.is_none() {
-            anyhow::bail!("only durable Prism workspaces can publish a live binding");
+    ) -> Result<LiveRegistration, LiveRegistrationFailure> {
+        match workspace.live_state() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err(LiveRegistrationFailure {
+                    error: anyhow::anyhow!(
+                        "only durable Prism workspaces can publish a live binding"
+                    ),
+                    retired_binding: None,
+                });
+            }
+            Err(error) => {
+                return Err(LiveRegistrationFailure {
+                    error,
+                    retired_binding: None,
+                });
+            }
         }
         if !self.bindings.contains_key(&tab_id) && self.bindings.len() >= MAX_LIVE_BINDINGS {
-            anyhow::bail!("Prism live binding limit ({MAX_LIVE_BINDINGS}) reached");
+            return Err(LiveRegistrationFailure {
+                error: anyhow::anyhow!("Prism live binding limit ({MAX_LIVE_BINDINGS}) reached"),
+                retired_binding: None,
+            });
         }
         let epoch = self
             .bindings
@@ -97,7 +129,10 @@ impl PrismLiveRegistry {
             .and_then(|binding| binding.lease.as_ref())
             .and_then(|lease| lease.record().ok())
             .map_or(1, |record| record.binding_epoch.saturating_add(1));
-        let mut binding = self.start_binding(epoch, workspace)?;
+        let mut binding = match self.start_binding(epoch, workspace) {
+            Ok(binding) => binding,
+            Err(error) => return Err(self.registration_failure(tab_id, workspace, error)),
+        };
         let record = match binding
             .lease
             .as_ref()
@@ -107,7 +142,7 @@ impl PrismLiveRegistry {
             Ok(record) => record,
             Err(error) => {
                 binding.shutdown();
-                return Err(error.into());
+                return Err(self.registration_failure(tab_id, workspace, error.into()));
             }
         };
         let mut previous = self.bindings.insert(tab_id, binding);
@@ -119,6 +154,23 @@ impl PrismLiveRegistry {
             record,
             retired_binding,
         })
+    }
+
+    fn registration_failure(
+        &mut self,
+        tab_id: u64,
+        workspace: &Workspace,
+        error: anyhow::Error,
+    ) -> LiveRegistrationFailure {
+        let incompatible = self
+            .bindings
+            .get(&tab_id)
+            .is_some_and(|binding| !binding.matches_workspace(workspace));
+        let retired_binding = incompatible.then(|| self.remove(tab_id)).flatten();
+        LiveRegistrationFailure {
+            error,
+            retired_binding,
+        }
     }
 
     fn start_binding(&mut self, epoch: u64, workspace: &Workspace) -> anyhow::Result<LiveBinding> {
@@ -236,6 +288,24 @@ impl Drop for PrismLiveRegistry {
 }
 
 impl LiveBinding {
+    fn matches_workspace(&self, workspace: &Workspace) -> bool {
+        let Ok(Some(live)) = workspace.live_state() else {
+            return false;
+        };
+        let Some(path) = workspace.project_path.as_deref() else {
+            return false;
+        };
+        let Ok(path) = std::fs::canonicalize(path) else {
+            return false;
+        };
+        self.lease
+            .as_ref()
+            .and_then(|lease| lease.record().ok())
+            .is_some_and(|record| {
+                record.project_id == live.project_id && record.canonical_project_path == path
+            })
+    }
+
     fn start(
         directory: &DiscoveryDirectory,
         instance_id: InstanceId,
@@ -374,6 +444,7 @@ mod tests {
     use spectrum_revisions::{Actor, ActorKind, SessionId};
 
     use super::*;
+    use crate::TerminalDock;
 
     #[test]
     fn tab_lifecycle_rotates_and_removes_authenticated_discovery() {
@@ -508,6 +579,59 @@ mod tests {
                 .server
                 .active_connection_count(),
             1
+        );
+    }
+
+    #[test]
+    fn moved_project_start_failure_retires_the_incompatible_old_binding() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("discovery");
+        let project = temporary.path().join("project.prism");
+        let mut workspace = Workspace::create_durable(
+            prism_core::Document::new("Live", 64, 64),
+            &project,
+            Actor {
+                id: "human:test".into(),
+                display_name: "Test Human".into(),
+                kind: ActorKind::Human,
+            },
+            SessionId::new(),
+        )
+        .unwrap();
+        let mut registry = PrismLiveRegistry::at_root(root).unwrap();
+        let original = registry.register(7, &workspace).unwrap().record;
+        let capability = registry.directory.load_capability(&original).unwrap();
+        let mut terminal = TerminalDock::new(true);
+        terminal.new_session(crate::terminal::terminal_launch(
+            &workspace,
+            Some(original.binding_id),
+        ));
+        let moved = temporary.path().join("moved.prism");
+        workspace.move_project(&moved).unwrap();
+
+        registry.fail_next_start();
+        let failure = registry.register(7, &workspace).unwrap_err();
+        assert_eq!(failure.retired_binding, Some(original.binding_id));
+        assert!(registry.record(7).is_none());
+        assert!(registry.directory.records().unwrap().is_empty());
+        assert!(!original.capability_path.exists());
+        assert!(!project.exists());
+        assert_eq!(terminal.live_binding_unavailable(original.binding_id), 1);
+        assert_eq!(
+            terminal.sessions[0].context.environment("PRISM_PROJECT"),
+            Some(original.canonical_project_path.as_os_str())
+        );
+        assert!(
+            terminal.sessions[0]
+                .message
+                .as_ref()
+                .unwrap()
+                .0
+                .contains("open a new terminal session")
+        );
+        assert!(
+            BridgeClient::connect(&ClientConfig::local(original.endpoint.clone()), &capability)
+                .is_err()
         );
     }
 }

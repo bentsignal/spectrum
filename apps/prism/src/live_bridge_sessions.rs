@@ -6,8 +6,8 @@ use spectrum_revisions::{
 };
 
 use crate::{
-    Command, LiveWorkspaceState, PrismLiveAction, PrismLiveApplied, PrismLiveResult,
-    PrismLiveState, Workspace,
+    LiveWorkspaceState, PrismLiveAction, PrismLiveApplied, PrismLiveResult, PrismLiveState,
+    Workspace,
 };
 
 #[derive(Debug)]
@@ -102,16 +102,17 @@ impl PrismLiveSessions {
         check_expectation(expectation, &human_before, &agent_before, &collaboration)
             .map_err(PrismLiveApplyError::definitely_unapplied)?;
 
-        let outputs = match action {
+        let prepared = match action {
             PrismLiveAction::State => unreachable!(),
-            PrismLiveAction::ExecuteBatch { commands, .. } => agent.execute_batch(commands),
-            PrismLiveAction::Undo { .. } => agent.execute(Command::Undo).map(|output| vec![output]),
-            PrismLiveAction::Redo { .. } => agent.execute(Command::Redo).map(|output| vec![output]),
-            PrismLiveAction::MoveAgentCursor { target, .. } => {
-                agent.move_to_revision(target).map(|_| Vec::new())
-            }
+            PrismLiveAction::ExecuteBatch { commands, .. } => agent.prepare_live_batch(commands),
+            PrismLiveAction::Undo { .. } => agent.prepare_live_undo(),
+            PrismLiveAction::Redo { .. } => agent.prepare_live_redo(),
+            PrismLiveAction::MoveAgentCursor { target, .. } => agent.prepare_live_move(target),
         }
-        .map_err(PrismLiveApplyError::outcome_unknown)?;
+        .map_err(PrismLiveApplyError::definitely_unapplied)?;
+        let outputs = agent
+            .commit_live_mutation(prepared)
+            .map_err(PrismLiveApplyError::outcome_unknown)?;
         self.maybe_fail(PrismLiveTestFault::AfterAgentMutation)?;
 
         let sync = if collaboration.mode == CollaborationMode::Together {

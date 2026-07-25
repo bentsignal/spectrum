@@ -436,7 +436,7 @@ impl PrismApp {
             .and_then(|id| self.workspace.document.layer(id).ok())
     }
 
-    fn add_workspace_tab(&mut self, workspace: Workspace) {
+    fn add_workspace_tab(&mut self, workspace: Workspace) -> Result<(), String> {
         self.clear_font_hover_preview();
         self.settle_inline_text_editor();
         self.cancel_pen();
@@ -459,7 +459,7 @@ impl PrismApp {
         self.drag = None;
         self.smart_guides = SmartGuides::default();
         self.alignment_reference = None;
-        self.register_live_tab(id);
+        self.register_live_tab(id)
     }
 
     fn activate_tab(&mut self, id: u64) {

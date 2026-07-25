@@ -26,6 +26,23 @@ pub struct Workspace {
     interaction_commands: Vec<Command>,
 }
 
+pub(crate) enum PreparedLiveMutation {
+    Noop {
+        outputs: Vec<CommandOutput>,
+    },
+    Edit {
+        prepared: crate::revisions::PreparedEdit,
+        candidate: Document,
+        outputs: Vec<CommandOutput>,
+        label: String,
+    },
+    Navigation {
+        prepared: crate::revisions::PreparedNavigation,
+        changed: bool,
+        outputs: Vec<CommandOutput>,
+    },
+}
+
 impl Default for Workspace {
     fn default() -> Self {
         Self::new(Document::default(), None)
@@ -439,6 +456,124 @@ impl Workspace {
         Ok(outputs)
     }
 
+    pub(crate) fn prepare_live_batch(
+        &self,
+        commands: Vec<Command>,
+    ) -> Result<PreparedLiveMutation> {
+        validate_live_mutation_ready(self)?;
+        validate_edit_batch(&commands)?;
+        let durable = self
+            .durable
+            .as_ref()
+            .context("live Prism mutation requires a durable project")?;
+        durable.preflight_edit(&commands)?;
+        let commands = resolve_durable_commands(&self.document, commands)?;
+        let prepared = durable.prepare_edit(&commands)?;
+        let mut candidate = self.document.clone();
+        let outputs = prepared.apply(&mut candidate)?;
+        if candidate == self.document {
+            return Ok(PreparedLiveMutation::Noop { outputs });
+        }
+        let label = if outputs.len() == 1 {
+            outputs[0].message.clone()
+        } else {
+            format!("Applied {} actions", outputs.len())
+        };
+        Ok(PreparedLiveMutation::Edit {
+            prepared,
+            candidate,
+            outputs,
+            label,
+        })
+    }
+
+    pub(crate) fn prepare_live_undo(&self) -> Result<PreparedLiveMutation> {
+        validate_live_mutation_ready(self)?;
+        let durable = self
+            .durable
+            .as_ref()
+            .context("live Prism mutation requires a durable project")?;
+        let prepared = durable.prepare_undo()?;
+        Ok(PreparedLiveMutation::Navigation {
+            prepared,
+            changed: true,
+            outputs: vec![output("undo", "went back one edit", Vec::new())],
+        })
+    }
+
+    pub(crate) fn prepare_live_redo(&self) -> Result<PreparedLiveMutation> {
+        validate_live_mutation_ready(self)?;
+        let durable = self
+            .durable
+            .as_ref()
+            .context("live Prism mutation requires a durable project")?;
+        let prepared = durable.prepare_redo()?;
+        Ok(PreparedLiveMutation::Navigation {
+            prepared,
+            changed: true,
+            outputs: vec![output("redo", "went forward one edit", Vec::new())],
+        })
+    }
+
+    pub(crate) fn prepare_live_move(
+        &self,
+        target: spectrum_revisions::RevisionId,
+    ) -> Result<PreparedLiveMutation> {
+        validate_live_mutation_ready(self)?;
+        let durable = self
+            .durable
+            .as_ref()
+            .context("live Prism mutation requires a durable project")?;
+        let prepared = durable.prepare_move_to(target)?;
+        let changed = prepared.changes_cursor(durable.cursor());
+        Ok(PreparedLiveMutation::Navigation {
+            prepared,
+            changed,
+            outputs: Vec::new(),
+        })
+    }
+
+    pub(crate) fn commit_live_mutation(
+        &mut self,
+        mutation: PreparedLiveMutation,
+    ) -> Result<Vec<CommandOutput>> {
+        match mutation {
+            PreparedLiveMutation::Noop { outputs } => Ok(outputs),
+            PreparedLiveMutation::Edit {
+                prepared,
+                candidate,
+                outputs,
+                label,
+            } => {
+                self.durable
+                    .as_mut()
+                    .context("durable Prism project disappeared")?
+                    .commit_prepared(prepared, &candidate, label)?;
+                self.document = candidate;
+                self.dirty = false;
+                self.bump_document_generation();
+                Ok(outputs)
+            }
+            PreparedLiveMutation::Navigation {
+                prepared,
+                changed,
+                outputs,
+            } => {
+                let document = self
+                    .durable
+                    .as_mut()
+                    .context("durable Prism project disappeared")?
+                    .commit_navigation(prepared)?;
+                if changed {
+                    self.document = document;
+                    self.dirty = false;
+                    self.bump_document_generation();
+                }
+                Ok(outputs)
+            }
+        }
+    }
+
     pub fn begin_interaction(&mut self) {
         if self.interaction_before.is_none() {
             self.interaction_before = Some(self.document.clone());
@@ -705,6 +840,28 @@ fn resolve_durable_commands(
         apply_command(&mut candidate, command.clone())?;
     }
     Ok(commands)
+}
+
+fn validate_live_mutation_ready(workspace: &Workspace) -> Result<()> {
+    if workspace.interaction_before.is_some() {
+        bail!("finish the active interaction before executing another command");
+    }
+    Ok(())
+}
+
+fn validate_edit_batch(commands: &[Command]) -> Result<()> {
+    if commands.is_empty() {
+        bail!("command batch is empty");
+    }
+    if commands.iter().any(|command| {
+        matches!(
+            command,
+            Command::Undo | Command::Redo | Command::SelectLayer { .. }
+        )
+    }) {
+        bail!("history and selection commands cannot be part of an edit batch");
+    }
+    Ok(())
 }
 
 fn next_document_identity() -> u64 {
