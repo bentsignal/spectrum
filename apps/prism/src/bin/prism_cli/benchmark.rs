@@ -24,6 +24,8 @@ mod adjusted_vector;
 mod dissolve_preview;
 #[path = "benchmark/font_picker.rs"]
 mod font_picker;
+#[path = "benchmark/mixed_raster.rs"]
+mod mixed_raster;
 #[path = "benchmark/optimized_copy.rs"]
 mod optimized_copy;
 #[path = "benchmark/paint.rs"]
@@ -121,6 +123,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let text_preview_frame = text_preview_frame::measure()?;
     let font_picker = font_picker::measure();
     let dissolve_preview = dissolve_preview::measure()?;
+    let mut mixed_raster = mixed_raster::measure()?;
     let dissolve_preview_budget =
         dissolve_preview::budget_ms(matches!(profile, BenchmarkProfile::HostedCi));
     let mut optimized_copy = optimized_copy::measure()?;
@@ -634,6 +637,10 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let (adjusted_vector_source_median, adjusted_vector_source_p95) =
         sample_summary(&mut adjusted_vector.samples);
     let (cached_spot_median, cached_spot_p95) = sample_summary(&mut cached_spot_samples);
+    let (mixed_raster_8x_median, mixed_raster_8x_p95) =
+        sample_summary(&mut mixed_raster.samples_8x);
+    let (mixed_raster_16x_median, mixed_raster_16x_p95) =
+        sample_summary(&mut mixed_raster.samples_16x);
     let (optimized_copy_median, optimized_copy_p95) = sample_summary(&mut optimized_copy.samples);
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = [
@@ -849,6 +856,20 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             budget_ms: 500.0,
             pass: cached_spot_p95 <= 500.0,
         },
+        BenchmarkMetric {
+            name: "8x_zoom_16k_mixed_raster_viewport_composite",
+            median_ms: mixed_raster_8x_median,
+            p95_ms: mixed_raster_8x_p95,
+            budget_ms: 500.0,
+            pass: mixed_raster_8x_p95 <= 500.0 && mixed_raster.full_plane_copy_bytes == 0,
+        },
+        BenchmarkMetric {
+            name: "16x_zoom_16k_mixed_raster_viewport_composite",
+            median_ms: mixed_raster_16x_median,
+            p95_ms: mixed_raster_16x_p95,
+            budget_ms: 500.0,
+            pass: mixed_raster_16x_p95 <= 500.0 && mixed_raster.full_plane_copy_bytes == 0,
+        },
     ];
     let passed = metrics.iter().all(|metric| metric.pass);
     if strict && !passed {
@@ -874,6 +895,9 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         "output": [rendered.as_ref().unwrap().width(), rendered.as_ref().unwrap().height()],
         "setup": {
             "cached_raster_cold_prepare_ms": cached_raster_cold_prepare.as_secs_f64() * 1_000.0,
+            "mixed_raster_cold_prepare_ms": mixed_raster.cold_prepare.as_secs_f64() * 1_000.0,
+            "mixed_raster_max_source_staging_pixels": mixed_raster.max_source_staging_pixels,
+            "mixed_raster_full_plane_copy_bytes": mixed_raster.full_plane_copy_bytes,
             "cached_raster_samples": "warm file-backed provider reads",
             "paint_max_source_staging_pixels": paint.max_source_staging_pixels,
             "optimized_copy_reduction_bytes": optimized_copy.reduction_bytes,

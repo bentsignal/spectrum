@@ -687,6 +687,7 @@ mod raster_sources;
 mod render;
 mod render_fallback;
 mod render_region;
+mod sequential_png_source;
 mod text_preview_cache;
 mod text_render;
 mod text_rotation;
@@ -715,6 +716,7 @@ pub use render::{
     save_document,
 };
 pub use render_region::{RegionSourceScales, recommended_text_raster_scale, region_source_scales};
+pub use sequential_png_source::{SequentialPngLimits, SequentialPngReadError, SequentialPngSource};
 pub use text_preview_cache::{LayerPreviewSchedule, TextPreviewFrameCache};
 pub use text_render::{
     TextGeometry, measure_text, measure_text_geometry, measure_text_geometry_with_typography,

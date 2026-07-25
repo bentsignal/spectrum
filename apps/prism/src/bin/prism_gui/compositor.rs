@@ -66,13 +66,11 @@ fn render_composite_request(
                 request.raster_sources.as_ref(),
             )
         }
-        RasterRenderMode::LegacyNative | RasterRenderMode::FallbackCapped => {
-            prism_core::render_document_region_scaled(
-                &request.key.document,
-                request.key.scale(),
-                request.key.region,
-            )
-        }
+        RasterRenderMode::FallbackCapped => prism_core::render_document_region_scaled(
+            &request.key.document,
+            request.key.scale(),
+            request.key.region,
+        ),
     };
     result.map_err(|error| format!("{error:#}"))
 }
@@ -89,13 +87,11 @@ fn render_immediate_composite_request(
                 request.raster_sources.as_ref(),
             )
         }
-        RasterRenderMode::LegacyNative | RasterRenderMode::FallbackCapped => {
-            prism_core::render_direct_preview_region_scaled(
-                &request.key.document,
-                request.key.scale(),
-                request.key.region,
-            )
-        }
+        RasterRenderMode::FallbackCapped => prism_core::render_direct_preview_region_scaled(
+            &request.key.document,
+            request.key.scale(),
+            request.key.region,
+        ),
     };
     result.map_err(|error| format!("{error:#}"))
 }
@@ -935,3 +931,7 @@ mod review_tests;
 #[cfg(test)]
 #[path = "compositor_dissolve_tests.rs"]
 mod dissolve_tests;
+
+#[cfg(test)]
+#[path = "compositor_raster_snapshot_tests.rs"]
+mod raster_snapshot_tests;
