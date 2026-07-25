@@ -214,7 +214,7 @@ fn stale_saturated_worker_queue_wakes_poll_to_dispatch_new_active_work() {
         move || {
             let _ = wake_sender.send(());
         },
-        |_path, _identity| PreparationOutcome::LegacyNative,
+        |_path, _identity| PreparationOutcome::Ready(resolved("worker", None)),
     );
     let mut coordinator = RasterSourceCoordinator {
         request_sender: Some(request_sender.clone()),
@@ -241,7 +241,7 @@ fn stale_saturated_worker_queue_wakes_poll_to_dispatch_new_active_work() {
         .recv_timeout(Duration::from_secs(1))
         .expect("new active request completion did not wake the coordinator");
     coordinator.poll(&context);
-    assert!(coordinator.snapshot.legacy_native.contains(&active_path));
+    assert!(coordinator.snapshot.providers.contains_key(&active_path));
     drop(coordinator);
     drop(request_sender);
     worker.join().unwrap();

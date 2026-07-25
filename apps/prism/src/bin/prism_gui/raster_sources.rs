@@ -12,6 +12,7 @@ use eframe::egui;
 use prism_core::{
     DerivedBackingCache, DerivedBackingIdentity, DerivedBackingLimits, Document, LayerKind,
     PrepareDerivedBacking, RasterSourceEpoch, RasterSourceResolver, ResolvedRasterSource,
+    SequentialPngLimits, SequentialPngSource,
 };
 use spectrum_imaging::RegionReadCapability;
 
@@ -24,7 +25,6 @@ const DERIVED_CACHE_COMPATIBILITY: &str = "derived-rgba8-schema-v2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RasterRenderMode {
-    LegacyNative,
     Provider { snapshot_epoch: u64 },
     FallbackCapped,
 }
@@ -33,7 +33,6 @@ pub(super) enum RasterRenderMode {
 pub(super) struct RasterSourceSnapshot {
     epoch: u64,
     providers: Arc<HashMap<PathBuf, ResolvedRasterSource>>,
-    legacy_native: Arc<HashSet<PathBuf>>,
 }
 
 impl RasterSourceSnapshot {
@@ -41,12 +40,10 @@ impl RasterSourceSnapshot {
         Self {
             epoch: 0,
             providers: Arc::new(HashMap::new()),
-            legacy_native: Arc::new(HashSet::new()),
         }
     }
 
     pub(super) fn render_mode(&self, document: &Document) -> RasterRenderMode {
-        let mut raster_class = None;
         for layer in document
             .layers
             .iter()
@@ -62,34 +59,17 @@ impl RasterSourceSnapshot {
             let LayerKind::Raster { path, .. } = &layer.kind else {
                 continue;
             };
-            let class = if self.providers.contains_key(path) {
-                RasterClass::Provider
-            } else if self.legacy_native.contains(path) {
-                RasterClass::LegacyNative
-            } else {
-                return RasterRenderMode::FallbackCapped;
-            };
-            if raster_class.is_some_and(|existing| existing != class) {
-                // The provider renderer intentionally cannot fall back to paths. Keep mixed
-                // sequential/provider documents bounded until sequential sources have an
-                // immutable provider of their own.
+            if !self.providers.contains_key(path) {
                 return RasterRenderMode::FallbackCapped;
             }
-            raster_class = Some(class);
         }
 
-        match raster_class {
-            Some(RasterClass::Provider)
-                if prism_core::document_supports_region_native_zoom_with_sources(
-                    document, self,
-                ) =>
-            {
-                RasterRenderMode::Provider {
-                    snapshot_epoch: self.epoch,
-                }
+        if prism_core::document_supports_region_native_zoom_with_sources(document, self) {
+            RasterRenderMode::Provider {
+                snapshot_epoch: self.epoch,
             }
-            Some(RasterClass::Provider) => RasterRenderMode::FallbackCapped,
-            Some(RasterClass::LegacyNative) | None => RasterRenderMode::LegacyNative,
+        } else {
+            RasterRenderMode::FallbackCapped
         }
     }
 
@@ -99,10 +79,17 @@ impl RasterSourceSnapshot {
         path: PathBuf,
         source: ResolvedRasterSource,
     ) -> Arc<Self> {
+        Self::with_test_providers(epoch, [(path, source)])
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_test_providers(
+        epoch: u64,
+        sources: impl IntoIterator<Item = (PathBuf, ResolvedRasterSource)>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             epoch,
-            providers: Arc::new(HashMap::from([(path, source)])),
-            legacy_native: Arc::new(HashSet::new()),
+            providers: Arc::new(sources.into_iter().collect()),
         })
     }
 }
@@ -117,12 +104,6 @@ impl RasterSourceResolver for RasterSourceSnapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RasterClass {
-    LegacyNative,
-    Provider,
-}
-
 enum PathPhase {
     Needed,
     InFlight,
@@ -131,7 +112,6 @@ enum PathPhase {
         attempts: u32,
         retry_at: Instant,
     },
-    LegacyNative,
     Provider(ResolvedRasterSource),
     Unsupported,
     Failed {
@@ -159,7 +139,6 @@ struct PreparationResult {
 }
 
 enum PreparationOutcome {
-    LegacyNative,
     Ready(ResolvedRasterSource),
     InProgress(DerivedBackingIdentity),
     Unsupported,
@@ -332,11 +311,7 @@ impl RasterSourceCoordinator {
             .cloned()
             .unwrap_or_default();
         let removed_published = self.paths.iter().any(|(path, state)| {
-            !desired.contains(path)
-                && matches!(
-                    &state.phase,
-                    PathPhase::LegacyNative | PathPhase::Provider(_)
-                )
+            !desired.contains(path) && matches!(&state.phase, PathPhase::Provider(_))
         });
         self.paths.retain(|path, _| desired.contains(path));
         for path in desired {
@@ -393,10 +368,6 @@ impl RasterSourceCoordinator {
         }
         let mut publish = false;
         state.phase = match result.outcome {
-            PreparationOutcome::LegacyNative => {
-                publish = true;
-                PathPhase::LegacyNative
-            }
             PreparationOutcome::Ready(source) => {
                 publish = true;
                 PathPhase::Provider(source)
@@ -483,13 +454,6 @@ impl RasterSourceCoordinator {
                 _ => None,
             })
             .collect();
-        let legacy_native = self
-            .paths
-            .iter()
-            .filter_map(|(path, state)| {
-                matches!(&state.phase, PathPhase::LegacyNative).then_some(path.clone())
-            })
-            .collect();
         let epoch = self
             .snapshot
             .epoch
@@ -498,7 +462,6 @@ impl RasterSourceCoordinator {
         self.snapshot = Arc::new(RasterSourceSnapshot {
             epoch,
             providers: Arc::new(providers),
-            legacy_native: Arc::new(legacy_native),
         });
     }
 }
@@ -539,7 +502,15 @@ fn prepare_source(
     };
     match inspection.info.capability {
         RegionReadCapability::SequentialBounded if inspection.info.supports_region_reads_now() => {
-            PreparationOutcome::LegacyNative
+            let source = match SequentialPngSource::open(path, SequentialPngLimits::default()) {
+                Ok(source) => source,
+                Err(error) => return PreparationOutcome::Failed(format!("{error:#}")),
+            };
+            let source_epoch = source.source_epoch().clone();
+            match ResolvedRasterSource::new(source_epoch, Arc::new(source)) {
+                Ok(source) => PreparationOutcome::Ready(source),
+                Err(error) => PreparationOutcome::Failed(format!("{error:#}")),
+            }
         }
         RegionReadCapability::DerivedBacking => {
             let identity = match cache.identify(path) {
@@ -742,21 +713,29 @@ mod tests {
                 path: stale.path,
                 generation: stale.generation,
                 attempts: 0,
-                outcome: PreparationOutcome::LegacyNative,
+                outcome: PreparationOutcome::Ready(resolved("stale", None)),
             },
             Instant::now(),
         );
-        assert!(coordinator.snapshot.legacy_native.is_empty());
+        assert!(coordinator.snapshot.providers.is_empty());
         coordinator.apply_result(
             PreparationResult {
                 path: current.path,
                 generation: current.generation,
                 attempts: 0,
-                outcome: PreparationOutcome::LegacyNative,
+                outcome: PreparationOutcome::Ready(resolved("current", None)),
             },
             Instant::now(),
         );
-        assert!(coordinator.snapshot.legacy_native.contains(&path));
+        assert_eq!(
+            coordinator
+                .snapshot
+                .resolve(&path)
+                .unwrap()
+                .source_epoch()
+                .as_str(),
+            "current"
+        );
     }
 
     #[test]
@@ -829,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_only_modes_preserve_png_zoom_and_cap_mixed_documents() {
+    fn unified_provider_map_keeps_mixed_documents_region_native() {
         let png = PathBuf::from("missing-but-classified.png");
         let jpg = PathBuf::from("missing-but-backed.jpg");
         let png_document = raster_document(png.clone());
@@ -842,13 +821,13 @@ mod tests {
                 path: request.path,
                 generation: request.generation,
                 attempts: 0,
-                outcome: PreparationOutcome::LegacyNative,
+                outcome: PreparationOutcome::Ready(resolved("png-provider", None)),
             },
             Instant::now(),
         );
         assert_eq!(
             coordinator.snapshot.render_mode(&png_document),
-            RasterRenderMode::LegacyNative
+            RasterRenderMode::Provider { snapshot_epoch: 1 }
         );
 
         let mut mixed = png_document;
@@ -856,12 +835,14 @@ mod tests {
         mixed.layers.push(jpg_document.layers.remove(0));
         let snapshot = RasterSourceSnapshot {
             epoch: 7,
-            providers: Arc::new(HashMap::from([(jpg, resolved("provider", None))])),
-            legacy_native: Arc::new(HashSet::from([png])),
+            providers: Arc::new(HashMap::from([
+                (png, resolved("png-provider", None)),
+                (jpg, resolved("derived-provider", None)),
+            ])),
         };
         assert_eq!(
             snapshot.render_mode(&mixed),
-            RasterRenderMode::FallbackCapped
+            RasterRenderMode::Provider { snapshot_epoch: 7 }
         );
     }
 }
