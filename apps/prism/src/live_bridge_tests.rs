@@ -446,6 +446,7 @@ fn full_state_plan_keeps_its_exact_cursor_and_cannot_overwrite_a_later_edit() {
         color: [255; 4],
         x: 10.0,
         y: 10.0,
+        shaping: Default::default(),
     })
     .unwrap();
     let layer_id = seed.document.selected.unwrap();

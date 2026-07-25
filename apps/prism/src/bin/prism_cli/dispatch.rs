@@ -6,7 +6,7 @@ use spectrum_imaging::AdjustmentPatch;
 
 use super::{
     CliCommand, GuideCommand, PathCommand, effects, live_bridge::decode_commands, paint,
-    parse_color, paths, selection, transfer, updated_typography,
+    parse_color, paths, selection, text_shaping, transfer, updated_typography,
 };
 
 pub(super) struct SemanticPlan {

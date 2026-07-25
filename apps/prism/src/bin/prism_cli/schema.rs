@@ -46,6 +46,7 @@ pub(super) fn schema() -> Value {
             "mode": ["off", "required"],
             "required_mode_fallback": false,
             "semantic_mutations": "normal parsed Prism mutation commands become one Vec<Command> and execute through the authenticated GUI as one batch",
+            "clone_stamp_policy": "required live mode resolves Clone source identity and CurrentClone strokes on the bound GUI workspace, embeds the authenticated sampled bytes in one version 14 durable revision, and never falls back to direct project mutation",
             "history_policy": "a normal run command containing exactly one undo or redo maps to the typed live history action; history cannot be mixed with edits",
             "ui_local_selection_policy": "select-layer is refused through the agent bridge because GUI-local selection is not a durable agent-session edit",
             "read_only_and_export_policy": "immutable inspection, layer-copy, and export remain direct read-only operations; they never mutate the project",

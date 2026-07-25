@@ -106,12 +106,6 @@ enum CliCommand {
         x: f32,
         #[arg(long, default_value_t = 0.0)]
         y: f32,
-        /// Permanent layout engine for the new text.
-        #[arg(long, value_enum, default_value_t = CliTextLayout::HarfbuzzV1)]
-        layout: CliTextLayout,
-        /// Canonical BCP-47 shaping language; omitted means und.
-        #[arg(long)]
-        language: Option<String>,
     },
     /// Add editable text using Prism's bundled Ubuntu Light font.
     AddText {
@@ -126,6 +120,12 @@ enum CliCommand {
         x: f32,
         #[arg(long, default_value_t = 0.0)]
         y: f32,
+        /// Permanent layout engine for the new text.
+        #[arg(long, value_enum, default_value_t = CliTextLayout::HarfbuzzV1)]
+        layout: CliTextLayout,
+        /// Canonical BCP-47 shaping language; omitted means und.
+        #[arg(long)]
+        language: Option<String>,
     },
     /// Embed an OpenType font in this portable Prism project.
     FontImport {

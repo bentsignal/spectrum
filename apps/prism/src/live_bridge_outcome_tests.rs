@@ -1,19 +1,114 @@
 use std::{
+    fs,
     sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 
+use image::{Rgba, RgbaImage};
+use spectrum_imaging::PixelRegion;
 use spectrum_live_bridge::{
     BridgeEventKind, BridgeHost, HostApplyOutcome, InteractionPolicy, RequestId, ResponseBody,
 };
 use spectrum_revisions::CollaborationMode;
 
 use crate::{
-    PRISM_COMMAND_OPERATIONS_VERSION, PrismLiveAction, PrismLiveInteractionState, Workspace,
+    BrushMode, BrushSample, BrushStroke, BrushStyle, Command, LayerKind,
+    PRISM_COMMAND_OPERATIONS_VERSION, PaintSelection, PrismLiveAction, PrismLiveInteractionState,
+    Workspace,
     live_bridge_sessions::PrismLiveTestFault,
     live_bridge_tests::{Fixture, HostHarness, rename},
 };
+
+fn write_live_clone_source(path: &std::path::Path) -> Vec<u8> {
+    let mut image = RgbaImage::new(8, 8);
+    for y in 0..8 {
+        for x in 0..8 {
+            image.put_pixel(
+                x,
+                y,
+                Rgba([
+                    20 + x as u8 * 20,
+                    30 + y as u8 * 18,
+                    200 - x as u8 * 10,
+                    255,
+                ]),
+            );
+        }
+    }
+    image.put_pixel(1, 1, Rgba([200, 50, 10, 128]));
+    image.save(path).unwrap();
+    fs::read(path).unwrap()
+}
+
+fn current_clone_stroke(x: f32, y: f32) -> BrushStroke {
+    BrushStroke::new(
+        BrushStyle {
+            mode: BrushMode::Paint,
+            color: [0; 4],
+            size: 2.0,
+            hardness: 1.0,
+            opacity: 1.0,
+            spacing: 0.25,
+        },
+        vec![BrushSample {
+            x,
+            y,
+            pressure: 1.0,
+        }],
+    )
+    .unwrap()
+    .as_current_clone()
+    .unwrap()
+}
+
+fn live_clone_setup_commands(source: &std::path::Path) -> Vec<Command> {
+    let source = fs::canonicalize(source).unwrap();
+    vec![
+        Command::AddRaster {
+            path: source,
+            name: Some("Live Clone source".into()),
+            x: 0.0,
+            y: 0.0,
+        },
+        Command::AddPaintLayer {
+            name: Some("Live Clone result".into()),
+            width: 8,
+            height: 8,
+        },
+        Command::SetCloneSource {
+            id: 1,
+            document_x: 1.5,
+            document_y: 1.5,
+            resolved_source: None,
+        },
+        Command::AddBrushStroke {
+            id: 2,
+            stroke: current_clone_stroke(4.5, 4.5),
+            selection: PaintSelection::None,
+        },
+    ]
+}
+
+fn rendered_live_clone(document: &crate::Document) -> RgbaImage {
+    let layer = document.layer(2).unwrap();
+    let LayerKind::Paint { program } = &layer.kind else {
+        panic!("live Clone batch did not retain its Paint layer")
+    };
+    crate::paint_render::render_paint_region_with_sources(
+        program,
+        layer.pixel_mask.as_ref(),
+        PixelRegion {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        },
+        &document.sampled_sources,
+        None,
+    )
+    .unwrap()
+}
 
 #[test]
 fn one_coalesced_wake_drains_more_than_one_frame_budget_promptly() {
@@ -439,6 +534,178 @@ fn failed_together_recovery_poisons_every_stale_workspace_entry_until_project_re
             .document
             .name,
         "Durable but unavailable"
+    );
+}
+
+#[test]
+fn required_live_clone_batch_is_one_v14_revision_with_embedded_follower_parity() {
+    let mut fixture = Fixture::new(CollaborationMode::Together);
+    let source = fixture.path.with_file_name("live-clone-source.png");
+    let source_bytes = write_live_clone_source(&source);
+    let human_session = fixture.human.session_id().unwrap();
+    let history_before = fixture.human.history().unwrap().unwrap().revisions.len();
+    let mut harness = HostHarness::new(&fixture);
+    let request = harness.request(
+        &fixture,
+        PrismLiveAction::ExecuteBatch {
+            expectation: fixture.expectation(),
+            command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+            commands: live_clone_setup_commands(&source),
+        },
+        InteractionPolicy::Immediate,
+    );
+
+    let response = harness.round_trip(&mut fixture.human, request, PrismLiveInteractionState::Idle);
+    assert!(
+        matches!(response.body, ResponseBody::Applied { .. }),
+        "unexpected live Clone response: {:?}",
+        response.body
+    );
+    let history = fixture.human.history().unwrap().unwrap();
+    assert_eq!(history.revisions.len(), history_before + 1);
+    assert_eq!(history.revisions.last().unwrap().command_count, 4);
+    assert_eq!(PRISM_COMMAND_OPERATIONS_VERSION, 14);
+
+    let canonical = rusqlite::Connection::open(&fixture.path).unwrap();
+    let operation_version: i64 = canonical
+        .query_row(
+            "SELECT version FROM operation_payloads
+             WHERE instr(CAST(bytes AS TEXT), 'set_clone_source') > 0
+             LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(operation_version, 14);
+    let embedded_source: Vec<u8> = canonical
+        .query_row("SELECT bytes FROM assets", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(embedded_source, source_bytes);
+    let asset_count: i64 = canonical
+        .query_row("SELECT count(*) FROM assets", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(asset_count, 1);
+    drop(canonical);
+    fs::remove_file(&source).unwrap();
+
+    let agent = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
+    let reopened = Workspace::open_session(&fixture.path, human_session).unwrap();
+    let human_state = fixture.human.live_state().unwrap().unwrap();
+    assert_eq!(
+        human_state.cursor,
+        agent.live_state().unwrap().unwrap().cursor
+    );
+    assert_eq!(
+        human_state.cursor,
+        reopened.live_state().unwrap().unwrap().cursor
+    );
+    assert_eq!(fixture.human.document.sampled_sources.len(), 1);
+    assert_eq!(agent.document.sampled_sources.len(), 1);
+    assert_eq!(reopened.document.sampled_sources.len(), 1);
+    let human_pixels = rendered_live_clone(&fixture.human.document);
+    assert_eq!(rendered_live_clone(&agent.document), human_pixels);
+    assert_eq!(rendered_live_clone(&reopened.document), human_pixels);
+    assert!(
+        human_pixels.pixels().any(|pixel| pixel.0[3] != 0),
+        "the live Clone batch must produce visible sampled pixels"
+    );
+}
+
+#[test]
+fn failed_live_clone_follow_recovery_poison_blocks_exact_and_new_retries() {
+    let mut fixture = Fixture::new(CollaborationMode::Together);
+    let source = fixture
+        .path
+        .with_file_name("poisoned-live-clone-source.png");
+    write_live_clone_source(&source);
+    let mut setup_harness = HostHarness::new(&fixture);
+    let setup = setup_harness.request(
+        &fixture,
+        PrismLiveAction::ExecuteBatch {
+            expectation: fixture.expectation(),
+            command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+            commands: live_clone_setup_commands(&source),
+        },
+        InteractionPolicy::Immediate,
+    );
+    let setup_response =
+        setup_harness.round_trip(&mut fixture.human, setup, PrismLiveInteractionState::Idle);
+    assert!(
+        matches!(setup_response.body, ResponseBody::Applied { .. }),
+        "unexpected live Clone setup response: {:?}",
+        setup_response.body
+    );
+    fs::remove_file(source).unwrap();
+
+    let history_before = Workspace::open_session(&fixture.path, fixture.agent_session)
+        .unwrap()
+        .history()
+        .unwrap()
+        .unwrap()
+        .revisions
+        .len();
+    let mut harness = HostHarness::new(&fixture);
+    let request = harness.request(
+        &fixture,
+        PrismLiveAction::ExecuteBatch {
+            expectation: fixture.expectation(),
+            command_version: PRISM_COMMAND_OPERATIONS_VERSION,
+            commands: vec![Command::AddBrushStroke {
+                id: 2,
+                stroke: current_clone_stroke(6.5, 6.5),
+                selection: PaintSelection::None,
+            }],
+        },
+        InteractionPolicy::Immediate,
+    );
+    fixture.human.fail_next_together_sync_after_durable_commit();
+    fixture.human.fail_next_together_recovery_open();
+
+    let (error, report) = harness.round_trip_error(
+        &mut fixture.human,
+        request.clone(),
+        PrismLiveInteractionState::Idle,
+    );
+    assert!(error.to_string().contains("inspect current state"));
+    assert!(report.outcome_unknown);
+    assert!(report.reopen_required);
+    assert!(matches!(
+        harness.server.handle_request(request.clone()).unwrap().body,
+        ResponseBody::OutcomeUnknown
+    ));
+
+    let mut new_retry = request.clone();
+    new_retry.request_id = RequestId::new();
+    assert!(matches!(
+        harness
+            .round_trip(
+                &mut fixture.human,
+                new_retry,
+                PrismLiveInteractionState::Idle
+            )
+            .body,
+        ResponseBody::Refused { .. }
+    ));
+    let direct_retry = fixture
+        .human
+        .execute(Command::AddBrushStroke {
+            id: 2,
+            stroke: current_clone_stroke(6.5, 6.5),
+            selection: PaintSelection::None,
+        })
+        .unwrap_err();
+    assert!(direct_retry.to_string().contains("reopen the project"));
+
+    let agent = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
+    assert_eq!(
+        agent.history().unwrap().unwrap().revisions.len(),
+        history_before + 1,
+        "the unknown Clone intent must commit exactly once"
+    );
+    let reopened = Workspace::open(&fixture.path).unwrap();
+    assert_eq!(
+        rendered_live_clone(&reopened.document),
+        rendered_live_clone(&agent.document)
     );
 }
 
