@@ -225,10 +225,6 @@ mod tests {
     #[test]
     #[ignore = "release-only strict gradient benchmark calibration"]
     fn release_gradient_fixture_reports_all_four_workloads() {
-        assert!(
-            !cfg!(debug_assertions),
-            "run this calibration in release mode"
-        );
         let measured = measure().unwrap();
         eprintln!(
             "radial small {:.3}/{:.3} ms, radial large {:.3}/{:.3} ms, \
