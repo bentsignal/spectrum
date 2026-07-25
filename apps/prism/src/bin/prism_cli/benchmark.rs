@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use prism_core::{
     BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
     LayerStyle, RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment, TextEffects,
-    TextShaping, TextTypography, Transform, Workspace, region_source_scales, render_document,
+    TextShaping, TextTypography, Transform, Workspace, render_document,
     render_document_region_scaled, render_document_region_scaled_with_sources_and_stats,
     render_document_region_scaled_with_stats, render_layer_base_scaled,
     render_layer_base_scaled_with_font, render_solid_color,
@@ -26,6 +26,8 @@ mod clone_stamp;
 mod dissolve_preview;
 #[path = "benchmark/font_picker.rs"]
 mod font_picker;
+#[path = "benchmark/gradient.rs"]
+mod gradient;
 #[path = "benchmark/mixed_raster.rs"]
 mod mixed_raster;
 #[path = "benchmark/optimized_copy.rs"]
@@ -40,81 +42,17 @@ mod selection;
 mod selection_outline;
 #[path = "benchmark/shaped_wrap.rs"]
 mod shaped_wrap;
+#[path = "benchmark/staging.rs"]
+mod staging;
 #[path = "benchmark/support.rs"]
 mod support;
 #[path = "benchmark/text_preview_frame.rs"]
 mod text_preview_frame;
+use staging::bounded_staging_budget;
+#[cfg(test)]
+use staging::{inverse_rotation_aabb, triangle_source_extent};
 pub(crate) use support::BenchmarkProfile;
 use support::{BenchmarkMetric, TemporaryRaster, sample_summary};
-
-// spectrum-imaging expands adjusted regions by four source pixels for denoise
-// and two more for sharpening.
-const DEVELOPMENT_FILTER_HALO: f64 = 6.0;
-
-fn bounded_staging_budget(
-    document: &Document,
-    document_scale: f32,
-    region: RenderRegion,
-) -> Result<u64> {
-    document
-        .layers
-        .iter()
-        .filter(|layer| layer.visible && layer.opacity > 0.0)
-        .map(|layer| layer_staging_budget(document, layer, document_scale, region))
-        .try_fold(0, |maximum, budget| -> Result<u64> {
-            Ok(maximum.max(budget?))
-        })
-}
-
-fn layer_staging_budget(
-    document: &Document,
-    layer: &Layer,
-    document_scale: f32,
-    region: RenderRegion,
-) -> Result<u64> {
-    let scales = region_source_scales(document, layer, document_scale)?;
-    let (rotated_width, rotated_height) = inverse_rotation_aabb(
-        f64::from(region.width),
-        f64::from(region.height),
-        layer.transform.rotation,
-    );
-    let adjusted_width = triangle_source_extent(rotated_width, scales.outer_transform[0]);
-    let adjusted_height = triangle_source_extent(rotated_height, scales.outer_transform[1]);
-    let adjusted_pixels = adjusted_width.saturating_mul(adjusted_height);
-
-    // The development pipeline expands in adjusted coordinates before inverse
-    // straighten sampling. Ignoring straighten's compensating zoom keeps this
-    // an upper bound, and the extra two pixels cover its bilinear support.
-    let halo = DEVELOPMENT_FILTER_HALO * 2.0;
-    let (source_width, source_height) = inverse_rotation_aabb(
-        adjusted_width as f64 + halo,
-        adjusted_height as f64 + halo,
-        layer.adjustments.straighten,
-    );
-    let bilinear_support = u64::from(layer.adjustments.straighten.abs() > 0.01) * 2;
-    let source_width = source_width.ceil() as u64 + bilinear_support;
-    let source_height = source_height.ceil() as u64 + bilinear_support;
-    let source_pixels = source_width.saturating_mul(source_height);
-
-    // Quarter-turn development rotations only swap the axes, so they do not
-    // change the pixel-area bound.
-    Ok(adjusted_pixels.max(source_pixels))
-}
-
-fn inverse_rotation_aabb(width: f64, height: f64, degrees: f32) -> (f64, f64) {
-    let radians = f64::from(degrees).to_radians();
-    let (sin, cos) = radians.sin_cos();
-    (
-        width * cos.abs() + height * sin.abs(),
-        width * sin.abs() + height * cos.abs(),
-    )
-}
-
-fn triangle_source_extent(output_extent: f64, outer_scale: f32) -> u64 {
-    let inverse_scale = 1.0 / f64::from(outer_scale.abs().max(f32::EPSILON));
-    let filter_radius = inverse_scale.max(1.0);
-    (output_extent * inverse_scale + filter_radius * 2.0 + 2.0).ceil() as u64
-}
 
 pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value> {
     let selection_fill = selection::measure_selection_fill()?;
@@ -128,6 +66,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let text_preview_frame = text_preview_frame::measure()?;
     let font_picker = font_picker::measure();
     let dissolve_preview = dissolve_preview::measure()?;
+    let gradient = gradient::measure()?;
     let mut clone_stamp = clone_stamp::measure()?;
     let mut mixed_raster = mixed_raster::measure()?;
     let dissolve_preview_budget =
@@ -656,6 +595,20 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let (clone_live_median, clone_live_p95) = sample_summary(&mut clone_stamp.live_samples);
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
     let metrics = vec![
+        BenchmarkMetric {
+            name: "8x_16k_32_stop_radial_gradient_viewport",
+            median_ms: gradient.radial_median_ms,
+            p95_ms: gradient.radial_p95_ms,
+            budget_ms: profile.modern_gradient_budget_ms(),
+            pass: gradient.radial_p95_ms <= profile.modern_gradient_budget_ms(),
+        },
+        BenchmarkMetric {
+            name: "8x_16k_32_stop_angle_gradient_viewport",
+            median_ms: gradient.angle_median_ms,
+            p95_ms: gradient.angle_p95_ms,
+            budget_ms: profile.modern_gradient_budget_ms(),
+            pass: gradient.angle_p95_ms <= profile.modern_gradient_budget_ms(),
+        },
         BenchmarkMetric {
             name: "4096_square_contiguous_magic_wand",
             median_ms: magic_wand.elapsed_ms,

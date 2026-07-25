@@ -1,4 +1,4 @@
-use prism_core::{Command, DropShadow, GradientStop, Layer, LayerStyle, ShapeFill, ShapeGradient};
+use prism_core::{Command, DropShadow, Layer, LayerStyle, ShapeFill, ShapeGradient};
 
 use super::*;
 
@@ -76,56 +76,29 @@ impl PrismApp {
             );
         }
 
-        if matches!(
+        let supports_fill = matches!(
             layer.kind,
             prism_core::LayerKind::Rectangle { .. } | prism_core::LayerKind::Ellipse { .. }
-        ) {
+        ) || matches!(
+            &layer.kind,
+            prism_core::LayerKind::Path { geometry, .. } if geometry.closed()
+        );
+        if supports_fill {
             self.shape_gradient_controls(ui, layer);
         }
     }
 
     fn shape_gradient_controls(&mut self, ui: &mut egui::Ui, layer: &Layer) {
         let mut enabled = layer.shape_fill.is_some();
-        if ui.checkbox(&mut enabled, "Linear gradient").changed() {
+        if ui.checkbox(&mut enabled, "Gradient").changed() {
             self.execute(Command::SetShapeFill {
                 id: layer.id,
                 fill: enabled.then(|| ShapeFill::Gradient(ShapeGradient::default())),
             });
         }
-        let Some(ShapeFill::Gradient(mut gradient)) = layer.shape_fill.clone() else {
+        let Some(ShapeFill::Gradient(gradient)) = layer.shape_fill.clone() else {
             return;
         };
-        let response = ui.add(
-            egui::Slider::new(&mut gradient.angle, 0.0..=360.0)
-                .text("Angle")
-                .suffix("°"),
-        );
-        self.widget_command(
-            &response,
-            Command::SetShapeFill {
-                id: layer.id,
-                fill: Some(ShapeFill::Gradient(gradient.clone())),
-            },
-        );
-        for (index, label) in ["Start", "End"].into_iter().enumerate() {
-            let mut color = Color32::from_rgba_unmultiplied(
-                gradient.stops[index].color[0],
-                gradient.stops[index].color[1],
-                gradient.stops[index].color[2],
-                gradient.stops[index].color[3],
-            );
-            ui.horizontal(|ui| {
-                ui.label(label);
-                let response = ui.color_edit_button_srgba(&mut color);
-                gradient.stops[index] = GradientStop::new(index as f32, color.to_array());
-                self.widget_command(
-                    &response,
-                    Command::SetShapeFill {
-                        id: layer.id,
-                        fill: Some(ShapeFill::Gradient(gradient.clone())),
-                    },
-                );
-            });
-        }
+        crate::gradient_editor::gradient_editor(self, ui, layer, gradient);
     }
 }

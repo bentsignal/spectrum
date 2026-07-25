@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "document_lifecycle_tests.rs"]
 mod document_lifecycle_tests;
+#[path = "gradient_tests.rs"]
+mod gradient_tests;
 #[path = "lasso_tests.rs"]
 mod lasso_tests;
 #[path = "live_bridge_tests.rs"]

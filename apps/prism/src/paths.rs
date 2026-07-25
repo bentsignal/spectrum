@@ -518,7 +518,6 @@ fn render_path_tile(
     } else {
         None
     };
-    let direction = layer.shape_fill.as_ref().map(|fill| fill.direction());
     Ok(RgbaImage::from_fn(tile_width, tile_height, |x, y| {
         let global_x = tile_x + x;
         let global_y = tile_y + y;
@@ -527,15 +526,7 @@ fn render_path_tile(
         let fill_color = layer
             .shape_fill
             .as_ref()
-            .map(|fill| {
-                fill.sample(
-                    local_x,
-                    local_y,
-                    geometry.width(),
-                    geometry.height(),
-                    direction.unwrap_or((1.0, 0.0)),
-                )
-            })
+            .map(|fill| fill.sample(local_x, local_y, geometry.width(), geometry.height()))
             .unwrap_or(*color);
         let index = (u64::from(y) * u64::from(tile_width) + u64::from(x)) as usize;
         let fill = covered_color(fill_color, fill_mask.data()[index]);

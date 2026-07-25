@@ -38,6 +38,8 @@ mod compositor;
 mod dialogs;
 #[path = "prism_gui/effects_ui.rs"]
 mod effects_ui;
+#[path = "prism_gui/gradient_editor.rs"]
+mod gradient_editor;
 #[path = "prism_gui/history.rs"]
 mod history;
 #[path = "prism_gui/inline_text.rs"]
@@ -49,6 +51,9 @@ mod inspector_controls;
 use inspector_controls::*;
 #[path = "prism_gui/lasso_tool.rs"]
 mod lasso_tool;
+#[path = "prism_gui/launch.rs"]
+mod launch;
+use launch::native_options;
 #[path = "prism_gui/layers.rs"]
 mod layers;
 #[path = "prism_gui/live_bridge.rs"]
@@ -176,45 +181,8 @@ struct PrismApp {
     native_terminal: native_terminal::NativeTerminalHost,
 }
 
-fn native_options() -> eframe::NativeOptions {
-    eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1500.0, 940.0])
-            .with_min_inner_size([980.0, 640.0])
-            .with_icon(prism_icon()),
-        centered: true,
-        ..Default::default()
-    }
-}
-
-fn prism_icon() -> egui::IconData {
-    eframe::icon_data::from_png_bytes(include_bytes!(
-        "../../../../assets/branding/prism-app-icon.png"
-    ))
-    .expect("bundled Prism icon must be a valid PNG")
-}
-
-#[cfg(not(target_os = "macos"))]
 fn main() -> eframe::Result {
-    let initial_project = std::env::args_os().nth(1).map(PathBuf::from);
-    let (_, open_document_receiver) = mpsc::channel();
-    eframe::run_native(
-        "Prism",
-        native_options(),
-        Box::new(move |creation| {
-            Ok(Box::new(PrismApp::new(
-                creation,
-                initial_project.as_deref(),
-                open_document_receiver,
-            )))
-        }),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn main() -> eframe::Result {
-    let initial_project = std::env::args_os().nth(1).map(PathBuf::from);
-    macos::run(initial_project)
+    launch::run()
 }
 
 impl PrismApp {
@@ -672,6 +640,7 @@ mod paragraph_width_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::launch::prism_icon;
 
     #[test]
     fn bundled_prism_icon_uses_the_user_cropped_artwork() {

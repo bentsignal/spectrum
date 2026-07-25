@@ -3,6 +3,13 @@ use spectrum_revisions::{Compatibility, Encoding};
 
 use crate::Command;
 
+#[path = "revision_encoding_transfers.rs"]
+mod transfer_encoding;
+pub(super) use transfer_encoding::downgrade_compatible_transfers;
+use transfer_encoding::{
+    command_contains_current_clone_marker, command_uses_clone_stamp, requires_modern_encoding,
+};
+
 pub(super) const SNAPSHOT_FAMILY: &str = "spectrum.prism.document";
 pub(super) const OPERATIONS_FAMILY: &str = "spectrum.prism.commands";
 pub(super) const LEGACY_SNAPSHOT_VERSION: u32 = 1;
@@ -16,6 +23,7 @@ pub(super) const DISSOLVE_SNAPSHOT_VERSION: u32 = 8;
 pub(super) const RASTER_PIXEL_MASK_SNAPSHOT_VERSION: u32 = 9;
 pub(crate) const SHAPED_TEXT_SNAPSHOT_VERSION: u32 = 10;
 pub(crate) const CLONE_STAMP_SNAPSHOT_VERSION: u32 = 11;
+pub(crate) const MODERN_GRADIENT_SNAPSHOT_VERSION: u32 = 12;
 pub(super) const LEGACY_OPERATIONS_VERSION: u32 = 1;
 pub(super) const LAYER_TRANSFER_OPERATIONS_VERSION: u32 = 2;
 pub(super) const LAYER_EFFECTS_OPERATIONS_VERSION: u32 = 3;
@@ -30,6 +38,7 @@ pub(super) const DISSOLVE_OPERATIONS_VERSION: u32 = 11;
 pub(super) const RASTER_PIXEL_MASK_OPERATIONS_VERSION: u32 = 12;
 pub(super) const SHAPED_TEXT_OPERATIONS_VERSION: u32 = 13;
 pub(super) const CLONE_STAMP_OPERATIONS_VERSION: u32 = 14;
+pub(super) const MODERN_GRADIENT_OPERATIONS_VERSION: u32 = 15;
 pub(super) const DEFLATE_CAPABILITY: &str = "deflate";
 
 pub(super) struct PrismCompatibility;
@@ -65,7 +74,8 @@ impl Compatibility for PrismCompatibility {
                 DISSOLVE_SNAPSHOT_VERSION
                 | RASTER_PIXEL_MASK_SNAPSHOT_VERSION
                 | SHAPED_TEXT_SNAPSHOT_VERSION
-                | CLONE_STAMP_SNAPSHOT_VERSION => {
+                | CLONE_STAMP_SNAPSHOT_VERSION
+                | MODERN_GRADIENT_SNAPSHOT_VERSION => {
                     encoding.required_capabilities.is_empty()
                         || encoding.required_capabilities == [DEFLATE_CAPABILITY]
                 }
@@ -75,13 +85,16 @@ impl Compatibility for PrismCompatibility {
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
         encoding.family == OPERATIONS_FAMILY
-            && (LEGACY_OPERATIONS_VERSION..=CLONE_STAMP_OPERATIONS_VERSION)
+            && (LEGACY_OPERATIONS_VERSION..=MODERN_GRADIENT_OPERATIONS_VERSION)
                 .contains(&encoding.version)
             && encoding.required_capabilities.is_empty()
     }
 }
 
 pub(super) fn operations_version(commands: &[Command]) -> u32 {
+    if commands.iter().any(requires_modern_encoding) {
+        return MODERN_GRADIENT_OPERATIONS_VERSION;
+    }
     if commands.iter().any(command_uses_clone_stamp) {
         return CLONE_STAMP_OPERATIONS_VERSION;
     }
@@ -223,64 +236,6 @@ pub(super) fn operations_version(commands: &[Command]) -> u32 {
     }
 }
 
-fn command_uses_clone_stamp(command: &Command) -> bool {
-    match command {
-        Command::SetCloneSource { .. } => true,
-        Command::AddPaintLayerWithStroke { stroke, .. }
-        | Command::AddBrushStroke { stroke, .. } => {
-            stroke.style.mode == crate::BrushMode::CloneStamp || stroke.source.is_some()
-        }
-        Command::InsertLayer { transfer, .. } => {
-            transfer.version >= crate::CLONE_STAMP_LAYER_TRANSFER_VERSION
-                || !transfer.sampled_sources.is_empty()
-                || matches!(&transfer.layer.kind, crate::LayerKind::Paint { program } if program.contains_sampled_sources())
-        }
-        _ => false,
-    }
-}
-
-pub(super) fn downgrade_compatible_transfers(commands: &mut [Command]) {
-    for command in commands {
-        if let Command::InsertLayer { transfer, .. } = command
-            && transfer.validate_envelope().is_ok()
-        {
-            let minimal_version = if matches!(
-                &transfer.layer.kind,
-                crate::LayerKind::Paint { program } if program.contains_sampled_sources()
-            ) {
-                crate::CLONE_STAMP_LAYER_TRANSFER_VERSION
-            } else if matches!(
-                &transfer.layer.kind,
-                crate::LayerKind::Text { typography, .. }
-                    if typography.shaping.engine == crate::TextShapingEngine::HarfBuzzV1
-            ) {
-                crate::SHAPED_TEXT_LAYER_TRANSFER_VERSION
-            } else if matches!(transfer.layer.kind, crate::LayerKind::Raster { .. })
-                && transfer.layer.pixel_mask.is_some()
-            {
-                crate::RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
-            } else if transfer.layer.blend_mode == crate::BlendMode::Dissolve
-                || transfer.layer.dissolve_seed != 0
-            {
-                crate::DISSOLVE_LAYER_TRANSFER_VERSION
-            } else if matches!(transfer.layer.kind, crate::LayerKind::Paint { .. }) {
-                crate::PAINT_LAYER_TRANSFER_VERSION
-            } else if transfer.layer.vector_mask.is_some()
-                || matches!(transfer.layer.kind, crate::LayerKind::Path { .. })
-            {
-                crate::PATH_LAYER_TRANSFER_VERSION
-            } else if transfer.layer.pixel_mask.is_some() {
-                3
-            } else if transfer.layer.style.is_empty() && transfer.layer.shape_fill.is_none() {
-                1
-            } else {
-                2
-            };
-            transfer.version = transfer.version.min(minimal_version);
-        }
-    }
-}
-
 pub(super) fn validate_operations_version(
     commands: &[Command],
     encoded_version: u32,
@@ -295,20 +250,6 @@ pub(super) fn validate_operations_version(
         );
     }
     Ok(())
-}
-
-fn command_contains_current_clone_marker(command: &Command) -> bool {
-    match command {
-        Command::AddPaintLayerWithStroke { stroke, .. }
-        | Command::AddBrushStroke { stroke, .. } => {
-            matches!(stroke.source, Some(crate::SampledBrushSource::CurrentClone))
-        }
-        Command::InsertLayer { transfer, .. } => matches!(
-            &transfer.layer.kind,
-            crate::LayerKind::Paint { program } if program.contains_current_clone_marker()
-        ),
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -527,18 +468,62 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_advertises_every_operation_version_through_clone_stamp() {
-        for version in LEGACY_OPERATIONS_VERSION..=CLONE_STAMP_OPERATIONS_VERSION {
+    fn compatibility_advertises_every_operation_version_through_modern_gradients() {
+        for version in LEGACY_OPERATIONS_VERSION..=MODERN_GRADIENT_OPERATIONS_VERSION {
             assert!(
                 PrismCompatibility.supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
-        for version in [0, CLONE_STAMP_OPERATIONS_VERSION + 1] {
+        for version in [0, MODERN_GRADIENT_OPERATIONS_VERSION + 1] {
             assert!(
                 !PrismCompatibility
                     .supports_operations(&Encoding::new(OPERATIONS_FAMILY, version,))
             );
         }
+    }
+
+    #[test]
+    fn modern_gradients_require_v15_but_legacy_gradients_remain_v3() {
+        let modern = Command::SetShapeFill {
+            id: 1,
+            fill: Some(crate::ShapeFill::Gradient(crate::ShapeGradient {
+                kind: crate::GradientKind::Radial,
+                spread: crate::GradientSpread::Reflect,
+                stops: vec![
+                    crate::GradientStop::new(0.0, [255, 0, 0, 255]),
+                    crate::GradientStop::new(0.4, [0, 255, 0, 128]),
+                    crate::GradientStop::new(1.0, [0, 0, 255, 0]),
+                ],
+                ..Default::default()
+            })),
+        };
+        assert_eq!(
+            operations_version(std::slice::from_ref(&modern)),
+            MODERN_GRADIENT_OPERATIONS_VERSION
+        );
+        assert!(
+            validate_operations_version(
+                std::slice::from_ref(&modern),
+                CLONE_STAMP_OPERATIONS_VERSION
+            )
+            .is_err()
+        );
+        assert!(
+            validate_operations_version(
+                std::slice::from_ref(&modern),
+                MODERN_GRADIENT_OPERATIONS_VERSION
+            )
+            .is_ok()
+        );
+
+        let legacy = Command::SetShapeFill {
+            id: 1,
+            fill: Some(crate::ShapeFill::Gradient(Default::default())),
+        };
+        assert_eq!(
+            operations_version(std::slice::from_ref(&legacy)),
+            LAYER_EFFECTS_OPERATIONS_VERSION
+        );
     }
 
     #[test]
@@ -610,7 +595,7 @@ mod tests {
         }];
         assert_eq!(
             operations_version(&compatible),
-            CLONE_STAMP_OPERATIONS_VERSION
+            MODERN_GRADIENT_OPERATIONS_VERSION
         );
         assert!(
             validate_operations_version(&compatible, LAYER_TRANSFER_OPERATIONS_VERSION).is_err()

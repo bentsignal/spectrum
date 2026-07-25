@@ -150,7 +150,6 @@ pub(crate) struct ShapeSampler<'a> {
     layer: &'a Layer,
     scale: [f32; 2],
     dimensions: (u32, u32),
-    fill_direction: Option<(f32, f32)>,
 }
 
 impl<'a> ShapeSampler<'a> {
@@ -173,7 +172,6 @@ impl<'a> ShapeSampler<'a> {
             layer,
             scale,
             dimensions,
-            fill_direction: layer.shape_fill.as_ref().map(|fill| fill.direction()),
         })
     }
 
@@ -219,7 +217,6 @@ impl<'a> ShapeSampler<'a> {
                         (y as f32 + 0.5) / self.scale[1],
                         width,
                         height,
-                        self.fill_direction,
                     )
                 } else {
                     sample_shape_pixel(x, y, self.scale, |x, y| {
@@ -238,15 +235,7 @@ impl<'a> ShapeSampler<'a> {
                         Some(if stroke_pixel {
                             self.layer.stroke.color
                         } else {
-                            shape_fill_color(
-                                self.layer,
-                                color,
-                                x,
-                                y,
-                                width,
-                                height,
-                                self.fill_direction,
-                            )
+                            shape_fill_color(self.layer, color, x, y, width, height)
                         })
                     })
                 }
@@ -275,15 +264,7 @@ impl<'a> ShapeSampler<'a> {
                     Some(if self.layer.stroke.enabled && !inner {
                         self.layer.stroke.color
                     } else {
-                        shape_fill_color(
-                            self.layer,
-                            color,
-                            x,
-                            y,
-                            width,
-                            height,
-                            self.fill_direction,
-                        )
+                        shape_fill_color(self.layer, color, x, y, width, height)
                     })
                 })
             }
@@ -309,7 +290,6 @@ impl<'a> ShapeSampler<'a> {
                         (y as f32 + 0.5) / self.scale[1],
                         width,
                         height,
-                        self.fill_direction,
                     )
                 } else {
                     sample_shape_alpha(x, y, self.scale, |x, y| {
@@ -328,15 +308,7 @@ impl<'a> ShapeSampler<'a> {
                         Some(if stroke_pixel {
                             self.layer.stroke.color[3]
                         } else {
-                            shape_fill_alpha(
-                                self.layer,
-                                color[3],
-                                x,
-                                y,
-                                width,
-                                height,
-                                self.fill_direction,
-                            )
+                            shape_fill_alpha(self.layer, color[3], x, y, width, height)
                         })
                     })
                 }
@@ -365,15 +337,7 @@ impl<'a> ShapeSampler<'a> {
                     Some(if self.layer.stroke.enabled && !inner {
                         self.layer.stroke.color[3]
                     } else {
-                        shape_fill_alpha(
-                            self.layer,
-                            color[3],
-                            x,
-                            y,
-                            width,
-                            height,
-                            self.fill_direction,
-                        )
+                        shape_fill_alpha(self.layer, color[3], x, y, width, height)
                     })
                 })
             }
@@ -407,28 +371,19 @@ fn shape_fill_color(
     y: f32,
     width: u32,
     height: u32,
-    direction: Option<(f32, f32)>,
 ) -> [u8; 4] {
     layer
         .shape_fill
         .as_ref()
-        .map(|fill| fill.sample(x, y, width, height, direction.unwrap_or((1.0, 0.0))))
+        .map(|fill| fill.sample(x, y, width, height))
         .unwrap_or(fallback)
 }
 
-fn shape_fill_alpha(
-    layer: &Layer,
-    fallback: u8,
-    x: f32,
-    y: f32,
-    width: u32,
-    height: u32,
-    direction: Option<(f32, f32)>,
-) -> u8 {
+fn shape_fill_alpha(layer: &Layer, fallback: u8, x: f32, y: f32, width: u32, height: u32) -> u8 {
     layer
         .shape_fill
         .as_ref()
-        .map(|fill| fill.sample_alpha(x, y, width, height, direction.unwrap_or((1.0, 0.0))))
+        .map(|fill| fill.sample_alpha(x, y, width, height))
         .unwrap_or(fallback)
 }
 

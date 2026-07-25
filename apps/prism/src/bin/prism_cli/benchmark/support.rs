@@ -30,6 +30,13 @@ impl BenchmarkProfile {
         }
     }
 
+    pub(crate) fn modern_gradient_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 500.0,
+            Self::HostedCi => 1_500.0,
+        }
+    }
+
     pub(crate) fn magic_wand_budget_ms(self) -> f64 {
         match self {
             Self::Interactive => 5_000.0,

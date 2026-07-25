@@ -39,7 +39,8 @@ pub(super) fn schema() -> Value {
             "dissolve_operations_version": 11,
             "raster_pixel_mask_operations_version": 12,
             "shaped_text_operations_version": 13,
-            "clone_stamp_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "clone_stamp_operations_version": 14,
+            "modern_gradient_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "live_bridge": {
@@ -135,7 +136,7 @@ pub(super) fn schema() -> Value {
         },
         "layer_styles": {
             "drop_shadow": "shadow <layer> [--x <px>] [--y <px>] [--blur <px>] [--color <RRGGBBAA>] [--clear]",
-            "shape_gradient": "gradient <shape> [--angle <degrees>] [--start <RRGGBBAA>] [--end <RRGGBBAA>] [--clear]",
+            "shape_gradient": "gradient <shape> [--kind <linear|radial|angle>] [--angle <degrees>] [--spread <pad|repeat|reflect>] [--center-x <0..1>] [--center-y <0..1>] [--radius <positive>] [--stop <POSITION:RRGGBBAA>]... [--start <RRGGBBAA>] [--end <RRGGBBAA>] [--clear]",
             "rendering": "portable CPU export and exact interactive composite preview share the same fixed-kernel shadow and shape sampler"
         },
         "selection": {
@@ -227,7 +228,7 @@ fn command_examples() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn schema_advertises_shaped_text_v13_and_clone_v14() {
+    fn schema_advertises_shaped_text_v13_clone_v14_and_modern_gradients_v15() {
         let schema = super::schema();
         assert_eq!(
             schema["command_protocol"]["dissolve_operations_version"],
@@ -246,8 +247,12 @@ mod tests {
             14
         );
         assert_eq!(
+            schema["command_protocol"]["modern_gradient_operations_version"],
+            15
+        );
+        assert_eq!(
             schema["command_protocol"]["supported_operation_versions"],
-            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
         );
         assert_eq!(
             schema["typography"]["harfbuzz_v1_policy"]["engine"],

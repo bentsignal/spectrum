@@ -564,7 +564,7 @@ fn required_live_clone_batch_is_one_v14_revision_with_embedded_follower_parity()
     let history = fixture.human.history().unwrap().unwrap();
     assert_eq!(history.revisions.len(), history_before + 1);
     assert_eq!(history.revisions.last().unwrap().command_count, 4);
-    assert_eq!(PRISM_COMMAND_OPERATIONS_VERSION, 14);
+    assert_eq!(PRISM_COMMAND_OPERATIONS_VERSION, 15);
 
     let canonical = rusqlite::Connection::open(&fixture.path).unwrap();
     let operation_version: i64 = canonical

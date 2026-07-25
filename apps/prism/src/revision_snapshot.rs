@@ -124,7 +124,15 @@ impl PreparedSnapshot {
             || portable.layers.iter().any(|layer| {
                 matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
             });
-        let snapshot_version = if clone_stamp_schema {
+        let modern_gradient_schema = portable.layers.iter().any(|layer| {
+            layer
+                .shape_fill
+                .as_ref()
+                .is_some_and(crate::ShapeFill::requires_modern_encoding)
+        });
+        let snapshot_version = if modern_gradient_schema {
+            MODERN_GRADIENT_SNAPSHOT_VERSION
+        } else if clone_stamp_schema {
             CLONE_STAMP_SNAPSHOT_VERSION
         } else if shaped_text_schema {
             SHAPED_TEXT_SNAPSHOT_VERSION
@@ -204,7 +212,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | DISSOLVE_SNAPSHOT_VERSION
             | RASTER_PIXEL_MASK_SNAPSHOT_VERSION
             | SHAPED_TEXT_SNAPSHOT_VERSION
-            | CLONE_STAMP_SNAPSHOT_VERSION,
+            | CLONE_STAMP_SNAPSHOT_VERSION
+            | MODERN_GRADIENT_SNAPSHOT_VERSION,
             true,
             false,
         ) => bounded_snapshot_bytes(&payload.bytes),
@@ -217,7 +226,8 @@ pub(super) fn decode_snapshot(payload: &Payload) -> Result<Vec<u8>> {
             | DISSOLVE_SNAPSHOT_VERSION
             | RASTER_PIXEL_MASK_SNAPSHOT_VERSION
             | SHAPED_TEXT_SNAPSHOT_VERSION
-            | CLONE_STAMP_SNAPSHOT_VERSION,
+            | CLONE_STAMP_SNAPSHOT_VERSION
+            | MODERN_GRADIENT_SNAPSHOT_VERSION,
             false,
             true,
         ) => inflate_snapshot(&payload.bytes),
@@ -248,6 +258,44 @@ mod tests {
             Vec::new(),
         );
         assert!(decode_snapshot(&unknown_capability).is_err());
+    }
+
+    #[test]
+    fn modern_gradient_snapshot_is_v12_and_legacy_fill_stays_v3() {
+        let mut modern = Document::new("Modern gradient", 32, 24);
+        modern.layers.push(crate::Layer {
+            id: 1,
+            shape_fill: Some(crate::ShapeFill::Gradient(crate::ShapeGradient {
+                kind: crate::GradientKind::Angle,
+                stops: vec![
+                    crate::GradientStop::new(0.0, [255, 0, 0, 255]),
+                    crate::GradientStop::new(0.5, [0, 255, 0, 128]),
+                    crate::GradientStop::new(1.0, [0, 0, 255, 255]),
+                ],
+                ..Default::default()
+            })),
+            kind: crate::LayerKind::Rectangle {
+                width: 8,
+                height: 8,
+                color: [255; 4],
+                corner_radius: 0.0,
+            },
+            ..Default::default()
+        });
+        let prepared = PreparedSnapshot::legacy(&modern).unwrap();
+        assert_eq!(
+            prepared.payload.encoding.version,
+            MODERN_GRADIENT_SNAPSHOT_VERSION
+        );
+
+        modern.layers[0].shape_fill =
+            Some(crate::ShapeFill::Gradient(crate::ShapeGradient::default()));
+        modern.version = LAYER_EFFECTS_SNAPSHOT_VERSION;
+        let prepared = PreparedSnapshot::legacy(&modern).unwrap();
+        assert_eq!(
+            prepared.payload.encoding.version,
+            LAYER_EFFECTS_SNAPSHOT_VERSION
+        );
     }
 
     #[test]

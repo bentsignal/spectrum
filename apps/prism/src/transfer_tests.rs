@@ -12,6 +12,39 @@ use crate::{
     TextAlignment, TextEffects, TextTypography, Transform, Workspace, render_document,
 };
 
+#[test]
+fn modern_gradient_transfer_uses_v10_and_v9_fails_closed() {
+    let mut document = Document::new("Gradient transfer", 64, 64);
+    document.layers.push(Layer {
+        id: 1,
+        shape_fill: Some(ShapeFill::Gradient(ShapeGradient {
+            kind: crate::GradientKind::Radial,
+            spread: crate::GradientSpread::Repeat,
+            stops: vec![
+                GradientStop::new(0.0, [255, 0, 0, 255]),
+                GradientStop::new(0.5, [0, 255, 0, 128]),
+                GradientStop::new(1.0, [0, 0, 255, 0]),
+            ],
+            ..Default::default()
+        })),
+        kind: LayerKind::Ellipse {
+            width: 20,
+            height: 20,
+            color: [255; 4],
+        },
+        ..Default::default()
+    });
+    document.selected = Some(1);
+    let transfer = LayerTransfer::from_selected(&document).unwrap();
+    assert_eq!(
+        transfer.version,
+        crate::MODERN_GRADIENT_LAYER_TRANSFER_VERSION
+    );
+    let mut old = transfer;
+    old.version = crate::CLONE_STAMP_LAYER_TRANSFER_VERSION;
+    assert!(old.validate_envelope_metadata().is_err());
+}
+
 fn test_directory(label: &str) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

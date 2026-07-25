@@ -13,14 +13,11 @@ use spectrum_revisions::{
     RevisionId, Session, SessionId, TrackId,
 };
 
-use crate::{
-    Command, Document, FontAsset, FontSourceSnapshot, LayerKind, LayerTransferFont, apply_command,
-};
+use crate::{Command, Document, FontSourceSnapshot, LayerKind, LayerTransferFont, apply_command};
 
 const APPLICATION_ID: &str = "spectrum.prism";
 const SNAPSHOT_COMMAND_BUDGET: u64 = 100;
 const SNAPSHOT_OPERATION_BYTE_BUDGET: usize = 64 * 1024;
-const ASSET_PREFIX: &str = "spectrum-asset:";
 
 #[path = "durable_cache.rs"]
 mod durable_cache;
@@ -35,10 +32,16 @@ pub(crate) mod durable_sampled_sources;
 #[path = "revision_encoding.rs"]
 mod revision_encoding;
 use revision_encoding::*;
-pub(crate) use revision_encoding::{CLONE_STAMP_SNAPSHOT_VERSION, SHAPED_TEXT_SNAPSHOT_VERSION};
+pub(crate) use revision_encoding::{
+    CLONE_STAMP_SNAPSHOT_VERSION, MODERN_GRADIENT_SNAPSHOT_VERSION, SHAPED_TEXT_SNAPSHOT_VERSION,
+};
 #[path = "revision_snapshot.rs"]
 mod revision_snapshot;
 use revision_snapshot::*;
+#[path = "revision_assets.rs"]
+mod revision_assets;
+pub(crate) use revision_assets::MAX_EMBEDDED_RASTER_BYTES;
+use revision_assets::*;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct SnapshotTail {
@@ -835,121 +838,5 @@ impl PreparedOperations {
             ),
             assets,
         })
-    }
-}
-
-struct PreparedAsset {
-    reference: AssetReference,
-    asset: Asset,
-    source_path: PathBuf,
-}
-
-pub(crate) const MAX_EMBEDDED_RASTER_BYTES: usize = 512 * 1024 * 1024;
-
-fn prepare_asset(path: &Path) -> Result<PreparedAsset> {
-    if let Some(reference) = AssetReference::parse(path) {
-        bail!(
-            "cannot prepare unresolved embedded asset reference {}",
-            reference.id
-        );
-    }
-    let (canonical, bytes) = crate::font_source::read_secure_regular_file(
-        path,
-        MAX_EMBEDDED_RASTER_BYTES,
-        "raster asset",
-    )
-    .with_context(|| format!("could not embed {}", path.display()))?;
-    Ok(prepare_asset_bytes(&canonical, bytes))
-}
-
-fn prepare_generated_asset(path: &Path) -> Result<PreparedAsset> {
-    let canonical = fs::canonicalize(path)
-        .with_context(|| format!("could not resolve generated asset {}", path.display()))?;
-    prepare_asset(&canonical)
-}
-
-fn prepare_asset_bytes(path: &Path, bytes: Vec<u8>) -> PreparedAsset {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(sanitize_extension)
-        .filter(|extension| !extension.is_empty())
-        .unwrap_or_else(|| "bin".into());
-    let asset = Asset::new(media_type(&extension), bytes);
-    PreparedAsset {
-        reference: AssetReference {
-            id: asset.id,
-            extension,
-        },
-        asset,
-        source_path: path.to_owned(),
-    }
-}
-
-fn prepare_font_snapshot(snapshot: &FontSourceSnapshot) -> Result<PreparedAsset> {
-    let prepared = prepare_asset_bytes(snapshot.canonical_path(), snapshot.bytes().to_vec());
-    if prepared.asset.id.to_string() != snapshot.content_hash() {
-        bail!("font snapshot identity does not match the revision asset identity");
-    }
-    Ok(prepared)
-}
-
-fn prepare_verified_font_asset(font: &FontAsset) -> Result<PreparedAsset> {
-    prepare_font_snapshot(&font.source_snapshot()?)
-}
-
-fn prepare_verified_transfer_font_asset(font: &LayerTransferFont) -> Result<PreparedAsset> {
-    let snapshot = FontSourceSnapshot::read_verified(&font.path, &font.content_hash)?;
-    if snapshot.family != font.family
-        || snapshot.style != font.style
-        || snapshot.weight != font.weight
-        || snapshot.slant != font.slant
-        || snapshot.subset_allowed != font.subset_allowed
-    {
-        bail!("transferred font metadata does not match its immutable source snapshot");
-    }
-    prepare_font_snapshot(&snapshot)
-}
-
-struct AssetReference {
-    id: AssetId,
-    extension: String,
-}
-
-impl AssetReference {
-    fn parse(path: &Path) -> Option<Self> {
-        let value = path.to_str()?.strip_prefix(ASSET_PREFIX)?;
-        let (hash, extension) = value.split_once('.')?;
-        let id = AssetId::from_hex(hash)?;
-        let extension = sanitize_extension(extension);
-        if extension.is_empty() {
-            return None;
-        }
-        Some(Self { id, extension })
-    }
-
-    fn path(&self) -> PathBuf {
-        PathBuf::from(format!("{ASSET_PREFIX}{}.{}", self.id, self.extension))
-    }
-}
-
-fn sanitize_extension(extension: &str) -> String {
-    extension
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .take(12)
-        .collect::<String>()
-        .to_ascii_lowercase()
-}
-
-fn media_type(extension: &str) -> &'static str {
-    match extension {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "tif" | "tiff" => "image/tiff",
-        "webp" => "image/webp",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        _ => "application/octet-stream",
     }
 }
