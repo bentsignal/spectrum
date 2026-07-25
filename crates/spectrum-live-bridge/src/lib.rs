@@ -15,6 +15,8 @@ mod limits;
 mod protocol;
 mod request_cache;
 mod server;
+#[cfg(windows)]
+mod windows_security;
 
 pub use auth::{AuthChallenge, AuthProof, Capability, verify_proof};
 pub use client::{BridgeClient, ClientConfig};
@@ -27,5 +29,5 @@ pub use event_log::{EventLog, Subscription};
 pub use framing::{FrameReader, read_frame, write_frame};
 pub use limits::*;
 pub use protocol::*;
-pub use request_cache::{CachedResponse, RequestCache};
-pub use server::{BridgeHost, BridgeServer, ServerConfig};
+pub use request_cache::{CachedResponse, RequestCache, RequestLookup};
+pub use server::{BridgeHost, BridgeServer, HostApplyOutcome, ServerConfig};

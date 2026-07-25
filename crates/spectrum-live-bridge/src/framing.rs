@@ -4,12 +4,15 @@ use std::{
 };
 
 use serde::{
-    Deserialize, Deserializer, Serialize,
-    de::{DeserializeOwned, Error as _, MapAccess, SeqAccess, Visitor},
+    Deserializer, Serialize,
+    de::{DeserializeOwned, DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::{Number, Value};
 
-use crate::{BridgeError, BridgeResult, MAX_FRAME_BYTES, validate_json_limits};
+use crate::{
+    BridgeError, BridgeResult, MAX_BATCH_ITEMS, MAX_FRAME_BYTES, MAX_JSON_DEPTH, MAX_JSON_NODES,
+    MAX_STRING_BYTES,
+};
 
 pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> BridgeResult<()> {
     let body = serde_json::to_vec(value)?;
@@ -28,6 +31,12 @@ pub fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> BridgeResult<
     FrameReader::new(reader).read()
 }
 
+pub(crate) fn read_frame_counted<R: Read, T: DeserializeOwned>(
+    reader: &mut R,
+) -> BridgeResult<(T, usize)> {
+    FrameReader::new(reader).read_counted()
+}
+
 pub struct FrameReader<R> {
     inner: R,
     body: Vec<u8>,
@@ -42,6 +51,10 @@ impl<R: Read> FrameReader<R> {
     }
 
     pub fn read<T: DeserializeOwned>(&mut self) -> BridgeResult<T> {
+        Ok(self.read_counted()?.0)
+    }
+
+    pub fn read_counted<T: DeserializeOwned>(&mut self) -> BridgeResult<(T, usize)> {
         let mut prefix = [0_u8; 4];
         self.inner.read_exact(&mut prefix)?;
         let length = u32::from_be_bytes(prefix) as usize;
@@ -54,8 +67,7 @@ impl<R: Read> FrameReader<R> {
         self.body.resize(length, 0);
         self.inner.read_exact(&mut self.body)?;
         let value = parse_strict_value(&self.body)?;
-        validate_json_limits(&value)?;
-        Ok(serde_json::from_value(value)?)
+        Ok((serde_json::from_value(value)?, length + prefix.len()))
     }
 
     pub fn into_inner(self) -> R {
@@ -65,22 +77,60 @@ impl<R: Read> FrameReader<R> {
 
 fn parse_strict_value(bytes: &[u8]) -> BridgeResult<Value> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let value = StrictValue::deserialize(&mut deserializer)?.0;
+    let mut budget = JsonBudget { nodes: 0 };
+    let value = StrictValueSeed {
+        budget: &mut budget,
+        depth: 0,
+    }
+    .deserialize(&mut deserializer)?
+    .0;
     deserializer.end()?;
     Ok(value)
 }
 
 struct StrictValue(Value);
 
-impl<'de> Deserialize<'de> for StrictValue {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(StrictValueVisitor)
+struct JsonBudget {
+    nodes: usize,
+}
+
+struct StrictValueSeed<'a> {
+    budget: &'a mut JsonBudget,
+    depth: usize,
+}
+
+impl<'de> DeserializeSeed<'de> for StrictValueSeed<'_> {
+    type Value = StrictValue;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        self.budget.nodes = self
+            .budget
+            .nodes
+            .checked_add(1)
+            .ok_or_else(|| D::Error::custom("JSON node count overflow"))?;
+        if self.budget.nodes > MAX_JSON_NODES {
+            return Err(D::Error::custom(format!(
+                "JSON exceeds {MAX_JSON_NODES} aggregate values"
+            )));
+        }
+        if self.depth > MAX_JSON_DEPTH {
+            return Err(D::Error::custom(format!(
+                "JSON nesting exceeds {MAX_JSON_DEPTH} levels"
+            )));
+        }
+        deserializer.deserialize_any(StrictValueVisitor {
+            budget: self.budget,
+            depth: self.depth,
+        })
     }
 }
 
-struct StrictValueVisitor;
+struct StrictValueVisitor<'a> {
+    budget: &'a mut JsonBudget,
+    depth: usize,
+}
 
-impl<'de> Visitor<'de> for StrictValueVisitor {
+impl<'de> Visitor<'de> for StrictValueVisitor<'_> {
     type Value = StrictValue;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -107,10 +157,20 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
     }
 
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        if value.len() > MAX_STRING_BYTES {
+            return Err(E::custom(format!(
+                "JSON string exceeds {MAX_STRING_BYTES} bytes"
+            )));
+        }
         Ok(StrictValue(Value::String(value.to_owned())))
     }
 
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+        if value.len() > MAX_STRING_BYTES {
+            return Err(E::custom(format!(
+                "JSON string exceeds {MAX_STRING_BYTES} bytes"
+            )));
+        }
         Ok(StrictValue(Value::String(value)))
     }
 
@@ -123,12 +183,24 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
     }
 
     fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
-        StrictValue::deserialize(deserializer)
+        StrictValueSeed {
+            budget: &mut *self.budget,
+            depth: self.depth + 1,
+        }
+        .deserialize(deserializer)
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
         let mut values = Vec::new();
-        while let Some(value) = sequence.next_element::<StrictValue>()? {
+        while let Some(value) = sequence.next_element_seed(StrictValueSeed {
+            budget: &mut *self.budget,
+            depth: self.depth + 1,
+        })? {
+            if values.len() >= MAX_BATCH_ITEMS {
+                return Err(A::Error::custom(format!(
+                    "JSON array exceeds {MAX_BATCH_ITEMS} items"
+                )));
+            }
             values.push(value.0);
         }
         Ok(StrictValue(Value::Array(values)))
@@ -136,7 +208,16 @@ impl<'de> Visitor<'de> for StrictValueVisitor {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut fields = BTreeMap::new();
-        while let Some((key, value)) = map.next_entry::<String, StrictValue>()? {
+        while let Some(key) = map.next_key::<String>()? {
+            if key.len() > MAX_STRING_BYTES {
+                return Err(A::Error::custom(format!(
+                    "JSON key exceeds {MAX_STRING_BYTES} bytes"
+                )));
+            }
+            let value = map.next_value_seed(StrictValueSeed {
+                budget: &mut *self.budget,
+                depth: self.depth + 1,
+            })?;
             if fields.insert(key.clone(), value.0).is_some() {
                 return Err(A::Error::custom(format!("duplicate object key `{key}`")));
             }
@@ -188,5 +269,19 @@ mod tests {
         let mut nested = Vec::from((body.len() as u32).to_be_bytes());
         nested.extend_from_slice(body.as_bytes());
         assert!(read_frame::<_, Value>(&mut nested.as_slice()).is_err());
+    }
+
+    #[test]
+    fn aggregate_node_limit_aborts_during_deserialization() {
+        let fields = (0..MAX_JSON_NODES)
+            .map(|index| format!("\"k{index}\":null"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = format!("{{{fields}}}");
+        assert!(body.len() < MAX_FRAME_BYTES);
+        let mut framed = Vec::from((body.len() as u32).to_be_bytes());
+        framed.extend_from_slice(body.as_bytes());
+        let error = read_frame::<_, Value>(&mut framed.as_slice()).unwrap_err();
+        assert!(error.to_string().contains("aggregate values"));
     }
 }

@@ -56,9 +56,26 @@ impl BridgeClient {
     }
 
     pub fn request(&mut self, request: RequestEnvelope) -> BridgeResult<ResponseEnvelope> {
+        request.validate()?;
+        let request_id = request.request_id;
         write_frame(&mut self.stream, &ClientMessage::Request(Box::new(request)))?;
         match read_frame(&mut self.stream)? {
-            ServerMessage::Response(response) => Ok(response),
+            ServerMessage::Response(response) => {
+                response.validate()?;
+                if response.request_id != request_id {
+                    return Err(BridgeError::Protocol(
+                        "server response request id does not match".into(),
+                    ));
+                }
+                Ok(response)
+            }
+            ServerMessage::RateLimited {
+                retry_after_millis,
+                disconnect,
+            } => Err(BridgeError::RateLimited {
+                retry_after_millis,
+                disconnect,
+            }),
             _ => Err(BridgeError::Protocol(
                 "server did not answer request with a response".into(),
             )),
@@ -66,9 +83,23 @@ impl BridgeClient {
     }
 
     pub fn ping(&mut self, nonce: u64) -> BridgeResult<()> {
-        write_frame(&mut self.stream, &ClientMessage::Ping { nonce })?;
+        self.ping_with_padding(nonce, String::new())
+    }
+
+    pub fn ping_with_padding(&mut self, nonce: u64, padding: String) -> BridgeResult<()> {
+        if padding.len() > crate::MAX_STRING_BYTES {
+            return Err(BridgeError::Limit("ping padding exceeds 4096 bytes".into()));
+        }
+        write_frame(&mut self.stream, &ClientMessage::Ping { nonce, padding })?;
         match read_frame(&mut self.stream)? {
             ServerMessage::Pong { nonce: received } if received == nonce => Ok(()),
+            ServerMessage::RateLimited {
+                retry_after_millis,
+                disconnect,
+            } => Err(BridgeError::RateLimited {
+                retry_after_millis,
+                disconnect,
+            }),
             _ => Err(BridgeError::Protocol("invalid ping response".into())),
         }
     }
@@ -76,7 +107,17 @@ impl BridgeClient {
     pub fn subscribe(&mut self, after_seq: u64) -> BridgeResult<StateSnapshot> {
         write_frame(&mut self.stream, &ClientMessage::Subscribe { after_seq })?;
         match read_frame(&mut self.stream)? {
-            ServerMessage::Snapshot(snapshot) => Ok(snapshot),
+            ServerMessage::Snapshot(snapshot) => {
+                snapshot.validate()?;
+                Ok(snapshot)
+            }
+            ServerMessage::RateLimited {
+                retry_after_millis,
+                disconnect,
+            } => Err(BridgeError::RateLimited {
+                retry_after_millis,
+                disconnect,
+            }),
             _ => Err(BridgeError::Protocol(
                 "subscription did not begin with a snapshot".into(),
             )),
@@ -84,6 +125,19 @@ impl BridgeClient {
     }
 
     pub fn read_subscription_message(&mut self) -> BridgeResult<ServerMessage> {
-        read_frame(&mut self.stream)
+        let message = read_frame(&mut self.stream)?;
+        match &message {
+            ServerMessage::Event(event) => event.validate()?,
+            ServerMessage::ResyncRequired {
+                oldest_seq,
+                newest_seq,
+            } if oldest_seq > newest_seq => {
+                return Err(BridgeError::Protocol(
+                    "invalid resynchronization sequence range".into(),
+                ));
+            }
+            _ => {}
+        }
+        Ok(message)
     }
 }

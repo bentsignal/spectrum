@@ -3,6 +3,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Condvar, Mutex},
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -12,7 +14,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     BindingId, BridgeError, BridgeResult, Capability, CapabilityId, DISCOVERY_EXPIRY,
-    DISCOVERY_FAMILY, InstanceId, PROTOCOL_VERSION,
+    DISCOVERY_FAMILY, DISCOVERY_REFRESH, InstanceId, LocalStream, PROTOCOL_VERSION,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +46,7 @@ pub struct DiscoveryRecord {
     pub capabilities: Vec<String>,
     pub oldest_event_seq: u64,
     pub newest_event_seq: u64,
+    pub created_unix_millis: u64,
     pub refreshed_unix_millis: u64,
     pub expires_unix_millis: u64,
 }
@@ -86,7 +89,9 @@ impl DiscoveryDirectory {
     pub fn open(root: impl Into<PathBuf>) -> BridgeResult<Self> {
         let root = root.into();
         secure_directory(&root)?;
-        Ok(Self { root })
+        let directory = Self { root };
+        directory.remove_stale(|endpoint| LocalStream::connect(endpoint).is_err())?;
+        Ok(directory)
     }
 
     pub fn root(&self) -> &Path {
@@ -127,6 +132,22 @@ impl DiscoveryDirectory {
         })
     }
 
+    /// Publish a binding with a freshly generated capability.
+    ///
+    /// Lifecycle owners should use this for launch, replacement, move, close /
+    /// reopen, and any binding epoch change so capability rotation is not
+    /// optional at the call site.
+    pub fn publish_rotated(
+        &self,
+        mut record: DiscoveryRecord,
+    ) -> BridgeResult<(PublishedBinding, Capability)> {
+        let capability = Capability::generate()?;
+        record.capability_id = capability.id();
+        record.capability_path = self.root.join(format!("{}.capability", record.binding_id));
+        let published = self.publish(record, &capability)?;
+        Ok((published, capability))
+    }
+
     pub fn records(&self) -> BridgeResult<Vec<DiscoveryRecord>> {
         let mut records = Vec::new();
         for entry in fs::read_dir(&self.root)? {
@@ -147,7 +168,13 @@ impl DiscoveryDirectory {
     where
         F: FnMut(&EndpointAddress) -> bool,
     {
-        let now = unix_millis()?;
+        self.remove_stale_at(unix_millis()?, &mut endpoint_failed)
+    }
+
+    fn remove_stale_at<F>(&self, now: u64, endpoint_failed: &mut F) -> BridgeResult<usize>
+    where
+        F: FnMut(&EndpointAddress) -> bool,
+    {
         let mut removed = 0;
         for record in self.records()? {
             if record.is_expired(now) && endpoint_failed(&record.endpoint) {
@@ -156,6 +183,7 @@ impl DiscoveryDirectory {
                 if secure_owned_file(&record_path).is_ok()
                     && secure_owned_file(&capability_path).is_ok()
                 {
+                    remove_owned_endpoint(&record.endpoint)?;
                     fs::remove_file(record_path)?;
                     fs::remove_file(capability_path)?;
                     removed += 1;
@@ -172,13 +200,12 @@ impl DiscoveryDirectory {
                 "capability path does not match binding".into(),
             ));
         }
-        let mut secret = secure_read(&expected, 32)?;
-        let bytes: [u8; 32] = secret
-            .as_slice()
-            .try_into()
-            .map_err(|_| BridgeError::Authentication("capability has wrong length".into()))?;
-        secret.zeroize();
-        Ok(Capability::from_secret(record.capability_id, bytes))
+        let secret = secure_read(&expected, 32)?;
+        let bytes = Zeroizing::new(
+            <[u8; 32]>::try_from(secret.as_slice())
+                .map_err(|_| BridgeError::Authentication("capability has wrong length".into()))?,
+        );
+        Ok(Capability::from_zeroizing(record.capability_id, bytes))
     }
 }
 
@@ -216,26 +243,114 @@ impl Drop for PublishedBinding {
 }
 
 pub struct DiscoveryLease {
-    published: PublishedBinding,
+    published: Arc<Mutex<PublishedBinding>>,
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    worker: Option<thread::JoinHandle<()>>,
+    refresh_error: Arc<Mutex<Option<String>>>,
 }
 
 impl DiscoveryLease {
-    pub fn new(published: PublishedBinding) -> Self {
-        Self { published }
+    pub fn new(published: PublishedBinding) -> BridgeResult<Self> {
+        Self::with_refresh_interval(published, DISCOVERY_REFRESH)
     }
 
-    pub fn refresh(&mut self, oldest_event_seq: u64, newest_event_seq: u64) -> BridgeResult<()> {
-        self.published.refresh(oldest_event_seq, newest_event_seq)
+    fn with_refresh_interval(
+        published: PublishedBinding,
+        refresh_interval: std::time::Duration,
+    ) -> BridgeResult<Self> {
+        let published = Arc::new(Mutex::new(published));
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let refresh_error = Arc::new(Mutex::new(None));
+        let worker = {
+            let published = Arc::clone(&published);
+            let stop = Arc::clone(&stop);
+            let refresh_error = Arc::clone(&refresh_error);
+            thread::Builder::new()
+                .name("spectrum-discovery-lease".into())
+                .spawn(move || {
+                    let (stopped, wake) = &*stop;
+                    loop {
+                        let guard = match stopped.lock() {
+                            Ok(guard) => guard,
+                            Err(_) => return,
+                        };
+                        let Ok((guard, _)) = wake.wait_timeout(guard, refresh_interval) else {
+                            return;
+                        };
+                        if *guard {
+                            return;
+                        }
+                        drop(guard);
+                        let result = (|| -> BridgeResult<()> {
+                            let mut binding = published.lock().map_err(|_| BridgeError::Closed)?;
+                            let oldest = binding.record.oldest_event_seq;
+                            let newest = binding.record.newest_event_seq;
+                            binding.refresh(oldest, newest)
+                        })();
+                        if let Err(error) = result {
+                            if let Ok(mut slot) = refresh_error.lock() {
+                                *slot = Some(error.to_string());
+                            }
+                            return;
+                        }
+                    }
+                })
+                .map_err(BridgeError::Io)?
+        };
+        Ok(Self {
+            published,
+            stop,
+            worker: Some(worker),
+            refresh_error,
+        })
     }
 
-    pub fn record(&self) -> &DiscoveryRecord {
-        self.published.record()
+    pub fn refresh(&self, oldest_event_seq: u64, newest_event_seq: u64) -> BridgeResult<()> {
+        if let Some(error) = self
+            .refresh_error
+            .lock()
+            .map_err(|_| BridgeError::Closed)?
+            .as_ref()
+        {
+            return Err(BridgeError::Protocol(format!(
+                "automatic discovery refresh failed: {error}"
+            )));
+        }
+        self.published
+            .lock()
+            .map_err(|_| BridgeError::Closed)?
+            .refresh(oldest_event_seq, newest_event_seq)
+    }
+
+    pub fn record(&self) -> BridgeResult<DiscoveryRecord> {
+        Ok(self
+            .published
+            .lock()
+            .map_err(|_| BridgeError::Closed)?
+            .record()
+            .clone())
+    }
+}
+
+impl Drop for DiscoveryLease {
+    fn drop(&mut self) {
+        let (stopped, wake) = &*self.stop;
+        if let Ok(mut stopped) = stopped.lock() {
+            *stopped = true;
+            wake.notify_all();
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
 impl DiscoveryRecord {
     fn refresh(&mut self) -> BridgeResult<()> {
         self.refreshed_unix_millis = unix_millis()?;
+        if self.created_unix_millis == 0 {
+            self.created_unix_millis = self.refreshed_unix_millis;
+        }
         self.expires_unix_millis = self.refreshed_unix_millis
             + u64::try_from(DISCOVERY_EXPIRY.as_millis())
                 .map_err(|_| BridgeError::Protocol("lease duration overflow".into()))?;
@@ -299,6 +414,44 @@ fn secure_read(path: &Path, maximum: usize) -> BridgeResult<Zeroizing<Vec<u8>>> 
         return Err(BridgeError::Limit("secure file is oversized".into()));
     }
     Ok(bytes)
+}
+
+#[cfg(unix)]
+fn remove_owned_endpoint(endpoint: &EndpointAddress) -> BridgeResult<()> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let EndpointAddress::Unix { path } = endpoint else {
+        return Ok(());
+    };
+    let Some(parent) = path.parent() else {
+        return Err(BridgeError::Authentication(
+            "stale endpoint has no private parent".into(),
+        ));
+    };
+    secure_directory(parent)?;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.file_type().is_socket()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o777 != 0o600
+    {
+        return Err(BridgeError::Authentication(
+            "stale endpoint failed ownership checks".into(),
+        ));
+    }
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_owned_endpoint(_endpoint: &EndpointAddress) -> BridgeResult<()> {
+    // Named pipes disappear with their final kernel handle; stale cleanup only
+    // removes the authenticated discovery/capability records.
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -376,156 +529,12 @@ fn verify_open_file(file: &File) -> BridgeResult<()> {
 
 #[cfg(windows)]
 fn apply_private_acl(path: &Path) -> BridgeResult<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::{
-        Foundation::LocalFree,
-        Security::{
-            Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SetFileSecurityW,
-        },
-        System::SystemServices::SECURITY_DESCRIPTOR_REVISION,
-    };
-
-    let sddl: Vec<u16> = "D:P(A;;GA;;;OW)\0".encode_utf16().collect();
-    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SECURITY_DESCRIPTOR_REVISION,
-            &raw mut descriptor,
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let applied = unsafe { SetFileSecurityW(wide.as_ptr(), DACL_SECURITY_INFORMATION, descriptor) };
-    unsafe {
-        LocalFree(descriptor);
-    }
-    if applied == 0 {
-        Err(std::io::Error::last_os_error().into())
-    } else {
-        verify_private_acl(path)
-    }
+    crate::windows_security::apply_private_acl(path)
 }
 
 #[cfg(windows)]
 fn verify_private_acl(path: &Path) -> BridgeResult<()> {
-    use std::{ffi::c_void, os::windows::ffi::OsStrExt};
-    use windows_sys::Win32::{
-        Foundation::LocalFree,
-        Security::{
-            ACL, Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
-            DACL_SECURITY_INFORMATION, GetFileSecurityW, PSECURITY_DESCRIPTOR,
-        },
-        System::SystemServices::SECURITY_DESCRIPTOR_REVISION,
-    };
-
-    fn dacl(descriptor: PSECURITY_DESCRIPTOR) -> BridgeResult<(*mut ACL, usize)> {
-        use windows_sys::Win32::Security::{
-            ACL, ACL_SIZE_INFORMATION, AclSizeInformation, GetAclInformation,
-            GetSecurityDescriptorDacl,
-        };
-        let mut present = 0;
-        let mut defaulted = 0;
-        let mut acl: *mut ACL = std::ptr::null_mut();
-        if unsafe {
-            GetSecurityDescriptorDacl(
-                descriptor,
-                &raw mut present,
-                &raw mut acl,
-                &raw mut defaulted,
-            )
-        } == 0
-            || present == 0
-            || acl.is_null()
-        {
-            return Err(BridgeError::Authentication("private DACL is absent".into()));
-        }
-        let mut size = ACL_SIZE_INFORMATION {
-            AceCount: 0,
-            AclBytesInUse: 0,
-            AclBytesFree: 0,
-        };
-        if unsafe {
-            GetAclInformation(
-                acl,
-                (&raw mut size).cast::<c_void>(),
-                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
-                AclSizeInformation,
-            )
-        } == 0
-        {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok((acl, size.AclBytesInUse as usize))
-    }
-
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut needed = 0;
-    unsafe {
-        GetFileSecurityW(
-            wide.as_ptr(),
-            DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            0,
-            &raw mut needed,
-        );
-    }
-    if needed == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let mut actual = vec![0_u8; needed as usize];
-    if unsafe {
-        GetFileSecurityW(
-            wide.as_ptr(),
-            DACL_SECURITY_INFORMATION,
-            actual.as_mut_ptr().cast(),
-            needed,
-            &raw mut needed,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-
-    let sddl: Vec<u16> = "D:P(A;;GA;;;OW)\0".encode_utf16().collect();
-    let mut expected: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SECURITY_DESCRIPTOR_REVISION,
-            &raw mut expected,
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let comparison = (|| -> BridgeResult<bool> {
-        let (actual_acl, actual_len) = dacl(actual.as_mut_ptr().cast())?;
-        let (expected_acl, expected_len) = dacl(expected)?;
-        if actual_len != expected_len {
-            return Ok(false);
-        }
-        let actual_bytes =
-            unsafe { std::slice::from_raw_parts(actual_acl.cast::<u8>(), actual_len) };
-        let expected_bytes =
-            unsafe { std::slice::from_raw_parts(expected_acl.cast::<u8>(), expected_len) };
-        Ok(actual_bytes == expected_bytes)
-    })();
-    unsafe {
-        LocalFree(expected);
-    }
-    if comparison? {
-        Ok(())
-    } else {
-        Err(BridgeError::Authentication(
-            "binding path does not have the user-only protected DACL".into(),
-        ))
-    }
+    crate::windows_security::verify_private_acl(path)
 }
 
 #[cfg(windows)]
@@ -535,7 +544,7 @@ fn verify_open_file(file: &File) -> BridgeResult<()> {
             "opened binding file is not regular".into(),
         ));
     }
-    Ok(())
+    crate::windows_security::verify_private_handle(file)
 }
 
 fn unix_millis() -> BridgeResult<u64> {
@@ -548,6 +557,8 @@ fn unix_millis() -> BridgeResult<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::{thread, time::Duration};
+
     use super::*;
 
     fn record(root: &Path, capability: &Capability) -> DiscoveryRecord {
@@ -572,6 +583,7 @@ mod tests {
             capabilities: Vec::new(),
             oldest_event_seq: 0,
             newest_event_seq: 0,
+            created_unix_millis: 0,
             refreshed_unix_millis: 0,
             expires_unix_millis: 0,
         }
@@ -603,6 +615,33 @@ mod tests {
         assert!(directory.records().unwrap().is_empty());
     }
 
+    #[test]
+    fn lease_refreshes_automatically_and_rotated_publication_changes_capability() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("records");
+        let directory = DiscoveryDirectory::open(&root).unwrap();
+        let seed = Capability::generate().unwrap();
+        let published = directory.publish(record(&root, &seed), &seed).unwrap();
+        let initial = published.record().clone();
+        let lease =
+            DiscoveryLease::with_refresh_interval(published, Duration::from_millis(10)).unwrap();
+        thread::sleep(Duration::from_millis(40));
+        let refreshed = lease.record().unwrap();
+        assert!(refreshed.refreshed_unix_millis > initial.refreshed_unix_millis);
+        assert!(refreshed.expires_unix_millis > initial.expires_unix_millis);
+        drop(lease);
+
+        let mut next = initial;
+        next.binding_epoch += 1;
+        next.created_unix_millis = 0;
+        next.refreshed_unix_millis = 0;
+        next.expires_unix_millis = 0;
+        let (published, rotated) = directory.publish_rotated(next).unwrap();
+        assert_ne!(rotated.id(), seed.id());
+        assert_ne!(rotated.secret(), seed.secret());
+        drop(published);
+    }
+
     #[cfg(unix)]
     #[test]
     fn hardlinks_and_symlinks_are_rejected() {
@@ -622,5 +661,87 @@ mod tests {
         fs::remove_file(&original).unwrap();
         symlink("/dev/null", &original).unwrap();
         assert!(directory.load_capability(lease.record()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn killed_host_residuals_are_scavenged_only_after_endpoint_failure_and_expiry() {
+        use std::process::Command;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("records");
+        let ready = temporary.path().join("ready");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("crashed_discovery_process_helper")
+            .arg("--nocapture")
+            .env("SPECTRUM_BRIDGE_CRASH_DISCOVERY", &root)
+            .env("SPECTRUM_BRIDGE_CRASH_DISCOVERY_READY", &ready)
+            .spawn()
+            .unwrap();
+        for _ in 0..200 {
+            if ready.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            ready.exists(),
+            "crash helper did not publish its ready marker"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        let directory = DiscoveryDirectory::open(&root).unwrap();
+        let residual = directory.records().unwrap().pop().unwrap();
+        assert!(matches!(&residual.endpoint, EndpointAddress::Unix { .. }));
+        let removed = directory
+            .remove_stale_at(residual.expires_unix_millis + 1, &mut |endpoint| {
+                LocalStream::connect(endpoint).is_err()
+            })
+            .unwrap();
+        assert_eq!(removed, 1);
+        assert!(directory.records().unwrap().is_empty());
+        let EndpointAddress::Unix { path } = residual.endpoint else {
+            unreachable!()
+        };
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn crashed_discovery_process_helper() {
+        let Ok(root) = std::env::var("SPECTRUM_BRIDGE_CRASH_DISCOVERY") else {
+            return;
+        };
+        let ready = std::env::var("SPECTRUM_BRIDGE_CRASH_DISCOVERY_READY").unwrap();
+        let root = PathBuf::from(root);
+        let directory = DiscoveryDirectory::open(&root).unwrap();
+        let capability = Capability::generate().unwrap();
+        let record = record(&root, &capability);
+        let listener = crate::LocalListener::bind(&record.endpoint).unwrap();
+        directory
+            .publish(record, &capability)
+            .unwrap()
+            .preserve_files();
+        fs::write(ready, b"ready").unwrap();
+        std::hint::black_box((&listener, &capability));
+        loop {
+            thread::park();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn discovery_files_have_current_logon_owner_and_exact_user_dacl() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("records");
+        let directory = DiscoveryDirectory::open(&root).unwrap();
+        let capability = Capability::generate().unwrap();
+        let published = directory
+            .publish(record(&root, &capability), &capability)
+            .unwrap();
+        crate::windows_security::verify_private_acl(&root).unwrap();
+        crate::windows_security::verify_private_acl(&published.record_path).unwrap();
+        crate::windows_security::verify_private_acl(&published.capability_path).unwrap();
     }
 }

@@ -13,6 +13,7 @@ pub const MAX_STRING_BYTES: usize = 4_096;
 pub const MAX_ERROR_BYTES: usize = 8_192;
 pub const MAX_JSON_DEPTH: usize = 64;
 pub const MAX_BATCH_ITEMS: usize = 128;
+pub const MAX_JSON_NODES: usize = 65_536;
 pub const MAX_CURSOR_EXPECTATIONS: usize = 64;
 pub const MAX_AUTHENTICATED_CONNECTIONS: usize = 8;
 pub const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 8;
@@ -25,6 +26,10 @@ pub const MAX_SUBSCRIBER_BYTES: usize = 2 * 1024 * 1024;
 pub const EVENT_LOG_MAX_EVENTS: usize = 1_024;
 pub const EVENT_LOG_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const REQUEST_CACHE_MAX_ENTRIES: usize = 1_024;
+pub const REQUEST_TOMBSTONE_MAX_ENTRIES: usize = 8_192;
+pub const REQUEST_TOMBSTONE_BLOOM_WORDS: usize = 2_048;
+pub const MAX_INGRESS_BYTES_PER_SECOND: usize = 8 * 1024 * 1024;
+pub const MAX_INGRESS_BURST_BYTES: usize = 16 * 1024 * 1024;
 pub const AUTH_DEADLINE: Duration = Duration::from_secs(2);
 pub const DISCOVERY_REFRESH: Duration = Duration::from_secs(5);
 pub const DISCOVERY_EXPIRY: Duration = Duration::from_secs(15);
@@ -32,7 +37,15 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const REQUEST_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
 pub fn validate_json_limits(value: &Value) -> BridgeResult<()> {
-    fn walk(value: &Value, depth: usize) -> BridgeResult<()> {
+    fn walk(value: &Value, depth: usize, nodes: &mut usize) -> BridgeResult<()> {
+        *nodes = nodes
+            .checked_add(1)
+            .ok_or_else(|| BridgeError::Limit("JSON node count overflow".into()))?;
+        if *nodes > MAX_JSON_NODES {
+            return Err(BridgeError::Limit(format!(
+                "JSON exceeds {MAX_JSON_NODES} aggregate values"
+            )));
+        }
         if depth > MAX_JSON_DEPTH {
             return Err(BridgeError::Limit("JSON nesting exceeds 64 levels".into()));
         }
@@ -45,7 +58,7 @@ pub fn validate_json_limits(value: &Value) -> BridgeResult<()> {
                     return Err(BridgeError::Limit("JSON array exceeds 128 items".into()));
                 }
                 for item in items {
-                    walk(item, depth + 1)?;
+                    walk(item, depth + 1, nodes)?;
                 }
                 Ok(())
             }
@@ -54,12 +67,13 @@ pub fn validate_json_limits(value: &Value) -> BridgeResult<()> {
                     if key.len() > MAX_STRING_BYTES {
                         return Err(BridgeError::Limit("JSON key exceeds 4096 bytes".into()));
                     }
-                    walk(value, depth + 1)?;
+                    walk(value, depth + 1, nodes)?;
                 }
                 Ok(())
             }
             _ => Ok(()),
         }
     }
-    walk(value, 0)
+    let mut nodes = 0;
+    walk(value, 0, &mut nodes)
 }

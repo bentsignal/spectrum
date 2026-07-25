@@ -88,8 +88,24 @@ impl Capability {
         Self { id, secret }
     }
 
+    pub(crate) fn from_zeroizing(id: CapabilityId, mut secret: Zeroizing<[u8; 32]>) -> Self {
+        Self {
+            id,
+            secret: std::mem::take(&mut *secret),
+        }
+    }
+
     pub fn id(&self) -> CapabilityId {
         self.id
+    }
+
+    /// Duplicate a capability for an in-process local client without exposing
+    /// its raw bytes through argv, environment, logs, or serialization.
+    pub fn duplicate(&self) -> Self {
+        Self {
+            id: self.id,
+            secret: self.secret,
+        }
     }
 
     pub fn prove(&self, challenge: &AuthChallenge) -> BridgeResult<AuthProof> {
