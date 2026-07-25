@@ -48,23 +48,45 @@ pub(crate) fn current_user_only_descriptor() -> BridgeResult<OwnedSecurityDescri
 
 pub(crate) fn apply_private_acl(path: &Path) -> BridgeResult<()> {
     let descriptor = current_user_only_descriptor()?;
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let applied = unsafe {
-        SetFileSecurityW(
-            wide.as_ptr(),
-            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
-            descriptor.as_ptr(),
-        )
-    };
-    if applied == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
+    apply_security_descriptor(path, &descriptor, descriptor.as_ptr())?;
     verify_private_acl(path)
 }
 
-pub(crate) fn verify_private_acl(path: &Path) -> BridgeResult<()> {
+fn apply_security_descriptor(
+    path: &Path,
+    dacl_descriptor: &OwnedSecurityDescriptor,
+    owner_descriptor: PSECURITY_DESCRIPTOR,
+) -> BridgeResult<()> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let information = DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION;
+    // Apply the protected current-user DACL first. Elevated Windows tokens can
+    // create a file owned by the Administrators group; granting the current
+    // logon SID full access gives the following owner update WRITE_OWNER
+    // without enabling or depending on a process privilege.
+    if unsafe {
+        SetFileSecurityW(
+            wide.as_ptr(),
+            DACL_SECURITY_INFORMATION,
+            dacl_descriptor.as_ptr(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe { SetFileSecurityW(wide.as_ptr(), OWNER_SECURITY_INFORMATION, owner_descriptor) } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+pub(crate) fn verify_private_acl(path: &Path) -> BridgeResult<()> {
+    let mut actual =
+        read_security_descriptor(path, DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION)?;
+    verify_descriptor(actual.as_mut_ptr().cast())
+}
+
+fn read_security_descriptor(path: &Path, information: u32) -> BridgeResult<Vec<u8>> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut needed = 0;
     unsafe {
         GetFileSecurityW(
@@ -92,7 +114,7 @@ pub(crate) fn verify_private_acl(path: &Path) -> BridgeResult<()> {
         return Err(std::io::Error::last_os_error().into());
     }
 
-    verify_descriptor(actual.as_mut_ptr().cast())
+    Ok(actual)
 }
 
 pub(crate) fn verify_private_handle(file: &std::fs::File) -> BridgeResult<()> {
@@ -129,6 +151,13 @@ fn verify_descriptor(actual_descriptor: PSECURITY_DESCRIPTOR) -> BridgeResult<()
             "binding path owner is not the current logon SID".into(),
         ));
     }
+    verify_descriptor_dacl(actual_descriptor, current.as_sid())
+}
+
+fn verify_descriptor_dacl(
+    actual_descriptor: PSECURITY_DESCRIPTOR,
+    current_sid: PSID,
+) -> BridgeResult<()> {
     let mut control = 0;
     let mut revision = 0;
     if unsafe {
@@ -188,7 +217,7 @@ fn verify_descriptor(actual_descriptor: PSECURITY_DESCRIPTOR) -> BridgeResult<()
         ));
     }
     let allowed_sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
-    if unsafe { EqualSid(allowed_sid, current.as_sid()) } == 0 {
+    if unsafe { EqualSid(allowed_sid, current_sid) } == 0 {
         return Err(BridgeError::Authentication(
             "binding path DACL grants a principal other than the current user".into(),
         ));
@@ -311,6 +340,8 @@ fn token_user(token: HANDLE) -> BridgeResult<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, ptr};
+
     use super::*;
 
     #[test]
@@ -322,5 +353,41 @@ mod tests {
         let broad =
             descriptor_from_sddl(&format!("O:{sid}D:P(A;;FA;;;{sid})(A;;GR;;;WD)")).unwrap();
         assert!(verify_descriptor(broad.as_ptr()).is_err());
+    }
+
+    #[test]
+    fn two_phase_hardening_handles_inherited_admin_owned_objects() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("inherited.tmp");
+        fs::write(&path, b"private").unwrap();
+
+        let current = current_user_sid().unwrap();
+        let mut before = read_security_descriptor(&path, OWNER_SECURITY_INFORMATION).unwrap();
+        let owner = descriptor_owner(before.as_mut_ptr().cast()).unwrap();
+        let began_with_different_owner = unsafe { EqualSid(owner, current.as_sid()) } == 0;
+        if std::env::var_os("GITHUB_ACTIONS").is_some() {
+            assert!(
+                began_with_different_owner,
+                "the elevated Windows runner should exercise inherited administrator ownership"
+            );
+        }
+
+        apply_private_acl(&path).unwrap();
+        verify_private_acl(&path).unwrap();
+    }
+
+    #[test]
+    fn failed_owner_phase_leaves_a_fail_closed_current_user_dacl() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("owner-failure.tmp");
+        fs::write(&path, b"private").unwrap();
+        let descriptor = current_user_only_descriptor().unwrap();
+
+        let error = apply_security_descriptor(&path, &descriptor, ptr::null_mut()).unwrap_err();
+        assert!(matches!(error, BridgeError::Io(_)));
+
+        let current = current_user_sid().unwrap();
+        let mut after = read_security_descriptor(&path, DACL_SECURITY_INFORMATION).unwrap();
+        verify_descriptor_dacl(after.as_mut_ptr().cast(), current.as_sid()).unwrap();
     }
 }
