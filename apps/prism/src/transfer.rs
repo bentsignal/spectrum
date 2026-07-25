@@ -20,7 +20,8 @@ pub const DISSOLVE_LAYER_TRANSFER_VERSION: u32 = 6;
 pub const RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION: u32 = 7;
 pub const SHAPED_TEXT_LAYER_TRANSFER_VERSION: u32 = 8;
 pub const CLONE_STAMP_LAYER_TRANSFER_VERSION: u32 = 9;
-pub const LAYER_TRANSFER_VERSION: u32 = CLONE_STAMP_LAYER_TRANSFER_VERSION;
+pub const MODERN_GRADIENT_LAYER_TRANSFER_VERSION: u32 = 10;
+pub const LAYER_TRANSFER_VERSION: u32 = MODERN_GRADIENT_LAYER_TRANSFER_VERSION;
 const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
@@ -88,7 +89,13 @@ impl LayerTransfer {
                 );
             }
         }
-        let version = if matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
+        let version = if layer
+            .shape_fill
+            .as_ref()
+            .is_some_and(crate::ShapeFill::requires_modern_encoding)
+        {
+            MODERN_GRADIENT_LAYER_TRANSFER_VERSION
+        } else if matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
         {
             CLONE_STAMP_LAYER_TRANSFER_VERSION
         } else if matches!(
@@ -259,6 +266,15 @@ impl LayerTransfer {
             && matches!(&self.layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
         {
             bail!("Prism layer transfer versions before 9 cannot contain Clone Stamp sources");
+        }
+        if self.version < MODERN_GRADIENT_LAYER_TRANSFER_VERSION
+            && self
+                .layer
+                .shape_fill
+                .as_ref()
+                .is_some_and(crate::ShapeFill::requires_modern_encoding)
+        {
+            bail!("Prism layer transfers before 10 cannot contain modern gradients");
         }
         let mut referenced = std::collections::BTreeSet::new();
         if let LayerKind::Paint { program } = &self.layer.kind {

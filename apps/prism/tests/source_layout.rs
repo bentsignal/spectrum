@@ -220,16 +220,20 @@ fn native_macos_menu_disables_winit_replacement_before_launch() {
 
     let binary = fs::read_to_string(manifest.join("src/bin/prism-gui.rs"))
         .expect("Prism GUI entry point should be readable");
+    let launch = fs::read_to_string(manifest.join("src/bin/prism_gui/launch.rs"))
+        .expect("Prism GUI launch module should be readable");
     assert!(!binary.contains("with_default_menu("));
-    assert!(binary.contains("#[cfg(not(target_os = \"macos\"))]\nfn main()"));
-    assert!(binary.contains("eframe::run_native("));
+    assert!(binary.contains("fn main() -> eframe::Result"));
+    assert!(binary.contains("launch::run()"));
+    assert!(launch.contains("#[cfg(not(target_os = \"macos\"))]\npub(super) fn run()"));
+    assert!(launch.contains("eframe::run_native("));
 }
 
 #[test]
 fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repository = manifest.join("../..");
-    let app = fs::read_to_string(manifest.join("src/bin/prism-gui.rs")).unwrap();
+    let app = fs::read_to_string(manifest.join("src/bin/prism_gui/launch.rs")).unwrap();
     let plist = fs::read_to_string(repository.join("packaging/prism/macos/Info.plist")).unwrap();
     let macos = fs::read_to_string(repository.join("scripts/package-prism-macos.sh")).unwrap();
     let linux = fs::read_to_string(repository.join("scripts/package-prism-linux.sh")).unwrap();

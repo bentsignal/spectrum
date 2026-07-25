@@ -38,6 +38,8 @@ mod compositor;
 mod dialogs;
 #[path = "prism_gui/effects_ui.rs"]
 mod effects_ui;
+#[path = "prism_gui/gradient_editor.rs"]
+mod gradient_editor;
 #[path = "prism_gui/history.rs"]
 mod history;
 #[path = "prism_gui/inline_text.rs"]
@@ -47,8 +49,15 @@ mod inspector;
 #[path = "prism_gui/inspector_controls.rs"]
 mod inspector_controls;
 use inspector_controls::*;
+#[path = "prism_gui/inspector_interaction.rs"]
+mod inspector_interaction;
+use inspector_interaction::*;
 #[path = "prism_gui/lasso_tool.rs"]
 mod lasso_tool;
+#[path = "prism_gui/launch.rs"]
+mod launch;
+#[cfg(target_os = "macos")]
+use launch::native_options;
 #[path = "prism_gui/layers.rs"]
 mod layers;
 #[path = "prism_gui/live_bridge.rs"]
@@ -140,6 +149,7 @@ struct PrismApp {
     pen: pen_tool::PenState,
     brush: brush_tool::BrushState,
     inspector_section: inspector::InspectorSection,
+    suppress_inspector_widget_commands: bool,
     composition_query: String,
     composition_search_focus: bool,
     composition_result_index: usize,
@@ -176,45 +186,8 @@ struct PrismApp {
     native_terminal: native_terminal::NativeTerminalHost,
 }
 
-fn native_options() -> eframe::NativeOptions {
-    eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1500.0, 940.0])
-            .with_min_inner_size([980.0, 640.0])
-            .with_icon(prism_icon()),
-        centered: true,
-        ..Default::default()
-    }
-}
-
-fn prism_icon() -> egui::IconData {
-    eframe::icon_data::from_png_bytes(include_bytes!(
-        "../../../../assets/branding/prism-app-icon.png"
-    ))
-    .expect("bundled Prism icon must be a valid PNG")
-}
-
-#[cfg(not(target_os = "macos"))]
 fn main() -> eframe::Result {
-    let initial_project = std::env::args_os().nth(1).map(PathBuf::from);
-    let (_, open_document_receiver) = mpsc::channel();
-    eframe::run_native(
-        "Prism",
-        native_options(),
-        Box::new(move |creation| {
-            Ok(Box::new(PrismApp::new(
-                creation,
-                initial_project.as_deref(),
-                open_document_receiver,
-            )))
-        }),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn main() -> eframe::Result {
-    let initial_project = std::env::args_os().nth(1).map(PathBuf::from);
-    macos::run(initial_project)
+    launch::run()
 }
 
 impl PrismApp {
@@ -288,6 +261,7 @@ impl PrismApp {
             pen: pen_tool::PenState::default(),
             brush: brush_tool::BrushState::configured(),
             inspector_section: inspector::InspectorSection::default(),
+            suppress_inspector_widget_commands: false,
             composition_query: String::new(),
             composition_search_focus: false,
             composition_result_index: 0,
@@ -422,11 +396,17 @@ impl PrismApp {
     }
 
     fn widget_command_if(&mut self, response: &egui::Response, command: Option<Command>) {
-        if response.drag_started() || response.gained_focus() {
+        if inspector_widget_focus_loss_action(response) == InspectorWidgetFocusLossAction::Cancel {
+            self.cancel_workspace_interaction_for_escape_frame();
+            return;
+        }
+        let phases =
+            inspector_widget_command_phases(response, self.suppress_inspector_widget_commands);
+        if phases.begin {
             self.settle_inline_text_editor();
             self.begin_workspace_interaction();
         }
-        if response.changed()
+        if phases.apply
             && let Some(command) = command
         {
             if self.workspace.interaction_active() {
@@ -435,7 +415,7 @@ impl PrismApp {
                 self.execute(command);
             }
         }
-        if response.drag_stopped() || response.lost_focus() {
+        if phases.finish {
             self.finish_interaction();
         }
     }
@@ -601,6 +581,27 @@ impl PrismApp {
     }
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct InspectorWidgetCommandPhases {
+    begin: bool,
+    apply: bool,
+    finish: bool,
+}
+
+fn inspector_widget_command_phases(
+    response: &egui::Response,
+    suppress_for_frame: bool,
+) -> InspectorWidgetCommandPhases {
+    if suppress_for_frame {
+        return InspectorWidgetCommandPhases::default();
+    }
+    InspectorWidgetCommandPhases {
+        begin: response.drag_started() || response.gained_focus(),
+        apply: response.changed(),
+        finish: response.drag_stopped() || response.lost_focus(),
+    }
+}
+
 fn visible_status(status: &str, status_error: bool) -> Option<&str> {
     status_error.then_some(status)
 }
@@ -643,6 +644,7 @@ impl eframe::App for PrismApp {
         #[cfg(target_os = "macos")]
         self.sync_native_menu_state(&context);
         self.composite_preview.poll(&context);
+        self.suppress_inspector_widget_commands = false;
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -672,6 +674,7 @@ mod paragraph_width_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::launch::prism_icon;
 
     #[test]
     fn bundled_prism_icon_uses_the_user_cropped_artwork() {

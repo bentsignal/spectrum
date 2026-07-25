@@ -238,7 +238,7 @@ enum CliCommand {
     },
     /// Add, update, or clear a portable layer drop shadow.
     Shadow(ShadowArgs),
-    /// Add, update, or clear a two-stop linear shape gradient.
+    /// Add, update, or clear a bounded multi-stop shape gradient.
     Gradient(GradientArgs),
     /// Freeze an editable shape into an embedded raster asset.
     RasterizeShape {

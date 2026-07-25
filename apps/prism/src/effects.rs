@@ -1,5 +1,9 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+pub use spectrum_imaging::{
+    Gradient as ShapeGradient, GradientInterpolation, GradientKind, GradientSampler,
+    GradientSpread, GradientStop, MAX_GRADIENT_STOPS,
+};
 
 use crate::validation::require_finite;
 
@@ -133,95 +137,6 @@ impl LayerStyle {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct GradientStop {
-    pub position: f32,
-    pub color: [u8; 4],
-}
-
-impl GradientStop {
-    pub const fn new(position: f32, color: [u8; 4]) -> Self {
-        Self { position, color }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GradientKind {
-    #[default]
-    Linear,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ShapeGradient {
-    pub kind: GradientKind,
-    pub angle: f32,
-    pub stops: Vec<GradientStop>,
-}
-
-impl Default for ShapeGradient {
-    fn default() -> Self {
-        Self {
-            kind: GradientKind::Linear,
-            angle: 0.0,
-            stops: vec![
-                GradientStop::new(0.0, [93, 216, 199, 255]),
-                GradientStop::new(1.0, [174, 123, 255, 255]),
-            ],
-        }
-    }
-}
-
-impl ShapeGradient {
-    pub(crate) fn sanitized(mut self) -> Self {
-        self.angle = self.angle.rem_euclid(360.0);
-        for stop in &mut self.stops {
-            stop.position = stop.position.clamp(0.0, 1.0);
-        }
-        self.stops
-            .sort_by(|left, right| left.position.total_cmp(&right.position));
-        self
-    }
-
-    fn direction(&self) -> (f32, f32) {
-        let radians = self.angle.to_radians();
-        (radians.cos(), radians.sin())
-    }
-
-    fn sample(&self, normalized_x: f32, normalized_y: f32, direction: (f32, f32)) -> [u8; 4] {
-        let Some(start) = self.stops.first().copied() else {
-            return [0; 4];
-        };
-        let Some(end) = self.stops.get(1).copied() else {
-            return start.color;
-        };
-        let amount = gradient_amount(start, end, normalized_x, normalized_y, direction);
-        interpolate_premultiplied(start.color, end.color, amount)
-    }
-
-    fn sample_alpha(&self, normalized_x: f32, normalized_y: f32, direction: (f32, f32)) -> u8 {
-        let Some(start) = self.stops.first().copied() else {
-            return 0;
-        };
-        let Some(end) = self.stops.get(1).copied() else {
-            return start.color[3];
-        };
-        let amount = gradient_amount(start, end, normalized_x, normalized_y, direction);
-        (f32::from(start.color[3]) + (f32::from(end.color[3]) - f32::from(start.color[3])) * amount)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    }
-
-    fn uniform_color(&self) -> Option<[u8; 4]> {
-        let first = self.stops.first()?;
-        self.stops
-            .iter()
-            .all(|stop| stop.color == first.color)
-            .then_some(first.color)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ShapeFill {
@@ -229,32 +144,25 @@ pub enum ShapeFill {
 }
 
 impl ShapeFill {
+    pub(crate) fn requires_modern_encoding(&self) -> bool {
+        match self {
+            Self::Gradient(gradient) => gradient.requires_modern_encoding(),
+        }
+    }
+
     pub(crate) fn sanitized(self) -> Self {
         match self {
-            Self::Gradient(gradient) => Self::Gradient(gradient.sanitized()),
+            Self::Gradient(gradient) => Self::Gradient(gradient.canonicalized()),
         }
     }
 
-    pub(crate) fn direction(&self) -> (f32, f32) {
+    pub(crate) fn sampler(&self, width: u32, height: u32) -> ShapeFillSampler<'_> {
         match self {
-            Self::Gradient(gradient) => gradient.direction(),
-        }
-    }
-
-    pub(crate) fn sample(
-        &self,
-        x: f32,
-        y: f32,
-        width: u32,
-        height: u32,
-        direction: (f32, f32),
-    ) -> [u8; 4] {
-        match self {
-            Self::Gradient(gradient) => gradient.sample(
-                (x / width.max(1) as f32).clamp(0.0, 1.0),
-                (y / height.max(1) as f32).clamp(0.0, 1.0),
-                direction,
-            ),
+            Self::Gradient(gradient) => ShapeFillSampler {
+                gradient: gradient.sampler(),
+                width: width.max(1) as f32,
+                height: height.max(1) as f32,
+            },
         }
     }
 
@@ -263,37 +171,33 @@ impl ShapeFill {
             Self::Gradient(gradient) => gradient.uniform_color(),
         }
     }
-
-    pub(crate) fn sample_alpha(
-        &self,
-        x: f32,
-        y: f32,
-        width: u32,
-        height: u32,
-        direction: (f32, f32),
-    ) -> u8 {
-        match self {
-            Self::Gradient(gradient) => gradient.sample_alpha(
-                (x / width.max(1) as f32).clamp(0.0, 1.0),
-                (y / height.max(1) as f32).clamp(0.0, 1.0),
-                direction,
-            ),
-        }
-    }
 }
 
-fn gradient_amount(
-    start: GradientStop,
-    end: GradientStop,
-    normalized_x: f32,
-    normalized_y: f32,
-    direction: (f32, f32),
-) -> f32 {
-    let projection =
-        ((normalized_x - 0.5) * direction.0 + (normalized_y - 0.5) * direction.1 + 0.5)
-            .clamp(0.0, 1.0);
-    let span = (end.position - start.position).max(f32::EPSILON);
-    ((projection - start.position) / span).clamp(0.0, 1.0)
+#[derive(Clone, Copy)]
+pub(crate) struct ShapeFillSampler<'a> {
+    gradient: GradientSampler<'a>,
+    width: f32,
+    height: f32,
+}
+
+impl ShapeFillSampler<'_> {
+    pub(crate) fn sample(&self, x: f32, y: f32) -> [u8; 4] {
+        self.gradient.sample_in_box(
+            x.clamp(0.0, self.width),
+            y.clamp(0.0, self.height),
+            self.width,
+            self.height,
+        )
+    }
+
+    pub(crate) fn sample_alpha(&self, x: f32, y: f32) -> u8 {
+        self.gradient.sample_alpha_in_box(
+            x.clamp(0.0, self.width),
+            y.clamp(0.0, self.height),
+            self.width,
+            self.height,
+        )
+    }
 }
 
 pub(crate) fn validate_layer_style(style: &LayerStyle) -> Result<()> {
@@ -312,19 +216,7 @@ pub(crate) fn validate_layer_style(style: &LayerStyle) -> Result<()> {
 pub(crate) fn validate_shape_fill(fill: &ShapeFill) -> Result<()> {
     match fill {
         ShapeFill::Gradient(gradient) => {
-            require_finite("gradient angle", gradient.angle)?;
-            if gradient.stops.len() != 2 {
-                bail!("this Prism version requires exactly two gradient stops");
-            }
-            for stop in &gradient.stops {
-                require_finite("gradient stop position", stop.position)?;
-                if !(0.0..=1.0).contains(&stop.position) {
-                    bail!("gradient stop positions must be between 0 and 1");
-                }
-            }
-            if gradient.stops[0].position >= gradient.stops[1].position {
-                bail!("gradient stop positions must be strictly increasing");
-            }
+            gradient.validate().map_err(anyhow::Error::new)?;
         }
     }
     Ok(())
@@ -358,23 +250,4 @@ pub(crate) fn colored_shadow_pixel(shadow: DropShadow, source_alpha: u8) -> [u8;
         shadow.color[2],
         alpha as u8,
     ]
-}
-
-fn interpolate_premultiplied(start: [u8; 4], end: [u8; 4], amount: f32) -> [u8; 4] {
-    let start_alpha = f32::from(start[3]) / 255.0;
-    let end_alpha = f32::from(end[3]) / 255.0;
-    let alpha = start_alpha + (end_alpha - start_alpha) * amount;
-    let mut output = [0_u8; 4];
-    for channel in 0..3 {
-        let start_value = f32::from(start[channel]) * start_alpha;
-        let end_value = f32::from(end[channel]) * end_alpha;
-        let premultiplied = start_value + (end_value - start_value) * amount;
-        output[channel] = if alpha > f32::EPSILON {
-            (premultiplied / alpha).round().clamp(0.0, 255.0) as u8
-        } else {
-            0
-        };
-    }
-    output[3] = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
-    output
 }

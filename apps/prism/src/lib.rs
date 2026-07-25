@@ -7,9 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use spectrum_imaging::Adjustments;
-use std::sync::Arc;
 
 mod commands;
 pub use commands::{Command, CommandOutput, PaintSelection};
@@ -17,9 +15,9 @@ pub use commands::{Command, CommandOutput, PaintSelection};
 mod effects;
 mod effects_render;
 pub use effects::{
-    DROP_SHADOW_KERNEL, DROP_SHADOW_KERNEL_TOTAL_WEIGHT, DropShadow, GradientKind, GradientStop,
-    LayerStyle, MAX_DROP_SHADOW_BLUR, MAX_DROP_SHADOW_OFFSET, ShapeFill, ShapeGradient,
-    ShapeStroke,
+    DROP_SHADOW_KERNEL, DROP_SHADOW_KERNEL_TOTAL_WEIGHT, DropShadow, GradientInterpolation,
+    GradientKind, GradientSpread, GradientStop, LayerStyle, MAX_DROP_SHADOW_BLUR,
+    MAX_DROP_SHADOW_OFFSET, MAX_GRADIENT_STOPS, ShapeFill, ShapeGradient, ShapeStroke,
 };
 
 mod text;
@@ -54,7 +52,8 @@ pub use font_subset_plan::{
 mod transfer;
 pub use transfer::{
     CLONE_STAMP_LAYER_TRANSFER_VERSION, DISSOLVE_LAYER_TRANSFER_VERSION, LAYER_TRANSFER_FORMAT,
-    LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont, PAINT_LAYER_TRANSFER_VERSION,
+    LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont,
+    MODERN_GRADIENT_LAYER_TRANSFER_VERSION, PAINT_LAYER_TRANSFER_VERSION,
     PATH_LAYER_TRANSFER_VERSION, RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION,
     SHAPED_TEXT_LAYER_TRANSFER_VERSION,
 };
@@ -142,8 +141,8 @@ pub use lasso::{
     combine_selections, lasso_selection,
 };
 
-pub const PRISM_VERSION: u32 = 11;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 14;
+pub const PRISM_VERSION: u32 = 12;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 15;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
@@ -174,149 +173,11 @@ pub use selection_outline::{
     marching_ants_frame, selection_mask_outline,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Transform {
-    pub x: f32,
-    pub y: f32,
-    pub scale_x: f32,
-    pub scale_y: f32,
-    pub rotation: f32,
-}
+mod transform;
+pub use transform::Transform;
 
-impl Default for Transform {
-    fn default() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            scale_x: 1.0,
-            scale_y: 1.0,
-            rotation: 0.0,
-        }
-    }
-}
-
-impl Transform {
-    fn sanitized(self) -> Self {
-        Self {
-            x: self.x.clamp(-100_000.0, 100_000.0),
-            y: self.y.clamp(-100_000.0, 100_000.0),
-            scale_x: self.scale_x.clamp(0.01, 100.0),
-            scale_y: self.scale_y.clamp(0.01, 100.0),
-            rotation: self.rotation.rem_euclid(360.0),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LayerMask {
-    pub enabled: bool,
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub invert: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PixelMask {
-    pub width: u32,
-    pub height: u32,
-    pub content_hash: [u8; 32],
-    #[serde(with = "pixel_mask_bytes")]
-    pub alpha: Arc<[u8]>,
-}
-
-impl PixelMask {
-    pub fn new(width: u32, height: u32, alpha: impl Into<Arc<[u8]>>) -> Self {
-        let alpha = alpha.into();
-        let content_hash = Sha256::digest(alpha.as_ref()).into();
-        Self {
-            width,
-            height,
-            content_hash,
-            alpha,
-        }
-    }
-
-    pub fn identity(&self) -> [u8; 32] {
-        self.content_hash
-    }
-
-    pub(crate) fn has_valid_identity(&self) -> bool {
-        self.content_hash == <[u8; 32]>::from(Sha256::digest(self.alpha.as_ref()))
-    }
-}
-
-impl PartialEq for PixelMask {
-    fn eq(&self, other: &Self) -> bool {
-        self.width == other.width
-            && self.height == other.height
-            && self.content_hash == other.content_hash
-            && (Arc::ptr_eq(&self.alpha, &other.alpha)
-                || self.alpha.as_ref() == other.alpha.as_ref())
-    }
-}
-
-impl Eq for PixelMask {}
-
-mod pixel_mask_bytes {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    const MAX_ENCODED_BYTES: usize = (crate::MAX_COLOR_SELECTION_PIXELS as usize).div_ceil(3) * 4;
-
-    pub fn serialize<S: Serializer>(
-        bytes: &std::sync::Arc<[u8]>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&STANDARD.encode(bytes.as_ref()))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<std::sync::Arc<[u8]>, D::Error> {
-        let encoded = String::deserialize(deserializer)?;
-        if encoded.len() > MAX_ENCODED_BYTES {
-            return Err(serde::de::Error::custom(
-                "pixel mask exceeds the encoded size limit",
-            ));
-        }
-        STANDARD
-            .decode(encoded)
-            .map(std::sync::Arc::from)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-impl Default for LayerMask {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            x: 0.0,
-            y: 0.0,
-            width: 1.0,
-            height: 1.0,
-            invert: false,
-        }
-    }
-}
-
-impl LayerMask {
-    fn sanitized(self) -> Self {
-        let x = self.x.clamp(0.0, 1.0);
-        let y = self.y.clamp(0.0, 1.0);
-        Self {
-            enabled: self.enabled,
-            x,
-            y,
-            width: self.width.clamp(0.001, 1.0 - x),
-            height: self.height.clamp(0.001, 1.0 - y),
-            invert: self.invert,
-        }
-    }
-}
+mod layer_masks;
+pub use layer_masks::{LayerMask, PixelMask};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -741,6 +602,13 @@ impl Document {
             validate_shape_stroke(layer.stroke)?;
             if let Some(fill) = &layer.shape_fill {
                 effects::validate_shape_fill(fill)?;
+                if source_version < revisions::MODERN_GRADIENT_SNAPSHOT_VERSION
+                    && fill.requires_modern_encoding()
+                {
+                    bail!(
+                        "Prism snapshot version {source_version} cannot contain modern gradients"
+                    );
+                }
                 if !matches!(
                     layer.kind,
                     LayerKind::Rectangle { .. }
@@ -967,6 +835,10 @@ mod durable_asset_tests;
 #[cfg(test)]
 #[path = "effect_tests.rs"]
 mod effect_tests;
+
+#[cfg(test)]
+#[path = "gradient_tests.rs"]
+mod gradient_tests;
 
 #[cfg(test)]
 #[path = "selection_tests.rs"]

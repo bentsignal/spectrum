@@ -39,7 +39,8 @@ pub(super) fn schema() -> Value {
             "dissolve_operations_version": 11,
             "raster_pixel_mask_operations_version": 12,
             "shaped_text_operations_version": 13,
-            "clone_stamp_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "clone_stamp_operations_version": 14,
+            "modern_gradient_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "live_bridge": {
@@ -135,7 +136,15 @@ pub(super) fn schema() -> Value {
         },
         "layer_styles": {
             "drop_shadow": "shadow <layer> [--x <px>] [--y <px>] [--blur <px>] [--color <RRGGBBAA>] [--clear]",
-            "shape_gradient": "gradient <shape> [--angle <degrees>] [--start <RRGGBBAA>] [--end <RRGGBBAA>] [--clear]",
+            "shape_gradient": "gradient <shape> (--gradient-json <bounded strict object> | [--kind <linear|radial|angle>] [--angle <degrees>] [--spread <pad|repeat|reflect>] [--center-x <0..1>] [--center-y <0..1>] [--radius <positive normal>] [--offset <finite>] [--extent <positive normal>] (--stop <POSITION:RRGGBBAA> repeated 2..32 times | legacy --start <RRGGBBAA> and/or --end <RRGGBBAA>) | --clear); structured JSON, modern --stop, legacy endpoints, and --clear are mutually exclusive surfaces",
+            "gradient_contract": {
+                "model": "spectrum_shape_gradient_v1",
+                "interpolation": "premultiplied_srgb_v1",
+                "structured_json_max_bytes": 16384,
+                "strict_json": "unknown and duplicate gradient or stop keys are rejected",
+                "geometry": "Radial and Angle use a source-local pixel metric; Linear preserves normalized-box legacy projection; angle zero begins at positive X; offset defaults to 0 and extent defaults to 1",
+                "transparent_color": "modern fully transparent stops canonicalize hidden RGB to zero; grandfathered legacy two-stop Linear bytes remain unchanged"
+            },
             "rendering": "portable CPU export and exact interactive composite preview share the same fixed-kernel shadow and shape sampler"
         },
         "selection": {
@@ -180,7 +189,7 @@ pub(super) fn schema() -> Value {
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
-            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed; v7 preserves raster pixel masks; v8 preserves HarfBuzzV1 text; v9 preserves immutable Clone Stamp sources",
+            "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed; v7 preserves raster pixel masks; v8 preserves HarfBuzzV1 text; v9 preserves immutable Clone Stamp sources; v10 preserves modern multi-stop shape gradients",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
         "color": "RRGGBB or RRGGBBAA",
@@ -227,7 +236,7 @@ fn command_examples() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn schema_advertises_shaped_text_v13_and_clone_v14() {
+    fn schema_advertises_shaped_text_v13_clone_v14_and_modern_gradients_v15() {
         let schema = super::schema();
         assert_eq!(
             schema["command_protocol"]["dissolve_operations_version"],
@@ -246,8 +255,12 @@ mod tests {
             14
         );
         assert_eq!(
+            schema["command_protocol"]["modern_gradient_operations_version"],
+            15
+        );
+        assert_eq!(
             schema["command_protocol"]["supported_operation_versions"],
-            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+            serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
         );
         assert_eq!(
             schema["typography"]["harfbuzz_v1_policy"]["engine"],

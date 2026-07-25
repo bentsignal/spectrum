@@ -22,7 +22,7 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
     assert!(schema["alignment"].is_object());
     assert_eq!(
         schema["command_protocol"]["supported_operation_versions"],
-        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+        serde_json::json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
     );
     assert_eq!(
         schema["command_protocol"]["selection_operations_version"],
@@ -68,6 +68,32 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
     assert_eq!(
         schema["layer_transfer"]["version"],
         prism_core::LAYER_TRANSFER_VERSION
+    );
+    assert!(
+        schema["layer_transfer"]["assets"]
+            .as_str()
+            .unwrap()
+            .contains("v10 preserves modern multi-stop shape gradients")
+    );
+    assert!(
+        schema["layer_styles"]["shape_gradient"]
+            .as_str()
+            .unwrap()
+            .contains("mutually exclusive")
+    );
+    assert_eq!(
+        schema["layer_styles"]["gradient_contract"]["interpolation"],
+        "premultiplied_srgb_v1"
+    );
+    assert_eq!(
+        schema["layer_styles"]["gradient_contract"]["structured_json_max_bytes"],
+        16_384
+    );
+    assert!(
+        schema["layer_styles"]["gradient_contract"]["strict_json"]
+            .as_str()
+            .unwrap()
+            .contains("duplicate")
     );
     assert!(schema["gui_interactions"]["brush"].is_string());
     assert!(schema["gui_interactions"]["eraser"].is_string());

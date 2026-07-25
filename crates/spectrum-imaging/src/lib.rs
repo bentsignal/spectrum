@@ -1,12 +1,17 @@
 //! App-neutral image adjustment and rendering primitives for Spectrum.
 
 pub mod adjustments;
+pub mod gradient;
 pub mod region_source;
 pub mod render;
 
 pub use adjustments::{
     AdjustmentPatch, Adjustments, ColorGrade, ColorGrading, CropRect, CurvePoint, HslAdjustments,
     HslBand, SpotRemoval, ToneCurve, ToneCurves,
+};
+pub use gradient::{
+    Gradient, GradientInterpolation, GradientKind, GradientSampleStats, GradientSampler,
+    GradientSpread, GradientStop, GradientValidationError, MAX_GRADIENT_STOPS,
 };
 pub use region_source::{
     DynExactRegionSource, ExactRegionSource, RegionReadCapability, RegionReadiness,
