@@ -22,6 +22,8 @@ const CLIENT_COUNT: usize = 8;
 const SLOW_EVENT_COUNT: usize = 100;
 const CACHE_RESULT_COUNT: usize = 12;
 const CACHE_RESULT_BYTES: usize = 512 * 1024;
+const INTERACTIVE_WIRE_EVENT_LIMIT_MS: f64 = 750.0;
+const HOSTED_WIRE_EVENT_LIMIT_MS: f64 = 1_000.0;
 
 struct Results {
     authenticated_connect_p95: Duration,
@@ -166,6 +168,11 @@ fn benchmark_event(index: usize, padding: usize) -> BridgeEventKind {
 fn enforce(results: &Results, hosted: bool) -> Result<(), Box<dyn Error>> {
     let handshake_limit = if hosted { 25.0 } else { 5.0 };
     let ping_limit = if hosted { 10.0 } else { 2.0 };
+    let wire_event_limit = if hosted {
+        HOSTED_WIRE_EVENT_LIMIT_MS
+    } else {
+        INTERACTIVE_WIRE_EVENT_LIMIT_MS
+    };
     require_under(
         "endpoint authenticated connect+ping p95",
         results.authenticated_connect_p95,
@@ -175,6 +182,11 @@ fn enforce(results: &Results, hosted: bool) -> Result<(), Box<dyn Error>> {
         "endpoint 1 KiB ping p95",
         results.endpoint_ping_p95,
         ping_limit,
+    )?;
+    require_under(
+        "1,000 wire-ordered 1 KiB events",
+        results.wire_event_duration,
+        wire_event_limit,
     )?;
     if results.retained_state_bytes > 16 * 1024 * 1024 {
         return Err("measured eight-client retained state exceeds 16 MiB".into());
@@ -411,4 +423,54 @@ fn percentile(samples: &[Duration], percentile: usize) -> Duration {
 
 fn milliseconds(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bounded_results(wire_event_duration: Duration) -> Results {
+        Results {
+            authenticated_connect_p95: Duration::from_millis(1),
+            endpoint_ping_p95: Duration::from_millis(1),
+            wire_event_duration,
+            retained_state_bytes: 8 * 1024 * 1024,
+            slow_disconnect: Duration::from_millis(50),
+        }
+    }
+
+    #[test]
+    fn strict_wire_event_duration_accepts_each_profile_boundary() {
+        assert!(
+            enforce(
+                &bounded_results(Duration::from_millis(
+                    INTERACTIVE_WIRE_EVENT_LIMIT_MS as u64
+                )),
+                false,
+            )
+            .is_ok()
+        );
+        assert!(
+            enforce(
+                &bounded_results(Duration::from_millis(HOSTED_WIRE_EVENT_LIMIT_MS as u64)),
+                true,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn strict_wire_event_duration_rejects_each_profile_overage() {
+        for (hosted, limit) in [
+            (false, INTERACTIVE_WIRE_EVENT_LIMIT_MS),
+            (true, HOSTED_WIRE_EVENT_LIMIT_MS),
+        ] {
+            let error = enforce(
+                &bounded_results(Duration::from_millis(limit as u64 + 1)),
+                hosted,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("wire-ordered"));
+        }
+    }
 }

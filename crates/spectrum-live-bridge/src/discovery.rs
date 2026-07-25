@@ -17,6 +17,8 @@ use crate::{
     DISCOVERY_FAMILY, DISCOVERY_REFRESH, InstanceId, LocalStream, PROTOCOL_VERSION,
 };
 
+mod scan;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum EndpointAddress {
@@ -116,6 +118,11 @@ impl DiscoveryDirectory {
                 "capability path is outside the binding directory".into(),
             ));
         }
+        if record.endpoint != self.expected_endpoint(record.binding_id) {
+            return Err(BridgeError::Protocol(
+                "endpoint target does not match binding identity".into(),
+            ));
+        }
         let secret = capability.copy_secret();
         atomic_publish(&capability_path, &secret)?;
         record.refresh()?;
@@ -149,17 +156,11 @@ impl DiscoveryDirectory {
     }
 
     pub fn records(&self) -> BridgeResult<Vec<DiscoveryRecord>> {
-        let mut records = Vec::new();
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            let bytes = secure_read(&entry.path(), crate::MAX_FRAME_BYTES)?;
-            let record: DiscoveryRecord = serde_json::from_slice(&bytes)?;
-            record.validate()?;
-            records.push(record);
-        }
+        let mut records = self
+            .validated_entries()?
+            .into_iter()
+            .map(|entry| entry.record)
+            .collect::<Vec<_>>();
         records.sort_by_key(|record| (record.application.clone(), record.binding_id.to_string()));
         Ok(records)
     }
@@ -176,18 +177,16 @@ impl DiscoveryDirectory {
         F: FnMut(&EndpointAddress) -> bool,
     {
         let mut removed = 0;
-        for record in self.records()? {
-            if record.is_expired(now) && endpoint_failed(&record.endpoint) {
-                let record_path = self.root.join(format!("{}.json", record.binding_id));
-                let capability_path = self.root.join(format!("{}.capability", record.binding_id));
-                if secure_owned_file(&record_path).is_ok()
-                    && secure_owned_file(&capability_path).is_ok()
-                {
-                    remove_owned_endpoint(&record.endpoint)?;
-                    fs::remove_file(record_path)?;
-                    fs::remove_file(capability_path)?;
-                    removed += 1;
-                }
+        for entry in self.validated_entries()? {
+            if entry.record.is_expired(now)
+                && endpoint_failed(&entry.record.endpoint)
+                && secure_owned_file(&entry.record_path).is_ok()
+                && secure_owned_file(&entry.capability_path).is_ok()
+            {
+                remove_owned_endpoint(&entry.record.endpoint)?;
+                fs::remove_file(entry.record_path)?;
+                fs::remove_file(entry.capability_path)?;
+                removed += 1;
             }
         }
         Ok(removed)
@@ -609,9 +608,7 @@ mod tests {
             instance_id: InstanceId::new(),
             binding_id,
             binding_epoch: 1,
-            endpoint: EndpointAddress::Unix {
-                path: root.join("bridge.sock"),
-            },
+            endpoint: test_endpoint(root, binding_id),
             capability_id: capability.id(),
             capability_path: root.join(format!("{binding_id}.capability")),
             process_id: std::process::id(),
@@ -622,6 +619,21 @@ mod tests {
             created_unix_millis: 0,
             refreshed_unix_millis: 0,
             expires_unix_millis: 0,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_endpoint(root: &Path, binding_id: BindingId) -> EndpointAddress {
+        let binding = binding_id.to_string();
+        EndpointAddress::Unix {
+            path: root.join(format!("{}.sock", &binding[..8])),
+        }
+    }
+
+    #[cfg(windows)]
+    fn test_endpoint(_root: &Path, binding_id: BindingId) -> EndpointAddress {
+        EndpointAddress::WindowsPipe {
+            name: format!(r"\\.\pipe\spectrum-live-{binding_id}"),
         }
     }
 
@@ -697,6 +709,129 @@ mod tests {
         fs::remove_file(&original).unwrap();
         symlink("/dev/null", &original).unwrap();
         assert!(directory.load_capability(lease.record()).is_err());
+    }
+
+    #[test]
+    fn mismatched_filename_and_embedded_targets_abort_cleanup_before_any_deletion() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("records");
+        let directory = DiscoveryDirectory::open(&root).unwrap();
+
+        let capability_b = Capability::generate().unwrap();
+        let published_b = directory
+            .publish(record(&root, &capability_b), &capability_b)
+            .unwrap();
+        let binding_a = BindingId::new();
+        let record_a_path = root.join(format!("{binding_a}.json"));
+        let capability_a_path = root.join(format!("{binding_a}.capability"));
+        atomic_publish(&capability_a_path, &[0xA5; 32]).unwrap();
+
+        let mut mismatched_a = published_b.record().clone();
+        mismatched_a.created_unix_millis = 1;
+        mismatched_a.refreshed_unix_millis = 1;
+        mismatched_a.expires_unix_millis = 2;
+        atomic_publish(&record_a_path, &serde_json::to_vec(&mismatched_a).unwrap()).unwrap();
+
+        let paths = [
+            record_a_path,
+            capability_a_path,
+            published_b.record_path.clone(),
+            published_b.capability_path.clone(),
+        ];
+        let bytes_before = paths
+            .iter()
+            .map(|path| fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        assert!(directory.records().is_err());
+        let mut endpoint_checks = 0;
+        assert!(
+            directory
+                .remove_stale_at(3, &mut |_| {
+                    endpoint_checks += 1;
+                    true
+                })
+                .is_err()
+        );
+        assert_eq!(endpoint_checks, 0);
+        for (path, expected) in paths.iter().zip(bytes_before) {
+            assert_eq!(fs::read(path).unwrap(), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mismatched_filename_identity_preserves_unix_endpoint_inodes() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("records");
+        let directory = DiscoveryDirectory::open(&root).unwrap();
+
+        let capability_b = Capability::generate().unwrap();
+        let record_b = record(&root, &capability_b);
+        let listener_b = crate::LocalListener::bind(&record_b.endpoint).unwrap();
+        let published_b = directory.publish(record_b, &capability_b).unwrap();
+
+        let binding_a = BindingId::new();
+        let endpoint_a = test_endpoint(&root, binding_a);
+        let listener_a = crate::LocalListener::bind(&endpoint_a).unwrap();
+        let record_a_path = root.join(format!("{binding_a}.json"));
+        let capability_a_path = root.join(format!("{binding_a}.capability"));
+        atomic_publish(&capability_a_path, &[0xA5; 32]).unwrap();
+
+        let mut mismatched_a = published_b.record().clone();
+        mismatched_a.created_unix_millis = 1;
+        mismatched_a.refreshed_unix_millis = 1;
+        mismatched_a.expires_unix_millis = 2;
+        atomic_publish(&record_a_path, &serde_json::to_vec(&mismatched_a).unwrap()).unwrap();
+
+        let record_b_path = published_b.record_path.clone();
+        let capability_b_path = published_b.capability_path.clone();
+        let files_before = [
+            fs::read(&record_a_path).unwrap(),
+            fs::read(&capability_a_path).unwrap(),
+            fs::read(&record_b_path).unwrap(),
+            fs::read(&capability_b_path).unwrap(),
+        ];
+        let EndpointAddress::Unix {
+            path: endpoint_a_path,
+        } = &endpoint_a
+        else {
+            unreachable!()
+        };
+        let EndpointAddress::Unix {
+            path: endpoint_b_path,
+        } = &published_b.record().endpoint
+        else {
+            unreachable!()
+        };
+        let endpoint_a_identity = fs::metadata(endpoint_a_path).unwrap().ino();
+        let endpoint_b_identity = fs::metadata(endpoint_b_path).unwrap().ino();
+
+        assert!(directory.records().is_err());
+        let mut endpoint_checks = 0;
+        assert!(
+            directory
+                .remove_stale_at(3, &mut |_| {
+                    endpoint_checks += 1;
+                    true
+                })
+                .is_err()
+        );
+        assert_eq!(endpoint_checks, 0);
+        assert_eq!(fs::read(&record_a_path).unwrap(), files_before[0]);
+        assert_eq!(fs::read(&capability_a_path).unwrap(), files_before[1]);
+        assert_eq!(fs::read(&record_b_path).unwrap(), files_before[2]);
+        assert_eq!(fs::read(&capability_b_path).unwrap(), files_before[3]);
+        assert_eq!(
+            fs::metadata(endpoint_a_path).unwrap().ino(),
+            endpoint_a_identity
+        );
+        assert_eq!(
+            fs::metadata(endpoint_b_path).unwrap().ino(),
+            endpoint_b_identity
+        );
+        std::hint::black_box((&listener_a, &listener_b));
     }
 
     #[cfg(unix)]
