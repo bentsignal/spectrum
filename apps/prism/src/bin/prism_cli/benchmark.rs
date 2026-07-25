@@ -751,7 +751,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: text_preview_frame.cold_edit_p95_ms <= 100.0,
         },
         BenchmarkMetric {
-            name: "14999_grapheme_3000_break_wide_shaped_wrap",
+            name: "common_only_14999_grapheme_3000_break_wide_shaped_wrap",
             median_ms: shaped_wrap_median,
             p95_ms: shaped_wrap_p95,
             budget_ms: profile.shaped_wrap_budget_ms(),

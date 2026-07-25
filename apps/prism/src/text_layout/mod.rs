@@ -3,6 +3,7 @@
 mod font_resolver;
 mod glyph_raster;
 mod legacy;
+mod script;
 mod shaped;
 
 use anyhow::Result;

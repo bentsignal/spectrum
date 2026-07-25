@@ -10,7 +10,7 @@ pub(super) struct ShapedWrapMeasurement {
 }
 
 pub(super) fn measure() -> Result<ShapedWrapMeasurement> {
-    let mut text = "word ".repeat(3_000);
+    let mut text = "1111 ".repeat(3_000);
     text.pop();
     let graphemes = text.chars().count();
     let break_opportunities = unicode_linebreak::linebreaks(&text).count();

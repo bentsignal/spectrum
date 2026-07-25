@@ -12,6 +12,7 @@ use super::{
     font_resolver::{FaceChoice, ResolvedFonts, validate_grapheme_boundaries},
     glyph_raster::{GlyphBitmap, glyph_pixel_bounds, rasterize_glyph},
     legacy::TextGeometry,
+    script::resolve_prior_or_next_strong,
 };
 use crate::{FontAsset, RenderRegion, TextAlignment, TextTypography};
 
@@ -663,28 +664,7 @@ fn resolved_groups(
         .iter()
         .map(|(_, _, script)| *script)
         .collect::<Vec<_>>();
-    let resolved_scripts = scripts
-        .iter()
-        .enumerate()
-        .map(|(index, script)| {
-            if !matches!(script, UnicodeScript::Common | UnicodeScript::Inherited) {
-                return *script;
-            }
-            scripts[..index]
-                .iter()
-                .rev()
-                .copied()
-                .find(|candidate| {
-                    !matches!(candidate, UnicodeScript::Common | UnicodeScript::Inherited)
-                })
-                .or_else(|| {
-                    scripts[index + 1..].iter().copied().find(|candidate| {
-                        !matches!(candidate, UnicodeScript::Common | UnicodeScript::Inherited)
-                    })
-                })
-                .unwrap_or(UnicodeScript::Latin)
-        })
-        .collect::<Vec<_>>();
+    let resolved_scripts = resolve_prior_or_next_strong(&scripts);
     let mut groups = Vec::<ResolvedGroup>::new();
     for ((range, face, _), script) in graphemes.into_iter().zip(resolved_scripts) {
         if let Some(last) = groups.last_mut()
