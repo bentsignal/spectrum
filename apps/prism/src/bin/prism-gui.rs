@@ -86,6 +86,8 @@ use source_geometry::*;
 mod terminal;
 #[path = "prism_gui/terminal_input.rs"]
 mod terminal_input;
+#[path = "prism_gui/terminal_protocol.rs"]
+mod terminal_protocol;
 #[path = "prism_gui/terminal_render.rs"]
 mod terminal_render;
 #[path = "prism_gui/theme.rs"]
@@ -215,6 +217,7 @@ impl PrismApp {
         #[cfg(target_os = "macos")] native_menu: macos::NativeMenuBridge,
     ) -> Self {
         install_style(&creation.egui_ctx);
+        terminal_render::install_terminal_fallback_fonts(&creation.egui_ctx);
         #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
         let native_terminal = native_terminal::NativeTerminalHost::from_environment(
             creation,

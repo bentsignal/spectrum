@@ -7,6 +7,56 @@ const FONT_SIZE: f32 = 13.0;
 const HORIZONTAL_PADDING: f32 = 8.0;
 const VERTICAL_PADDING: f32 = 6.0;
 
+pub(super) fn install_terminal_fallback_fonts(context: &egui::Context) {
+    let Some((name, bytes)) = terminal_fallback_font() else {
+        return;
+    };
+    let mut definitions = egui::FontDefinitions::default();
+    definitions.font_data.insert(
+        name.clone(),
+        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+    );
+    definitions
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push(name);
+    context.set_fonts(definitions);
+}
+
+fn terminal_fallback_font() -> Option<(String, Vec<u8>)> {
+    terminal_fallback_candidates().iter().find_map(|path| {
+        std::fs::read(path)
+            .ok()
+            .map(|bytes| (format!("Spectrum terminal fallback: {path}"), bytes))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn terminal_fallback_candidates() -> &'static [&'static str] {
+    &[
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/Supplemental/NISC18030.ttf",
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn terminal_fallback_candidates() -> &'static [&'static str] {
+    &[
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\msgothic.ttc",
+    ]
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn terminal_fallback_candidates() -> &'static [&'static str] {
+    &[
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    ]
+}
+
 pub(super) fn show_terminal(
     ui: &mut egui::Ui,
     session: &mut TerminalTab,
@@ -27,7 +77,12 @@ pub(super) fn show_terminal(
             Sense::click_and_drag(),
         )
         .on_hover_cursor(egui::CursorIcon::Text);
-    if response.clicked() || response.drag_started() || *focus_requested {
+    if response.clicked_by(egui::PointerButton::Primary)
+        || response.clicked_by(egui::PointerButton::Middle)
+        || response.clicked_by(egui::PointerButton::Secondary)
+        || response.drag_started()
+        || *focus_requested
+    {
         response.request_focus();
         *focus_requested = false;
     }
@@ -278,5 +333,24 @@ mod tests {
             TERMINAL_SURFACE
         );
         assert_ne!(indexed_color(0), TERMINAL_SURFACE);
+    }
+
+    #[test]
+    fn terminal_fallback_candidates_are_bounded_absolute_paths() {
+        assert!(!terminal_fallback_candidates().is_empty());
+        assert!(terminal_fallback_candidates().len() <= 3);
+        assert!(
+            terminal_fallback_candidates()
+                .iter()
+                .all(|path| std::path::Path::new(path).is_absolute())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn primary_macos_terminal_fallback_covers_wide_cjk() {
+        let bytes = std::fs::read(terminal_fallback_candidates()[0]).unwrap();
+        let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        assert!(face.glyph_index('界').is_some());
     }
 }
