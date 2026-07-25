@@ -6,7 +6,7 @@ use spectrum_imaging::AdjustmentPatch;
 use crate::{
     Alignment, AlignmentReference, BlendMode, BrushStroke, GuideOrientation, LassoPath, LayerMask,
     LayerStyle, LayerTransfer, PathGeometry, Selection, SelectionCombineMode, ShapeFill,
-    ShapeStroke, TextTypography, Transform, VectorMask,
+    ShapeStroke, TextShaping, TextTypography, Transform, VectorMask,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -59,6 +59,8 @@ pub enum Command {
         color: [u8; 4],
         x: f32,
         y: f32,
+        #[serde(default, skip_serializing_if = "TextShaping::is_legacy_default")]
+        shaping: TextShaping,
     },
     ImportFont {
         path: PathBuf,

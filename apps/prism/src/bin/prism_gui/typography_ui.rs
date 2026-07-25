@@ -68,6 +68,18 @@ fn with_alignment(
     changed
 }
 
+fn with_shaping_engine(
+    current: &prism_core::TextTypography,
+    engine: prism_core::TextShapingEngine,
+) -> prism_core::TextTypography {
+    let mut changed = current.clone();
+    changed.shaping.engine = engine;
+    if engine == prism_core::TextShapingEngine::LegacyCharV1 {
+        changed.shaping.language = None;
+    }
+    changed
+}
+
 fn with_line_height(
     current: &prism_core::TextTypography,
     line_height: f32,
@@ -280,6 +292,31 @@ impl PrismApp {
     ) {
         typography_section_label(ui, "PARAGRAPH");
         ui.horizontal(|ui| {
+            ui.label(RichText::new("Layout").size(10.0).color(MUTED));
+            for (label, engine) in [
+                ("Legacy", prism_core::TextShapingEngine::LegacyCharV1),
+                ("Shaped", prism_core::TextShapingEngine::HarfBuzzV1),
+            ] {
+                if ui
+                    .selectable_label(current.shaping.engine == engine, label)
+                    .on_hover_text(match engine {
+                        prism_core::TextShapingEngine::LegacyCharV1 => {
+                            "Preserve Prism's original character-at-a-time layout"
+                        }
+                        prism_core::TextShapingEngine::HarfBuzzV1 => {
+                            "Use deterministic ligatures, bidi, scripts, and Ubuntu fallback"
+                        }
+                    })
+                    .clicked()
+                {
+                    self.execute(Command::SetTextTypography {
+                        id,
+                        typography: with_shaping_engine(current, engine),
+                    });
+                }
+            }
+        });
+        ui.horizontal(|ui| {
             for (label, alignment) in [
                 ("Left", prism_core::TextAlignment::Left),
                 ("Center", prism_core::TextAlignment::Center),
@@ -465,6 +502,7 @@ mod tests {
             line_height: 1.6,
             tracking: 12.0,
             box_width: Some(480.0),
+            shaping: Default::default(),
             effects: prism_core::TextEffects {
                 outline_width: 3.0,
                 outline_color: [1, 2, 3, 4],

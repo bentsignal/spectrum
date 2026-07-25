@@ -4,7 +4,7 @@
 //! fonts, break lines, or implement caret and IME behavior. Those layers must
 //! divide text into runs and select a font before calling this API.
 
-mod native;
+mod harfbuzz_ffi;
 mod subset;
 
 use std::ops::Range;
@@ -21,9 +21,11 @@ pub const MAX_SHAPE_SCALARS: usize = 16_384;
 pub const MAX_SHAPE_GLYPHS: usize = 65_536;
 /// Maximum explicit OpenType feature overrides accepted per run.
 pub const MAX_SHAPE_FEATURES: usize = 32;
+/// Maximum variable-font coordinates accepted per run.
+pub const MAX_VARIATION_COORDINATES: usize = 64;
 
 /// Horizontal direction for one already-resolved shaping run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TextDirection {
     /// Logical text is shaped from left to right.
     LeftToRight,
@@ -148,10 +150,12 @@ fn validate_feature_tag(tag: [u8; 4]) -> Result<(), ShapeError> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShapeRequest<'text> {
     text: &'text str,
+    item_range: Option<Range<usize>>,
     direction: Option<TextDirection>,
     script: Option<Script>,
     language: Option<String>,
     features: Vec<OpenTypeFeature>,
+    variations: Vec<VariationCoordinate>,
 }
 
 impl<'text> ShapeRequest<'text> {
@@ -162,11 +166,19 @@ impl<'text> ShapeRequest<'text> {
     pub fn new(text: &'text str) -> Self {
         Self {
             text,
+            item_range: None,
             direction: None,
             script: None,
             language: None,
             features: Vec::new(),
+            variations: Vec::new(),
         }
+    }
+
+    /// Selects one non-empty UTF-8 item while retaining the complete source context.
+    pub fn item_range(mut self, range: Range<usize>) -> Self {
+        self.item_range = Some(range);
+        self
     }
 
     /// Sets an explicit run direction.
@@ -193,9 +205,37 @@ impl<'text> ShapeRequest<'text> {
         self
     }
 
+    /// Replaces the canonical variable-font coordinate list.
+    ///
+    /// Coordinates are sorted by tag. Duplicate axes fail closed rather than
+    /// depending on caller order.
+    pub fn variations(
+        mut self,
+        variations: impl IntoIterator<Item = VariationCoordinate>,
+    ) -> Result<Self, ShapeError> {
+        self.variations = variations.into_iter().collect();
+        self.variations
+            .sort_unstable_by_key(|coordinate| coordinate.tag);
+        if self
+            .variations
+            .windows(2)
+            .any(|pair| pair[0].tag == pair[1].tag)
+        {
+            return Err(ShapeError::new(
+                "variable-font coordinate tags must be unique",
+            ));
+        }
+        Ok(self)
+    }
+
     /// Returns the UTF-8 source text.
     pub fn text(&self) -> &'text str {
         self.text
+    }
+
+    /// Returns the selected item range, or the complete source text.
+    pub fn selected_item_range(&self) -> Range<usize> {
+        self.item_range.clone().unwrap_or(0..self.text.len())
     }
 
     /// Returns the explicit direction, or `None` when it will be guessed.
@@ -216,6 +256,43 @@ impl<'text> ShapeRequest<'text> {
     /// Returns the ordered feature overrides.
     pub fn feature_overrides(&self) -> &[OpenTypeFeature] {
         &self.features
+    }
+
+    /// Returns canonical variable-font coordinates ordered by tag.
+    pub fn variation_coordinates(&self) -> &[VariationCoordinate] {
+        &self.variations
+    }
+}
+
+/// One canonical OpenType variable-font axis coordinate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VariationCoordinate {
+    tag: [u8; 4],
+    value_bits: u32,
+}
+
+impl VariationCoordinate {
+    /// Creates a finite coordinate, normalizing negative zero.
+    pub fn new(tag: [u8; 4], value: f32) -> Result<Self, ShapeError> {
+        validate_feature_tag(tag)?;
+        if !value.is_finite() {
+            return Err(ShapeError::new("variable-font coordinate must be finite"));
+        }
+        let value = if value == 0.0 { 0.0 } else { value };
+        Ok(Self {
+            tag,
+            value_bits: value.to_bits(),
+        })
+    }
+
+    /// Returns the four-byte OpenType axis tag.
+    pub fn tag(self) -> [u8; 4] {
+        self.tag
+    }
+
+    /// Returns the axis value.
+    pub fn value(self) -> f32 {
+        f32::from_bits(self.value_bits)
     }
 }
 
@@ -269,6 +346,8 @@ pub struct ShapedGlyph {
     pub glyph_id: u16,
     /// UTF-8 byte offset of the source cluster.
     pub cluster: u32,
+    /// Exclusive UTF-8 byte end of the source cluster.
+    pub cluster_end: u32,
     /// HarfBuzz safety flags.
     pub flags: GlyphFlags,
     /// Horizontal advance in font units.
@@ -292,8 +371,14 @@ pub struct ShapedRun {
     script_was_guessed: bool,
     language_was_defaulted: bool,
     units_per_em: u16,
+    ascender: i16,
+    descender: i16,
+    line_gap: i16,
     face_index: u32,
+    face_identity: [u8; 32],
     source_text_bytes: u32,
+    item_start: u32,
+    item_end: u32,
 }
 
 impl ShapedRun {
@@ -337,14 +422,39 @@ impl ShapedRun {
         self.units_per_em
     }
 
+    /// Returns the face ascender in font units.
+    pub fn ascender(&self) -> i16 {
+        self.ascender
+    }
+
+    /// Returns the face descender in font units.
+    pub fn descender(&self) -> i16 {
+        self.descender
+    }
+
+    /// Returns the face line gap in font units.
+    pub fn line_gap(&self) -> i16 {
+        self.line_gap
+    }
+
     /// Returns the selected face index.
     pub fn face_index(&self) -> u32 {
         self.face_index
     }
 
+    /// Returns SHA-256(font bytes || big-endian face index).
+    pub fn face_identity(&self) -> [u8; 32] {
+        self.face_identity
+    }
+
     /// Returns the UTF-8 byte length of the source run.
     pub fn source_text_bytes(&self) -> u32 {
         self.source_text_bytes
+    }
+
+    /// Returns the shaped item's UTF-8 byte range within the source context.
+    pub fn item_range(&self) -> Range<u32> {
+        self.item_start..self.item_end
     }
 }
 
@@ -359,13 +469,13 @@ pub trait TextShaper {
 /// The font is linked in process through the pinned bundled dependency. This
 /// type never invokes a system executable or loads a runtime HarfBuzz dylib.
 pub struct HarfBuzzShaper<'font> {
-    native: native::NativeShaper<'font>,
+    native: harfbuzz_ffi::NativeShaper<'font>,
 }
 
 impl<'font> HarfBuzzShaper<'font> {
     /// Validates and opens one face from immutable font bytes.
     pub fn new(bytes: &'font [u8], face_index: u32) -> Result<Self, ShapeError> {
-        native::NativeShaper::new(bytes, face_index).map(|native| Self { native })
+        harfbuzz_ffi::NativeShaper::new(bytes, face_index).map(|native| Self { native })
     }
 
     /// Shapes one bounded request.
@@ -433,6 +543,21 @@ fn validate_request(request: &ShapeRequest<'_>) -> Result<(), ShapeError> {
     if request.feature_overrides().len() > MAX_SHAPE_FEATURES {
         return Err(ShapeError::new(
             "OpenType feature count exceeds resource limit",
+        ));
+    }
+    if request.variation_coordinates().len() > MAX_VARIATION_COORDINATES {
+        return Err(ShapeError::new(
+            "variable-font coordinate count exceeds resource limit",
+        ));
+    }
+    let item = request.selected_item_range();
+    if item.start >= item.end
+        || item.end > text.len()
+        || !text.is_char_boundary(item.start)
+        || !text.is_char_boundary(item.end)
+    {
+        return Err(ShapeError::new(
+            "shaping item range must be non-empty UTF-8 byte boundaries",
         ));
     }
     if let Some(language) = request.requested_language() {

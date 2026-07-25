@@ -99,6 +99,7 @@ fn text_and_shapes_render() {
             color: [255, 255, 255, 255],
             x: 30.0,
             y: 40.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let rendered = render_document(&workspace.document, None).unwrap();
@@ -116,6 +117,7 @@ fn automatic_text_names_follow_content_without_overwriting_manual_names() {
             color: [255, 255, 255, 255],
             x: 30.0,
             y: 40.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let id = workspace.document.selected.unwrap();
@@ -396,6 +398,7 @@ fn durable_project_preserves_alternate_futures() {
         color: [255, 255, 255, 255],
         x: 40.0,
         y: 160.0,
+        shaping: Default::default(),
     };
     apply_command(&mut document, alternate_command.clone()).unwrap();
     let alternate = project
@@ -671,6 +674,7 @@ fn workspace_history_navigation_is_idempotent_and_visibly_forks() {
             color: [255, 255, 255, 255],
             x: 40.0,
             y: 150.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let original = workspace.history().unwrap().unwrap().current;
@@ -688,6 +692,7 @@ fn workspace_history_navigation_is_idempotent_and_visibly_forks() {
             color: [255, 255, 255, 255],
             x: 40.0,
             y: 200.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let history = workspace.history().unwrap().unwrap();
@@ -748,6 +753,7 @@ fn together_agent_session_live_follows_then_splits_on_human_edit() {
             color: [255, 255, 255, 255],
             x: 20.0,
             y: 20.0,
+            shaping: Default::default(),
         })
         .unwrap();
     assert!(matches!(
@@ -775,6 +781,7 @@ fn together_agent_session_live_follows_then_splits_on_human_edit() {
             color: [255, 255, 255, 255],
             x: 20.0,
             y: 80.0,
+            shaping: Default::default(),
         })
         .unwrap();
     assert!(matches!(
@@ -885,6 +892,7 @@ fn durable_workspace_moves_without_losing_history_or_session_position() {
             color: [255, 255, 255, 255],
             x: 20.0,
             y: 30.0,
+            shaping: Default::default(),
         })
         .unwrap();
 
@@ -917,6 +925,7 @@ fn canceled_interaction_restores_the_document() {
             color: [255, 255, 255, 255],
             x: 4.0,
             y: 8.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let before = workspace.document.clone();

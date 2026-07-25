@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use prism_core::{
     BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
     LayerStyle, RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment, TextEffects,
-    TextTypography, Transform, Workspace, region_source_scales, render_document,
+    TextShaping, TextTypography, Transform, Workspace, region_source_scales, render_document,
     render_document_region_scaled, render_document_region_scaled_with_sources_and_stats,
     render_document_region_scaled_with_stats, render_layer_base_scaled,
     render_layer_base_scaled_with_font, render_solid_color,
@@ -36,6 +36,8 @@ mod path;
 mod selection;
 #[path = "benchmark/selection_outline.rs"]
 mod selection_outline;
+#[path = "benchmark/shaped_wrap.rs"]
+mod shaped_wrap;
 #[path = "benchmark/support.rs"]
 mod support;
 #[path = "benchmark/text_preview_frame.rs"]
@@ -118,6 +120,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let raster_delete = selection::measure_color_mask_raster_delete()?;
     let lasso = selection::measure_lasso_bound()?;
     let selection_outline = selection_outline::measure()?;
+    let mut shaped_wrap = shaped_wrap::measure()?;
     let path = path::measure()?;
     let paint = paint::measure()?;
     let text_preview_frame = text_preview_frame::measure()?;
@@ -174,6 +177,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         color: [255, 255, 255, 255],
         x: 100.0,
         y: 100.0,
+        shaping: Default::default(),
     })?;
     let text_layer = text_workspace.document.selected.unwrap();
     text_workspace.begin_interaction();
@@ -239,6 +243,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
                 line_height: 1.35,
                 tracking: 2.0,
                 box_width: Some(720.0),
+                shaping: TextShaping::harfbuzz_v1(Some("en"))?,
                 effects: TextEffects {
                     outline_width: 2.0,
                     shadow_offset_x: 4.0,
@@ -642,8 +647,9 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let (mixed_raster_16x_median, mixed_raster_16x_p95) =
         sample_summary(&mut mixed_raster.samples_16x);
     let (optimized_copy_median, optimized_copy_p95) = sample_summary(&mut optimized_copy.samples);
+    let (shaped_wrap_median, shaped_wrap_p95) = sample_summary(&mut shaped_wrap.samples);
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
-    let metrics = [
+    let metrics = vec![
         BenchmarkMetric {
             name: "4096_square_contiguous_magic_wand",
             median_ms: magic_wand.elapsed_ms,
@@ -745,6 +751,13 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: text_preview_frame.cold_edit_p95_ms <= 100.0,
         },
         BenchmarkMetric {
+            name: "common_only_14999_grapheme_3000_break_wide_shaped_wrap",
+            median_ms: shaped_wrap_median,
+            p95_ms: shaped_wrap_p95,
+            budget_ms: profile.shaped_wrap_budget_ms(),
+            pass: shaped_wrap_p95 <= profile.shaped_wrap_budget_ms(),
+        },
+        BenchmarkMetric {
             name: "verified_linear_history_optimized_font_copy",
             median_ms: optimized_copy_median,
             p95_ms: optimized_copy_p95,
@@ -801,7 +814,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: paint.drag_preview_p95_ms <= profile.brush_drag_preview_budget_ms(),
         },
         BenchmarkMetric {
-            name: "portable_typography_effect_raster",
+            name: "portable_harfbuzz_v1_typography_effect_raster",
             median_ms: typography_median,
             p95_ms: typography_p95,
             budget_ms: 75.0,
@@ -901,6 +914,8 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             "cached_raster_samples": "warm file-backed provider reads",
             "paint_max_source_staging_pixels": paint.max_source_staging_pixels,
             "optimized_copy_reduction_bytes": optimized_copy.reduction_bytes,
+            "shaped_wrap_graphemes": shaped_wrap.graphemes,
+            "shaped_wrap_break_opportunities": shaped_wrap.break_opportunities,
             "live_brush_max_source_staging_pixels": paint.drag_preview_max_source_staging_pixels,
             "live_brush_peak_bytes": paint.drag_preview_peak_bytes,
             "live_brush_final_visible_pixels": paint.drag_preview_visible_pixels,

@@ -90,6 +90,8 @@ impl InlineTextEditor {
             placement: Some(placement),
             creation_id: Some(creation_id),
             creation_typography: Some(prism_core::TextTypography {
+                shaping: prism_core::TextShaping::harfbuzz_v1(None)
+                    .expect("und is a valid shaping language"),
                 box_width,
                 ..Default::default()
             }),
@@ -136,6 +138,8 @@ impl InlineTextEditor {
                 color: self.color,
                 x: position.x,
                 y: position.y,
+                shaping: prism_core::TextShaping::harfbuzz_v1(None)
+                    .expect("und is a valid shaping language"),
             })
         } else {
             Ok(Command::UpdateText {
@@ -149,8 +153,13 @@ impl InlineTextEditor {
 
     fn preview_commands(&self) -> Result<Vec<Command>, &'static str> {
         let mut commands = vec![self.update_command()?];
+        let creation_default = prism_core::TextTypography {
+            shaping: prism_core::TextShaping::harfbuzz_v1(None)
+                .expect("und is a valid shaping language"),
+            ..Default::default()
+        };
         if let Some(typography) = &self.creation_typography
-            && typography != &prism_core::TextTypography::default()
+            && typography != &creation_default
         {
             commands.push(Command::SetTextTypography {
                 id: self.layer_id,
@@ -679,6 +688,8 @@ mod tests {
             Command::SetTextTypography {
                 id: 8,
                 typography: prism_core::TextTypography {
+                    shaping: prism_core::TextShaping::harfbuzz_v1(None)
+                        .expect("und is a valid shaping language"),
                     box_width: Some(240.0),
                     ..Default::default()
                 },

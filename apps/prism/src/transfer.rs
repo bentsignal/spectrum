@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Document, FontAsset, FontSlant, Layer, LayerKind, MAX_CANVAS_DIMENSION,
+    Document, FontAsset, FontSlant, Layer, LayerKind, MAX_CANVAS_DIMENSION, TextShapingEngine,
     effects::{validate_layer_style, validate_shape_fill},
     validation::{
         require_finite, validate_adjustments, validate_mask, validate_shape_stroke,
@@ -17,7 +17,8 @@ pub const PATH_LAYER_TRANSFER_VERSION: u32 = 4;
 pub const PAINT_LAYER_TRANSFER_VERSION: u32 = 5;
 pub const DISSOLVE_LAYER_TRANSFER_VERSION: u32 = 6;
 pub const RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION: u32 = 7;
-pub const LAYER_TRANSFER_VERSION: u32 = RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION;
+pub const SHAPED_TEXT_LAYER_TRANSFER_VERSION: u32 = 8;
+pub const LAYER_TRANSFER_VERSION: u32 = SHAPED_TEXT_LAYER_TRANSFER_VERSION;
 const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
@@ -66,22 +67,27 @@ impl LayerTransfer {
             },
             _ => None,
         };
-        let version =
-            if matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some() {
-                RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
-            } else if layer.blend_mode == crate::BlendMode::Dissolve || layer.dissolve_seed != 0 {
-                DISSOLVE_LAYER_TRANSFER_VERSION
-            } else if matches!(layer.kind, LayerKind::Paint { .. }) {
-                PAINT_LAYER_TRANSFER_VERSION
-            } else if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. }) {
-                PATH_LAYER_TRANSFER_VERSION
-            } else if layer.pixel_mask.is_some() {
-                3
-            } else if !layer.style.is_empty() || layer.shape_fill.is_some() {
-                2
-            } else {
-                1
-            };
+        let version = if matches!(
+            &layer.kind,
+            LayerKind::Text { typography, .. }
+                if typography.shaping.engine == TextShapingEngine::HarfBuzzV1
+        ) {
+            SHAPED_TEXT_LAYER_TRANSFER_VERSION
+        } else if matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some() {
+            RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
+        } else if layer.blend_mode == crate::BlendMode::Dissolve || layer.dissolve_seed != 0 {
+            DISSOLVE_LAYER_TRANSFER_VERSION
+        } else if matches!(layer.kind, LayerKind::Paint { .. }) {
+            PAINT_LAYER_TRANSFER_VERSION
+        } else if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. }) {
+            PATH_LAYER_TRANSFER_VERSION
+        } else if layer.pixel_mask.is_some() {
+            3
+        } else if !layer.style.is_empty() || layer.shape_fill.is_some() {
+            2
+        } else {
+            1
+        };
         Ok(Self {
             format: LAYER_TRANSFER_FORMAT.into(),
             version,
@@ -189,6 +195,15 @@ impl LayerTransfer {
         {
             bail!("Prism layer transfer versions before 7 cannot contain raster pixel masks");
         }
+        if self.version < SHAPED_TEXT_LAYER_TRANSFER_VERSION
+            && matches!(
+                &self.layer.kind,
+                LayerKind::Text { typography, .. }
+                    if typography.shaping.engine == TextShapingEngine::HarfBuzzV1
+            )
+        {
+            bail!("Prism layer transfer versions before 8 cannot contain HarfBuzzV1 text");
+        }
         if self.layer.id != 0 {
             bail!("Prism layer transfers cannot contain a document-local layer ID");
         }
@@ -197,6 +212,10 @@ impl LayerTransfer {
             LayerKind::Text { typography, .. } => {
                 if typography.font_id.is_some() {
                     bail!("Prism layer transfers cannot contain a document-local font ID");
+                }
+                let canonical = typography.clone().validated_and_sanitized()?;
+                if canonical.shaping != typography.shaping {
+                    bail!("Prism layer transfer contains a noncanonical shaping policy");
                 }
             }
             _ if self.font_asset.is_some() => {
@@ -283,7 +302,7 @@ fn sanitize_layer(layer: &mut Layer) -> Result<()> {
                 require_finite("text box width", width)?;
             }
             *font_size = (*font_size).clamp(4.0, 1_000.0);
-            *typography = typography.clone().sanitized();
+            *typography = typography.clone().validated_and_sanitized()?;
         }
         LayerKind::Rectangle {
             width,

@@ -20,6 +20,10 @@ layout coverage. It retains `AV`, `ffi`, and U+00C5, exercising real GPOS
 positioning, GSUB ligature closure, GDEF, and a composite glyph without making
 a hinted-interpreter claim. Its SHA-256 is
 `05549e889a11eb65b542a071e97d71f4333caf5a88408ab10a1ac3de25d4be3a`.
+`noto-sans-locl-source.ttf` is derived the same way from the pinned Noto Sans
+Italic face. It retains Serbian Cyrillic letters whose real `locl` substitutions
+differ from Russian shaping, while dropping hinting. Its SHA-256 is
+`43d596cd5da2d1067e94a42e4cad85ec67767906b6a5aca78597861889a41404`.
 
 The integration test derives a third case in memory from the locked static
 fixture. It appends a checksummed cmap format 14 subtable containing both a

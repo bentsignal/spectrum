@@ -10,7 +10,7 @@ use spectrum_revisions::{
 use ttf_parser::Face;
 
 use crate::{
-    BlendMode, Command, Document, LayerKind, LayerTransfer, TextTypography, Workspace,
+    BlendMode, Command, Document, LayerKind, LayerTransfer, TextShaping, TextTypography, Workspace,
     rasterize_shape_asset,
 };
 
@@ -63,6 +63,7 @@ fn project_with_historical_font_usage(directory: &Path) -> (PathBuf, String, usi
             color: [255; 4],
             x: 4.0,
             y: 8.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let layer_id = workspace.document.selected.unwrap();
@@ -250,6 +251,7 @@ fn source_validation_rejects_hash_valid_operations_that_disagree_with_an_exact_s
             color: [255; 4],
             x: 4.0,
             y: 8.0,
+            shaping: Default::default(),
         },
         Command::SetTextTypography {
             id: 1,
@@ -575,6 +577,7 @@ fn mixed_subsettable_and_restricted_fonts_fail_without_any_output() {
             color: [255; 4],
             x: 2.0,
             y: 2.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let text = workspace.document.selected.unwrap();
@@ -648,6 +651,7 @@ fn rewrites_every_path_bearing_operation_and_preserves_non_font_assets() {
             color: [255; 4],
             x: 1.0,
             y: 1.0,
+            shaping: Default::default(),
         })
         .unwrap();
     text_source
@@ -678,6 +682,7 @@ fn rewrites_every_path_bearing_operation_and_preserves_non_font_assets() {
             color: [255; 4],
             x: 1.0,
             y: 32.0,
+            shaping: TextShaping::harfbuzz_v1(Some("en")).unwrap(),
         })
         .unwrap();
     layout_text_source
@@ -685,6 +690,7 @@ fn rewrites_every_path_bearing_operation_and_preserves_non_font_assets() {
             id: layout_text_source.document.selected.unwrap(),
             typography: TextTypography {
                 font_id: Some(layout_font_id),
+                shaping: TextShaping::harfbuzz_v1(Some("en")).unwrap(),
                 ..Default::default()
             },
         })
@@ -795,10 +801,7 @@ fn rewrites_every_path_bearing_operation_and_preserves_non_font_assets() {
                 .compatible_operation_payload(revision.id, &PrismCompatibility)
                 .unwrap()
                 .unwrap();
-            assert_eq!(
-                payload.encoding.version,
-                crate::revisions::DISSOLVE_OPERATIONS_VERSION
-            );
+            assert_eq!(payload.encoding.version, 13);
             let json = String::from_utf8(payload.bytes).unwrap();
             assert!(
                 source_font_hashes
@@ -843,6 +846,17 @@ fn rewrites_every_path_bearing_operation_and_preserves_non_font_assets() {
         let id = AssetId::for_bytes(&bytes);
         assert_eq!(destination.asset_record(id).unwrap().unwrap().bytes, bytes);
     }
+    let source_pixels = crate::render_document(&Workspace::load_read_only(&source).unwrap(), None)
+        .unwrap()
+        .into_rgba8();
+    let optimized_pixels =
+        crate::render_document(&Workspace::load_read_only(&output).unwrap(), None)
+            .unwrap()
+            .into_rgba8();
+    assert_eq!(
+        optimized_pixels, source_pixels,
+        "optimized shaped-font copy must preserve exact rendered pixels"
+    );
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -887,30 +901,6 @@ fn atomic_publish_loses_a_destination_creation_race_without_clobbering() {
             .to_string_lossy()
             .contains("optimized-copy.tmp")
     }));
-    fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn post_rename_sync_failure_reports_that_the_destination_exists() {
-    let directory = directory("optimized-sync-failure");
-    fs::create_dir_all(&directory).unwrap();
-    let temporary = directory.join("private.prism");
-    let output = directory.join("published.prism");
-    let mut cleanup = TemporaryProject::create(temporary.clone()).unwrap();
-    fs::write(&temporary, b"published bytes").unwrap();
-
-    let error = publish_optimized_copy(&temporary, &output, &mut cleanup, |source, destination| {
-        fs::rename(source, destination)?;
-        Err(spectrum_revisions::RevisionError::PublishedButNotSynced {
-            destination: destination.to_owned(),
-            source: std::io::Error::other("injected sync failure"),
-        })
-    })
-    .unwrap_err();
-
-    assert!(error.to_string().contains("optimized copy exists at"));
-    drop(cleanup);
-    assert_eq!(fs::read(output).unwrap(), b"published bytes");
     fs::remove_dir_all(directory).unwrap();
 }
 

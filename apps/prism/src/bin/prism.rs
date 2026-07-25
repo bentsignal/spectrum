@@ -48,7 +48,7 @@ mod selection;
 use selection::SelectionArgs;
 #[path = "prism_cli/typography.rs"]
 mod typography;
-use typography::{TypographyArgs, updated_typography};
+use typography::{CliTextLayout, TypographyArgs, text_shaping, updated_typography};
 #[path = "prism_cli/transfer.rs"]
 mod transfer;
 use transfer::{LayerCopyArgs, LayerPasteArgs};
@@ -106,6 +106,12 @@ enum CliCommand {
         x: f32,
         #[arg(long, default_value_t = 0.0)]
         y: f32,
+        /// Permanent layout engine for the new text.
+        #[arg(long, value_enum, default_value_t = CliTextLayout::HarfbuzzV1)]
+        layout: CliTextLayout,
+        /// Canonical BCP-47 shaping language; omitted means und.
+        #[arg(long)]
+        language: Option<String>,
     },
     /// Embed an OpenType font in this portable Prism project.
     FontImport {
@@ -509,6 +515,8 @@ fn run(cli: Cli) -> Result<Value> {
                     color,
                     x,
                     y,
+                    layout,
+                    language,
                 } => vec![workspace.execute(Command::AddText {
                     text,
                     name,
@@ -516,6 +524,7 @@ fn run(cli: Cli) -> Result<Value> {
                     color: parse_color(&color)?,
                     x,
                     y,
+                    shaping: text_shaping(layout, language.as_deref())?,
                 })?],
                 CliCommand::AddRectangle {
                     name,

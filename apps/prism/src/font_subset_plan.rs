@@ -202,6 +202,7 @@ mod tests {
                 color: [255; 4],
                 x: 0.0,
                 y: 0.0,
+                shaping: Default::default(),
             },
         )
         .unwrap();

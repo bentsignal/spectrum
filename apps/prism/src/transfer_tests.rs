@@ -295,6 +295,7 @@ fn text_transfer_deduplicates_font_bytes_and_remaps_the_font_id() {
             color: [220, 210, 180, 255],
             x: 80.0,
             y: 90.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let source_id = source.document.selected.unwrap();
@@ -307,6 +308,7 @@ fn text_transfer_deduplicates_font_bytes_and_remaps_the_font_id() {
                 line_height: 1.4,
                 tracking: 2.5,
                 box_width: Some(280.0),
+                shaping: Default::default(),
                 effects: TextEffects {
                     outline_width: 2.0,
                     outline_color: [10, 11, 12, 255],
@@ -508,7 +510,7 @@ fn durable_raster_pixel_mask_and_dissolve_transfer_uses_v7_v12_and_replays() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(operation_version, crate::PRISM_COMMAND_OPERATIONS_VERSION);
+    assert_eq!(operation_version, 12);
     let commands: Vec<Command> = serde_json::from_slice(&operation_bytes).unwrap();
     let Command::InsertLayer { transfer, .. } = &commands[0] else {
         panic!("durable transfer should remain a layer insert");
@@ -570,6 +572,7 @@ fn durable_text_transfer_embeds_font_bytes_and_replays_the_remapped_id() {
             color: [255; 4],
             x: 20.0,
             y: 30.0,
+            shaping: Default::default(),
         })
         .unwrap();
     let source_id = source.document.selected.unwrap();
@@ -659,4 +662,35 @@ fn normal_commands_keep_the_legacy_operation_version() {
     drop(connection);
     assert!(DurableProject::looks_durable(&project_path).unwrap());
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn shaped_text_transfer_uses_v8_and_older_envelopes_fail_closed() {
+    let mut workspace = Workspace::new(Document::new("Shaped transfer", 320, 180), None);
+    workspace
+        .execute(Command::AddText {
+            text: "office العربية".into(),
+            name: None,
+            font_size: 42.0,
+            color: [255; 4],
+            x: 12.0,
+            y: 18.0,
+            shaping: crate::TextShaping::harfbuzz_v1(Some("ar")).unwrap(),
+        })
+        .unwrap();
+    let transfer = LayerTransfer::from_selected(&workspace.document).unwrap();
+    assert_eq!(transfer.version, crate::SHAPED_TEXT_LAYER_TRANSFER_VERSION);
+    assert_eq!(
+        LayerTransfer::from_json(&transfer.to_json().unwrap()).unwrap(),
+        transfer
+    );
+
+    let mut forged = transfer.clone();
+    forged.version = crate::RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION;
+    assert!(
+        LayerTransfer::from_json(&serde_json::to_string(&forged).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("before 8")
+    );
 }

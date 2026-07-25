@@ -84,7 +84,7 @@ pub fn font_usage(document: &Document, font_id: u64) -> Result<FontUsage> {
     })
 }
 
-fn collect_unicode_repertoire(
+pub(crate) fn collect_unicode_repertoire(
     text: &str,
     codepoints: &mut BTreeSet<u32>,
     variation_sequences: &mut BTreeSet<UnicodeVariationSequence>,

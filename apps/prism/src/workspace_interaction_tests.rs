@@ -37,6 +37,7 @@ fn preview_batch_commits_paragraph_text_as_one_undoable_interaction() {
                 color: [255, 255, 255, 255],
                 x: 40.0,
                 y: 60.0,
+                shaping: Default::default(),
             },
             Command::SetTextTypography {
                 id: 1,
@@ -93,6 +94,7 @@ fn failed_preview_batch_is_atomic_and_cancelable() {
                     color: [255, 255, 255, 255],
                     x: 40.0,
                     y: 60.0,
+                    shaping: Default::default(),
                 },
                 Command::SetTextTypography {
                     id: 99,

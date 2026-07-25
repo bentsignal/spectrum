@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{HarfBuzzShaper, ShapeRequest, ShapedGlyph};
-use crate::{SubsetError, SubsetRequest};
+use crate::{ShapingSample, SubsetError, SubsetRequest};
 
 pub(crate) fn validate_parity(
     source: &[u8],
@@ -48,7 +48,11 @@ pub(crate) fn validate_parity(
     Ok(shaped_glyphs)
 }
 
-fn shape_subset_sample(bytes: &[u8], codepoints: &[u32]) -> Result<Vec<ShapedGlyph>, SubsetError> {
+fn shape_subset_sample(
+    bytes: &[u8],
+    sample: &ShapingSample,
+) -> Result<Vec<ShapedGlyph>, SubsetError> {
+    let codepoints = sample.codepoints();
     if codepoints.is_empty() {
         return Err(SubsetError::new("shaping sample cannot be empty"));
     }
@@ -66,8 +70,21 @@ fn shape_subset_sample(bytes: &[u8], codepoints: &[u32]) -> Result<Vec<ShapedGly
         })
         .collect::<Result<String, _>>()?;
     let shaper = HarfBuzzShaper::new(bytes, 0).map_err(SubsetError::from_shape)?;
+    let mut request = ShapeRequest::new(&text);
+    if let Some(range) = sample.item_range_bytes() {
+        request = request.item_range(range);
+    }
+    if let Some(direction) = sample.requested_direction() {
+        request = request.direction(direction);
+    }
+    if let Some(script) = sample.requested_script() {
+        request = request.script(script);
+    }
+    if let Some(language) = sample.requested_language() {
+        request = request.language(language);
+    }
     shaper
-        .shape(&ShapeRequest::new(&text))
+        .shape(&request)
         .map(|run| run.glyphs().to_vec())
         .map_err(SubsetError::from_shape)
 }

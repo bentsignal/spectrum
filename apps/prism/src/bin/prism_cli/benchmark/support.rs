@@ -85,6 +85,13 @@ impl BenchmarkProfile {
             Self::HostedCi => 3_000.0,
         }
     }
+
+    pub(crate) fn shaped_wrap_budget_ms(self) -> f64 {
+        match self {
+            Self::Interactive => 250.0,
+            Self::HostedCi => 750.0,
+        }
+    }
 }
 
 #[derive(Serialize)]

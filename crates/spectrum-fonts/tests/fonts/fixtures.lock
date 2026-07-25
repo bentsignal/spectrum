@@ -9,6 +9,15 @@ url = "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e5449
 sha256 = "b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5"
 license = "SIL Open Font License 1.1 (OFL.txt)"
 
+[[source]]
+id = "noto-sans-italic-hinted"
+repository = "https://github.com/notofonts/noto-fonts"
+revision = "ffebf8c1ee449e544955a7e813c54f9b73848eac"
+path = "hinted/ttf/NotoSans/NotoSans-Italic.ttf"
+url = "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans/NotoSans-Italic.ttf"
+sha256 = "36cff144df01309dab648bea71baff9bb074026914afe63aeacc8bc90b67a28b"
+license = "SIL Open Font License 1.1 (OFL.txt)"
+
 [[fixture]]
 path = "noto-sans-rich-rejected.ttf"
 source = "noto-sans-regular-hinted"
@@ -37,6 +46,17 @@ drop_tables_not_in = ["head", "hhea", "maxp", "OS/2", "hmtx", "cmap", "loca", "g
 flags = ["drop_hinting", "remap_glyph_indices", "retain_subroutines", "retain_legacy_names", "retain_notdef_outline", "retain_glyph_names", "retain_unicode_ranges", "retain_layout_closure"]
 sha256 = "05549e889a11eb65b542a071e97d71f4333caf5a88408ab10a1ac3de25d4be3a"
 coverage = ["GSUB ligature closure", "GPOS positioning", "GDEF retention", "composite outline parity", "shaped closure outline/metric/unhinted-raster parity"]
+
+[[fixture]]
+path = "noto-sans-locl-source.ttf"
+source = "noto-sans-italic-hinted"
+generator = "cargo run --locked -p spectrum-fonts --example generate_fixtures -- <regular-source> crates/spectrum-fonts/tests/fonts <italic-source>"
+tool = "hb-subset 0.3.0 with bundled HarfBuzz 8.2.2"
+unicode = "U+0041-U+005A,U+0431,U+0433,U+0434,U+043F,U+0442"
+drop_tables_not_in = ["head", "hhea", "maxp", "OS/2", "hmtx", "cmap", "loca", "glyf", "name", "post", "GDEF", "GPOS", "GSUB"]
+flags = ["drop_hinting", "remap_glyph_indices", "retain_subroutines", "retain_legacy_names", "retain_notdef_outline", "retain_glyph_names", "retain_unicode_ranges", "retain_layout_closure"]
+sha256 = "43d596cd5da2d1067e94a42e4cad85ec67767906b6a5aca78597861889a41404"
+coverage = ["real Serbian Cyrillic locl substitution", "explicit direction/script/language subset parity", "full-context item-range parity"]
 
 [[derived_case]]
 id = "noto-sans-static-cmap14"

@@ -26,7 +26,8 @@ mod text;
 
 mod typography;
 pub use typography::{
-    FontAsset, FontEmbeddingPermission, FontSlant, TextAlignment, TextEffects, TextTypography,
+    FontAsset, FontEmbeddingPermission, FontSlant, TextAlignment, TextEffects, TextShaping,
+    TextShapingEngine, TextTypography,
 };
 
 mod bundled_font;
@@ -54,7 +55,7 @@ mod transfer;
 pub use transfer::{
     DISSOLVE_LAYER_TRANSFER_VERSION, LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer,
     LayerTransferFont, PAINT_LAYER_TRANSFER_VERSION, PATH_LAYER_TRANSFER_VERSION,
-    RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION,
+    RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION, SHAPED_TEXT_LAYER_TRANSFER_VERSION,
 };
 
 mod validation;
@@ -98,8 +99,8 @@ pub use lasso::{
     combine_selections, lasso_selection,
 };
 
-pub const PRISM_VERSION: u32 = 9;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 12;
+pub const PRISM_VERSION: u32 = 10;
+pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 13;
 pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
@@ -536,6 +537,7 @@ impl Document {
                 self.version
             );
         }
+        let source_version = self.version;
         self.version = PRISM_VERSION;
         self.width = self.width.clamp(1, MAX_CANVAS_DIMENSION);
         self.height = self.height.clamp(1, MAX_CANVAS_DIMENSION);
@@ -613,7 +615,12 @@ impl Document {
             layer.stroke = layer.stroke.sanitized();
             layer.adjustments = layer.adjustments.clone().sanitized();
             if let LayerKind::Text { typography, .. } = &mut layer.kind {
-                *typography = typography.clone().sanitized();
+                if source_version < revisions::SHAPED_TEXT_SNAPSHOT_VERSION
+                    && typography.shaping.engine == TextShapingEngine::HarfBuzzV1
+                {
+                    bail!("Prism snapshot version {source_version} cannot contain HarfBuzzV1 text");
+                }
+                *typography = typography.clone().validated_and_sanitized()?;
                 if typography
                     .font_id
                     .is_some_and(|id| !self.font_assets.iter().any(|font| font.id == id))

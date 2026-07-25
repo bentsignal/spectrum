@@ -18,14 +18,15 @@ mod sfnt;
 pub mod shaping;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use hb_subset::{Blob, Flags, FontFace, SubsetInput};
 
 pub use error::{ShapeError, SubsetError};
 pub use shaping::{
     GlyphFlags, HarfBuzzShaper, MAX_SHAPE_FEATURES, MAX_SHAPE_GLYPHS, MAX_SHAPE_SCALARS,
-    MAX_SHAPE_TEXT_BYTES, OpenTypeFeature, Script, ShapeRequest, ShapedGlyph, ShapedRun,
-    TextDirection, TextShaper,
+    MAX_SHAPE_TEXT_BYTES, MAX_VARIATION_COORDINATES, OpenTypeFeature, Script, ShapeRequest,
+    ShapedGlyph, ShapedRun, TextDirection, TextShaper, VariationCoordinate,
 };
 
 /// One cmap format 14 base/selector mapping requested from the candidate engine.
@@ -35,6 +36,92 @@ pub struct UnicodeVariationSequence {
     pub selector_codepoint: u32,
 }
 
+/// One exact source-context run whose shaping policy must survive subsetting.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ShapingSample {
+    codepoints: Vec<u32>,
+    item_range: Option<(usize, usize)>,
+    direction: Option<TextDirection>,
+    script: Option<Script>,
+    language: Option<String>,
+}
+
+impl ShapingSample {
+    /// Creates a default-policy sample over the complete source text.
+    pub fn new(text: impl AsRef<str>) -> Self {
+        Self::from_codepoints(text.as_ref().chars().map(u32::from))
+    }
+
+    fn from_codepoints(codepoints: impl IntoIterator<Item = u32>) -> Self {
+        Self {
+            codepoints: codepoints.into_iter().collect(),
+            item_range: None,
+            direction: None,
+            script: None,
+            language: None,
+        }
+    }
+
+    /// Selects one UTF-8 item while preserving the sample's complete source context.
+    pub fn item_range(mut self, range: Range<usize>) -> Self {
+        self.item_range = Some((range.start, range.end));
+        self
+    }
+
+    pub fn direction(mut self, direction: TextDirection) -> Self {
+        self.direction = Some(direction);
+        self
+    }
+
+    pub fn script(mut self, script: Script) -> Self {
+        self.script = Some(script);
+        self
+    }
+
+    pub fn language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
+    }
+
+    pub fn codepoints(&self) -> &[u32] {
+        &self.codepoints
+    }
+
+    pub fn item_range_bytes(&self) -> Option<Range<usize>> {
+        self.item_range.map(|(start, end)| start..end)
+    }
+
+    pub fn requested_direction(&self) -> Option<TextDirection> {
+        self.direction
+    }
+
+    pub fn requested_script(&self) -> Option<Script> {
+        self.script
+    }
+
+    pub fn requested_language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+
+    fn selected_codepoints(&self) -> Vec<u32> {
+        let Some((start, end)) = self.item_range else {
+            return self.codepoints.clone();
+        };
+        let Ok(text) = self
+            .codepoints
+            .iter()
+            .copied()
+            .map(|codepoint| char::from_u32(codepoint).ok_or(()))
+            .collect::<Result<String, _>>()
+        else {
+            return self.codepoints.clone();
+        };
+        text.get(start..end)
+            .map(|item| item.chars().map(u32::from).collect())
+            .unwrap_or_else(|| self.codepoints.clone())
+    }
+}
+
 /// The exact nominal Unicode and default-feature shaping repertoire requested from a font.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubsetRequest {
@@ -42,7 +129,7 @@ pub struct SubsetRequest {
     nominal_codepoints: Vec<u32>,
     subset_codepoints: Vec<u32>,
     variation_sequences: Vec<UnicodeVariationSequence>,
-    shaping_samples: Vec<Vec<u32>>,
+    shaping_samples: Vec<ShapingSample>,
 }
 
 impl SubsetRequest {
@@ -84,15 +171,31 @@ impl SubsetRequest {
         I: IntoIterator<Item = S>,
         S: IntoIterator<Item = u32>,
     {
+        let samples = samples
+            .into_iter()
+            .map(ShapingSample::from_codepoints)
+            .filter(|sample| !sample.codepoints.is_empty());
+        self = self.with_policy_shaping_samples(samples);
+        self
+    }
+
+    /// Adds exact policy-bearing source-context runs for closure validation.
+    pub fn with_policy_shaping_samples(
+        mut self,
+        samples: impl IntoIterator<Item = ShapingSample>,
+    ) -> Self {
         let mut shaping_samples = self.shaping_samples.into_iter().collect::<BTreeSet<_>>();
         shaping_samples.extend(
             samples
                 .into_iter()
-                .map(|sample| sample.into_iter().collect::<Vec<_>>())
-                .filter(|sample| !sample.is_empty()),
+                .filter(|sample| !sample.codepoints.is_empty()),
         );
         let mut subset_codepoints = self.subset_codepoints.into_iter().collect::<BTreeSet<_>>();
-        subset_codepoints.extend(shaping_samples.iter().flatten().copied());
+        subset_codepoints.extend(
+            shaping_samples
+                .iter()
+                .flat_map(ShapingSample::selected_codepoints),
+        );
         self.subset_codepoints = subset_codepoints.into_iter().collect();
         self.shaping_samples = shaping_samples.into_iter().collect();
         self
@@ -115,7 +218,7 @@ impl SubsetRequest {
         &self.variation_sequences
     }
 
-    pub fn shaping_samples(&self) -> &[Vec<u32>] {
+    pub fn shaping_samples(&self) -> &[ShapingSample] {
         &self.shaping_samples
     }
 }
@@ -276,8 +379,12 @@ mod tests {
         assert_eq!(request.codepoints(), &[90]);
         assert_eq!(request.subset_codepoints(), &[65, 86, 90, 102, 105, 0xfe0f]);
         assert_eq!(
-            request.shaping_samples(),
-            &[vec![65, 86], vec![65, 0xfe0f, 86], vec![102, 105]]
+            request
+                .shaping_samples()
+                .iter()
+                .map(ShapingSample::codepoints)
+                .collect::<Vec<_>>(),
+            &[&[65, 86][..], &[65, 0xfe0f, 86][..], &[102, 105][..]]
         );
     }
 
