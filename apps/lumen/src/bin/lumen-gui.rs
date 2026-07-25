@@ -34,6 +34,10 @@ mod history;
 mod inspector;
 #[path = "lumen_gui/library.rs"]
 mod library;
+#[path = "lumen_gui/live_bridge.rs"]
+mod live_bridge;
+#[path = "lumen_gui/live_bridge_lifecycle.rs"]
+mod live_bridge_lifecycle;
 #[cfg(target_os = "macos")]
 #[path = "lumen_gui/macos.rs"]
 mod macos;
@@ -47,6 +51,7 @@ mod terminal;
 #[path = "lumen_gui/toolbar.rs"]
 mod toolbar;
 use helpers::*;
+use live_bridge::LumenLiveRegistry;
 use terminal::TerminalDock;
 
 const ACCENT: Color32 = Color32::from_rgb(174, 123, 255);
@@ -210,6 +215,7 @@ struct LumenApp {
     history_scroll_to_current: bool,
     open_document_receiver: Receiver<PathBuf>,
     terminal: TerminalDock,
+    live_bridge: Option<LumenLiveRegistry>,
     #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
     native_terminal: spectrum_terminal::native_ghostty::NativeTerminalHost,
     #[cfg(target_os = "macos")]
@@ -338,6 +344,7 @@ impl LumenApp {
                 #[cfg(not(all(target_os = "macos", feature = "ghostty-terminal")))]
                 false,
             ),
+            live_bridge: LumenLiveRegistry::new(creation.egui_ctx.clone()).ok(),
             #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
             native_terminal,
             #[cfg(target_os = "macos")]
@@ -351,6 +358,10 @@ impl LumenApp {
         if let Some(path) = app.workspace.catalog_path.clone() {
             app.remember_catalog(path);
         }
+        if let Err(error) = app.register_live_catalog() {
+            app.status = format!("Live bridge unavailable: {error}");
+            app.error = true;
+        }
         app
     }
 }
@@ -359,6 +370,7 @@ impl eframe::App for LumenApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
         self.receive_open_documents(&context);
+        self.drain_live_bridge(&context);
         self.sync_agent_collaborations(&context);
         self.sync_draft();
         self.poll_terminal(&context);
@@ -394,6 +406,7 @@ impl eframe::App for LumenApp {
         self.export_window(&context);
         #[cfg(target_os = "macos")]
         self.sync_native_menu_state(&context);
+        self.observe_live_bridge();
         if !context.input(|input| input.raw.hovered_files.is_empty()) {
             let painter = context.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
@@ -425,6 +438,9 @@ impl eframe::App for LumenApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let _ = self.workspace.checkpoint();
+        if let Some(live_bridge) = &mut self.live_bridge {
+            live_bridge.shutdown();
+        }
         self.terminal.shutdown();
         #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
         self.native_terminal.shutdown();

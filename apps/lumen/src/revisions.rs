@@ -1,4 +1,5 @@
 mod codec;
+mod live;
 
 use std::{
     collections::HashMap,
@@ -23,6 +24,7 @@ use spectrum_revisions::{
 };
 
 use crate::{Command, Photo, Project, command::apply_replay_command};
+pub use live::LiveWorkspaceState;
 
 const APPLICATION_ID: &str = "spectrum.lumen";
 const SNAPSHOT_COMMAND_BUDGET: u64 = 100;
@@ -319,7 +321,7 @@ impl DurableCatalog {
                 expected_parent: self.photo_cursor(photo.id)?,
                 application_version: env!("CARGO_PKG_VERSION").into(),
                 label: Some(label.clone()),
-                command_count: 1,
+                command_count: command_count_for_photo(commands, photo.id),
                 operation_payloads: vec![operation],
                 snapshots,
                 assets: Vec::new(),
@@ -355,7 +357,7 @@ impl DurableCatalog {
                 expected_parent: self.catalog_cursor,
                 application_version: env!("CARGO_PKG_VERSION").into(),
                 label: Some(label.clone()),
-                command_count: 1,
+                command_count: command_count_for_catalog(commands),
                 operation_payloads: vec![operation],
                 snapshots,
                 assets: Vec::new(),
@@ -606,6 +608,47 @@ impl DurableCatalog {
         }
         Ok(())
     }
+}
+
+fn command_count_for_photo(commands: &[Command], photo_id: u64) -> u32 {
+    commands
+        .iter()
+        .filter(|command| match command {
+            Command::Adjust { id, .. }
+            | Command::SetAdjustments { id, .. }
+            | Command::Rotate { id, .. }
+            | Command::FlipHorizontal { id }
+            | Command::FlipVertical { id } => *id == photo_id,
+            Command::SetPick { ids, .. }
+            | Command::Reset { ids }
+            | Command::ApplyPreset { ids, .. }
+            | Command::PasteEdits { ids } => ids.contains(&photo_id),
+            _ => false,
+        })
+        .count()
+        .max(1)
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+fn command_count_for_catalog(commands: &[Command]) -> u32 {
+    commands
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                Command::New { .. }
+                    | Command::Import { .. }
+                    | Command::RenameBatch { .. }
+                    | Command::SavePreset { .. }
+                    | Command::DeletePreset { .. }
+                    | Command::Remove { .. }
+            )
+        })
+        .count()
+        .max(1)
+        .try_into()
+        .unwrap_or(u32::MAX)
 }
 
 fn load_catalog(

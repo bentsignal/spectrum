@@ -18,6 +18,7 @@ pub(super) struct TerminalDock {
     native_sessions: bool,
     focus_requested: bool,
     close_confirmation: bool,
+    live_binding: Option<spectrum_live_bridge::BindingId>,
 }
 
 impl TerminalDock {
@@ -29,6 +30,7 @@ impl TerminalDock {
             native_sessions,
             focus_requested: false,
             close_confirmation: false,
+            live_binding: None,
         }
     }
 
@@ -234,7 +236,7 @@ impl LumenApp {
         }
         self.terminal.visible = !self.terminal.visible;
         if self.terminal.visible {
-            let launch = terminal_launch(&self.workspace);
+            let launch = terminal_launch_with_binding(&self.workspace, self.terminal.live_binding);
             self.terminal.ensure_session(launch);
             self.terminal.focus_requested = true;
         }
@@ -246,7 +248,21 @@ impl LumenApp {
             self.native_terminal.reset(id);
         }
         self.terminal
-            .replace_workspace_session(terminal_launch(&self.workspace));
+            .replace_workspace_session(terminal_launch_with_binding(
+                &self.workspace,
+                self.terminal.live_binding,
+            ));
+    }
+
+    pub(super) fn set_terminal_live_binding(
+        &mut self,
+        binding: Option<spectrum_live_bridge::BindingId>,
+    ) {
+        if self.terminal.live_binding == binding {
+            return;
+        }
+        self.terminal.live_binding = binding;
+        self.reset_terminal_for_workspace();
     }
 
     pub(super) fn poll_terminal(&mut self, context: &egui::Context) {
@@ -505,7 +521,15 @@ pub(super) fn terminal_shortcut_label() -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn terminal_launch(workspace: &Workspace) -> TerminalLaunch {
+    terminal_launch_with_binding(workspace, None)
+}
+
+fn terminal_launch_with_binding(
+    workspace: &Workspace,
+    live_binding: Option<spectrum_live_bridge::BindingId>,
+) -> TerminalLaunch {
     let catalog = workspace.catalog_path.as_deref().map(canonical_path);
     let working_directory = catalog
         .as_deref()
@@ -527,6 +551,14 @@ fn terminal_launch(workspace: &Workspace) -> TerminalLaunch {
         context = context
             .with_env("SPECTRUM_SESSION", &session)
             .with_env("LUMEN_SESSION", &session);
+    }
+    if let Some(binding) = live_binding {
+        let binding = binding.to_string();
+        context = context
+            .with_env("SPECTRUM_LIVE_BINDING_ID", &binding)
+            .with_env("LUMEN_LIVE_BINDING_ID", &binding)
+            .with_env("SPECTRUM_LIVE_MODE", "required")
+            .with_env("LUMEN_LIVE_MODE", "required");
     }
     if let Ok(executable) = std::env::current_exe()
         && let Some(directory) = executable.parent()
@@ -807,6 +839,23 @@ mod tests {
             launch.context.environment("SPECTRUM_ACTIVE_APP"),
             Some(std::ffi::OsStr::new("lumen"))
         );
+    }
+
+    #[test]
+    fn live_terminal_handoff_contains_binding_identity_and_mode_but_no_secret() {
+        let binding = spectrum_live_bridge::BindingId::new();
+        let workspace = Workspace::new(Project::new("Live terminal"), None);
+        let launch = terminal_launch_with_binding(&workspace, Some(binding));
+        assert_eq!(
+            launch.context.environment("LUMEN_LIVE_BINDING_ID"),
+            Some(std::ffi::OsStr::new(&binding.to_string()))
+        );
+        assert_eq!(
+            launch.context.environment("LUMEN_LIVE_MODE"),
+            Some(std::ffi::OsStr::new("required"))
+        );
+        assert_eq!(launch.context.environment("LUMEN_LIVE_CAPABILITY"), None);
+        assert_eq!(launch.context.environment("SPECTRUM_LIVE_CAPABILITY"), None);
     }
 
     #[test]

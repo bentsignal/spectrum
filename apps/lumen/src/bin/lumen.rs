@@ -23,12 +23,20 @@ use spectrum_revisions::{CollaborationMode, SessionId};
 
 #[path = "lumen_cli/benchmark.rs"]
 mod benchmark;
+#[path = "lumen_cli/benchmark_live_bridge.rs"]
+mod benchmark_live_bridge;
 #[path = "lumen_cli/collaboration.rs"]
 mod collaboration;
+#[path = "lumen_cli/live_bridge.rs"]
+mod live_bridge;
 #[path = "lumen_cli/schema.rs"]
 mod schema;
 use benchmark::benchmark;
 use collaboration::*;
+use live_bridge::{
+    CliLiveMode, LiveCommand, live_command, require_direct_mode, resolved_live_mode,
+    run_required_live,
+};
 use schema::schema;
 
 #[derive(Parser)]
@@ -47,12 +55,21 @@ struct Cli {
     #[arg(long, global = true)]
     session: Option<SessionId>,
 
+    /// Use the authenticated live GUI bridge or ordinary direct project access.
+    #[arg(long, global = true, value_enum)]
+    live: Option<CliLiveMode>,
+
     #[command(subcommand)]
     command: CliCommand,
 }
 
 #[derive(Subcommand)]
 enum CliCommand {
+    /// Inspect or mutate an open Lumen GUI through its authenticated bridge.
+    Live {
+        #[command(subcommand)]
+        command: LiveCommand,
+    },
     /// Create a new empty catalog.
     Init {
         #[arg(default_value = "Untitled")]
@@ -517,7 +534,16 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
     }
 
     if let CliCommand::Agent { command } = &cli.command {
+        require_direct_mode(resolved_live_mode(cli.live)?, "agent")?;
         return agent_command(&cli.catalog, cli.session, command.clone());
+    }
+
+    let live_mode = resolved_live_mode(cli.live)?;
+    if let CliCommand::Live { command } = &cli.command {
+        return live_command(&cli.catalog, cli.session, command.clone());
+    }
+    if live_mode == CliLiveMode::Required {
+        return run_required_live(&cli);
     }
 
     if let CliCommand::Init { name, force } = &cli.command {
@@ -903,6 +929,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             (serde_json::to_value(outputs)?, true)
         }
         CliCommand::Init { .. }
+        | CliCommand::Live { .. }
         | CliCommand::Agent { .. }
         | CliCommand::Benchmark { .. }
         | CliCommand::Schema => {

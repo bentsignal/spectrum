@@ -23,6 +23,27 @@ pub(super) fn schema() -> serde_json::Value {
             "separate": "starts at the human cursor for one photo and never moves the human session",
             "transport": "CLI JSON; no vendor-specific integration required"
         },
+        "live_bridge": {
+            "protocol": {
+                "family": spectrum_live_bridge::PROTOCOL_FAMILY,
+                "version": spectrum_live_bridge::PROTOCOL_VERSION,
+                "application": lumen_core::LUMEN_LIVE_APPLICATION,
+                "action_family": lumen_core::LUMEN_LIVE_ACTION_FAMILY,
+                "action_version": lumen_core::LUMEN_LIVE_ACTION_VERSION
+            },
+            "mode": {
+                "argument": "--live <off|required>",
+                "environment_precedence": ["LUMEN_LIVE_MODE", "SPECTRUM_LIVE_MODE"],
+                "default": "off",
+                "required_mode_fallback": false
+            },
+            "commands": ["live status", "live apply", "live undo", "live redo", "live move-agent-cursor", "live subscribe"],
+            "scope": "one authenticated open durable catalog and one photo-scoped collaboration",
+            "neutral_state": "catalog/default-track cursor only",
+            "application_expectation": ["photo_id", "track_id", "agent_revision", "source_revision"],
+            "allowed_mutations": ["adjust", "set-adjustments", "reset-one-photo", "apply-preset-one-photo", "rotate", "flip-horizontal", "flip-vertical", "lowered-copy-edits"],
+            "terminal": "publishes binding identity and required mode only; capability bytes remain private"
+        },
         "adjustments": {
             "exposure": { "range": [-5.0, 5.0], "unit": "stops", "default": 0.0 },
             "temperature": { "range": [-100, 100], "default": 0 },
