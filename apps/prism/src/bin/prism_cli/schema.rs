@@ -42,6 +42,23 @@ pub(super) fn schema() -> Value {
             "clone_stamp_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
+        "live_bridge": {
+            "mode": ["off", "required"],
+            "required_mode_fallback": false,
+            "semantic_mutations": "normal parsed Prism mutation commands become one Vec<Command> and execute through the authenticated GUI as one batch",
+            "clone_stamp_policy": "required live mode resolves Clone source identity and CurrentClone strokes on the bound GUI workspace, embeds the authenticated sampled bytes in one version 14 durable revision, and never falls back to direct project mutation",
+            "history_policy": "a normal run command containing exactly one undo or redo maps to the typed live history action; history cannot be mixed with edits",
+            "ui_local_selection_policy": "select-layer is refused through the agent bridge because GUI-local selection is not a durable agent-session edit",
+            "read_only_and_export_policy": "immutable inspection, layer-copy, and export remain direct read-only operations; they never mutate the project",
+            "standalone_artifact_policy": "init, optimized-copy, and from-lumen are refused in required mode because they cannot target an existing live binding",
+            "agent_policy": "agent start/status manage collaboration sessions directly; document mutations for that session use the live GUI",
+            "application": prism_core::PRISM_LIVE_APPLICATION,
+            "action_family": prism_core::PRISM_LIVE_ACTION_FAMILY,
+            "action_version": prism_core::PRISM_LIVE_ACTION_VERSION,
+            "actions": ["state", "execute_batch", "undo", "redo", "move_agent_cursor"],
+            "terminal_handoff": ["PRISM_PROJECT", "PRISM_SESSION", "PRISM_LIVE_MODE", "PRISM_LIVE_BINDING_ID"],
+            "capability_in_environment": false,
+        },
         "document_lifecycle": {
             "rename": "prism --project <path> rename-document <name> changes durable document metadata only and appends one revision",
             "project_path": "rename-document never changes the .prism filename or location; Move Project remains the only GUI path relocation action",

@@ -6,7 +6,7 @@ use crate::{BridgeError, BridgeResult};
 
 pub const PROTOCOL_FAMILY: &str = "spectrum.live_bridge";
 pub const DISCOVERY_FAMILY: &str = "spectrum.live_bridge.discovery";
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_ACTION_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_STRING_BYTES: usize = 4_096;

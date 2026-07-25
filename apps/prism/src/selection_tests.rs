@@ -601,7 +601,7 @@ fn inline_mask_budget_failures_are_atomic_for_execute_and_preview() {
     );
     assert_eq!(workspace.document, before);
 
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     assert!(
         workspace
             .preview(Command::DuplicateLayer { id: 1 })

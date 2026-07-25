@@ -203,7 +203,7 @@ fn active_project_context_is_passed_as_data() {
         Document::new("$(unsafe) artwork", 100, 100),
         Some(PathBuf::from("/tmp/project with spaces.prism")),
     );
-    let launch = terminal_launch(&workspace);
+    let launch = terminal_launch(&workspace, None);
     assert_eq!(launch.context.working_directory(), Path::new("/tmp"));
     assert_eq!(
         launch.context.environment("PRISM_PROJECT"),
@@ -212,6 +212,114 @@ fn active_project_context_is_passed_as_data() {
     assert_eq!(
         launch.context.environment("PRISM_DOCUMENT"),
         Some(std::ffi::OsStr::new("$(unsafe) artwork"))
+    );
+    assert_eq!(
+        launch.context.environment("PRISM_LIVE_MODE"),
+        Some(std::ffi::OsStr::new("required"))
+    );
+}
+
+#[test]
+fn terminal_live_context_contains_mode_and_binding_but_no_capability() {
+    let workspace = Workspace::new(Document::new("Live", 100, 100), None);
+    let binding = spectrum_live_bridge::BindingId::new();
+    let launch = terminal_launch(&workspace, Some(binding));
+    assert_eq!(
+        launch.context.environment("PRISM_LIVE_MODE"),
+        Some(std::ffi::OsStr::new("required"))
+    );
+    assert_eq!(
+        launch.context.environment("PRISM_LIVE_BINDING_ID"),
+        Some(std::ffi::OsStr::new(&binding.to_string()))
+    );
+    assert!(
+        launch
+            .context
+            .environment("PRISM_LIVE_CAPABILITY")
+            .is_none()
+    );
+    assert!(
+        launch
+            .context
+            .environment("SPECTRUM_LIVE_CAPABILITY_PATH")
+            .is_none()
+    );
+}
+
+#[test]
+fn rotated_binding_marks_old_sessions_stale_and_new_session_uses_replacement() {
+    let workspace = Workspace::new(
+        Document::new("Live", 100, 100),
+        Some(PathBuf::from("/tmp/rotated.prism")),
+    );
+    let old = spectrum_live_bridge::BindingId::new();
+    let replacement = spectrum_live_bridge::BindingId::new();
+    let mut dock = TerminalDock::new(true);
+    dock.new_session(terminal_launch(&workspace, Some(old)));
+
+    assert_eq!(dock.live_binding_rotated(old), 1);
+    assert!(
+        dock.sessions[0]
+            .message
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("open a new terminal session")
+    );
+    assert_eq!(
+        dock.sessions[0]
+            .context
+            .environment("PRISM_LIVE_BINDING_ID"),
+        Some(std::ffi::OsStr::new(&old.to_string()))
+    );
+
+    dock.new_session(terminal_launch(&workspace, Some(replacement)));
+    assert_eq!(
+        dock.sessions[1]
+            .context
+            .environment("PRISM_LIVE_BINDING_ID"),
+        Some(std::ffi::OsStr::new(&replacement.to_string()))
+    );
+    assert!(dock.sessions.iter().all(|session| {
+        session
+            .context
+            .environment("PRISM_LIVE_CAPABILITY")
+            .is_none()
+    }));
+    assert_eq!(dock.live_binding_unavailable(replacement), 1);
+    assert!(
+        dock.sessions[1]
+            .message
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("without a usable live binding")
+    );
+}
+
+#[test]
+fn closing_project_marks_surviving_terminal_with_reopen_recovery() {
+    let workspace = Workspace::new(
+        Document::new("Live", 100, 100),
+        Some(PathBuf::from("/tmp/closed.prism")),
+    );
+    let retired = spectrum_live_bridge::BindingId::new();
+    let unrelated = spectrum_live_bridge::BindingId::new();
+    let mut dock = TerminalDock::new(true);
+    dock.new_session(terminal_launch(&workspace, Some(retired)));
+    dock.new_session(terminal_launch(&workspace, Some(unrelated)));
+
+    assert_eq!(dock.live_project_closed(retired), 1);
+    let message = &dock.sessions[0].message.as_ref().unwrap().0;
+    assert!(message.contains("project was closed"));
+    assert!(message.contains("reopen the project"));
+    assert!(message.contains("open a new terminal session"));
+    assert!(dock.sessions[1].message.is_none());
+    assert_eq!(
+        dock.sessions[0]
+            .context
+            .environment("PRISM_LIVE_BINDING_ID"),
+        Some(std::ffi::OsStr::new(&retired.to_string()))
     );
 }
 

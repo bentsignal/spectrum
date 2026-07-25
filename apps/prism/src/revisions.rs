@@ -27,6 +27,9 @@ mod durable_cache;
 #[path = "durable_edit.rs"]
 mod durable_edit;
 pub(crate) use durable_edit::PreparedEdit;
+#[path = "durable_navigation.rs"]
+mod durable_navigation;
+pub(crate) use durable_navigation::PreparedNavigation;
 #[path = "durable_sampled_sources.rs"]
 pub(crate) mod durable_sampled_sources;
 #[path = "revision_encoding.rs"]
@@ -381,19 +384,8 @@ impl DurableProject {
     }
 
     pub fn move_to(&mut self, target: RevisionId) -> Result<Document> {
-        let target = self
-            .store
-            .store()
-            .newest_compatible_ancestor(target, &PrismCompatibility)?;
-        if target == self.cursor {
-            return Ok(self.load(target)?.0);
-        }
-        self.store
-            .mutate(|store| store.move_session(self.session_id, self.cursor, target))?;
-        self.cursor = target;
-        let (document, snapshot_tail) = self.load(target)?;
-        self.snapshot_tail = snapshot_tail;
-        Ok(document)
+        let prepared = self.prepare_move_to(target)?;
+        self.commit_navigation(prepared)
     }
 
     pub fn history(&self) -> Result<ProjectHistory> {
@@ -409,9 +401,29 @@ impl DurableProject {
     }
 
     pub fn sync_together(&mut self) -> Result<(CollaborationSync, Option<Document>)> {
-        let sync = self
-            .store
-            .mutate(|store| store.sync_together(self.session_id))?;
+        self.sync_together_inner(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_together_after_durable_commit(
+        &mut self,
+    ) -> Result<(CollaborationSync, Option<Document>)> {
+        self.sync_together_inner(true)
+    }
+
+    fn sync_together_inner(
+        &mut self,
+        fail_after_commit: bool,
+    ) -> Result<(CollaborationSync, Option<Document>)> {
+        let sync = self.store.mutate(|store| {
+            let sync = store.sync_together(self.session_id)?;
+            if fail_after_commit {
+                return Err(spectrum_revisions::RevisionError::Invalid(
+                    "injected failure after Together sync database commit".into(),
+                ));
+            }
+            Ok(sync)
+        })?;
         if let CollaborationSync::Advanced { to, .. } = &sync {
             self.cursor = *to;
             let (document, snapshot_tail) = self.load(*to)?;
@@ -422,34 +434,13 @@ impl DurableProject {
     }
 
     pub fn undo(&mut self) -> Result<Document> {
-        let current = self
-            .store
-            .store()
-            .revision(self.cursor)?
-            .context("current Prism revision is missing")?;
-        let parent = current.parent_id.context("nothing to undo")?;
-        self.store
-            .mutate(|store| store.remember_child(self.session_id, parent, self.cursor))?;
-        self.move_to(parent)
+        let prepared = self.prepare_undo()?;
+        self.commit_navigation(prepared)
     }
 
     pub fn redo(&mut self) -> Result<Document> {
-        let preferred = self
-            .store
-            .store()
-            .preferred_child(self.session_id, self.cursor)?;
-        let target = match preferred {
-            Some(preferred) => preferred,
-            None => {
-                let children = self.store.store().children(self.cursor)?;
-                match children.as_slice() {
-                    [only] => only.id,
-                    [] => bail!("nothing to redo"),
-                    _ => bail!("choose which future to follow"),
-                }
-            }
-        };
-        self.move_to(target)
+        let prepared = self.prepare_redo()?;
+        self.commit_navigation(prepared)
     }
 
     pub fn can_undo(&self) -> bool {
@@ -489,6 +480,13 @@ impl DurableProject {
 
     pub fn project_info(&self) -> &ProjectInfo {
         &self.info
+    }
+
+    pub fn current_revision(&self) -> Result<Revision> {
+        self.store
+            .store()
+            .revision(self.cursor)?
+            .context("current Prism revision is missing")
     }
 
     pub fn pending_publish_error(&self) -> Option<String> {
@@ -625,6 +623,10 @@ impl DurableProject {
             .with_context(|| format!("embedded Prism asset {} is missing", reference.id))?;
         self.stage_asset(&reference, &asset.bytes)
     }
+}
+
+pub fn required_command_operations_version(commands: &[Command]) -> u32 {
+    operations_version(commands)
 }
 
 fn snapshot_backed_magic_wand_operations(commands: &[Command]) -> (Vec<Command>, bool) {

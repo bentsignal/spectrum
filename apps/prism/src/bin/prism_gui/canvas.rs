@@ -293,8 +293,8 @@ impl PrismApp {
                         action,
                         DragAction::Move | DragAction::Rotate | DragAction::Resize(_)
                     );
-            if editable {
-                self.workspace.begin_interaction();
+            if editable && !self.begin_workspace_interaction() {
+                return;
             }
             let paragraph_source_override = if matches!(
                 action,

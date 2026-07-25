@@ -57,6 +57,13 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
         schema["command_protocol"]["clone_stamp_operations_version"],
         14
     );
+    assert_eq!(schema["live_bridge"]["required_mode_fallback"], false);
+    assert!(
+        schema["live_bridge"]["clone_stamp_policy"]
+            .as_str()
+            .unwrap()
+            .contains("version 14 durable revision")
+    );
     assert_eq!(schema["paths"]["geometry_version"], 1);
     assert_eq!(
         schema["layer_transfer"]["version"],

@@ -194,6 +194,7 @@ impl PrismApp {
                 |workspace| workspace.document.name.clone(),
             )
         };
+        self.remove_live_tab(id);
         self.tab_ids.remove(position);
         if id == self.active_tab_id {
             let replacement_id = self.tab_ids[position.min(self.tab_ids.len() - 1)];
@@ -363,6 +364,10 @@ impl PrismApp {
                         self.cancel_brush();
                         self.workspace = workspace;
                         self.sync_active_raster_sources();
+                        (self.status, self.status_error) = completed_live_status(
+                            "Created local project".into(),
+                            self.rotate_active_live_binding(),
+                        );
                     }
                     Err(error) => {
                         self.status = format!("Could not create local project: {error:#}");
@@ -401,8 +406,9 @@ impl PrismApp {
                 self.cancel_brush();
                 self.workspace = workspace;
                 self.sync_active_raster_sources();
-                self.status = format!("Opened {}", path.display());
-                self.status_error = false;
+                let completed = format!("Opened {}", path.display());
+                (self.status, self.status_error) =
+                    completed_live_status(completed, self.rotate_active_live_binding());
             }
             Err(error) => {
                 self.status = format!("Could not open project: {error:#}");
@@ -414,9 +420,9 @@ impl PrismApp {
     pub(super) fn open_path(&mut self, path: &Path) {
         match open_local_workspace(path) {
             Ok(workspace) => {
-                self.add_workspace_tab(workspace);
-                self.status = format!("Opened {}", path.display());
-                self.status_error = false;
+                let completed = format!("Opened {}", path.display());
+                (self.status, self.status_error) =
+                    completed_live_status(completed, self.add_workspace_tab(workspace));
             }
             Err(error) => {
                 self.status = format!("Could not open project: {error:#}");
@@ -429,12 +435,12 @@ impl PrismApp {
         match create_managed_workspace(Document::new(draft.name, draft.width, draft.height)) {
             Ok(workspace) => {
                 let path = workspace.project_path.clone();
-                self.add_workspace_tab(workspace);
-                self.status = path.map_or_else(
+                let completed = path.map_or_else(
                     || "Created a new Prism project".into(),
                     |path| format!("Created {}", path.display()),
                 );
-                self.status_error = false;
+                (self.status, self.status_error) =
+                    completed_live_status(completed, self.add_workspace_tab(workspace));
             }
             Err(error) => {
                 self.status = format!("Could not create project: {error:#}");
@@ -523,8 +529,9 @@ impl PrismApp {
             let destination = directory.join(file_name);
             match self.workspace.move_project(&destination) {
                 Ok(path) => {
-                    self.status = format!("Project now lives at {}", path.display());
-                    self.status_error = false;
+                    let completed = format!("Project moved to {}", path.display());
+                    (self.status, self.status_error) =
+                        completed_live_status(completed, self.rotate_active_live_binding());
                 }
                 Err(error) => {
                     self.status = format!("Could not move project: {error:#}");
@@ -534,6 +541,16 @@ impl PrismApp {
         } else if keep_open {
             self.move_project_dialog = Some(dialog);
         }
+    }
+}
+
+fn completed_live_status(completed: String, live: Result<(), String>) -> (String, bool) {
+    match live {
+        Ok(()) => (completed, false),
+        Err(error) => (
+            format!("{completed}, but live binding unavailable: {error}"),
+            true,
+        ),
     }
 }
 
@@ -650,6 +667,30 @@ mod tests {
     fn idle_project_does_not_force_periodic_full_app_repaints() {
         let now = std::time::Instant::now();
         assert_eq!(next_open_document_repaint_delay(now, true, now, None), None);
+    }
+
+    #[test]
+    fn completed_move_or_open_never_hides_live_publication_failure() {
+        assert_eq!(
+            completed_live_status(
+                "Project moved to /tmp/moved.prism".into(),
+                Err("injected live binding start failure".into()),
+            ),
+            (
+                "Project moved to /tmp/moved.prism, but live binding unavailable: injected live binding start failure".into(),
+                true,
+            )
+        );
+        assert_eq!(
+            completed_live_status(
+                "Opened /tmp/opened.prism".into(),
+                Err("Prism live bridge is unavailable".into()),
+            ),
+            (
+                "Opened /tmp/opened.prism, but live binding unavailable: Prism live bridge is unavailable".into(),
+                true,
+            )
+        );
     }
 
     #[test]

@@ -3,6 +3,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_DOCUMENT_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveWorkspaceState {
+    pub project_id: spectrum_revisions::ProjectId,
+    pub track_id: spectrum_revisions::TrackId,
+    pub session_id: spectrum_revisions::SessionId,
+    pub cursor: spectrum_revisions::RevisionId,
+    pub actor: spectrum_revisions::Actor,
+    pub revision: spectrum_revisions::Revision,
+}
+
 pub struct Workspace {
     pub document: Document,
     pub project_path: Option<PathBuf>,
@@ -14,6 +24,28 @@ pub struct Workspace {
     document_generation: u64,
     interaction_before: Option<Document>,
     interaction_commands: Vec<Command>,
+    reopen_required_reason: Option<String>,
+    #[cfg(test)]
+    fail_together_after_durable_sync: bool,
+    #[cfg(test)]
+    fail_together_recovery_open: bool,
+}
+
+pub(crate) enum PreparedLiveMutation {
+    Noop {
+        outputs: Vec<CommandOutput>,
+    },
+    Edit {
+        prepared: crate::revisions::PreparedEdit,
+        candidate: Document,
+        outputs: Vec<CommandOutput>,
+        label: String,
+    },
+    Navigation {
+        prepared: crate::revisions::PreparedNavigation,
+        changed: bool,
+        outputs: Vec<CommandOutput>,
+    },
 }
 
 impl Default for Workspace {
@@ -35,6 +67,11 @@ impl Workspace {
             document_generation: 0,
             interaction_before: None,
             interaction_commands: Vec::new(),
+            reopen_required_reason: None,
+            #[cfg(test)]
+            fail_together_after_durable_sync: false,
+            #[cfg(test)]
+            fail_together_recovery_open: false,
         }
     }
 
@@ -117,6 +154,24 @@ impl Workspace {
         self.durable.as_ref().map(DurableProject::session_id)
     }
 
+    pub fn live_state(&self) -> Result<Option<LiveWorkspaceState>> {
+        self.require_workspace_usable()?;
+        self.durable
+            .as_ref()
+            .map(|durable| {
+                let info = durable.project_info();
+                Ok(LiveWorkspaceState {
+                    project_id: info.project_id,
+                    track_id: info.default_track_id,
+                    session_id: durable.session_id(),
+                    cursor: durable.cursor(),
+                    actor: durable.actor().clone(),
+                    revision: durable.current_revision()?,
+                })
+            })
+            .transpose()
+    }
+
     /// Changes whenever this workspace's live document may have changed.
     /// GUI caches can use this without walking the document on every frame.
     pub fn document_generation(&self) -> u64 {
@@ -128,7 +183,12 @@ impl Workspace {
         self.document_identity
     }
 
+    pub(crate) fn live_reopen_required(&self) -> bool {
+        self.reopen_required_reason.is_some()
+    }
+
     pub fn checkpoint(&self) -> Result<()> {
+        self.require_workspace_usable()?;
         if let Some(durable) = &self.durable {
             durable.checkpoint()?;
         }
@@ -136,6 +196,7 @@ impl Workspace {
     }
 
     pub fn history(&self) -> Result<Option<ProjectHistory>> {
+        self.require_workspace_usable()?;
         self.durable
             .as_ref()
             .map(DurableProject::history)
@@ -143,6 +204,7 @@ impl Workspace {
     }
 
     pub fn move_to_revision(&mut self, target: spectrum_revisions::RevisionId) -> Result<bool> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_some() {
             bail!("finish the active interaction before navigating history");
         }
@@ -160,13 +222,25 @@ impl Workspace {
     }
 
     pub fn sync_together(&mut self) -> Result<spectrum_revisions::CollaborationSync> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_some() {
             return Ok(spectrum_revisions::CollaborationSync::Idle);
         }
         let Some(durable) = &mut self.durable else {
             return Ok(spectrum_revisions::CollaborationSync::Idle);
         };
-        let (sync, document) = durable.sync_together()?;
+        #[cfg(test)]
+        let result = if std::mem::take(&mut self.fail_together_after_durable_sync) {
+            durable.fail_together_after_durable_commit()
+        } else {
+            durable.sync_together()
+        };
+        #[cfg(not(test))]
+        let result = durable.sync_together();
+        let (sync, document) = match result {
+            Ok(result) => result,
+            Err(error) => return self.recover_after_together_sync_error(error),
+        };
         if let Some(document) = document {
             self.document = document;
             self.dirty = false;
@@ -175,19 +249,75 @@ impl Workspace {
         Ok(sync)
     }
 
+    fn recover_after_together_sync_error(
+        &mut self,
+        error: anyhow::Error,
+    ) -> Result<spectrum_revisions::CollaborationSync> {
+        let path = self
+            .project_path
+            .clone()
+            .context("Together sync failed and the durable project path is missing")?;
+        let session_id = self
+            .session_id()
+            .context("Together sync failed and the bound human session is missing")?;
+        #[cfg(test)]
+        let recovered = if std::mem::take(&mut self.fail_together_recovery_open) {
+            Err(anyhow::anyhow!(
+                "injected bound human recovery-open failure"
+            ))
+        } else {
+            Self::open_session(&path, session_id)
+        };
+        #[cfg(not(test))]
+        let recovered = Self::open_session(&path, session_id);
+        match recovered {
+            Ok(mut recovered) => {
+                recovered.document_identity = self.document_identity;
+                recovered.document_generation = self.document_generation.wrapping_add(1);
+                *self = recovered;
+                Err(error
+                    .context("Together sync outcome is unknown; recovered the bound human session"))
+            }
+            Err(recovery_error) => {
+                self.reopen_required_reason = Some(format!("{recovery_error:#}"));
+                self.bump_document_generation();
+                bail!(
+                    "Together sync outcome is unknown ({error:#}); bound human recovery failed and the project must be reopened: {recovery_error:#}"
+                )
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_together_sync_after_durable_commit(&mut self) {
+        self.fail_together_after_durable_sync = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_together_recovery_open(&mut self) {
+        self.fail_together_recovery_open = true;
+    }
+
     pub fn can_undo(&self) -> bool {
+        if self.reopen_required_reason.is_some() {
+            return false;
+        }
         self.durable
             .as_ref()
             .map_or_else(|| !self.undo.is_empty(), DurableProject::can_undo)
     }
 
     pub fn can_redo(&self) -> bool {
+        if self.reopen_required_reason.is_some() {
+            return false;
+        }
         self.durable
             .as_ref()
             .map_or_else(|| !self.redo.is_empty(), DurableProject::can_redo)
     }
 
     pub fn save(&mut self, path: Option<&Path>) -> Result<PathBuf> {
+        self.require_workspace_usable()?;
         if let Some(durable) = &self.durable {
             if path.is_some_and(|path| Some(path) != self.project_path.as_deref()) {
                 bail!("Save As for durable Prism projects is not implemented yet");
@@ -227,6 +357,7 @@ impl Workspace {
     }
 
     pub fn move_project(&mut self, destination: &Path) -> Result<PathBuf> {
+        self.require_workspace_usable()?;
         let source = self
             .project_path
             .clone()
@@ -323,6 +454,7 @@ impl Workspace {
     }
 
     pub fn execute(&mut self, command: Command) -> Result<CommandOutput> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_some() {
             bail!("finish the active interaction before executing another command");
         }
@@ -345,6 +477,7 @@ impl Workspace {
     }
 
     pub fn execute_batch(&mut self, commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_some() {
             bail!("finish the active interaction before executing another command");
         }
@@ -412,14 +545,136 @@ impl Workspace {
         Ok(outputs)
     }
 
-    pub fn begin_interaction(&mut self) {
+    pub(crate) fn prepare_live_batch(
+        &self,
+        commands: Vec<Command>,
+    ) -> Result<PreparedLiveMutation> {
+        validate_live_mutation_ready(self)?;
+        validate_edit_batch(&commands)?;
+        let durable = self
+            .durable
+            .as_ref()
+            .context("live Prism mutation requires a durable project")?;
+        durable.preflight_edit(&commands)?;
+        let commands = resolve_durable_commands(&self.document, commands)?;
+        let prepared = durable.prepare_edit(&commands)?;
+        let mut candidate = self.document.clone();
+        let outputs = prepared.apply(&mut candidate)?;
+        if candidate == self.document {
+            return Ok(PreparedLiveMutation::Noop { outputs });
+        }
+        let label = if outputs.len() == 1 {
+            outputs[0].message.clone()
+        } else {
+            format!("Applied {} actions", outputs.len())
+        };
+        Ok(PreparedLiveMutation::Edit {
+            prepared,
+            candidate,
+            outputs,
+            label,
+        })
+    }
+
+    pub(crate) fn prepare_live_undo(&self) -> Result<PreparedLiveMutation> {
+        validate_live_mutation_ready(self)?;
+        let durable = self
+            .durable
+            .as_ref()
+            .context("live Prism mutation requires a durable project")?;
+        let prepared = durable.prepare_undo()?;
+        Ok(PreparedLiveMutation::Navigation {
+            prepared,
+            changed: true,
+            outputs: vec![output("undo", "went back one edit", Vec::new())],
+        })
+    }
+
+    pub(crate) fn prepare_live_redo(&self) -> Result<PreparedLiveMutation> {
+        validate_live_mutation_ready(self)?;
+        let durable = self
+            .durable
+            .as_ref()
+            .context("live Prism mutation requires a durable project")?;
+        let prepared = durable.prepare_redo()?;
+        Ok(PreparedLiveMutation::Navigation {
+            prepared,
+            changed: true,
+            outputs: vec![output("redo", "went forward one edit", Vec::new())],
+        })
+    }
+
+    pub(crate) fn prepare_live_move(
+        &self,
+        target: spectrum_revisions::RevisionId,
+    ) -> Result<PreparedLiveMutation> {
+        validate_live_mutation_ready(self)?;
+        let durable = self
+            .durable
+            .as_ref()
+            .context("live Prism mutation requires a durable project")?;
+        let prepared = durable.prepare_move_to(target)?;
+        let changed = prepared.changes_cursor(durable.cursor());
+        Ok(PreparedLiveMutation::Navigation {
+            prepared,
+            changed,
+            outputs: Vec::new(),
+        })
+    }
+
+    pub(crate) fn commit_live_mutation(
+        &mut self,
+        mutation: PreparedLiveMutation,
+    ) -> Result<Vec<CommandOutput>> {
+        self.require_workspace_usable()?;
+        match mutation {
+            PreparedLiveMutation::Noop { outputs } => Ok(outputs),
+            PreparedLiveMutation::Edit {
+                prepared,
+                candidate,
+                outputs,
+                label,
+            } => {
+                self.durable
+                    .as_mut()
+                    .context("durable Prism project disappeared")?
+                    .commit_prepared(prepared, &candidate, label)?;
+                self.document = candidate;
+                self.dirty = false;
+                self.bump_document_generation();
+                Ok(outputs)
+            }
+            PreparedLiveMutation::Navigation {
+                prepared,
+                changed,
+                outputs,
+            } => {
+                let document = self
+                    .durable
+                    .as_mut()
+                    .context("durable Prism project disappeared")?
+                    .commit_navigation(prepared)?;
+                if changed {
+                    self.document = document;
+                    self.dirty = false;
+                    self.bump_document_generation();
+                }
+                Ok(outputs)
+            }
+        }
+    }
+
+    pub fn begin_interaction(&mut self) -> Result<()> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_none() {
             self.interaction_before = Some(self.document.clone());
             self.interaction_commands.clear();
         }
+        Ok(())
     }
 
     pub fn preview(&mut self, command: Command) -> Result<CommandOutput> {
+        self.require_workspace_usable()?;
         if self.interaction_before.is_none() {
             bail!("begin an interaction before applying preview commands");
         }
@@ -440,6 +695,7 @@ impl Workspace {
     }
 
     pub fn preview_batch(&mut self, mut commands: Vec<Command>) -> Result<Vec<CommandOutput>> {
+        self.require_workspace_usable()?;
         if commands.is_empty() {
             bail!("preview command batch is empty");
         }
@@ -480,6 +736,7 @@ impl Workspace {
     }
 
     pub fn commit_interaction(&mut self) -> Result<bool> {
+        self.require_workspace_usable()?;
         let Some(before) = self.interaction_before.take() else {
             return Ok(false);
         };
@@ -538,6 +795,11 @@ impl Workspace {
             document_generation: 0,
             interaction_before: None,
             interaction_commands: Vec::new(),
+            reopen_required_reason: None,
+            #[cfg(test)]
+            fail_together_after_durable_sync: false,
+            #[cfg(test)]
+            fail_together_recovery_open: false,
         }
     }
 
@@ -581,6 +843,13 @@ impl Workspace {
 
     fn bump_document_generation(&mut self) {
         self.document_generation = self.document_generation.wrapping_add(1);
+    }
+
+    fn require_workspace_usable(&self) -> Result<()> {
+        if let Some(reason) = &self.reopen_required_reason {
+            bail!("workspace is unusable; reopen the project before continuing: {reason}");
+        }
+        Ok(())
     }
 }
 
@@ -678,6 +947,29 @@ fn resolve_durable_commands(
         apply_command(&mut candidate, command.clone())?;
     }
     Ok(commands)
+}
+
+fn validate_live_mutation_ready(workspace: &Workspace) -> Result<()> {
+    workspace.require_workspace_usable()?;
+    if workspace.interaction_before.is_some() {
+        bail!("finish the active interaction before executing another command");
+    }
+    Ok(())
+}
+
+fn validate_edit_batch(commands: &[Command]) -> Result<()> {
+    if commands.is_empty() {
+        bail!("command batch is empty");
+    }
+    if commands.iter().any(|command| {
+        matches!(
+            command,
+            Command::Undo | Command::Redo | Command::SelectLayer { .. }
+        )
+    }) {
+        bail!("history and selection commands cannot be part of an edit batch");
+    }
+    Ok(())
 }
 
 fn next_document_identity() -> u64 {

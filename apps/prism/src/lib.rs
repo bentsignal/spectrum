@@ -66,11 +66,34 @@ mod revisions;
 pub use revisions::{
     DurableProject, OptimizedCopyFont, OptimizedCopyReport, ProjectHistory, ReadOnlyFontSource,
     ReadOnlyFontSubsetInput, create_optimized_font_copy, inspect_font_source_read_only,
-    inspect_font_subset_read_only,
+    inspect_font_subset_read_only, required_command_operations_version,
 };
 
 mod workspace;
-pub use workspace::Workspace;
+pub use workspace::{LiveWorkspaceState, Workspace};
+
+mod live_bridge;
+pub use live_bridge::{
+    PRISM_LIVE_ACTION_FAMILY, PRISM_LIVE_ACTION_VERSION, PRISM_LIVE_APPLICATION, PrismLiveAction,
+    PrismLiveActionExpectation, PrismLiveApplied, PrismLiveResult, PrismLiveState,
+    decode_live_action, prism_live_discovery_root,
+};
+
+mod live_bridge_host;
+pub use live_bridge_host::{
+    PrismLiveDrain, PrismLiveDrainReport, PrismLiveHost, PrismLiveInteractionState,
+};
+
+mod live_bridge_sessions;
+pub use live_bridge_sessions::{PrismLiveApplyError, PrismLiveSessions};
+
+#[cfg(test)]
+#[path = "live_bridge_tests.rs"]
+mod live_bridge_tests;
+
+#[cfg(test)]
+#[path = "live_bridge_outcome_tests.rs"]
+mod live_bridge_outcome_tests;
 
 mod shapes;
 pub use shapes::{

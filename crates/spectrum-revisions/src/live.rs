@@ -168,7 +168,10 @@ impl LiveRevisionStore {
         #[cfg(target_os = "linux")]
         self.publish_recovered_working_locked()?;
         let core_started = Instant::now();
-        let result = mutation(&mut self.store)?;
+        // A store operation can commit its SQLite transaction and then fail while finishing the
+        // checkpoint. Publish whatever state is now observable before returning that error so a
+        // recovery open never mistakes committed working state for an unmarked stale cache.
+        let result = mutation(&mut self.store);
         let core_write_us = elapsed_us(core_started.elapsed());
         #[cfg(target_os = "linux")]
         let published = self.publish_current_locked();
@@ -184,15 +187,22 @@ impl LiveRevisionStore {
             Err(error) => match self.preserved_publish_failure(&error) {
                 Ok(message) => self.pending_publish_error.replace(Some(message)),
                 Err(recovery_error) => {
-                    let message =
-                        format!("{error}; could not preserve failed publication: {recovery_error}");
+                    let mutation_context = result
+                        .as_ref()
+                        .err()
+                        .map(|mutation_error| format!("{mutation_error}; "))
+                        .unwrap_or_default();
+                    let message = format!(
+                        "{mutation_context}{error}; could not preserve failed publication: \
+                         {recovery_error}"
+                    );
                     self.pending_publish_error.replace(Some(message.clone()));
                     self.publication_poisoned.set(true);
                     return Err(RevisionError::Invalid(message));
                 }
             },
         };
-        Ok(result)
+        result
     }
 
     pub fn publish(&self) -> RevisionResult<()> {

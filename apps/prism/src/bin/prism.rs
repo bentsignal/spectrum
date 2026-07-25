@@ -8,17 +8,20 @@ use clap::{Parser, Subcommand};
 use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
-use prism_core::{
-    AlignmentReference, BlendMode, Command, Document, LayerMask, ShapeStroke, Transform, Workspace,
-    export_document,
-};
+use prism_core::{Command, Document, Workspace, export_document};
 use serde_json::{Value, json};
-use spectrum_imaging::{AdjustmentPatch, RenderOptions};
+use spectrum_imaging::RenderOptions;
 use spectrum_revisions::{Actor, ActorKind, SessionId};
 
 #[path = "prism_cli/agent.rs"]
 mod agent;
 use agent::{AgentCommand, agent_command};
+#[path = "prism_cli/live_bridge.rs"]
+mod live_bridge;
+use live_bridge::{
+    CliLiveMode, LiveCommand, live_command, live_execute_prepared, prepare_live_semantic,
+    resolved_live_mode,
+};
 #[path = "prism_cli/alignment.rs"]
 mod alignment;
 use alignment::{CliAlignment, GuideCommand};
@@ -28,6 +31,8 @@ use benchmark::{BenchmarkProfile, benchmark};
 #[path = "prism_cli/blend.rs"]
 mod blend;
 use blend::CliBlend;
+#[path = "prism_cli/dispatch.rs"]
+mod dispatch;
 #[path = "prism_cli/effects.rs"]
 mod effects;
 use effects::{GradientArgs, ShadowArgs};
@@ -56,11 +61,20 @@ use transfer::{LayerCopyArgs, LayerPasteArgs};
 #[derive(Parser)]
 #[command(name = "prism", version, about = "Agent-first layered image editor")]
 struct Cli {
-    #[arg(short, long, global = true, default_value = "untitled.prism")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        env = "PRISM_PROJECT",
+        default_value = "untitled.prism"
+    )]
     project: PathBuf,
     /// Continue commands in an existing collaboration session.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "PRISM_SESSION")]
     session: Option<SessionId>,
+    /// Choose direct project access or require the authenticated running GUI.
+    #[arg(long, global = true, value_enum)]
+    live: Option<CliLiveMode>,
     #[command(subcommand)]
     command: CliCommand,
 }
@@ -396,6 +410,11 @@ enum CliCommand {
         #[command(subcommand)]
         command: AgentCommand,
     },
+    /// Discover, inspect, mutate, and subscribe through the running Prism GUI.
+    Live {
+        #[command(subcommand)]
+        command: LiveCommand,
+    },
     /// Print the machine-facing Command protocol and examples.
     Schema,
     /// Run deterministic command and compositing performance workloads.
@@ -426,6 +445,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<Value> {
+    let live_mode = resolved_live_mode(cli.live)?;
     match cli.command {
         CliCommand::Init {
             name,
@@ -433,6 +453,7 @@ fn run(cli: Cli) -> Result<Value> {
             height,
             background,
         } => {
+            require_direct_mode(live_mode, "init")?;
             let mut document = Document::new(name, width, height);
             document.background = parse_color(&background)?;
             let mut workspace =
@@ -460,6 +481,7 @@ fn run(cli: Cli) -> Result<Value> {
             typography::font_subset_plan_command(&cli.project, cli.session, font_id)
         }
         CliCommand::OptimizedCopy { output } => {
+            require_direct_mode(live_mode, "optimized-copy")?;
             if cli.session.is_some() {
                 bail!("optimized-copy does not accept --session");
             }
@@ -478,357 +500,52 @@ fn run(cli: Cli) -> Result<Value> {
             catalog,
             photo,
             output,
-        } => from_lumen(&catalog, photo, &output),
+        } => {
+            require_direct_mode(live_mode, "from-lumen")?;
+            from_lumen(&catalog, photo, &output)
+        }
         CliCommand::Agent { command } => agent_command(&cli.project, cli.session, command),
+        CliCommand::Live { command } => live_command(&cli.project, cli.session, command),
         CliCommand::Schema => Ok(schema()),
         CliCommand::Benchmark { strict, profile } => benchmark(strict, profile),
         command => {
-            let mut workspace = match cli.session {
-                Some(session) => Workspace::open_session(&cli.project, session)?,
-                None => Workspace::open_as(&cli.project, cli_actor(), SessionId::new())?,
+            enum Target {
+                Direct(Box<Workspace>),
+                Live(Box<live_bridge::PreparedLiveSemantic>),
+            }
+            let target = match live_mode {
+                CliLiveMode::Off => Target::Direct(Box::new(match cli.session {
+                    Some(session) => Workspace::open_session(&cli.project, session)?,
+                    None => Workspace::open_as(&cli.project, cli_actor(), SessionId::new())?,
+                })),
+                CliLiveMode::Required => {
+                    Target::Live(Box::new(prepare_live_semantic(&cli.project, cli.session)?))
+                }
             };
-            let outputs = match command {
-                CliCommand::RenameDocument { name } => {
-                    vec![workspace.execute(Command::RenameDocument { name })?]
-                }
-                CliCommand::FontImport { path } => {
-                    vec![workspace.execute(Command::ImportFont {
-                        path,
-                        source_name: None,
-                    })?]
-                }
-                CliCommand::Typography(arguments) => {
-                    let typography = updated_typography(&workspace.document, &arguments)?;
-                    vec![workspace.execute(Command::SetTextTypography {
-                        id: arguments.id,
-                        typography,
-                    })?]
-                }
-                CliCommand::LayerPaste(arguments) => {
-                    vec![workspace.execute(transfer::paste_command(arguments)?)?]
-                }
-                CliCommand::AddImage { path, name, x, y } => {
-                    vec![workspace.execute(Command::AddRaster { path, name, x, y })?]
-                }
-                CliCommand::AddText {
-                    text,
-                    name,
-                    size,
-                    color,
-                    x,
-                    y,
-                    layout,
-                    language,
-                } => vec![workspace.execute(Command::AddText {
-                    text,
-                    name,
-                    font_size: size,
-                    color: parse_color(&color)?,
-                    x,
-                    y,
-                    shaping: text_shaping(layout, language.as_deref())?,
-                })?],
-                CliCommand::AddRectangle {
-                    name,
-                    width,
-                    height,
-                    color,
-                    radius,
-                    x,
-                    y,
-                } => vec![workspace.execute(Command::AddRectangle {
-                    name,
-                    width,
-                    height,
-                    color: parse_color(&color)?,
-                    corner_radius: radius,
-                    x,
-                    y,
-                })?],
-                CliCommand::AddEllipse {
-                    name,
-                    width,
-                    height,
-                    color,
-                    x,
-                    y,
-                } => vec![workspace.execute(Command::AddEllipse {
-                    name,
-                    width,
-                    height,
-                    color: parse_color(&color)?,
-                    x,
-                    y,
-                })?],
-                CliCommand::Path(arguments) => {
-                    vec![workspace.execute(match arguments.command {
-                        PathCommand::Add {
-                            geometry,
-                            name,
-                            color,
-                            x,
-                            y,
-                        } => Command::AddPath {
-                            name,
-                            geometry: paths::read_geometry(geometry)?,
-                            color: parse_color(&color)?,
-                            x,
-                            y,
-                        },
-                        PathCommand::Replace { id, geometry } => {
-                            paths::replace_command(id, geometry)?
-                        }
-                    })?]
-                }
-                CliCommand::Paint(arguments) => {
-                    vec![workspace.execute(paint::paint_command(arguments)?)?]
-                }
-                CliCommand::VectorMask(arguments) => {
-                    vec![workspace.execute(paths::vector_mask_command(arguments)?)?]
-                }
-                CliCommand::EditText {
-                    id,
-                    text,
-                    size,
-                    color,
-                } => vec![workspace.execute(Command::UpdateText {
-                    id,
-                    text,
-                    font_size: size,
-                    color: parse_color(&color)?,
-                })?],
-                CliCommand::EditRectangle {
-                    id,
-                    width,
-                    height,
-                    color,
-                    radius,
-                } => vec![workspace.execute(Command::UpdateRectangle {
-                    id,
-                    width,
-                    height,
-                    color: parse_color(&color)?,
-                    corner_radius: radius,
-                })?],
-                CliCommand::EditEllipse {
-                    id,
-                    width,
-                    height,
-                    color,
-                } => vec![workspace.execute(Command::UpdateEllipse {
-                    id,
-                    width,
-                    height,
-                    color: parse_color(&color)?,
-                })?],
-                CliCommand::Stroke {
-                    id,
-                    enabled,
-                    width,
-                    color,
-                } => vec![workspace.execute(Command::SetShapeStroke {
-                    id,
-                    stroke: ShapeStroke {
-                        enabled,
-                        width,
-                        color: parse_color(&color)?,
-                    },
-                })?],
-                CliCommand::Shadow(arguments) => {
-                    vec![workspace.execute(effects::shadow_command(arguments)?)?]
-                }
-                CliCommand::Gradient(arguments) => {
-                    vec![workspace.execute(effects::gradient_command(arguments)?)?]
-                }
-                CliCommand::RasterizeShape { id, scale } => {
-                    let layer = workspace.document.layer(id)?;
-                    let scale = scale
-                        .map(Ok)
-                        .unwrap_or_else(|| prism_core::recommended_rasterization_scale(layer))?;
-                    let asset = prism_core::rasterize_shape_asset(&workspace.document, id, scale)?;
-                    vec![workspace.execute(Command::RasterizeShape {
-                        id,
-                        path: asset.path,
-                        scale: asset.scale,
-                    })?]
-                }
-                CliCommand::Rename { id, name } => {
-                    vec![workspace.execute(Command::RenameLayer { id, name })?]
-                }
-                CliCommand::Delete { id } => {
-                    vec![workspace.execute(Command::RemoveLayer { id })?]
-                }
-                CliCommand::Duplicate { id } => {
-                    vec![workspace.execute(Command::DuplicateLayer { id })?]
-                }
-                CliCommand::Select { id } => {
-                    vec![workspace.execute(Command::SelectLayer { id })?]
-                }
-                CliCommand::Selection(arguments) => {
-                    vec![workspace.execute(selection::command(arguments)?)?]
-                }
-                CliCommand::Reorder { id, index } => {
-                    vec![workspace.execute(Command::MoveLayer { id, index })?]
-                }
-                CliCommand::Visibility { id, visible } => {
-                    vec![workspace.execute(Command::SetVisibility { id, visible })?]
-                }
-                CliCommand::Lock { id, locked } => {
-                    vec![workspace.execute(Command::SetLocked { id, locked })?]
-                }
-                CliCommand::Opacity { id, opacity } => {
-                    vec![workspace.execute(Command::SetOpacity { id, opacity })?]
-                }
-                CliCommand::Blend { id, mode, seed } => {
-                    let blend_mode = BlendMode::from(mode);
-                    if seed.is_some() && blend_mode != BlendMode::Dissolve {
-                        bail!("--seed is only valid with the dissolve blend mode");
-                    }
-                    let mut commands = vec![Command::SetBlendMode { id, blend_mode }];
-                    if let Some(seed) = seed {
-                        commands.push(Command::SetDissolveSeed { id, seed });
-                    }
-                    workspace.execute_batch(commands)?
-                }
-                CliCommand::Transform {
-                    id,
-                    x,
-                    y,
-                    scale_x,
-                    scale_y,
-                    rotation,
-                } => vec![workspace.execute(Command::SetTransform {
-                    id,
-                    transform: Transform {
-                        x,
-                        y,
-                        scale_x,
-                        scale_y,
-                        rotation,
-                    },
-                })?],
-                CliCommand::Rotate { id, degrees } => {
-                    vec![workspace.execute(Command::SetRotation { id, degrees })?]
-                }
-                CliCommand::Align {
-                    id,
-                    alignment,
-                    to_layer,
-                } => vec![workspace.execute(Command::AlignLayer {
-                    id,
-                    alignment: alignment.into(),
-                    reference: to_layer.map_or(AlignmentReference::Canvas, |id| {
-                        AlignmentReference::Layer { id }
-                    }),
-                })?],
-                CliCommand::Snapping { enabled } => {
-                    vec![workspace.execute(Command::SetSnapping { enabled })?]
-                }
-                CliCommand::Guide { command } => vec![workspace.execute(match command {
-                    GuideCommand::Add {
-                        orientation,
-                        position,
-                    } => Command::AddGuide {
-                        orientation: orientation.into(),
-                        position,
-                    },
-                    GuideCommand::Move { id, position } => Command::MoveGuide { id, position },
-                    GuideCommand::Remove { id } => Command::RemoveGuide { id },
-                })?],
-                CliCommand::Adjust {
-                    id,
-                    exposure,
-                    contrast,
-                    highlights,
-                    shadows,
-                    temperature,
-                    tint,
-                    vibrance,
-                    saturation,
-                    clarity,
-                    dehaze,
-                    noise_reduction,
-                    sharpening,
-                } => vec![workspace.execute(Command::AdjustLayer {
-                    id,
-                    patch: AdjustmentPatch {
-                        exposure,
-                        contrast,
-                        highlights,
-                        shadows,
-                        temperature,
-                        tint,
-                        vibrance,
-                        saturation,
-                        clarity,
-                        dehaze,
-                        noise_reduction,
-                        sharpening,
-                        ..Default::default()
-                    },
-                })?],
-                CliCommand::ResetAdjustments { id } => {
-                    vec![workspace.execute(Command::ResetLayerAdjustments { id })?]
-                }
-                CliCommand::Mask {
-                    id,
-                    x,
-                    y,
-                    width,
-                    height,
-                    invert,
-                    clear,
-                } => vec![workspace.execute(Command::SetMask {
-                    id,
-                    mask: LayerMask {
-                        enabled: !clear,
-                        x,
-                        y,
-                        width,
-                        height,
-                        invert,
-                    },
-                })?],
-                CliCommand::Clip { id, enabled } => {
-                    vec![workspace.execute(Command::SetClipping { id, enabled })?]
-                }
-                CliCommand::Canvas {
-                    width,
-                    height,
-                    background,
-                } => vec![workspace.execute(Command::SetCanvas {
-                    width,
-                    height,
-                    background: parse_color(&background)?,
-                })?],
-                CliCommand::Crop {
-                    x,
-                    y,
-                    width,
-                    height,
-                } => vec![workspace.execute(Command::CropCanvas {
-                    x,
-                    y,
-                    width,
-                    height,
-                })?],
-                CliCommand::Run { json } => run_commands(&mut workspace, &json)?,
-                CliCommand::Init { .. }
-                | CliCommand::List
-                | CliCommand::FontList { .. }
-                | CliCommand::FontUsage { .. }
-                | CliCommand::FontSource { .. }
-                | CliCommand::FontSubsetPlan { .. }
-                | CliCommand::OptimizedCopy { .. }
-                | CliCommand::LayerCopy(..)
-                | CliCommand::Export { .. }
-                | CliCommand::FromLumen { .. }
-                | CliCommand::Agent { .. }
-                | CliCommand::Schema
-                | CliCommand::Benchmark { .. } => unreachable!(),
+            let document = match &target {
+                Target::Direct(workspace) => &workspace.document,
+                Target::Live(prepared) => &prepared.document,
             };
-            workspace.save(None)?;
-            Ok(json!({"ok": true, "project": cli.project, "results": outputs}))
+            let plan = dispatch::semantic_commands(command, document)?;
+            match target {
+                Target::Direct(mut workspace) => {
+                    let outputs = if plan.atomic_batch || plan.commands.len() != 1 {
+                        workspace.execute_batch(plan.commands)?
+                    } else {
+                        vec![
+                            workspace.execute(
+                                plan.commands
+                                    .into_iter()
+                                    .next()
+                                    .expect("single semantic command"),
+                            )?,
+                        ]
+                    };
+                    workspace.save(None)?;
+                    Ok(json!({"ok": true, "project": cli.project, "results": outputs}))
+                }
+                Target::Live(prepared) => live_execute_prepared(*prepared, plan.commands),
+            }
         }
     }
 }
@@ -840,12 +557,13 @@ fn session_document(path: &Path, session: Option<SessionId>) -> Result<Document>
     }
 }
 
-fn run_commands(workspace: &mut Workspace, value: &str) -> Result<Vec<prism_core::CommandOutput>> {
-    if value.trim_start().starts_with('[') {
-        workspace.execute_batch(serde_json::from_str::<Vec<Command>>(value)?)
-    } else {
-        Ok(vec![workspace.execute(serde_json::from_str(value)?)?])
+fn require_direct_mode(mode: CliLiveMode, command: &str) -> Result<()> {
+    if mode == CliLiveMode::Required {
+        bail!(
+            "{command} creates a standalone artifact and is unavailable when live mode is required"
+        );
     }
+    Ok(())
 }
 
 fn cli_actor() -> Actor {

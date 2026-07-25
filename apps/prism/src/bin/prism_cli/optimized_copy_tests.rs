@@ -26,6 +26,7 @@ fn optimized_copy_rejects_session_before_reading_the_source() {
     let error = run(Cli {
         project: PathBuf::from("missing.prism"),
         session: Some(SessionId::new()),
+        live: None,
         command: CliCommand::OptimizedCopy {
             output: PathBuf::from("unused.prism"),
         },
@@ -85,6 +86,7 @@ fn optimized_copy_cli_dispatches_end_to_end_without_mutating_the_source() {
     let result = run(Cli {
         project: source.clone(),
         session: None,
+        live: None,
         command: CliCommand::OptimizedCopy {
             output: output.clone(),
         },

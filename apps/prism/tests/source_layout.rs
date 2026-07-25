@@ -128,7 +128,7 @@ fn inline_text_editor_owns_existing_edits_and_click_to_type_creation() {
         .expect("inline text editor source should be readable");
     let dialogs = fs::read_to_string(manifest.join("src/bin/prism_gui/dialogs.rs"))
         .expect("dialog source should be readable");
-    assert!(inline.contains("self.workspace.begin_interaction()"));
+    assert!(inline.contains("self.begin_workspace_interaction()"));
     assert!(inline.contains("self.preview_command(command)"));
     assert!(inline.contains("self.finish_interaction()"));
     assert!(inline.contains("self.workspace.cancel_interaction()"));

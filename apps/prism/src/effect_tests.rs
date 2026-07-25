@@ -122,7 +122,7 @@ fn style_and_fill_commands_validate_layer_kind_and_undo_separately() {
 fn previewed_effect_changes_commit_as_one_undoable_revision() {
     let mut workspace = Workspace::new(styled_shape_document(), None);
     let original = workspace.document.layer(1).unwrap().style.clone();
-    workspace.begin_interaction();
+    workspace.begin_interaction().unwrap();
     for offset_x in [24.0, 28.0, 32.0] {
         let mut style = original.clone();
         style.drop_shadow.as_mut().unwrap().offset_x = offset_x;

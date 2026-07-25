@@ -334,6 +334,9 @@ pub enum BridgeEventKind {
     InteractionCanceled {
         interaction_id: String,
     },
+    InteractionOutcomeUnknown {
+        interaction_id: String,
+    },
     ProjectClosed,
 }
 
@@ -391,7 +394,8 @@ impl BridgeEvent {
                 }
                 Ok(())
             }
-            BridgeEventKind::InteractionCanceled { interaction_id } => {
+            BridgeEventKind::InteractionCanceled { interaction_id }
+            | BridgeEventKind::InteractionOutcomeUnknown { interaction_id } => {
                 bounded("interaction id", interaction_id, MAX_STRING_BYTES)?;
                 if interaction_id.is_empty() {
                     return Err(BridgeError::Protocol(

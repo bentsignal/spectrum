@@ -472,12 +472,14 @@ fn durable_font_subset_plan_replays_tail_text_without_writes() {
     let output = run(Cli {
         project: project.clone(),
         session: None,
+        live: None,
         command: CliCommand::FontSubsetPlan { font_id },
     })
     .unwrap();
     let session_error = run(Cli {
         project,
         session: Some(spectrum_revisions::SessionId::new()),
+        live: None,
         command: CliCommand::FontSubsetPlan { font_id },
     })
     .unwrap_err();
@@ -590,6 +592,7 @@ fn durable_font_source_keeps_store_bytes_unchanged_and_rejects_sessions() {
     run(Cli {
         project: project.clone(),
         session: None,
+        live: None,
         command: CliCommand::Init {
             name: "Read-only proof".into(),
             width: 320,
@@ -601,6 +604,7 @@ fn durable_font_source_keeps_store_bytes_unchanged_and_rejects_sessions() {
     run(Cli {
         project: project.clone(),
         session: None,
+        live: None,
         command: CliCommand::FontImport { path: source },
     })
     .unwrap();
@@ -609,12 +613,14 @@ fn durable_font_source_keeps_store_bytes_unchanged_and_rejects_sessions() {
     let output = run(Cli {
         project: project.clone(),
         session: None,
+        live: None,
         command: CliCommand::FontSource { font_id: 1 },
     })
     .unwrap();
     let session_error = run(Cli {
         project: project.clone(),
         session: Some(spectrum_revisions::SessionId::new()),
+        live: None,
         command: CliCommand::FontSource { font_id: 1 },
     })
     .unwrap_err();
@@ -640,6 +646,7 @@ fn durable_font_source_ignores_newer_live_and_recovery_state_without_writes() {
     run(Cli {
         project: project.clone(),
         session: None,
+        live: None,
         command: CliCommand::Init {
             name: "Immutable inspection".into(),
             width: 320,
@@ -651,6 +658,7 @@ fn durable_font_source_ignores_newer_live_and_recovery_state_without_writes() {
     run(Cli {
         project: project.clone(),
         session: None,
+        live: None,
         command: CliCommand::FontImport { path: source },
     })
     .unwrap();
@@ -693,6 +701,7 @@ fn durable_font_source_ignores_newer_live_and_recovery_state_without_writes() {
     let output = run(Cli {
         project: project.clone(),
         session: None,
+        live: None,
         command: CliCommand::FontSource { font_id: 1 },
     })
     .unwrap();
@@ -746,6 +755,7 @@ fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
     run(Cli {
         project: project.clone(),
         session: None,
+        live: None,
         command: CliCommand::Init {
             name: "Transfer destination".into(),
             width: 320,
@@ -758,6 +768,7 @@ fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
         run(Cli {
             project: project.clone(),
             session: None,
+            live: None,
             command: CliCommand::LayerPaste(LayerPasteArgs {
                 input: transfer_path.clone(),
                 index: None,
@@ -770,6 +781,7 @@ fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
     let output = run(Cli {
         project: project.clone(),
         session: None,
+        live: None,
         command: CliCommand::FontSource { font_id: 1 },
     })
     .unwrap();
@@ -810,6 +822,7 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
     run(Cli {
         project: destination.clone(),
         session: None,
+        live: None,
         command: CliCommand::Init {
             name: "Destination".into(),
             width: 400,
@@ -956,6 +969,7 @@ fn initialize_rectangle_project(project: &Path) {
     run(Cli {
         project: project.to_owned(),
         session: None,
+        live: None,
         command: CliCommand::Init {
             name: "CLI test".into(),
             width: 400,
@@ -967,6 +981,7 @@ fn initialize_rectangle_project(project: &Path) {
     run(Cli {
         project: project.to_owned(),
         session: None,
+        live: None,
         command: CliCommand::AddRectangle {
             name: None,
             width: 100,

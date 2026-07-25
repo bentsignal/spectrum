@@ -229,7 +229,31 @@ mod tests {
             capability.id(),
         )
         .unwrap();
-        challenge.version = 0;
+        challenge.version = 1;
         assert!(capability.prove(&challenge).is_err());
+    }
+
+    #[test]
+    fn legacy_v1_client_rejects_a_v2_server_before_sending_authentication_proof() {
+        let capability = Capability::generate().unwrap();
+        let challenge = AuthChallenge::new(
+            BindingId::new(),
+            1,
+            InstanceId::new(),
+            ProjectId::new(),
+            capability.id(),
+        )
+        .unwrap();
+        assert_eq!(challenge.version, 2);
+        assert!(legacy_v1_challenge_validation(&challenge).is_err());
+    }
+
+    fn legacy_v1_challenge_validation(challenge: &AuthChallenge) -> BridgeResult<()> {
+        if challenge.protocol != PROTOCOL_FAMILY || challenge.version != 1 {
+            return Err(BridgeError::Authentication(
+                "legacy v1 client rejected incompatible server handshake".into(),
+            ));
+        }
+        Ok(())
     }
 }
