@@ -233,10 +233,6 @@ pub(super) fn canvas_interaction_active(
     canvas_drag_active || workspace_interaction_active
 }
 
-fn cancel_workspace_interaction_on_escape(workspace: &mut Workspace) -> bool {
-    workspace.interaction_active() && workspace.cancel_interaction()
-}
-
 fn reset_tool_after_escape(tool: &mut Tool, status: &mut String, status_error: &mut bool) {
     *tool = Tool::Move;
     *status = Tool::Move.description().into();
@@ -266,7 +262,20 @@ impl PrismApp {
         if self.terminal.visible() {
             return;
         }
-        if self.has_modal_surface() || context.egui_wants_keyboard_input() {
+        if self.has_modal_surface() {
+            return;
+        }
+        let inline_text_owns_escape = self.inline_text_editor.is_some();
+        let brush_color_picker_owns_escape = self.brush_color_picker_open();
+        if focused_workspace_interaction_escape_pressed(
+            context,
+            inline_text_owns_escape,
+            brush_color_picker_owns_escape,
+        ) && self.cancel_workspace_interaction_for_escape_frame()
+        {
+            return;
+        }
+        if context.egui_wants_keyboard_input() {
             return;
         }
         if route_application_shortcut(
@@ -401,18 +410,13 @@ impl PrismApp {
             self.cancel_pen();
             self.cancel_brush();
             self.cancel_lasso();
-            let canceled_workspace = cancel_workspace_interaction_on_escape(&mut self.workspace);
+            self.cancel_workspace_interaction_for_escape_frame();
             if let Some(drag) = self.drag {
                 restore_source_override_after_cancel(
                     &mut self.layer_source_overrides,
                     &self.workspace.document,
                     drag,
                 );
-            }
-            if canceled_workspace {
-                self.sync_active_raster_sources();
-                self.layer_visual_dirty
-                    .extend(self.workspace.document.layers.iter().map(|layer| layer.id));
             }
             self.tool_palette = None;
             self.shape_palette = None;
@@ -710,8 +714,226 @@ mod tests {
             })
             .unwrap();
         assert!(workspace.interaction_active());
-        assert!(cancel_workspace_interaction_on_escape(&mut workspace));
+        let context = egui::Context::default();
+        let mut edited_value = "0.50".to_owned();
+        context.begin_pass(egui::RawInput::default());
+        let focused_response = egui::Area::new(egui::Id::new("unfocused-inspector-test"))
+            .show(&context, |ui| ui.text_edit_singleline(&mut edited_value))
+            .inner;
+        focused_response.request_focus();
+        let _ = context.end_pass();
+        context.memory_mut(|memory| memory.request_focus(focused_response.id));
+        context.begin_pass(egui::RawInput::default());
+        let mut stale_widget_response = egui::Area::new(egui::Id::new("unfocused-inspector-test"))
+            .show(&context, |ui| ui.text_edit_singleline(&mut edited_value))
+            .inner;
+        assert!(context.egui_wants_keyboard_input());
+        let _ = context.end_pass();
+        context.memory_mut(|memory| memory.surrender_focus(focused_response.id));
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: Some(egui::Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        context.begin_pass(input);
+        stale_widget_response.mark_changed();
+        assert!(!context.egui_wants_keyboard_input());
+        assert!(context.input(|input| input.key_pressed(egui::Key::Escape)));
+        assert!(stale_widget_response.changed());
+        assert!(stale_widget_response.lost_focus());
+        assert_eq!(
+            inspector_widget_focus_loss_action(&stale_widget_response),
+            InspectorWidgetFocusLossAction::Cancel
+        );
+        let mut suppress_for_frame = false;
+        assert!(cancel_workspace_interaction_and_arm_frame(
+            &mut workspace,
+            &mut suppress_for_frame
+        ));
+        assert!(suppress_for_frame);
+        let suppressed_phases =
+            inspector_widget_command_phases(&stale_widget_response, suppress_for_frame);
+        assert_eq!(suppressed_phases, InspectorWidgetCommandPhases::default());
+        if suppressed_phases.apply {
+            workspace
+                .preview(Command::SetShapeFill {
+                    id: 1,
+                    fill: Some(prism_core::ShapeFill::Gradient(prism_core::ShapeGradient {
+                        offset: 0.5,
+                        ..Default::default()
+                    })),
+                })
+                .unwrap();
+        }
+        if suppressed_phases.finish {
+            workspace.commit_interaction().unwrap();
+        }
+        suppress_for_frame = false;
+        assert_eq!(
+            inspector_widget_command_phases(&stale_widget_response, suppress_for_frame),
+            InspectorWidgetCommandPhases {
+                begin: false,
+                apply: true,
+                finish: true,
+            }
+        );
+        let _ = context.end_pass();
         assert!(!workspace.interaction_active());
+        assert_eq!(workspace.document, document_before);
+        assert_eq!(
+            workspace.history().unwrap().unwrap().revisions.len(),
+            revisions_before
+        );
+        assert_eq!(std::fs::read(&project).unwrap(), bytes_before);
+        drop(workspace);
+        std::fs::remove_file(project).unwrap();
+    }
+
+    #[test]
+    fn focused_egui_escape_routes_to_an_active_inspector_preview() {
+        let project = std::env::temp_dir().join(format!(
+            "prism-focused-inspector-escape-{}.prism",
+            spectrum_revisions::SessionId::new()
+        ));
+        let actor = spectrum_revisions::Actor {
+            id: "human:focused-inspector-escape".into(),
+            display_name: "Focused inspector escape".into(),
+            kind: spectrum_revisions::ActorKind::Human,
+        };
+        let session = spectrum_revisions::SessionId::new();
+        let mut workspace = Workspace::create_durable(
+            Document::new("Focused Inspector Escape", 64, 48),
+            &project,
+            actor,
+            session,
+        )
+        .unwrap();
+        workspace
+            .execute(Command::AddRectangle {
+                name: None,
+                width: 32,
+                height: 24,
+                color: [255; 4],
+                corner_radius: 0.0,
+                x: 0.0,
+                y: 0.0,
+            })
+            .unwrap();
+        workspace.save(None).unwrap();
+        let bytes_before = std::fs::read(&project).unwrap();
+        let revisions_before = workspace.history().unwrap().unwrap().revisions.len();
+        let document_before = workspace.document.clone();
+
+        workspace.begin_interaction().unwrap();
+        workspace
+            .preview(Command::SetShapeFill {
+                id: 1,
+                fill: Some(prism_core::ShapeFill::Gradient(prism_core::ShapeGradient {
+                    offset: 0.5,
+                    ..Default::default()
+                })),
+            })
+            .unwrap();
+
+        let context = egui::Context::default();
+        let mut focused_value = "0.50".to_owned();
+        context.begin_pass(egui::RawInput::default());
+        let focused = egui::Area::new(egui::Id::new("focused-inspector-test"))
+            .show(&context, |ui| ui.text_edit_singleline(&mut focused_value))
+            .inner;
+        focused.request_focus();
+        let _ = context.end_pass();
+        context.memory_mut(|memory| memory.request_focus(focused.id));
+
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: Some(egui::Key::Escape),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        context.begin_pass(input);
+        context.memory_mut(|memory| memory.request_focus(focused.id));
+        assert!(context.egui_wants_keyboard_input());
+        assert!(focused_workspace_interaction_escape_pressed(
+            &context, false, false
+        ));
+        let mut suppress_for_frame = false;
+        assert!(cancel_workspace_interaction_and_arm_frame(
+            &mut workspace,
+            &mut suppress_for_frame
+        ));
+        assert!(suppress_for_frame);
+        let mut stale_widget_response = focused.clone();
+        stale_widget_response.mark_changed();
+        stale_widget_response.surrender_focus();
+        assert!(stale_widget_response.changed());
+        assert!(stale_widget_response.lost_focus());
+        assert_eq!(
+            inspector_widget_focus_loss_action(&stale_widget_response),
+            InspectorWidgetFocusLossAction::Cancel
+        );
+        let suppressed_phases =
+            inspector_widget_command_phases(&stale_widget_response, suppress_for_frame);
+        assert_eq!(suppressed_phases, InspectorWidgetCommandPhases::default());
+        if suppressed_phases.apply {
+            workspace
+                .preview(Command::SetShapeFill {
+                    id: 1,
+                    fill: Some(prism_core::ShapeFill::Gradient(prism_core::ShapeGradient {
+                        offset: 0.5,
+                        ..Default::default()
+                    })),
+                })
+                .unwrap();
+        }
+        if suppressed_phases.finish {
+            workspace.commit_interaction().unwrap();
+        }
+        suppress_for_frame = false;
+        assert_eq!(
+            inspector_widget_command_phases(&stale_widget_response, suppress_for_frame),
+            InspectorWidgetCommandPhases {
+                begin: false,
+                apply: true,
+                finish: true,
+            },
+            "the suppression must apply only to the Escape frame"
+        );
+        let _ = context.end_pass();
+
+        assert!(!workspace.interaction_active());
+        assert_eq!(workspace.document, document_before);
+        assert_eq!(
+            workspace.history().unwrap().unwrap().revisions.len(),
+            revisions_before
+        );
+        assert_eq!(std::fs::read(&project).unwrap(), bytes_before);
+        for (inline_text_owns_escape, brush_color_picker_owns_escape) in
+            [(true, false), (false, true)]
+        {
+            workspace.begin_interaction().unwrap();
+            workspace
+                .preview(Command::SetShapeFill {
+                    id: 1,
+                    fill: Some(prism_core::ShapeFill::Gradient(prism_core::ShapeGradient {
+                        offset: 0.25,
+                        ..Default::default()
+                    })),
+                })
+                .unwrap();
+            assert!(!focused_workspace_interaction_escape_pressed(
+                &context,
+                inline_text_owns_escape,
+                brush_color_picker_owns_escape
+            ));
+            assert!(workspace.interaction_active());
+            assert!(workspace.cancel_interaction());
+        }
         assert_eq!(workspace.document, document_before);
         assert_eq!(
             workspace.history().unwrap().unwrap().revisions.len(),

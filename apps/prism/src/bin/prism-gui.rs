@@ -49,6 +49,9 @@ mod inspector;
 #[path = "prism_gui/inspector_controls.rs"]
 mod inspector_controls;
 use inspector_controls::*;
+#[path = "prism_gui/inspector_interaction.rs"]
+mod inspector_interaction;
+use inspector_interaction::*;
 #[path = "prism_gui/lasso_tool.rs"]
 mod lasso_tool;
 #[path = "prism_gui/launch.rs"]
@@ -146,6 +149,7 @@ struct PrismApp {
     pen: pen_tool::PenState,
     brush: brush_tool::BrushState,
     inspector_section: inspector::InspectorSection,
+    suppress_inspector_widget_commands: bool,
     composition_query: String,
     composition_search_focus: bool,
     composition_result_index: usize,
@@ -257,6 +261,7 @@ impl PrismApp {
             pen: pen_tool::PenState::default(),
             brush: brush_tool::BrushState::configured(),
             inspector_section: inspector::InspectorSection::default(),
+            suppress_inspector_widget_commands: false,
             composition_query: String::new(),
             composition_search_focus: false,
             composition_result_index: 0,
@@ -391,11 +396,17 @@ impl PrismApp {
     }
 
     fn widget_command_if(&mut self, response: &egui::Response, command: Option<Command>) {
-        if response.drag_started() || response.gained_focus() {
+        if inspector_widget_focus_loss_action(response) == InspectorWidgetFocusLossAction::Cancel {
+            self.cancel_workspace_interaction_for_escape_frame();
+            return;
+        }
+        let phases =
+            inspector_widget_command_phases(response, self.suppress_inspector_widget_commands);
+        if phases.begin {
             self.settle_inline_text_editor();
             self.begin_workspace_interaction();
         }
-        if response.changed()
+        if phases.apply
             && let Some(command) = command
         {
             if self.workspace.interaction_active() {
@@ -404,7 +415,7 @@ impl PrismApp {
                 self.execute(command);
             }
         }
-        if response.drag_stopped() || response.lost_focus() {
+        if phases.finish {
             self.finish_interaction();
         }
     }
@@ -570,6 +581,27 @@ impl PrismApp {
     }
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct InspectorWidgetCommandPhases {
+    begin: bool,
+    apply: bool,
+    finish: bool,
+}
+
+fn inspector_widget_command_phases(
+    response: &egui::Response,
+    suppress_for_frame: bool,
+) -> InspectorWidgetCommandPhases {
+    if suppress_for_frame {
+        return InspectorWidgetCommandPhases::default();
+    }
+    InspectorWidgetCommandPhases {
+        begin: response.drag_started() || response.gained_focus(),
+        apply: response.changed(),
+        finish: response.drag_stopped() || response.lost_focus(),
+    }
+}
+
 fn visible_status(status: &str, status_error: bool) -> Option<&str> {
     status_error.then_some(status)
 }
@@ -612,6 +644,7 @@ impl eframe::App for PrismApp {
         #[cfg(target_os = "macos")]
         self.sync_native_menu_state(&context);
         self.composite_preview.poll(&context);
+        self.suppress_inspector_widget_commands = false;
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

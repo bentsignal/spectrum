@@ -189,6 +189,15 @@ impl ShapeFillSampler<'_> {
             self.height,
         )
     }
+
+    pub(crate) fn sample_alpha(&self, x: f32, y: f32) -> u8 {
+        self.gradient.sample_alpha_in_box(
+            x.clamp(0.0, self.width),
+            y.clamp(0.0, self.height),
+            self.width,
+            self.height,
+        )
+    }
 }
 
 pub(crate) fn validate_layer_style(style: &LayerStyle) -> Result<()> {

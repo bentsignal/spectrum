@@ -375,7 +375,7 @@ fn shape_fill_color(
 }
 
 fn shape_fill_alpha(fill: Option<ShapeFillSampler<'_>>, fallback: u8, x: f32, y: f32) -> u8 {
-    fill.map(|fill| fill.sample(x, y)[3]).unwrap_or(fallback)
+    fill.map(|fill| fill.sample_alpha(x, y)).unwrap_or(fallback)
 }
 
 fn sample_shape_pixel(

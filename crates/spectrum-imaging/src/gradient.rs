@@ -260,6 +260,7 @@ impl Gradient {
         GradientSampler {
             gradient: self,
             linear_direction: linear_direction(self.angle),
+            uniform_alpha: self.uniform_alpha(),
         }
     }
 
@@ -276,7 +277,11 @@ impl Gradient {
 pub struct GradientSampler<'a> {
     gradient: &'a Gradient,
     linear_direction: [f32; 2],
+    uniform_alpha: Option<u8>,
 }
+
+#[path = "gradient_alpha.rs"]
+mod alpha;
 
 /// Logical work performed by explicitly instrumented gradient samples.
 ///
