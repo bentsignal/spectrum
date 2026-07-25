@@ -2939,6 +2939,7 @@ dependencies = [
  "spectrum-fonts",
  "spectrum-history-ui",
  "spectrum-imaging",
+ "spectrum-live-bridge",
  "spectrum-revisions",
  "spectrum-terminal",
  "tempfile",

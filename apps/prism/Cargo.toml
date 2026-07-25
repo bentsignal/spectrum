@@ -43,6 +43,7 @@ serde.workspace = true
 serde_json.workspace = true
 spectrum-imaging = { path = "../../crates/spectrum-imaging" }
 spectrum-history-ui = { path = "../../crates/spectrum-history-ui" }
+spectrum-live-bridge = { path = "../../crates/spectrum-live-bridge" }
 spectrum-revisions = { path = "../../crates/spectrum-revisions" }
 spectrum-fonts = { path = "../../crates/spectrum-fonts" }
 spectrum-terminal = { path = "../../crates/spectrum-terminal" }

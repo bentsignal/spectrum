@@ -491,6 +491,13 @@ impl DurableProject {
         &self.info
     }
 
+    pub fn current_revision(&self) -> Result<Revision> {
+        self.store
+            .store()
+            .revision(self.cursor)?
+            .context("current Prism revision is missing")
+    }
+
     pub fn pending_publish_error(&self) -> Option<String> {
         self.store.pending_publish_error()
     }
@@ -625,6 +632,10 @@ impl DurableProject {
             .with_context(|| format!("embedded Prism asset {} is missing", reference.id))?;
         self.stage_asset(&reference, &asset.bytes)
     }
+}
+
+pub fn required_command_operations_version(commands: &[Command]) -> u32 {
+    operations_version(commands)
 }
 
 fn snapshot_backed_magic_wand_operations(commands: &[Command]) -> (Vec<Command>, bool) {

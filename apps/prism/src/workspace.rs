@@ -3,6 +3,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_DOCUMENT_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveWorkspaceState {
+    pub project_id: spectrum_revisions::ProjectId,
+    pub track_id: spectrum_revisions::TrackId,
+    pub session_id: spectrum_revisions::SessionId,
+    pub cursor: spectrum_revisions::RevisionId,
+    pub actor: spectrum_revisions::Actor,
+    pub revision: spectrum_revisions::Revision,
+}
+
 pub struct Workspace {
     pub document: Document,
     pub project_path: Option<PathBuf>,
@@ -115,6 +125,23 @@ impl Workspace {
 
     pub fn session_id(&self) -> Option<spectrum_revisions::SessionId> {
         self.durable.as_ref().map(DurableProject::session_id)
+    }
+
+    pub fn live_state(&self) -> Result<Option<LiveWorkspaceState>> {
+        self.durable
+            .as_ref()
+            .map(|durable| {
+                let info = durable.project_info();
+                Ok(LiveWorkspaceState {
+                    project_id: info.project_id,
+                    track_id: info.default_track_id,
+                    session_id: durable.session_id(),
+                    cursor: durable.cursor(),
+                    actor: durable.actor().clone(),
+                    revision: durable.current_revision()?,
+                })
+            })
+            .transpose()
     }
 
     /// Changes whenever this workspace's live document may have changed.
