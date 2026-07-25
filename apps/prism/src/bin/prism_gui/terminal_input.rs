@@ -1,6 +1,11 @@
 use super::*;
 
 use terminal::{CellPosition, TerminalSelection, TerminalTab};
+use terminal_protocol::{
+    MouseButton, MouseEventKind, MouseReport, encode_mouse_report, is_meta_text_key,
+    terminal_key_bytes, terminal_text_bytes,
+};
+use vt100::MouseProtocolMode;
 
 pub(super) fn handle_terminal_input(
     ui: &mut egui::Ui,
@@ -13,7 +18,8 @@ pub(super) fn handle_terminal_input(
     if !response.has_focus() {
         return;
     }
-    let events = ui.input(|input| input.events.clone());
+    let (events, mut text_modifiers) = ui.input(|input| (input.events.clone(), input.modifiers));
+    let mut suppress_meta_text = false;
     for event in events {
         match event {
             egui::Event::Copy => match clipboard_event_route(
@@ -53,9 +59,15 @@ pub(super) fn handle_terminal_input(
                 request_output_poll(ui);
             }
             egui::Event::Text(text) if !text.is_empty() => {
-                session.selection = None;
-                session.write(text.as_bytes());
-                request_output_poll(ui);
+                if suppress_meta_text {
+                    suppress_meta_text = false;
+                    continue;
+                }
+                if let Some(bytes) = terminal_text_bytes(&text, text_modifiers) {
+                    session.selection = None;
+                    session.write(&bytes);
+                    request_output_poll(ui);
+                }
             }
             egui::Event::Key {
                 key,
@@ -63,13 +75,19 @@ pub(super) fn handle_terminal_input(
                 modifiers,
                 ..
             } => {
+                text_modifiers = modifiers;
                 if is_terminal_toggle_key(modifiers, key) {
                     continue;
                 }
                 if is_clipboard_key(modifiers, key) {
                     continue;
                 }
-                if modifiers.shift && matches!(key, egui::Key::PageUp | egui::Key::PageDown) {
+                if modifiers.shift
+                    && !modifiers.alt
+                    && !modifiers.ctrl
+                    && !modifiers.mac_cmd
+                    && matches!(key, egui::Key::PageUp | egui::Key::PageDown)
+                {
                     let current = session.parser.screen().scrollback();
                     let amount = usize::from(session.size.rows.saturating_sub(2));
                     let offset = if key == egui::Key::PageUp {
@@ -83,8 +101,9 @@ pub(super) fn handle_terminal_input(
                 if let Some(bytes) =
                     terminal_key_bytes(key, modifiers, session.parser.screen().application_cursor())
                 {
+                    suppress_meta_text = modifiers.alt && is_meta_text_key(key);
                     session.selection = None;
-                    session.write(bytes);
+                    session.write(&bytes);
                     request_output_poll(ui);
                 }
             }
@@ -95,12 +114,12 @@ pub(super) fn handle_terminal_input(
 
 #[cfg(target_os = "macos")]
 fn is_terminal_toggle_key(modifiers: egui::Modifiers, key: egui::Key) -> bool {
-    modifiers.mac_cmd && key == egui::Key::J
+    modifiers.mac_cmd && !modifiers.alt && key == egui::Key::J
 }
 
 #[cfg(not(target_os = "macos"))]
 fn is_terminal_toggle_key(modifiers: egui::Modifiers, key: egui::Key) -> bool {
-    modifiers.ctrl && modifiers.shift && key == egui::Key::J
+    modifiers.ctrl && modifiers.shift && !modifiers.alt && key == egui::Key::J
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,12 +158,15 @@ fn request_output_poll(ui: &egui::Ui) {
 
 #[cfg(target_os = "macos")]
 fn is_clipboard_key(modifiers: egui::Modifiers, key: egui::Key) -> bool {
-    modifiers.mac_cmd && matches!(key, egui::Key::C | egui::Key::V | egui::Key::X)
+    modifiers.mac_cmd && !modifiers.alt && matches!(key, egui::Key::C | egui::Key::V | egui::Key::X)
 }
 
 #[cfg(not(target_os = "macos"))]
 fn is_clipboard_key(modifiers: egui::Modifiers, key: egui::Key) -> bool {
-    modifiers.ctrl && modifiers.shift && matches!(key, egui::Key::C | egui::Key::V | egui::Key::X)
+    modifiers.ctrl
+        && modifiers.shift
+        && !modifiers.alt
+        && matches!(key, egui::Key::C | egui::Key::V | egui::Key::X)
 }
 
 fn handle_pointer(
@@ -154,10 +176,17 @@ fn handle_pointer(
     cell_size: Vec2,
     session: &mut TerminalTab,
 ) {
+    if pointer_route(session.parser.screen().mouse_protocol_mode()) == PointerRoute::Reported {
+        handle_reported_pointer(ui, viewport, cell_size, session);
+        return;
+    }
+    session.mouse_buttons = [false; 3];
+    session.last_mouse_cell = None;
     if response.drag_started()
         && let Some(pointer) = response.interact_pointer_pos()
     {
-        let position = cell_at(pointer, viewport, cell_size, session.size);
+        let position =
+            session.normalize_selection_cell(cell_at(pointer, viewport, cell_size, session.size));
         session.selection = Some(TerminalSelection {
             anchor: position,
             head: position,
@@ -165,9 +194,12 @@ fn handle_pointer(
         ui.ctx().request_repaint();
     } else if response.dragged()
         && let Some(pointer) = response.interact_pointer_pos()
-        && let Some(selection) = session.selection.as_mut()
     {
-        selection.head = cell_at(pointer, viewport, cell_size, session.size);
+        let position =
+            session.normalize_selection_cell(cell_at(pointer, viewport, cell_size, session.size));
+        if let Some(selection) = session.selection.as_mut() {
+            selection.head = position;
+        }
         ui.ctx().request_repaint();
     }
 
@@ -185,6 +217,182 @@ fn handle_pointer(
             session.selection = None;
             ui.ctx().request_repaint();
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerRoute {
+    Local,
+    Reported,
+}
+
+fn pointer_route(mode: MouseProtocolMode) -> PointerRoute {
+    if mode == MouseProtocolMode::None {
+        PointerRoute::Local
+    } else {
+        PointerRoute::Reported
+    }
+}
+
+fn handle_reported_pointer(
+    ui: &egui::Ui,
+    viewport: Rect,
+    cell_size: Vec2,
+    session: &mut TerminalTab,
+) {
+    session.selection = None;
+    let mode = session.parser.screen().mouse_protocol_mode();
+    let encoding = session.parser.screen().mouse_protocol_encoding();
+    let (events, hover_position) =
+        ui.input(|input| (input.events.clone(), input.pointer.hover_pos()));
+    for event in events {
+        match event {
+            egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers,
+            } => {
+                let Some((button, index)) = pointer_button(button) else {
+                    continue;
+                };
+                if pressed && !viewport.contains(pos) {
+                    continue;
+                }
+                if !pressed && !session.mouse_buttons[index] {
+                    continue;
+                }
+                session.mouse_buttons[index] = pressed;
+                let position = cell_at(pos, viewport, cell_size, session.size);
+                session.last_mouse_cell = Some(position);
+                write_mouse_report(
+                    ui,
+                    session,
+                    mode,
+                    encoding,
+                    MouseReport {
+                        kind: if pressed {
+                            MouseEventKind::Press
+                        } else {
+                            MouseEventKind::Release
+                        },
+                        button: Some(button),
+                        position,
+                        modifiers,
+                    },
+                );
+            }
+            egui::Event::PointerMoved(pos) => {
+                if !viewport.contains(pos) && !session.mouse_buttons.iter().any(|pressed| *pressed)
+                {
+                    continue;
+                }
+                let position = cell_at(pos, viewport, cell_size, session.size);
+                if session.last_mouse_cell == Some(position) {
+                    continue;
+                }
+                session.last_mouse_cell = Some(position);
+                let button = pressed_mouse_button(session.mouse_buttons);
+                write_mouse_report(
+                    ui,
+                    session,
+                    mode,
+                    encoding,
+                    MouseReport {
+                        kind: MouseEventKind::Motion,
+                        button,
+                        position,
+                        modifiers: ui.input(|input| input.modifiers),
+                    },
+                );
+            }
+            egui::Event::MouseWheel {
+                delta, modifiers, ..
+            } => {
+                let Some(pointer) = hover_position.filter(|pointer| viewport.contains(*pointer))
+                else {
+                    continue;
+                };
+                let Some(button) = wheel_button(delta) else {
+                    continue;
+                };
+                let position = cell_at(pointer, viewport, cell_size, session.size);
+                let dominant = delta.x.abs().max(delta.y.abs());
+                let cell_extent = if delta.x.abs() > delta.y.abs() {
+                    cell_size.x
+                } else {
+                    cell_size.y
+                };
+                let reports = (dominant / cell_extent).ceil().clamp(1.0, 8.0) as usize;
+                for _ in 0..reports {
+                    write_mouse_report(
+                        ui,
+                        session,
+                        mode,
+                        encoding,
+                        MouseReport {
+                            kind: MouseEventKind::Wheel,
+                            button: Some(button),
+                            position,
+                            modifiers,
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn pointer_button(button: egui::PointerButton) -> Option<(MouseButton, usize)> {
+    match button {
+        egui::PointerButton::Primary => Some((MouseButton::Primary, 0)),
+        egui::PointerButton::Middle => Some((MouseButton::Middle, 1)),
+        egui::PointerButton::Secondary => Some((MouseButton::Secondary, 2)),
+        egui::PointerButton::Extra1 | egui::PointerButton::Extra2 => None,
+    }
+}
+
+fn pressed_mouse_button(buttons: [bool; 3]) -> Option<MouseButton> {
+    if buttons[0] {
+        Some(MouseButton::Primary)
+    } else if buttons[1] {
+        Some(MouseButton::Middle)
+    } else if buttons[2] {
+        Some(MouseButton::Secondary)
+    } else {
+        None
+    }
+}
+
+fn wheel_button(delta: Vec2) -> Option<MouseButton> {
+    if delta.x.abs() > delta.y.abs() {
+        if delta.x > 0.0 {
+            Some(MouseButton::WheelLeft)
+        } else if delta.x < 0.0 {
+            Some(MouseButton::WheelRight)
+        } else {
+            None
+        }
+    } else if delta.y > 0.0 {
+        Some(MouseButton::WheelUp)
+    } else if delta.y < 0.0 {
+        Some(MouseButton::WheelDown)
+    } else {
+        None
+    }
+}
+
+fn write_mouse_report(
+    ui: &egui::Ui,
+    session: &mut TerminalTab,
+    mode: vt100::MouseProtocolMode,
+    encoding: vt100::MouseProtocolEncoding,
+    report: MouseReport,
+) {
+    if let Some(bytes) = encode_mouse_report(mode, encoding, report) {
+        session.write(&bytes);
+        request_output_poll(ui);
     }
 }
 
@@ -219,73 +427,6 @@ pub(super) fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
-pub(super) fn terminal_key_bytes(
-    key: egui::Key,
-    modifiers: egui::Modifiers,
-    application_cursor: bool,
-) -> Option<&'static [u8]> {
-    if modifiers.ctrl && !modifiers.alt {
-        return control_byte(key);
-    }
-    let csi = !application_cursor;
-    match key {
-        egui::Key::Enter => Some(b"\r"),
-        egui::Key::Tab => Some(b"\t"),
-        egui::Key::Backspace => Some(b"\x7f"),
-        egui::Key::Escape => Some(b"\x1b"),
-        egui::Key::ArrowUp if csi => Some(b"\x1b[A"),
-        egui::Key::ArrowDown if csi => Some(b"\x1b[B"),
-        egui::Key::ArrowRight if csi => Some(b"\x1b[C"),
-        egui::Key::ArrowLeft if csi => Some(b"\x1b[D"),
-        egui::Key::ArrowUp => Some(b"\x1bOA"),
-        egui::Key::ArrowDown => Some(b"\x1bOB"),
-        egui::Key::ArrowRight => Some(b"\x1bOC"),
-        egui::Key::ArrowLeft => Some(b"\x1bOD"),
-        egui::Key::Home => Some(b"\x1b[H"),
-        egui::Key::End => Some(b"\x1b[F"),
-        egui::Key::Insert => Some(b"\x1b[2~"),
-        egui::Key::Delete => Some(b"\x1b[3~"),
-        egui::Key::PageUp => Some(b"\x1b[5~"),
-        egui::Key::PageDown => Some(b"\x1b[6~"),
-        _ => None,
-    }
-}
-
-fn control_byte(key: egui::Key) -> Option<&'static [u8]> {
-    match key {
-        egui::Key::A => Some(b"\x01"),
-        egui::Key::B => Some(b"\x02"),
-        egui::Key::C => Some(b"\x03"),
-        egui::Key::D => Some(b"\x04"),
-        egui::Key::E => Some(b"\x05"),
-        egui::Key::F => Some(b"\x06"),
-        egui::Key::G => Some(b"\x07"),
-        egui::Key::H => Some(b"\x08"),
-        egui::Key::I => Some(b"\x09"),
-        egui::Key::J => Some(b"\x0a"),
-        egui::Key::K => Some(b"\x0b"),
-        egui::Key::L => Some(b"\x0c"),
-        egui::Key::M => Some(b"\x0d"),
-        egui::Key::N => Some(b"\x0e"),
-        egui::Key::O => Some(b"\x0f"),
-        egui::Key::P => Some(b"\x10"),
-        egui::Key::Q => Some(b"\x11"),
-        egui::Key::R => Some(b"\x12"),
-        egui::Key::S => Some(b"\x13"),
-        egui::Key::T => Some(b"\x14"),
-        egui::Key::U => Some(b"\x15"),
-        egui::Key::V => Some(b"\x16"),
-        egui::Key::W => Some(b"\x17"),
-        egui::Key::X => Some(b"\x18"),
-        egui::Key::Y => Some(b"\x19"),
-        egui::Key::Z => Some(b"\x1a"),
-        egui::Key::OpenBracket => Some(b"\x1b"),
-        egui::Key::Backslash => Some(b"\x1c"),
-        egui::Key::CloseBracket => Some(b"\x1d"),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,15 +458,15 @@ mod tests {
         };
         assert_eq!(
             terminal_key_bytes(egui::Key::C, ctrl, false),
-            Some(&b"\x03"[..])
+            Some(b"\x03".to_vec())
         );
         assert_eq!(
             terminal_key_bytes(egui::Key::ArrowUp, egui::Modifiers::default(), false),
-            Some(&b"\x1b[A"[..])
+            Some(b"\x1b[A".to_vec())
         );
         assert_eq!(
             terminal_key_bytes(egui::Key::ArrowUp, egui::Modifiers::default(), true),
-            Some(&b"\x1bOA"[..])
+            Some(b"\x1bOA".to_vec())
         );
     }
 
@@ -345,7 +486,7 @@ mod tests {
         assert!(!is_clipboard_key(ctrl, egui::Key::C));
         assert_eq!(
             terminal_key_bytes(egui::Key::C, ctrl, false),
-            Some(&b"\x03"[..])
+            Some(b"\x03".to_vec())
         );
     }
 
@@ -410,5 +551,58 @@ mod tests {
         }
         assert!(is_terminal_toggle_key(modifiers, egui::Key::J));
         assert!(!is_terminal_toggle_key(modifiers, egui::Key::K));
+        modifiers.alt = true;
+        assert!(!is_terminal_toggle_key(modifiers, egui::Key::J));
+    }
+
+    #[test]
+    fn negotiated_mouse_modes_route_exclusively_between_local_and_pty_behavior() {
+        let mut parser = vt100::Parser::new(4, 8, 0);
+        assert_eq!(
+            pointer_route(parser.screen().mouse_protocol_mode()),
+            PointerRoute::Local
+        );
+        parser.process(b"\x1b[?1000h\x1b[?1006h");
+        assert_eq!(
+            pointer_route(parser.screen().mouse_protocol_mode()),
+            PointerRoute::Reported
+        );
+        assert_eq!(
+            parser.screen().mouse_protocol_encoding(),
+            vt100::MouseProtocolEncoding::Sgr
+        );
+        parser.process(b"\x1b[?1000l\x1b[?1006l");
+        assert_eq!(
+            pointer_route(parser.screen().mouse_protocol_mode()),
+            PointerRoute::Local
+        );
+    }
+
+    #[test]
+    fn pointer_buttons_and_wheels_map_to_xterm_order() {
+        assert_eq!(
+            pointer_button(egui::PointerButton::Primary),
+            Some((MouseButton::Primary, 0))
+        );
+        assert_eq!(
+            pointer_button(egui::PointerButton::Middle),
+            Some((MouseButton::Middle, 1))
+        );
+        assert_eq!(
+            pointer_button(egui::PointerButton::Secondary),
+            Some((MouseButton::Secondary, 2))
+        );
+        assert_eq!(
+            pressed_mouse_button([false, true, false]),
+            Some(MouseButton::Middle)
+        );
+        assert_eq!(
+            wheel_button(Vec2::new(0.0, 12.0)),
+            Some(MouseButton::WheelUp)
+        );
+        assert_eq!(
+            wheel_button(Vec2::new(-8.0, 0.0)),
+            Some(MouseButton::WheelRight)
+        );
     }
 }

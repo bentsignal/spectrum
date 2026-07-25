@@ -1,6 +1,7 @@
 use super::*;
 
 use spectrum_terminal::{TerminalContext, TerminalEvent, TerminalSession, TerminalSize};
+use terminal_protocol::TerminalCallbacks;
 
 const INITIAL_ROWS: u16 = 32;
 const INITIAL_COLS: u16 = 120;
@@ -70,11 +71,13 @@ pub(super) struct TerminalTab {
     context_title: String,
     context: TerminalContext,
     pub(super) process: Option<TerminalSession>,
-    pub(super) parser: vt100::Parser,
+    pub(super) parser: vt100::Parser<TerminalCallbacks>,
     pub(super) size: TerminalSize,
     pub(super) running: bool,
     pub(super) message: Option<(String, bool)>,
     pub(super) selection: Option<TerminalSelection>,
+    pub(super) mouse_buttons: [bool; 3],
+    pub(super) last_mouse_cell: Option<CellPosition>,
     pub(super) last_activity: std::time::Instant,
     pub(super) native: bool,
 }
@@ -100,11 +103,13 @@ impl TerminalTab {
             context_title,
             context,
             process,
-            parser: vt100::Parser::new(size.rows, size.cols, SCROLLBACK_ROWS),
+            parser: terminal_parser(size),
             size,
             running,
             message,
             selection: None,
+            mouse_buttons: [false; 3],
+            last_mouse_cell: None,
             last_activity: std::time::Instant::now(),
             native,
         }
@@ -134,6 +139,12 @@ impl TerminalTab {
                     self.message = Some((message, !exit.success()));
                 }
                 TerminalEvent::Error(error) => self.message = Some((error, true)),
+            }
+        }
+        for reply in self.parser.callbacks_mut().take_replies() {
+            if let Err(error) = process.write(&reply) {
+                self.message = Some((format!("terminal query response failed: {error:#}"), true));
+                break;
             }
         }
         if changed {
@@ -175,6 +186,7 @@ impl TerminalTab {
         self.parser.screen_mut().set_size(size.rows, size.cols);
         self.size = size;
         self.selection = None;
+        self.last_mouse_cell = None;
     }
 
     pub(super) fn clear(&mut self) {
@@ -182,9 +194,11 @@ impl TerminalTab {
             self.message = Some(("Clear is handled by Ghostty key bindings.".into(), false));
             return;
         }
-        self.parser = vt100::Parser::new(self.size.rows, self.size.cols, SCROLLBACK_ROWS);
+        self.parser = terminal_parser(self.size);
         self.write(&[12]);
         self.selection = None;
+        self.mouse_buttons = [false; 3];
+        self.last_mouse_cell = None;
         self.message = None;
     }
 
@@ -206,7 +220,9 @@ impl TerminalTab {
                 self.process = Some(process);
                 self.running = true;
                 self.message = None;
-                self.parser = vt100::Parser::new(self.size.rows, self.size.cols, SCROLLBACK_ROWS);
+                self.parser = terminal_parser(self.size);
+                self.mouse_buttons = [false; 3];
+                self.last_mouse_cell = None;
             }
             Err(error) => {
                 self.process = None;
@@ -237,7 +253,12 @@ impl TerminalTab {
     }
 
     pub(super) fn selected_text(&self) -> Option<String> {
-        let (start, end) = self.selection?.ordered();
+        let selection = self.selection?;
+        let normalized = TerminalSelection {
+            anchor: self.normalize_selection_cell(selection.anchor),
+            head: self.normalize_selection_cell(selection.head),
+        };
+        let (start, end) = normalized.ordered();
         Some(self.parser.screen().contents_between(
             start.row,
             start.col,
@@ -245,6 +266,30 @@ impl TerminalTab {
             end.col.saturating_add(1).min(self.size.cols),
         ))
     }
+
+    pub(super) fn normalize_selection_cell(&self, position: CellPosition) -> CellPosition {
+        normalize_selection_cell(self.parser.screen(), position)
+    }
+}
+
+fn normalize_selection_cell(screen: &vt100::Screen, mut position: CellPosition) -> CellPosition {
+    if position.col > 0
+        && screen
+            .cell(position.row, position.col)
+            .is_some_and(vt100::Cell::is_wide_continuation)
+    {
+        position.col -= 1;
+    }
+    position
+}
+
+fn terminal_parser(size: TerminalSize) -> vt100::Parser<TerminalCallbacks> {
+    vt100::Parser::new_with_callbacks(
+        size.rows,
+        size.cols,
+        SCROLLBACK_ROWS,
+        TerminalCallbacks::default(),
+    )
 }
 
 impl TerminalDock {
@@ -313,6 +358,54 @@ impl TerminalDock {
 struct TerminalLaunch {
     title: String,
     context: TerminalContext,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TerminalRailGuidance {
+    persistent_rows: [String; 1],
+    on_demand_rows: [String; 3],
+}
+
+fn terminal_rail_guidance(labels: shortcuts::ShortcutLabels) -> TerminalRailGuidance {
+    TerminalRailGuidance {
+        persistent_rows: [format!("{}  editor", labels.terminal)],
+        on_demand_rows: [
+            labels.terminal_meta.to_owned(),
+            labels.terminal_clipboard.to_owned(),
+            "Shift+PageUp/PageDown scroll".to_owned(),
+        ],
+    }
+}
+
+fn terminal_guidance_footer(ui: &mut egui::Ui, guidance: &TerminalRailGuidance) -> egui::Response {
+    let response = ui.add(
+        egui::Label::new(
+            RichText::new(&guidance.persistent_rows[0])
+                .size(10.0)
+                .color(SUBTLE),
+        )
+        .sense(egui::Sense::click()),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!(
+                "{}. Terminal shortcuts: {}",
+                guidance.persistent_rows[0],
+                guidance.on_demand_rows.join("; ")
+            ),
+        )
+    });
+    let response = response.on_hover_text(guidance.on_demand_rows.join("\n"));
+    egui::Popup::menu(&response)
+        .align(egui::RectAlign::TOP_START)
+        .show(|ui| {
+            for row in &guidance.on_demand_rows {
+                ui.label(RichText::new(row).size(10.0));
+            }
+        });
+    response
 }
 
 impl PrismApp {
@@ -469,6 +562,7 @@ impl PrismApp {
         let mut hide = false;
         let mut cancel_close = false;
         let mut confirm_close = None;
+        let guidance = terminal_rail_guidance(shortcuts::SHORTCUT_LABELS);
         egui::Panel::right("terminal-session-rail")
             .default_size(SESSION_RAIL_WIDTH)
             .min_size(SESSION_RAIL_WIDTH)
@@ -566,11 +660,7 @@ impl PrismApp {
                     });
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.label(
-                        RichText::new(format!("{}  editor", shortcuts::SHORTCUT_LABELS.terminal))
-                            .size(10.0)
-                            .color(SUBTLE),
-                    );
+                    terminal_guidance_footer(ui, &guidance);
                     if let Some(session) = self.terminal.sessions.get(self.terminal.active)
                         && let Some((message, is_error)) = &session.message
                     {
@@ -715,102 +805,5 @@ fn terminal_launch(workspace: &Workspace) -> TerminalLaunch {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_launch() -> TerminalLaunch {
-        TerminalLaunch {
-            title: "Test project".into(),
-            context: TerminalContext::new(std::env::current_dir().unwrap()),
-        }
-    }
-
-    #[test]
-    fn hiding_terminal_preserves_every_session() {
-        let mut dock = TerminalDock::default();
-        dock.new_session(test_launch());
-        let process_id = dock.sessions[0]
-            .process
-            .as_ref()
-            .and_then(TerminalSession::process_id);
-        dock.visible = true;
-        dock.visible = false;
-        assert_eq!(dock.sessions.len(), 1);
-        assert_eq!(
-            dock.sessions[0]
-                .process
-                .as_ref()
-                .and_then(TerminalSession::process_id),
-            process_id
-        );
-        dock.shutdown();
-    }
-
-    #[test]
-    fn closing_active_session_selects_a_surviving_tab() {
-        let mut dock = TerminalDock::default();
-        dock.new_session(test_launch());
-        dock.new_session(test_launch());
-        dock.sessions[1].running = false;
-        dock.request_close(1);
-        assert_eq!(dock.sessions.len(), 1);
-        assert_eq!(dock.active, 0);
-        dock.shutdown();
-    }
-
-    #[test]
-    fn running_session_requires_confirmation_before_close() {
-        let mut dock = TerminalDock::default();
-        dock.new_session(test_launch());
-        dock.request_close(0);
-        assert_eq!(dock.sessions.len(), 1);
-        assert_eq!(dock.pending_close, Some(0));
-        dock.close_now(0);
-        assert!(dock.sessions.is_empty());
-    }
-
-    #[test]
-    fn terminal_polling_bursts_only_while_visible_and_active() {
-        assert_eq!(
-            terminal_poll_interval(true, true),
-            std::time::Duration::from_millis(16)
-        );
-        assert_eq!(
-            terminal_poll_interval(true, false),
-            std::time::Duration::from_millis(250)
-        );
-        assert_eq!(
-            terminal_poll_interval(false, true),
-            std::time::Duration::from_millis(250)
-        );
-    }
-
-    #[test]
-    fn active_project_context_is_passed_as_data() {
-        let workspace = Workspace::new(
-            Document::new("$(unsafe) artwork", 100, 100),
-            Some(PathBuf::from("/tmp/project with spaces.prism")),
-        );
-        let launch = terminal_launch(&workspace);
-        assert_eq!(launch.context.working_directory(), Path::new("/tmp"));
-        assert_eq!(
-            launch.context.environment("PRISM_PROJECT"),
-            Some(std::ffi::OsStr::new("/tmp/project with spaces.prism"))
-        );
-        assert_eq!(
-            launch.context.environment("PRISM_DOCUMENT"),
-            Some(std::ffi::OsStr::new("$(unsafe) artwork"))
-        );
-    }
-
-    #[test]
-    fn selection_orders_reverse_drags_and_includes_cells() {
-        let selection = TerminalSelection {
-            anchor: CellPosition { row: 4, col: 9 },
-            head: CellPosition { row: 2, col: 3 },
-        };
-        assert_eq!(selection.ordered().0, CellPosition { row: 2, col: 3 });
-        assert!(selection.contains(CellPosition { row: 3, col: 0 }));
-        assert!(!selection.contains(CellPosition { row: 1, col: 9 }));
-    }
-}
+#[path = "terminal_tests.rs"]
+mod tests;

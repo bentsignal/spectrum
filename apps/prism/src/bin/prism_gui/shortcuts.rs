@@ -9,6 +9,8 @@ pub(super) struct ShortcutLabels {
     pub(super) new_document: &'static str,
     pub(super) close_document: &'static str,
     pub(super) commit_text: &'static str,
+    pub(super) terminal_meta: &'static str,
+    pub(super) terminal_clipboard: &'static str,
 }
 
 impl ShortcutLabels {
@@ -22,6 +24,8 @@ impl ShortcutLabels {
                 new_document: "⌘N",
                 close_document: "⌘W",
                 commit_text: "⌘↵",
+                terminal_meta: "⌥ key sends Meta",
+                terminal_clipboard: "⌘C copy · ⌘V paste",
             }
         } else {
             Self {
@@ -32,6 +36,8 @@ impl ShortcutLabels {
                 new_document: "Ctrl+N",
                 close_document: "Ctrl+W",
                 commit_text: "Ctrl+Enter",
+                terminal_meta: "Alt+key sends Meta",
+                terminal_clipboard: "Ctrl+Shift+C copy · Ctrl+Shift+V paste",
             }
         }
     }
@@ -450,6 +456,8 @@ mod tests {
         assert_eq!(macos.redo, "⇧⌘Z");
         assert_eq!(macos.new_document, "⌘N");
         assert_eq!(macos.close_document, "⌘W");
+        assert_eq!(macos.terminal_meta, "⌥ key sends Meta");
+        assert_eq!(macos.terminal_clipboard, "⌘C copy · ⌘V paste");
 
         let portable = ShortcutLabels::for_platform(false);
         assert_eq!(portable.history, "Ctrl+H");
@@ -459,6 +467,11 @@ mod tests {
         assert_eq!(portable.new_document, "Ctrl+N");
         assert_eq!(portable.close_document, "Ctrl+W");
         assert_eq!(portable.commit_text, "Ctrl+Enter");
+        assert_eq!(portable.terminal_meta, "Alt+key sends Meta");
+        assert_eq!(
+            portable.terminal_clipboard,
+            "Ctrl+Shift+C copy · Ctrl+Shift+V paste"
+        );
     }
 
     #[test]
