@@ -1,5 +1,13 @@
 use super::*;
 
+#[derive(Clone, Debug)]
+pub(super) struct TextDialogDraft {
+    pub(super) id: u64,
+    pub(super) text: String,
+    pub(super) font_size: f32,
+    pub(super) color: [u8; 4],
+}
+
 const NEW_DOCUMENT_NAME_ID: &str = "prism-new-document-name";
 const ADD_TEXT_CONTENT_ID: &str = "prism-add-text-content";
 const RENAME_LAYER_ID: &str = "prism-rename-layer-name";
@@ -118,19 +126,6 @@ impl PrismApp {
         ])
     }
 
-    pub(super) fn open_new_text_dialog(&mut self) {
-        let width = self.workspace.document.width as f32;
-        let height = self.workspace.document.height as f32;
-        self.text_dialog = Some(TextDialogDraft {
-            target: TextDialogTarget::New {
-                position: Pos2::new(width * 0.15, height * 0.42),
-            },
-            text: "Text".into(),
-            font_size: 72.0,
-            color: [245, 246, 250, 255],
-        });
-    }
-
     pub(super) fn open_text_editor(&mut self, id: u64) -> bool {
         let Ok(layer) = self.workspace.document.layer(id) else {
             return false;
@@ -144,12 +139,13 @@ impl PrismApp {
             text,
             font_size,
             color,
+            ..
         } = &layer.kind
         else {
             return false;
         };
         self.text_dialog = Some(TextDialogDraft {
-            target: TextDialogTarget::Existing { id },
+            id,
             text: text.clone(),
             font_size: *font_size,
             color: *color,
@@ -244,10 +240,9 @@ impl PrismApp {
         let Some(mut draft) = self.text_dialog.take() else {
             return;
         };
-        let editing = matches!(draft.target, TextDialogTarget::Existing { .. });
         let mut save = false;
         let mut keep_open = true;
-        egui::Window::new(if editing { "Edit text" } else { "Add text" })
+        egui::Window::new("Edit text")
             .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
@@ -276,8 +271,7 @@ impl PrismApp {
                     ModalAction::None => {}
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = if editing { "Update text" } else { "Add text" };
-                    if primary_button(ui, label).clicked() {
+                    if primary_button(ui, "Update text").clicked() {
                         save = true;
                         keep_open = false;
                     }
@@ -291,31 +285,14 @@ impl PrismApp {
         }
         if save {
             draft.text = normalized_text_submission(&draft.text);
-            match draft.target {
-                TextDialogTarget::New { position } => {
-                    self.execute(Command::AddText {
-                        text: draft.text,
-                        name: None,
-                        font_size: draft.font_size,
-                        color: draft.color,
-                        x: position.x,
-                        y: position.y,
-                    });
-                    self.tool = Tool::Move;
-                }
-                TextDialogTarget::Existing { id } => {
-                    self.execute(Command::UpdateText {
-                        id,
-                        text: draft.text,
-                        font_size: draft.font_size,
-                        color: draft.color,
-                    });
-                }
-            }
+            self.execute(Command::UpdateText {
+                id: draft.id,
+                text: draft.text,
+                font_size: draft.font_size,
+                color: draft.color,
+            });
         } else if keep_open {
             self.text_dialog = Some(draft);
-        } else if !editing {
-            self.tool = Tool::Move;
         }
     }
 

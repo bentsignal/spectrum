@@ -48,6 +48,9 @@ mod terminal_input;
 mod terminal_render;
 #[path = "prism_gui/theme.rs"]
 mod theme;
+#[path = "prism_gui/typography_ui.rs"]
+mod typography_ui;
+use dialogs::TextDialogDraft;
 use history::HistoryViewState;
 use project_lifecycle::MoveProjectDialog;
 use renderer::*;
@@ -67,7 +70,6 @@ enum Tool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolActivation {
-    ImmediateDialog,
     ChoiceDialog,
     CanvasGesture,
 }
@@ -107,7 +109,7 @@ impl Tool {
             Self::Move => "Select on the canvas, drag to move, or pull a corner to resize.",
             Self::Rotate => "Rotation armed · drag around the focused object · Shift snaps to 15°.",
             Self::Crop => "Draw the new canvas boundary.",
-            Self::Text => "Type the text now, then move it into place.",
+            Self::Text => "Click the canvas to add text, then type directly in place.",
             Self::Shape => "Choose a rectangle, ellipse, or another shape to draw.",
             Self::Mask => "Draw the visible region of the focused element.",
         }
@@ -115,7 +117,6 @@ impl Tool {
 
     fn activation(self) -> ToolActivation {
         match self {
-            Self::Text => ToolActivation::ImmediateDialog,
             Self::Shape => ToolActivation::ChoiceDialog,
             _ => ToolActivation::CanvasGesture,
         }
@@ -186,6 +187,7 @@ enum CanvasInvalidation {
 fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
     match command {
         Command::UpdateText { id, .. }
+        | Command::SetTextTypography { id, .. }
         | Command::UpdateRectangle { id, .. }
         | Command::UpdateEllipse { id, .. }
         | Command::SetShapeStroke { id, .. }
@@ -199,6 +201,7 @@ fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::DuplicateLayer { .. }
         | Command::Undo
         | Command::Redo => CanvasInvalidation::All,
+        Command::ImportFont { .. } => CanvasInvalidation::None,
         Command::RemoveLayer { .. } => CanvasInvalidation::Structure,
         _ => CanvasInvalidation::None,
     }
@@ -209,20 +212,6 @@ struct NewDocumentDialog {
     name: String,
     width: u32,
     height: u32,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum TextDialogTarget {
-    New { position: Pos2 },
-    Existing { id: u64 },
-}
-
-#[derive(Clone, Debug)]
-struct TextDialogDraft {
-    target: TextDialogTarget,
-    text: String,
-    font_size: f32,
-    color: [u8; 4],
 }
 
 impl Default for NewDocumentDialog {
@@ -268,6 +257,8 @@ struct PrismApp {
     rename_layer: Option<(u64, String)>,
     new_dialog: Option<NewDocumentDialog>,
     text_dialog: Option<TextDialogDraft>,
+    font_query: String,
+    inline_text_edit: Option<typography_ui::InlineTextEdit>,
     delete_confirmation: Option<u64>,
     layer_drag: Option<u64>,
     layer_drop_index: Option<usize>,
@@ -381,6 +372,8 @@ impl PrismApp {
             rename_layer: None,
             new_dialog: None,
             text_dialog: None,
+            font_query: String::new(),
+            inline_text_edit: None,
             delete_confirmation: None,
             layer_drag: None,
             layer_drop_index: None,
@@ -846,6 +839,7 @@ mod tests {
                 text: "testing".into(),
                 font_size: 72.0,
                 color: [255, 255, 255, 255],
+                typography: prism_core::TextTypography::default(),
             },
             ..Default::default()
         };
@@ -864,6 +858,7 @@ mod tests {
                 text: "testing".into(),
                 font_size: 72.0,
                 color: [255, 255, 255, 255],
+                typography: prism_core::TextTypography::default(),
             },
             ..Default::default()
         };
@@ -968,7 +963,7 @@ mod tests {
 
     #[test]
     fn tools_declare_whether_selection_opens_ui_or_arms_the_canvas() {
-        assert_eq!(Tool::Text.activation(), ToolActivation::ImmediateDialog);
+        assert_eq!(Tool::Text.activation(), ToolActivation::CanvasGesture);
         assert_eq!(Tool::Shape.activation(), ToolActivation::ChoiceDialog);
         assert_eq!(Tool::Crop.activation(), ToolActivation::CanvasGesture);
     }

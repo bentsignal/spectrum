@@ -502,12 +502,20 @@ impl DurableProject {
                 *original_path = None;
             }
         }
+        for font in &mut document.font_assets {
+            if let Some(reference) = AssetReference::parse(&font.path) {
+                font.path = self.materialize(reference)?;
+                font.original_path = None;
+            }
+        }
         Ok(())
     }
 
     fn materialize_command_assets(&self, commands: &mut [Command]) -> Result<()> {
         for command in commands {
-            if let Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } = command
+            if let Command::AddRaster { path, .. }
+            | Command::RasterizeShape { path, .. }
+            | Command::ImportFont { path } = command
                 && let Some(reference) = AssetReference::parse(path)
             {
                 *path = self.materialize(reference)?;
@@ -598,6 +606,12 @@ impl PreparedSnapshot {
                 assets.push(prepared.asset);
             }
         }
+        for font in &mut portable.font_assets {
+            let prepared = prepare_asset(&font.path)?;
+            font.path = prepared.reference.path();
+            font.original_path = None;
+            assets.push(prepared.asset);
+        }
         let serialized = serde_json::to_vec(&portable)?;
         let payload = if compressed {
             Payload::new(
@@ -625,7 +639,9 @@ impl PreparedOperations {
         let mut portable = commands.to_vec();
         let mut assets = Vec::new();
         for command in &mut portable {
-            if let Command::AddRaster { path, .. } | Command::RasterizeShape { path, .. } = command
+            if let Command::AddRaster { path, .. }
+            | Command::RasterizeShape { path, .. }
+            | Command::ImportFont { path } = command
             {
                 let prepared = prepare_asset(path)?;
                 *path = prepared.reference.path();
@@ -730,6 +746,8 @@ fn media_type(extension: &str) -> &'static str {
         "png" => "image/png",
         "tif" | "tiff" => "image/tiff",
         "webp" => "image/webp",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
         _ => "application/octet-stream",
     }
 }

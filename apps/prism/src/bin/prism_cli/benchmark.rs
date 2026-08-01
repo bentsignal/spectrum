@@ -3,7 +3,8 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use prism_core::{
     BlendMode, Command, Document, LayerMask, RenderRegion, Transform, Workspace, render_document,
-    render_document_region_scaled, render_layer_base_scaled, render_solid_color,
+    render_document_region_scaled, render_layer_base_scaled, render_layer_base_scaled_with_font,
+    render_solid_color,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -117,6 +118,45 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
         let _ = render_layer_base_scaled(scaled_shape, None, [16.0, 16.0])?;
         scaled_shape_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    let mut typography_workspace = Workspace::new(Document::new("Typography", 1200, 800), None);
+    typography_workspace.execute(Command::AddText {
+        text: "Portable typography\nwith measured rhythm".into(),
+        name: Some("Typography benchmark".into()),
+        font_size: 72.0,
+        color: [245, 242, 235, 255],
+        x: 0.0,
+        y: 0.0,
+    })?;
+    let typography_id = typography_workspace.document.selected.unwrap();
+    typography_workspace.execute(Command::SetTextTypography {
+        id: typography_id,
+        typography: prism_core::TextTypography {
+            alignment: prism_core::TextAlignment::Center,
+            line_height: 1.35,
+            tracking: 2.0,
+            box_width: Some(720.0),
+            effects: prism_core::TextEffects {
+                outline_width: 1.5,
+                shadow_offset_x: 4.0,
+                shadow_offset_y: 6.0,
+                shadow_color: [0, 0, 0, 128],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    })?;
+    let typography_layer = typography_workspace.document.layer(typography_id)?;
+    let mut typography_samples = Vec::new();
+    for _ in 0..9 {
+        let started = Instant::now();
+        let _ = render_layer_base_scaled_with_font(
+            typography_layer,
+            None,
+            [1.0; 2],
+            Some(epaint_default_fonts::HACK_REGULAR),
+        )?;
+        typography_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     let mut blend_workspace = Workspace::new(Document::new("Blend benchmark", 960, 540), None);
     for index in 0..12 {
         blend_workspace.execute(Command::AddRectangle {
@@ -213,6 +253,7 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
     let (shape_median, shape_p95) = sample_summary(&mut shape_preview_samples);
     let (render_median, render_p95) = sample_summary(&mut render_samples);
     let (scaled_shape_median, scaled_shape_p95) = sample_summary(&mut scaled_shape_samples);
+    let (typography_median, typography_p95) = sample_summary(&mut typography_samples);
     let (blend_render_median, blend_render_p95) = sample_summary(&mut blend_render_samples);
     let (viewport_composite_median, viewport_composite_p95) =
         sample_summary(&mut viewport_composite_samples);
@@ -258,6 +299,13 @@ pub(super) fn benchmark(strict: bool) -> Result<Value> {
             p95_ms: scaled_shape_p95,
             budget_ms: 16.0,
             pass: scaled_shape_p95 <= 16.0,
+        },
+        BenchmarkMetric {
+            name: "portable_multiline_typography_raster",
+            median_ms: typography_median,
+            p95_ms: typography_p95,
+            budget_ms: 50.0,
+            pass: typography_p95 <= 50.0,
         },
         BenchmarkMetric {
             name: "960x540_12_layer_blend_mask_composite",

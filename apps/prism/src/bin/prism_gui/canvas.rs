@@ -66,6 +66,7 @@ impl PrismApp {
                 if let Some(drag) = self.drag {
                     self.paint_drag(ui, geometry, drag);
                 }
+                self.inline_text_editor(ui.ctx(), geometry);
                 if let Some(error) = &self.preview_error {
                     ui.painter().text(
                         available.center(),
@@ -384,12 +385,7 @@ impl PrismApp {
                 }
             }
             Tool::Text => {
-                self.text_dialog = Some(TextDialogDraft {
-                    target: TextDialogTarget::New { position },
-                    text: "Text".into(),
-                    font_size: 72.0,
-                    color: [245, 246, 250, 255],
-                });
+                self.start_new_inline_text_editor(position);
             }
             Tool::Shape => {
                 match self.shape_kind {
@@ -427,7 +423,7 @@ impl PrismApp {
             self.execute(Command::SelectLayer { id: hit });
         }
         if let Some(id) = hit {
-            self.open_text_editor(id);
+            self.start_inline_text_editor(id);
         }
     }
 

@@ -55,6 +55,7 @@ pub(super) struct LayerRenderRequest {
     layer: Layer,
     key: LayerVisualKey,
     max_size: u32,
+    font_path: Option<PathBuf>,
 }
 
 pub(super) struct LayerRenderResult {
@@ -218,6 +219,11 @@ impl PrismApp {
                         layer: layer.clone(),
                         key,
                         max_size: required_max_size,
+                        font_path: self
+                            .workspace
+                            .document
+                            .font_for_layer(layer)
+                            .map(|font| font.path.clone()),
                     },
                 );
             }
@@ -245,7 +251,14 @@ impl PrismApp {
         self.layer_visuals
             .get(&layer.id)
             .map(|entry| entry.source_size)
-            .or_else(|| source_size_before_preview(layer))
+            .or_else(|| {
+                let font_data = self
+                    .workspace
+                    .document
+                    .font_for_layer(layer)
+                    .and_then(|font| font.bytes().ok());
+                source_size_before_preview(layer, font_data.as_deref())
+            })
     }
 }
 
@@ -265,10 +278,17 @@ pub(super) fn spawn_layer_render_worker(
     std::thread::spawn(move || {
         let mut bases: HashMap<(u64, u64), CachedLayerBase> = HashMap::new();
         while let Ok(request) = receiver.recv() {
+            let font_data = request.font_path.as_ref().map(std::fs::read).transpose();
             let cache_id = (request.tab_id, request.layer.id);
             let mut render_layer = request.layer.clone();
-            if let LayerKind::Text { font_size, .. } = &mut render_layer.kind {
+            if let LayerKind::Text {
+                font_size,
+                typography,
+                ..
+            } = &mut render_layer.kind
+            {
                 *font_size *= request.key.text_raster_scale as f32;
+                typography.scale_for_raster(request.key.text_raster_scale as f32);
             }
             let cached = bases.get(&cache_id).filter(|cached| {
                 cached.kind == render_layer.kind
@@ -276,16 +296,19 @@ pub(super) fn spawn_layer_render_worker(
                     && cached.shape_raster_scale == request.key.shape_raster_scale
                     && cached.max_size >= request.max_size
             });
-            let base = if let Some(cached) = cached {
+            let base = if let Err(error) = &font_data {
+                Err(anyhow::anyhow!("could not read embedded font: {error}"))
+            } else if let Some(cached) = cached {
                 Ok(cached.image.clone())
             } else {
-                prism_core::render_layer_base_scaled(
+                prism_core::render_layer_base_scaled_with_font(
                     &render_layer,
                     Some(request.max_size),
                     [
                         request.key.shape_raster_scale[0] as f32,
                         request.key.shape_raster_scale[1] as f32,
                     ],
+                    font_data.as_ref().ok().and_then(Option::as_deref),
                 )
                 .inspect(|image| {
                     bases.insert(
@@ -300,7 +323,10 @@ pub(super) fn spawn_layer_render_worker(
                     );
                 })
             };
-            let source_size = source_size_before_preview(&request.layer);
+            let source_size = source_size_before_preview(
+                &request.layer,
+                font_data.as_ref().ok().and_then(Option::as_deref),
+            );
             let result = base
                 .map(|image| {
                     spectrum_imaging::render_image(
@@ -329,14 +355,17 @@ pub(super) fn spawn_layer_render_worker(
     });
 }
 
-fn source_size_before_preview(layer: &Layer) -> Option<Vec2> {
+fn source_size_before_preview(layer: &Layer, font_data: Option<&[u8]>) -> Option<Vec2> {
     match &layer.kind {
         LayerKind::Raster { path, .. } => image::image_dimensions(path)
             .ok()
             .map(|(width, height)| Vec2::new(width as f32, height as f32)),
         LayerKind::Text {
-            text, font_size, ..
-        } => prism_core::measure_text(text, *font_size)
+            text,
+            font_size,
+            typography,
+            ..
+        } => prism_core::measure_text_with_typography(text, *font_size, typography, font_data)
             .ok()
             .map(|(width, height)| Vec2::new(width as f32, height as f32)),
         LayerKind::Rectangle { width, height, .. } => {

@@ -5,7 +5,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use fontdue::Font;
 use image::{DynamicImage, ImageEncoder, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
@@ -67,6 +66,29 @@ pub fn save_document(document: &Document, path: &Path) -> Result<()> {
             }
         }
     }
+    for font in &mut portable.font_assets {
+        let canonical = fs::canonicalize(&font.path)
+            .with_context(|| format!("could not read font asset {}", font.path.display()))?;
+        if font.original_path.is_none() {
+            font.original_path = Some(canonical.clone());
+        }
+        let font_directory = asset_directory.join("fonts");
+        fs::create_dir_all(&font_directory)?;
+        let file_name = canonical
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("font.otf");
+        let destination = font_directory.join(format!("font-{}-{file_name}", font.id));
+        if canonical != destination {
+            fs::copy(&canonical, &destination).with_context(|| {
+                format!(
+                    "could not copy {} into portable Prism fonts",
+                    canonical.display()
+                )
+            })?;
+        }
+        font.path = destination.strip_prefix(&directory)?.to_owned();
+    }
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");
     let temporary = PathBuf::from(temporary);
@@ -118,6 +140,14 @@ pub fn load_document(path: &Path) -> Result<Document> {
             *path = directory.join(&*path);
             if let Ok(canonical) = fs::canonicalize(&*path) {
                 *path = canonical;
+            }
+        }
+    }
+    for font in &mut document.font_assets {
+        if font.path.is_relative() {
+            font.path = directory.join(&font.path);
+            if let Ok(canonical) = fs::canonicalize(&font.path) {
+                font.path = canonical;
             }
         }
     }
@@ -249,9 +279,20 @@ fn render_document_region_scaled_impl(
             [1.0; 2]
         };
         let mut render_layer = layer.clone();
-        if let LayerKind::Text { font_size, .. } = &mut render_layer.kind {
+        if let LayerKind::Text {
+            font_size,
+            typography,
+            ..
+        } = &mut render_layer.kind
+        {
             *font_size *= text_scale;
+            typography.scale_for_raster(text_scale);
         }
+        let font_bytes = document
+            .font_for_layer(layer)
+            .map(crate::FontAsset::bytes)
+            .transpose()?;
+        let font_data = font_bytes.as_deref();
         let mut scaled_layer = layer.clone();
         scaled_layer.transform.x *= scale;
         scaled_layer.transform.y *= scale;
@@ -273,9 +314,15 @@ fn render_document_region_scaled_impl(
             continue;
         }
         if bound_fallback_layers {
-            ensure_region_fallback_is_bounded(&render_layer, &scaled_layer, shape_scale)?;
+            ensure_region_fallback_is_bounded(
+                &render_layer,
+                &scaled_layer,
+                shape_scale,
+                font_data,
+            )?;
         }
-        let source = render_layer_preview_scaled(&render_layer, None, shape_scale)?;
+        let source =
+            render_layer_preview_scaled_with_font(&render_layer, None, shape_scale, font_data)?;
         let source = transform_layer(source, scaled_layer.transform);
         composite_layer_region(
             &mut canvas,
@@ -294,14 +341,18 @@ fn ensure_region_fallback_is_bounded(
     render_layer: &Layer,
     scaled_layer: &Layer,
     shape_scale: [f32; 2],
+    font_data: Option<&[u8]>,
 ) -> Result<()> {
     const MAX_FALLBACK_PIXELS: u64 = 4_096 * 4_096;
     let (base_width, base_height) = match &render_layer.kind {
         LayerKind::Raster { path, .. } => image::image_dimensions(path)
             .with_context(|| format!("could not inspect layer source {}", path.display()))?,
         LayerKind::Text {
-            text, font_size, ..
-        } => measure_text(text, *font_size)?,
+            text,
+            font_size,
+            typography,
+            ..
+        } => crate::text_render::measure_text(text, *font_size, typography, font_data)?,
         LayerKind::Rectangle { width, height, .. } | LayerKind::Ellipse { width, height, .. } => (
             (*width as f32 * shape_scale[0]).round().max(1.0) as u32,
             (*height as f32 * shape_scale[1]).round().max(1.0) as u32,
@@ -444,7 +495,16 @@ pub fn render_layer_preview_scaled(
     max_size: Option<u32>,
     shape_scale: [f32; 2],
 ) -> Result<DynamicImage> {
-    let image = render_layer_base_scaled(layer, max_size, shape_scale)?;
+    render_layer_preview_scaled_with_font(layer, max_size, shape_scale, None)
+}
+
+pub fn render_layer_preview_scaled_with_font(
+    layer: &Layer,
+    max_size: Option<u32>,
+    shape_scale: [f32; 2],
+    font_data: Option<&[u8]>,
+) -> Result<DynamicImage> {
+    let image = render_layer_base_scaled_with_font(layer, max_size, shape_scale, font_data)?;
     Ok(render_image(
         image,
         layer.adjustments.clone(),
@@ -463,6 +523,15 @@ pub fn render_layer_base_scaled(
     max_size: Option<u32>,
     shape_scale: [f32; 2],
 ) -> Result<DynamicImage> {
+    render_layer_base_scaled_with_font(layer, max_size, shape_scale, None)
+}
+
+pub fn render_layer_base_scaled_with_font(
+    layer: &Layer,
+    max_size: Option<u32>,
+    shape_scale: [f32; 2],
+    font_data: Option<&[u8]>,
+) -> Result<DynamicImage> {
     let mut image = match &layer.kind {
         LayerKind::Raster { path, .. } => image::ImageReader::open(path)
             .with_context(|| format!("could not open {}", path.display()))?
@@ -473,7 +542,10 @@ pub fn render_layer_base_scaled(
             text,
             font_size,
             color,
-        } => DynamicImage::ImageRgba8(render_text(text, *font_size, *color)?),
+            typography,
+        } => DynamicImage::ImageRgba8(crate::text_render::render_text(
+            text, *font_size, *color, typography, font_data,
+        )?),
         LayerKind::Rectangle { .. } | LayerKind::Ellipse { .. } => {
             DynamicImage::ImageRgba8(render_shape(layer, shape_scale)?)
         }
@@ -501,91 +573,16 @@ pub fn render_solid_color(color: [u8; 4], adjustments: &spectrum_imaging::Adjust
 }
 
 pub fn measure_text(text: &str, font_size: f32) -> Result<(u32, u32)> {
-    let font = Font::from_bytes(
-        epaint_default_fonts::UBUNTU_LIGHT,
-        fontdue::FontSettings::default(),
-    )
-    .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?;
-    let layout = layout_text(&font, text, font_size);
-    Ok((layout.width, layout.height))
+    crate::text_render::measure_text(text, font_size, &crate::TextTypography::default(), None)
 }
 
-fn render_text(text: &str, font_size: f32, color: [u8; 4]) -> Result<RgbaImage> {
-    let font = Font::from_bytes(
-        epaint_default_fonts::UBUNTU_LIGHT,
-        fontdue::FontSettings::default(),
-    )
-    .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?;
-    let layout = layout_text(&font, text, font_size);
-    let mut output = RgbaImage::new(layout.width, layout.height);
-    for glyph in layout.glyphs {
-        let (metrics, bitmap) = font.rasterize(glyph.character, font_size);
-        for row in 0..metrics.height {
-            for column in 0..metrics.width {
-                let x = glyph.x + column as i32 - layout.min_x;
-                let y = glyph.y + row as i32 - layout.min_y;
-                if x >= 0 && y >= 0 && (x as u32) < layout.width && (y as u32) < layout.height {
-                    let alpha = bitmap[row * metrics.width + column] as u16 * color[3] as u16 / 255;
-                    output.put_pixel(
-                        x as u32,
-                        y as u32,
-                        Rgba([color[0], color[1], color[2], alpha as u8]),
-                    );
-                }
-            }
-        }
-    }
-    Ok(output)
-}
-
-struct PositionedGlyph {
-    character: char,
-    x: i32,
-    y: i32,
-}
-
-struct TextLayout {
-    glyphs: Vec<PositionedGlyph>,
-    min_x: i32,
-    min_y: i32,
-    width: u32,
-    height: u32,
-}
-
-fn layout_text(font: &Font, text: &str, font_size: f32) -> TextLayout {
-    let line_metrics = font.horizontal_line_metrics(font_size);
-    let ascent = line_metrics.map_or(font_size, |metrics| metrics.ascent);
-    let natural_height = line_metrics.map_or(font_size, |metrics| metrics.new_line_size);
-    let line_height = natural_height.max(font_size * 1.25).ceil().max(1.0);
-    let lines: Vec<_> = text.split('\n').collect();
-    let mut glyphs = Vec::new();
-    let mut min_x = 0;
-    let mut min_y = 0;
-    let mut max_x = 1;
-    let mut max_y = (line_height * lines.len().max(1) as f32).ceil() as i32;
-    for (line_index, line) in lines.iter().enumerate() {
-        let mut cursor_x: f32 = 0.0;
-        for character in line.chars() {
-            let metrics = font.metrics(character, font_size);
-            let x = cursor_x.round() as i32 + metrics.xmin;
-            let baseline = line_index as f32 * line_height + ascent;
-            let y = baseline.round() as i32 - metrics.ymin - metrics.height as i32;
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x + metrics.width as i32);
-            max_y = max_y.max(y + metrics.height as i32);
-            glyphs.push(PositionedGlyph { character, x, y });
-            cursor_x += metrics.advance_width;
-        }
-        max_x = max_x.max(cursor_x.ceil() as i32);
-    }
-    TextLayout {
-        glyphs,
-        min_x,
-        min_y,
-        width: (max_x - min_x).max(1) as u32,
-        height: (max_y - min_y).max(1) as u32,
-    }
+pub fn measure_text_with_typography(
+    text: &str,
+    font_size: f32,
+    typography: &crate::TextTypography,
+    font_data: Option<&[u8]>,
+) -> Result<(u32, u32)> {
+    crate::text_render::measure_text(text, font_size, typography, font_data)
 }
 
 fn text_raster_scale(layer: &Layer, document_scale: f32) -> f32 {
@@ -785,6 +782,24 @@ pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<
             }
         }
     }
+    for font in &document.font_assets {
+        let overwrites_embedded = fs::canonicalize(&font.path).ok().as_ref() == Some(&destination);
+        let overwrites_original = font
+            .original_path
+            .as_ref()
+            .is_some_and(|original| fs::canonicalize(original).ok().as_ref() == Some(&destination));
+        if overwrites_embedded || overwrites_original {
+            bail!(
+                "refusing to overwrite font source {}; choose a new export path",
+                if overwrites_original {
+                    font.original_path.as_ref().unwrap_or(&font.path)
+                } else {
+                    &font.path
+                }
+                .display()
+            );
+        }
+    }
     let image = render_document(document, None)?;
     let file =
         fs::File::create(path).with_context(|| format!("could not create {}", path.display()))?;
@@ -816,7 +831,7 @@ pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<
 
 #[cfg(test)]
 mod text_tests {
-    use super::*;
+    use fontdue::Font;
 
     #[test]
     fn glyph_layout_does_not_discard_descender_pixels() {
@@ -826,7 +841,14 @@ mod text_tests {
         )
         .unwrap();
         let (_, glyph) = font.rasterize('g', 72.0);
-        let rendered = render_text("g", 72.0, [255, 255, 255, 255]).unwrap();
+        let rendered = crate::text_render::render_text(
+            "g",
+            72.0,
+            [255, 255, 255, 255],
+            &crate::TextTypography::default(),
+            None,
+        )
+        .unwrap();
         let source_alpha: u64 = glyph.into_iter().map(u64::from).sum();
         let rendered_alpha: u64 = rendered.pixels().map(|pixel| u64::from(pixel[3])).sum();
         assert_eq!(rendered_alpha, source_alpha);

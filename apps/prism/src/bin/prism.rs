@@ -9,7 +9,7 @@ use lumen_core::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
 use prism_core::{
-    BlendMode, Command, Document, LayerMask, ShapeStroke, Transform, Workspace, export_document,
+    Command, Document, LayerMask, ShapeStroke, Transform, Workspace, export_document,
 };
 use serde_json::{Value, json};
 use spectrum_imaging::{AdjustmentPatch, RenderOptions};
@@ -18,6 +18,12 @@ use spectrum_revisions::{Actor, ActorKind, CollaborationMode, SessionId};
 #[path = "prism_cli/benchmark.rs"]
 mod benchmark;
 use benchmark::benchmark;
+#[path = "prism_cli/blend.rs"]
+mod blend;
+use blend::CliBlend;
+#[path = "prism_cli/typography.rs"]
+mod typography;
+use typography::{TypographyArgs, updated_typography};
 
 #[derive(Parser)]
 #[command(name = "prism", version, about = "Agent-first layered image editor")]
@@ -69,6 +75,17 @@ enum CliCommand {
         #[arg(long, default_value_t = 0.0)]
         y: f32,
     },
+    /// Embed an OpenType font in this portable Prism project.
+    FontImport {
+        path: PathBuf,
+    },
+    /// Search bundled and embedded font faces.
+    FontList {
+        #[arg(long)]
+        query: Option<String>,
+    },
+    /// Update one text layer's font, paragraph metrics, and effects.
+    Typography(TypographyArgs),
     /// Add an editable vector-style rectangle layer.
     AddRectangle {
         #[arg(long)]
@@ -323,69 +340,6 @@ impl From<CliAgentMode> for CollaborationMode {
     }
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum CliBlend {
-    Normal,
-    Darken,
-    Multiply,
-    ColorBurn,
-    LinearBurn,
-    DarkerColor,
-    Lighten,
-    Screen,
-    ColorDodge,
-    LinearDodge,
-    LighterColor,
-    Overlay,
-    SoftLight,
-    HardLight,
-    VividLight,
-    LinearLight,
-    PinLight,
-    HardMix,
-    Difference,
-    Exclusion,
-    Subtract,
-    Divide,
-    Hue,
-    Saturation,
-    Color,
-    Luminosity,
-}
-
-impl From<CliBlend> for BlendMode {
-    fn from(value: CliBlend) -> Self {
-        match value {
-            CliBlend::Normal => Self::Normal,
-            CliBlend::Darken => Self::Darken,
-            CliBlend::Multiply => Self::Multiply,
-            CliBlend::ColorBurn => Self::ColorBurn,
-            CliBlend::LinearBurn => Self::LinearBurn,
-            CliBlend::DarkerColor => Self::DarkerColor,
-            CliBlend::Lighten => Self::Lighten,
-            CliBlend::Screen => Self::Screen,
-            CliBlend::ColorDodge => Self::ColorDodge,
-            CliBlend::LinearDodge => Self::LinearDodge,
-            CliBlend::LighterColor => Self::LighterColor,
-            CliBlend::Overlay => Self::Overlay,
-            CliBlend::SoftLight => Self::SoftLight,
-            CliBlend::HardLight => Self::HardLight,
-            CliBlend::VividLight => Self::VividLight,
-            CliBlend::LinearLight => Self::LinearLight,
-            CliBlend::PinLight => Self::PinLight,
-            CliBlend::HardMix => Self::HardMix,
-            CliBlend::Difference => Self::Difference,
-            CliBlend::Exclusion => Self::Exclusion,
-            CliBlend::Subtract => Self::Subtract,
-            CliBlend::Divide => Self::Divide,
-            CliBlend::Hue => Self::Hue,
-            CliBlend::Saturation => Self::Saturation,
-            CliBlend::Color => Self::Color,
-            CliBlend::Luminosity => Self::Luminosity,
-        }
-    }
-}
-
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(value) => {
@@ -424,6 +378,25 @@ fn run(cli: Cli) -> Result<Value> {
             let document = session_document(&cli.project, cli.session)?;
             Ok(json!({"ok": true, "project": cli.project, "document": document}))
         }
+        CliCommand::FontList { query } => {
+            let document = session_document(&cli.project, cli.session)?;
+            let query = query.unwrap_or_default().to_ascii_lowercase();
+            let fonts: Vec<_> = document
+                .font_assets
+                .iter()
+                .filter(|font| {
+                    query.is_empty()
+                        || font.family.to_ascii_lowercase().contains(&query)
+                        || font.style.to_ascii_lowercase().contains(&query)
+                })
+                .collect();
+            Ok(json!({
+                "ok": true,
+                "action": "font_list",
+                "bundled": {"id": null, "family": "Spectrum Sans", "style": "Regular", "weight": 300},
+                "fonts": fonts,
+            }))
+        }
         CliCommand::Export { path, quality } => {
             let document = session_document(&cli.project, cli.session)?;
             export_document(&document, &path, quality)?;
@@ -443,6 +416,16 @@ fn run(cli: Cli) -> Result<Value> {
                 None => Workspace::open_as(&cli.project, cli_actor(), SessionId::new())?,
             };
             let outputs = match command {
+                CliCommand::FontImport { path } => {
+                    vec![workspace.execute(Command::ImportFont { path })?]
+                }
+                CliCommand::Typography(arguments) => {
+                    let typography = updated_typography(&workspace.document, &arguments)?;
+                    vec![workspace.execute(Command::SetTextTypography {
+                        id: arguments.id,
+                        typography,
+                    })?]
+                }
                 CliCommand::AddImage { path, name, x, y } => {
                     vec![workspace.execute(Command::AddRaster { path, name, x, y })?]
                 }
@@ -683,6 +666,7 @@ fn run(cli: Cli) -> Result<Value> {
                 CliCommand::Run { json } => run_commands(&mut workspace, &json)?,
                 CliCommand::Init { .. }
                 | CliCommand::List
+                | CliCommand::FontList { .. }
                 | CliCommand::Export { .. }
                 | CliCommand::FromLumen { .. }
                 | CliCommand::Agent { .. }
@@ -872,6 +856,8 @@ fn schema() -> Value {
             "tag": "command",
             "examples": [
                 {"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0},
+                {"command": "import_font", "path": "/fonts/Inter-Regular.ttf"},
+                {"command": "set_text_typography", "id": 1, "typography": {"font_id": 1, "alignment": "center", "line_height": 1.3, "tracking": 2.0, "box_width": 480.0, "effects": {"outline_width": 1.0, "outline_color": [0,0,0,255], "shadow_offset_x": 4.0, "shadow_offset_y": 6.0, "shadow_color": [0,0,0,128]}}},
                 {"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0},
                 {"command": "set_shape_stroke", "id": 1, "stroke": {"enabled": true, "width": 6.0, "color": [255,255,255,255]}},
                 {"command": "rasterize_shape", "id": 1, "path": "/generated/shape.png", "scale": 2.0},
@@ -892,66 +878,18 @@ fn schema() -> Value {
             "luminosity"
         ],
         "layer_types": ["raster", "text", "rectangle", "ellipse"],
+        "typography": {
+            "portable_fonts": "font-import embeds permitted OpenType font bytes as content-addressed project assets",
+            "discovery": "font-list --query <text> searches embedded family and style metadata",
+            "selection": "typography <layer> accepts --font-id or --family with optional --weight and --style",
+            "paragraph": ["multiline", "wrap", "left/center/right alignment", "line height", "tracking"],
+            "effects": ["outline", "offset shadow"]
+        },
         "color": "RRGGBB or RRGGBBAA",
         "coordinates": "canvas pixels; layer masks are normalized 0..1"
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn colors_accept_rgb_and_rgba() {
-        assert_eq!(parse_color("ae7bff").unwrap(), [174, 123, 255, 255]);
-        assert_eq!(parse_color("#01020304").unwrap(), [1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn rotate_cli_persists_the_normalized_angle() {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let project = std::env::temp_dir().join(format!("prism-rotate-cli-{stamp}.prism"));
-        run(Cli {
-            project: project.clone(),
-            session: None,
-            command: CliCommand::Init {
-                name: "Rotate CLI".into(),
-                width: 400,
-                height: 300,
-                background: "18191dff".into(),
-            },
-        })
-        .unwrap();
-        run(Cli {
-            project: project.clone(),
-            session: None,
-            command: CliCommand::AddRectangle {
-                name: None,
-                width: 100,
-                height: 80,
-                color: "ffffffff".into(),
-                radius: 0.0,
-                x: 10.0,
-                y: 20.0,
-            },
-        })
-        .unwrap();
-        let rotate = Cli::try_parse_from([
-            "prism",
-            "--project",
-            project.to_str().unwrap(),
-            "rotate",
-            "1",
-            "-15",
-        ])
-        .unwrap();
-        run(rotate).unwrap();
-        let document = Workspace::load_read_only(&project).unwrap();
-        assert_eq!(document.layer(1).unwrap().transform.rotation, 345.0);
-        std::fs::remove_file(project).unwrap();
-    }
-}
+#[path = "prism_cli/tests.rs"]
+mod tests;
