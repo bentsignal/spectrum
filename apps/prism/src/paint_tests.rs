@@ -561,7 +561,7 @@ fn paint_mask_adjustment_and_vector_mask_order_never_resurrects_transparency() {
     )
     .unwrap();
     let mut alpha = vec![0; 32 * 32];
-    for row in alpha.chunks_exact_mut(32) {
+    for row in alpha.as_chunks_mut::<32>().0 {
         row[..16].fill(255);
     }
     let mut layer = paint_layer(program);

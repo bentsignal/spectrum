@@ -266,7 +266,7 @@ fn write_converted_rows(
     for source_row in source.chunks_exact(source_row_bytes) {
         for (pixel, rgba) in source_row
             .chunks_exact(channels)
-            .zip(output.chunks_exact_mut(4))
+            .zip(output.as_chunks_mut::<4>().0.iter_mut())
         {
             convert(pixel, rgba);
         }
