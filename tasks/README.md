@@ -17,7 +17,6 @@ here.
 - [GPU compositor](gpu-compositor.md)
 - [macOS icons](macos-icons.md)
 - [Selection acceptance](selection-user-acceptance.md)
-- [Spectrum UI polish](visual-polish.md)
 - [Rust dead-code audit](rust-dead-code-audit.md)
 - [Lumen terminal dock](lumen-terminal-dock.md)
 
