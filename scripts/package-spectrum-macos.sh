@@ -25,7 +25,7 @@ lock_value() {
 
 verify_chain_sources() {
   [[ "$(sha256_file "$lock_file")" == "$chain_lock_sha" ]]
-  [[ "$(sha256_file "$repo_root/scripts/package-prism-macos.sh")" == "$chain_package_sha" ]]
+  [[ "$(sha256_file "$repo_root/scripts/package-spectrum-macos.sh")" == "$chain_package_sha" ]]
   [[ "$(sha256_file "$proof_builder")" == "$chain_proof_builder_sha" ]]
   [[ "$(sha256_file "$bridge_builder")" == "$chain_bridge_builder_sha" ]]
   [[ "$(sha256_file "$tree_hasher")" == "$chain_tree_hasher_sha" ]]
@@ -88,7 +88,7 @@ if [[ "$ghostty_enabled" == true ]]; then
   [[ "$(printf '%s\n' "$xcode_output" | sed -n '2p')" == "Build version $expected_xcode_build" ]]
   export MACOSX_DEPLOYMENT_TARGET="$minimum_macos"
   chain_lock_sha="$(sha256_file "$lock_file")"
-  chain_package_sha="$(sha256_file "$repo_root/scripts/package-prism-macos.sh")"
+  chain_package_sha="$(sha256_file "$repo_root/scripts/package-spectrum-macos.sh")"
   chain_proof_builder_sha="$(sha256_file "$proof_builder")"
   chain_bridge_builder_sha="$(sha256_file "$bridge_builder")"
   chain_tree_hasher_sha="$(sha256_file "$tree_hasher")"
@@ -142,9 +142,9 @@ if [[ "$ghostty_enabled" == true ]]; then
   packaged_license_sha="$(sha256_file "$ghostty_stage/GHOSTTY-LICENSE")"
 fi
 if [[ "$ghostty_enabled" == true ]]; then
-  cargo build --release --locked -p prism --bins --features ghostty-terminal
+  cargo build --release --locked -p spectrum -p prism -p lumen-photo --bins --features spectrum/ghostty-terminal
 else
-  cargo build --release --locked -p prism --bins
+  cargo build --release --locked -p spectrum -p prism -p lumen-photo --bins
 fi
 
 if [[ "$ghostty_enabled" == true ]]; then
@@ -154,7 +154,7 @@ if [[ "$ghostty_enabled" == true ]]; then
   [[ "$(sha256_file "$ghostty_stage/GHOSTTY-LICENSE")" == "$packaged_license_sha" ]]
 fi
 
-bundle="$repo_root/target/dist/Prism.app"
+bundle="$repo_root/target/dist/Spectrum.app"
 if [[ -e "$bundle" || -L "$bundle" ]]; then
   [[ -d "$bundle" && ! -L "$bundle" && "$(realpath "$bundle")" == "$bundle" ]] || {
     echo "refusing to replace unsafe bundle path: $bundle" >&2
@@ -164,13 +164,14 @@ if [[ -e "$bundle" || -L "$bundle" ]]; then
   rm -rf -- "$bundle"
 fi
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
-install -m 0755 "$repo_root/target/release/prism-gui" "$bundle/Contents/MacOS/prism-gui"
+install -m 0755 "$repo_root/target/release/spectrum-gui" "$bundle/Contents/MacOS/spectrum-gui"
 install -m 0755 "$repo_root/target/release/prism" "$bundle/Contents/MacOS/prism"
-install -m 0644 "$repo_root/packaging/prism/macos/Info.plist" "$bundle/Contents/Info.plist"
+install -m 0755 "$repo_root/target/release/lumen" "$bundle/Contents/MacOS/lumen"
+install -m 0644 "$repo_root/packaging/spectrum/macos/Info.plist" "$bundle/Contents/Info.plist"
 "$repo_root/scripts/stamp-macos-bundle.sh" "$bundle/Contents/Info.plist"
 "$repo_root/scripts/package-macos-icon.sh" \
-  "$repo_root/assets/branding/Prism.icon" \
-  "$bundle/Contents/Resources/Prism.icns"
+  "$repo_root/assets/branding/Spectrum.icon" \
+  "$bundle/Contents/Resources/Spectrum.icns"
 install -m 0644 "$repo_root/LICENSE" "$bundle/Contents/Resources/LICENSE"
 install -m 0644 "$repo_root/THIRD_PARTY.md" "$bundle/Contents/Resources/THIRD_PARTY.md"
 install -m 0644 \
@@ -193,7 +194,7 @@ if [[ "$ghostty_enabled" == true ]]; then
   plutil -insert SpectrumGhosttyBridgeABI -integer "$bridge_abi" "$bundle/Contents/Info.plist"
   [[ "$(plutil -extract LSMinimumSystemVersion raw -o - "$bundle/Contents/Info.plist")" == "$minimum_macos" ]]
   [[ "$(plutil -extract SpectrumTerminalBackend raw -o - "$bundle/Contents/Info.plist")" == "Ghostty" ]]
-  for binary in "$bundle/Contents/MacOS/prism-gui" "$bundle/Contents/MacOS/prism"; do
+  for binary in "$bundle/Contents/MacOS/spectrum-gui" "$bundle/Contents/MacOS/prism" "$bundle/Contents/MacOS/lumen"; do
     otool -l "$binary" | awk -v expected="$minimum_macos" '
       $1 == "cmd" && $2 == "LC_BUILD_VERSION" { in_build = 1; next }
       in_build && $1 == "minos" { found = ($2 == expected); exit }
@@ -203,12 +204,14 @@ if [[ "$ghostty_enabled" == true ]]; then
   verify_chain_sources
 fi
 
-cli="$repo_root/target/dist/prism-macos"
-install -m 0755 "$repo_root/target/release/prism" "$cli"
+prism_cli="$repo_root/target/dist/prism-macos"
+lumen_cli="$repo_root/target/dist/lumen-macos"
+install -m 0755 "$repo_root/target/release/prism" "$prism_cli"
+install -m 0755 "$repo_root/target/release/lumen" "$lumen_cli"
 
 codesign --force --deep --sign - "$bundle"
 codesign --verify --deep --strict "$bundle"
 if [[ "$ghostty_enabled" == true ]]; then
   verify_chain_sources
 fi
-echo "Created $bundle and $cli"
+echo "Created $bundle, $prism_cli, and $lumen_cli"

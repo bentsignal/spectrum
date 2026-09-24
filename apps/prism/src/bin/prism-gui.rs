@@ -1,5 +1,3 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
@@ -120,7 +118,7 @@ use spectrum_terminal::native_ghostty as native_terminal;
 use terminal::TerminalDock;
 use theme::*;
 
-struct PrismApp {
+pub(crate) struct PrismApp {
     workspace: Workspace,
     tab_ids: Vec<u64>,
     active_tab_id: u64,
@@ -191,6 +189,44 @@ fn main() -> eframe::Result {
 }
 
 impl PrismApp {
+    pub(crate) fn for_spectrum(
+        creation: &eframe::CreationContext<'_>,
+        initial_project: Option<&Path>,
+        open_document_receiver: Receiver<PathBuf>,
+    ) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Self::new(
+                creation,
+                initial_project,
+                open_document_receiver,
+                macos::spectrum_menu_bridge(creation.egui_ctx.clone()),
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        Self::new(creation, initial_project, open_document_receiver)
+    }
+
+    pub(crate) fn suspend_for_spectrum(&mut self) {
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        self.native_terminal.hide_all();
+    }
+
+    pub(crate) fn poll_background_for_spectrum(&mut self, context: &egui::Context) {
+        self.raster_sources.poll(context);
+        self.receive_open_documents(context);
+        self.drain_live_bridges(context);
+        self.sync_agent_collaborations(context);
+        self.poll_terminals(context);
+        self.observe_live_bridges();
+        self.composite_preview.poll(context);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn show_spectrum_menu(&mut self) {
+        self.install_spectrum_menu();
+    }
+
     fn new(
         creation: &eframe::CreationContext<'_>,
         initial_project: Option<&Path>,
@@ -673,8 +709,8 @@ mod paragraph_width_tests;
 
 #[cfg(test)]
 mod tests {
+    use super::launch::prism_icon;
     use super::*;
-    use crate::launch::prism_icon;
 
     #[test]
     fn bundled_prism_icon_uses_the_user_cropped_artwork() {

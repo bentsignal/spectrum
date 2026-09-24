@@ -31,21 +31,18 @@ jobs:
         include:
           - os: windows-latest
             label: Windows
-            gui: target/release/lumen-gui.exe
+            gui: target/release/spectrum-gui.exe
             cli: target/release/lumen.exe
-            prism_gui: target/release/prism-gui.exe
             prism_cli: target/release/prism.exe
           - os: macos-latest
             label: macOS
-            gui: target/release/lumen-gui
+            gui: target/release/spectrum-gui
             cli: target/release/lumen
-            prism_gui: target/release/prism-gui
             prism_cli: target/release/prism
           - os: ubuntu-latest
             label: Linux
-            gui: target/release/lumen-gui
+            gui: target/release/spectrum-gui
             cli: target/release/lumen
-            prism_gui: target/release/prism-gui
             prism_cli: target/release/prism
     runs-on: ${{ matrix.os }}
     steps:
@@ -63,20 +60,18 @@ jobs:
       - if: runner.os == 'Linux'
         run: ./target/release/live-bridge-benchmark --strict --hosted
       - if: runner.os == 'macOS'
-        run: bash scripts/package-macos.sh && bash scripts/package-prism-macos.sh
+        run: bash scripts/package-spectrum-macos.sh
       - if: runner.os == 'Linux'
-        run: bash scripts/package-linux.sh && bash scripts/package-prism-linux.sh
+        run: bash scripts/package-spectrum-linux.sh
       - if: runner.os == 'Windows'
         run: |
-          pwsh scripts/package-windows.ps1
-          pwsh scripts/package-prism-windows.ps1
+          pwsh scripts/package-spectrum-windows.ps1
       - uses: actions/upload-artifact@v7
         with:
           name: spectrum-${{ matrix.label }}
           path: |
             ${{ matrix.gui }}
             ${{ matrix.cli }}
-            ${{ matrix.prism_gui }}
             ${{ matrix.prism_cli }}
             target/dist/
           if-no-files-found: error

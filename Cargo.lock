@@ -3563,6 +3563,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "spectrum"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "eframe",
+ "epaint_default_fonts",
+ "flate2",
+ "fontdue",
+ "fs2",
+ "icu_locale",
+ "icu_locale_core",
+ "image",
+ "libc",
+ "lumen-photo",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "png",
+ "prism",
+ "rayon",
+ "rfd",
+ "rusqlite",
+ "same-file",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spectrum-fonts",
+ "spectrum-history-ui",
+ "spectrum-imaging",
+ "spectrum-live-bridge",
+ "spectrum-revisions",
+ "spectrum-terminal",
+ "tempfile",
+ "tiff",
+ "tiny-skia",
+ "ttf-parser 0.21.1",
+ "unicode-bidi",
+ "unicode-linebreak",
+ "unicode-script",
+ "unicode-segmentation",
+ "vt100",
+ "windows-sys 0.61.2",
+ "winit",
+]
+
+[[package]]
 name = "spectrum-fonts"
 version = "0.1.0"
 dependencies = [

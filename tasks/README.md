@@ -11,6 +11,7 @@ here.
 
 ## Product and engineering tasks
 
+- [Unified Spectrum app](unified-spectrum-app.md)
 - [Healing Brush](healing-brush.md)
 - [Layer styles](layer-styles.md)
 - [Revision lifecycle](revision-lifecycle.md)

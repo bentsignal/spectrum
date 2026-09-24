@@ -1,5 +1,5 @@
+use super::terminal::terminal_shortcut_label;
 use super::*;
-use crate::terminal::terminal_shortcut_label;
 
 impl LumenApp {
     pub(super) fn toolbar(&mut self, root: &mut egui::Ui) {

@@ -21,12 +21,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
 cargo build --release --workspace --bins --locked
-bash scripts/package-linux.sh
-bash scripts/package-prism-linux.sh
+bash scripts/package-spectrum-linux.sh
 ./target/release/lumen schema
 ./target/release/prism schema
-./target/release/lumen-gui
-./target/release/prism-gui
+./target/release/spectrum-gui
 ```
 
 For a single command without an interactive shell, use, for example,
@@ -43,16 +41,15 @@ loaded native libraries and prefers `/run/opengl-driver/lib` for the running
 NixOS generation's graphics driver.
 
 On the tested KDE Wayland session, native Wayland windows rendered but KDE
-marked them unresponsive. X11/XWayland opened both packaged GUIs normally.
+marked them unresponsive. X11/XWayland opened the packaged GUI normally.
 Use this per-process fallback on that session (requires XWayland and `DISPLAY`):
 
 ```sh
-env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET ./target/release/lumen-gui
-env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET ./target/release/prism-gui
+env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET ./target/release/spectrum-gui
 ```
 
-The Linux scripts produce `target/dist/lumen-linux` and
-`target/dist/prism-linux`. Run their binaries inside `nix develop` too. Packages
+The Linux script produces `target/dist/spectrum-linux`. Run its binaries inside
+`nix develop` too. Packages
 built on NixOS reference the Nix store; these directories are local development
 artifacts, not portable distributions for other Linux machines. Use the
 existing Linux CI artifacts for the existing distribution workflow.

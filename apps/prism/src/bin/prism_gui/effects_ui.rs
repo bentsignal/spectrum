@@ -99,6 +99,6 @@ impl PrismApp {
         let Some(ShapeFill::Gradient(gradient)) = layer.shape_fill.clone() else {
             return;
         };
-        crate::gradient_editor::gradient_editor(self, ui, layer, gradient);
+        super::gradient_editor::gradient_editor(self, ui, layer, gradient);
     }
 }

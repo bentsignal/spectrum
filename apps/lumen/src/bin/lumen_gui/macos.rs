@@ -18,10 +18,10 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
 use winit::platform::macos::EventLoopBuilderExtMacOS;
 
-use super::*;
-use crate::macos_menu_spec::{
+use super::macos_menu_spec::{
     ACTION_MENU_ITEMS, ActionKeyEquivalent, KeyModifiers, NativeMenuAction, NativeMenuSection,
 };
+use super::*;
 
 static OPEN_DOCUMENT_SENDER: OnceLock<Sender<PathBuf>> = OnceLock::new();
 static NATIVE_MENU_SENDER: OnceLock<Sender<NativeMenuAction>> = OnceLock::new();
@@ -169,7 +169,7 @@ pub(super) struct NativeMenuBridge {
 }
 
 impl NativeMenuBridge {
-    fn new(receiver: Receiver<NativeMenuAction>) -> Self {
+    pub(super) fn new(receiver: Receiver<NativeMenuAction>) -> Self {
         Self {
             receiver,
             last_state: None,
@@ -268,6 +268,35 @@ fn install_app_integration(
         "could not install Lumen's macOS menu action handler"
     );
     install_main_menu(&application, delegate_object, marker);
+}
+
+pub(super) fn spectrum_menu_bridge(context: egui::Context) -> NativeMenuBridge {
+    let (sender, receiver) = mpsc::channel();
+    let _ = NATIVE_MENU_SENDER.set(sender);
+    let _ = APP_REPAINT.set(context);
+    let marker = MainThreadMarker::new().expect("Spectrum starts on the macOS main thread");
+    let application = NSApplication::sharedApplication(marker);
+    let delegate = application
+        .delegate()
+        .expect("winit configures the macOS application delegate");
+    let delegate_protocol: &ProtocolObject<dyn NSApplicationDelegate> = &delegate;
+    let class = delegate_protocol.as_ref().class();
+    let implementation: Imp = unsafe {
+        std::mem::transmute(perform_native_menu_action as unsafe extern "C-unwind" fn(_, _, _))
+    };
+    let added = unsafe {
+        ffi::class_addMethod(
+            class as *const _ as *mut _,
+            sel!(performLumenMenuAction:),
+            implementation,
+            c"v@:@".as_ptr(),
+        )
+    };
+    assert!(
+        added.as_bool(),
+        "could not install Spectrum photo menu actions"
+    );
+    NativeMenuBridge::new(receiver)
 }
 
 pub(super) fn run(initial_catalog: Option<PathBuf>) -> eframe::Result {
@@ -397,10 +426,10 @@ fn action_submenu(
 
 fn install_main_menu(application: &NSApplication, target: &AnyObject, marker: MainThreadMarker) {
     let menu_bar = NSMenu::new(marker);
-    let app_menu = submenu(marker, &menu_bar, "Lumen");
+    let app_menu = submenu(marker, &menu_bar, "Spectrum");
     app_menu.addItem(&menu_item(
         marker,
-        "About Lumen",
+        "About Spectrum",
         Some(sel!(orderFrontStandardAboutPanel:)),
         None,
     ));
@@ -410,7 +439,7 @@ fn install_main_menu(application: &NSApplication, target: &AnyObject, marker: Ma
     services_item.setSubmenu(Some(&services_menu));
     app_menu.addItem(&services_item);
     app_menu.addItem(&NSMenuItem::separatorItem(marker));
-    app_menu.addItem(&menu_item(marker, "Hide Lumen", Some(sel!(hide:)), None));
+    app_menu.addItem(&menu_item(marker, "Hide Spectrum", Some(sel!(hide:)), None));
     app_menu.addItem(&menu_item(
         marker,
         "Hide Others",
@@ -429,7 +458,7 @@ fn install_main_menu(application: &NSApplication, target: &AnyObject, marker: Ma
     app_menu.addItem(&NSMenuItem::separatorItem(marker));
     app_menu.addItem(&menu_item(
         marker,
-        "Quit Lumen",
+        "Quit Spectrum",
         Some(sel!(terminate:)),
         Some(key("q")),
     ));
@@ -491,6 +520,18 @@ fn update_menu_state(state: NativeMenuState) {
 }
 
 impl LumenApp {
+    pub(super) fn install_spectrum_menu(&mut self) {
+        let marker =
+            MainThreadMarker::new().expect("Spectrum updates menus on the macOS main thread");
+        let application = NSApplication::sharedApplication(marker);
+        let delegate = application
+            .delegate()
+            .expect("winit configures the macOS application delegate");
+        let delegate_protocol: &ProtocolObject<dyn NSApplicationDelegate> = &delegate;
+        install_main_menu(&application, delegate_protocol.as_ref(), marker);
+        self.native_menu.last_state = None;
+    }
+
     fn native_menu_state(&self, context: &egui::Context) -> NativeMenuState {
         let visible = self.visible_photo_ids();
         let selected_index = self

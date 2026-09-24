@@ -3,9 +3,9 @@
 Lumen has one behavior path and two interfaces:
 
 ```text
-Native GUI (lumen-gui) ─┐
-                        ├─> Command -> Workspace -> Project / Render engine
-CLI (lumen) ────────────┘
+Spectrum photo workspace ─┐
+                          ├─> Command -> Workspace -> Project / Render engine
+CLI (lumen) ───────────────┘
 ```
 
 The desktop app does not own a second editing model. Buttons and committed
@@ -25,7 +25,7 @@ same values directly or deserializes them through `lumen run '<json>'`.
 - `apps/lumen/src/bin/lumen_gui/`: focused native GUI modules for state, library,
   toolbar, inspector, canvas, dialogs, and drawing helpers
 
-The Lumen library remains named `lumen_core`; both binaries link it in-process.
+The Lumen library remains named `lumen_core`; Spectrum and the CLI link it in-process.
 `lumen_core` re-exports the shared Spectrum adjustment types for catalog API
 compatibility. The apps do not require a remote service or browser runtime.
 Optional authenticated local live bridges let CLI agents collaborate with an

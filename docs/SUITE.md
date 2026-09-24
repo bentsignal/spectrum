@@ -1,8 +1,8 @@
 # Spectrum
 
-This repository is a Rust workspace for small, fast, agent-first creative tools.
-The suite shares rendering primitives and automation conventions while keeping
-each application's workspace focused.
+This repository is a Rust workspace for one fast, agent-first creative desktop
+app. Its photo and canvas workspaces keep focused editing interfaces while
+sharing rendering primitives and automation conventions.
 
 The repository root is a virtual Cargo workspace. Applications live under
 `apps/`, reusable Spectrum behavior under `crates/`, and repository-wide policy
@@ -15,14 +15,14 @@ and `tools/`; files over 1,000 lines fail both local workspace tests and CI.
 
 ## Applications
 
-| App | Focus | Binaries |
+| Workspace | Focus | Binaries |
 | --- | --- | --- |
-| Lumen | Photo library, RAW development, culling, presets, and batch export | `lumen`, `lumen-gui` |
-| Prism | Layered canvas composition, text, masks, transforms, and image export | `prism`, `prism-gui` |
+| Photos (Lumen engine) | Photo library, RAW development, culling, presets, and batch export | `spectrum-gui`, `lumen` |
+| Canvas (Prism engine) | Layered canvas composition, text, masks, transforms, and image export | `spectrum-gui`, `prism` |
 
-Lumen is intentionally not a layer editor, and Prism is intentionally not a
-photo catalog. Opening a photo from Lumen in Prism is an explicit handoff rather
-than a reason to crowd either interface.
+The photo editor is not a layer editor, and the canvas editor is not a photo
+catalog. Spectrum switches between them in one window; the current
+`from-lumen` handoff still creates a rendered canvas layer.
 
 Prism's editable document format uses the `.prism` extension. Legacy `.mica`
 projects remain readable and writable. The format is an exchange
@@ -54,11 +54,10 @@ independent of Prism. Future handoffs should follow the same rule: exchange a
 documented asset or project representation, keep originals immutable, and make
 the operation available from both CLI and GUI.
 
-The intended destination is one Spectrum desktop app with focused photo,
-canvas, video, and audio workspaces. The existing Lumen and Prism applications
-are the current implementation. Their commands and rendering behavior should
-remain usable as the app shell is unified. See [direction](DIRECTION.md) for the
-product intent and the still-open questions about cross-workspace assets.
+The intended destination adds video and audio workspaces. The existing Lumen
+and Prism engines provide the current photo and canvas workspaces. See
+[direction](DIRECTION.md) for the still-open questions about cross-workspace
+assets.
 
 ## Workspace commands
 
@@ -71,5 +70,4 @@ cargo test --workspace --all-targets --locked
 cargo build --release --workspace --bins --locked
 ```
 
-Build only one application package by using its platform script. Lumen's scripts
-are named `package-<platform>`; Prism's are named `package-prism-<platform>`.
+Build the Spectrum application package with `package-spectrum-<platform>`.

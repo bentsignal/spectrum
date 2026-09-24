@@ -1,5 +1,6 @@
 [package]
 name = "prism"
+autobins = false
 version = "0.1.0"
 edition.workspace = true
 description = "A fast, agent-first layered image editor"
@@ -18,10 +19,6 @@ name = "prism_core"
 [[bin]]
 name = "prism"
 path = "src/bin/prism.rs"
-
-[[bin]]
-name = "prism-gui"
-path = "src/bin/prism-gui.rs"
 
 [dependencies]
 anyhow.workspace = true

@@ -11,8 +11,7 @@ bounded_runner="$repo_root/scripts/run-spectrum-bounded.py"
 sdk_tree_hasher="$repo_root/scripts/hash-spectrum-sdk-tree.py"
 sdk_validator="$repo_root/scripts/verify-spectrum-ghostty-sdk.py"
 xcrun_shim="$repo_root/scripts/spectrum-ghostty-xcrun-shim.sh"
-package_script="$repo_root/scripts/package-prism-macos.sh"
-lumen_package_script="$repo_root/scripts/package-macos.sh"
+package_script="$repo_root/scripts/package-spectrum-macos.sh"
 bridge_source="$repo_root/crates/spectrum-terminal/native/ghostty-bridge/Sources/SpectrumGhosttyBridge/SpectrumGhosttyBridge.swift"
 surface_source="$repo_root/crates/spectrum-terminal/native/ghostty-bridge/Sources/SpectrumGhosttyBridge/SpectrumGhosttySurfaceView.swift"
 focus_handoff_source="$repo_root/crates/spectrum-terminal/native/ghostty-bridge/Sources/SpectrumGhosttyBridge/SpectrumGhosttyFocusHandoff.swift"
@@ -20,11 +19,7 @@ focus_handoff_tests="$repo_root/crates/spectrum-terminal/native/ghostty-bridge/T
 fixture="$(mktemp -d "$repo_root/target/ghostty-source-tests.XXXXXX")"
 
 [[ -x "$package_script" ]] || {
-  echo "Prism packaging entrypoint is not executable: $package_script" >&2
-  exit 1
-}
-[[ -x "$lumen_package_script" ]] || {
-  echo "Lumen packaging entrypoint is not executable: $lumen_package_script" >&2
+  echo "Spectrum packaging entrypoint is not executable: $package_script" >&2
   exit 1
 }
 stale_proof_app_path="apps/prism/native/ghostty"'-proof'
@@ -558,10 +553,8 @@ expect_failure "" env PATH="$fixture/shims:/usr/bin:/bin" \
   SPECTRUM_GHOSTTY_TEST_MODE=signature "${bridge_command[@]}"
 
 # A caller cannot authorize a forged artifact plus matching attestation by
-# passing an external proof root to either production entry point.
-expect_failure "usage:" bash "$repo_root/scripts/package-prism-macos.sh" \
-  --with-ghostty "$fixture/forged-proof"
-expect_failure "usage:" bash "$repo_root/scripts/package-macos.sh" \
+# passing an external proof root to the production entry point.
+expect_failure "usage:" bash "$package_script" \
   --with-ghostty "$fixture/forged-proof"
 private_package_root="$(mktemp -d "$repo_root/target/spectrum-ghostty-package.XXXXXX")"
 chmod 0700 "$private_package_root"
@@ -576,8 +569,7 @@ rmdir "$fixture/forged-proof" "$private_package_root"
 
 python3 - "$repo_root/scripts/build-spectrum-ghostty-macos.sh" \
   "$repo_root/scripts/build-spectrum-ghostty-bridge-macos.sh" \
-  "$repo_root/scripts/package-prism-macos.sh" \
-  "$repo_root/scripts/package-macos.sh" \
+  "$package_script" \
   "$bridge_source" "$surface_source" \
   "$focus_handoff_source" "$focus_handoff_tests" <<'PY'
 import sys
@@ -585,11 +577,11 @@ from pathlib import Path
 
 proof = Path(sys.argv[1]).read_text()
 consumer = Path(sys.argv[2]).read_text()
-packages = [Path(sys.argv[3]).read_text(), Path(sys.argv[4]).read_text()]
-bridge_source = Path(sys.argv[5]).read_text()
-surface_source = Path(sys.argv[6]).read_text()
-focus_handoff_source = Path(sys.argv[7]).read_text()
-focus_handoff_tests = Path(sys.argv[8]).read_text()
+package = Path(sys.argv[3]).read_text()
+bridge_source = Path(sys.argv[4]).read_text()
+surface_source = Path(sys.argv[5]).read_text()
+focus_handoff_source = Path(sys.argv[6]).read_text()
+focus_handoff_tests = Path(sys.argv[7]).read_text()
 zig = proof.index('zig_source="$toolchains_dir/zig-$zig_arch-macos-$zig_version"')
 remove = proof.index('safe_remove_tree "$zig_source"', zig)
 extract = proof.index('extract_once "$zig_archive"', remove)
@@ -616,24 +608,21 @@ assert 'ln -s -- "$xcframework"' not in consumer
 assert 'scratch="$stage/swift-build"' in consumer
 assert '"$repo_root=/spectrum"' in consumer
 assert '"-ffile-prefix-map=$repo_root=/spectrum"' in consumer
-for package in packages:
-    assert 'bash "$proof_builder" --storage-root "$proof_root"' in package
-    assert 'chain_path_scrubber_sha' in package
-    assert 'mktemp -d "$repo_root/target/spectrum-ghostty-package.XXXXXX"' in package
-    assert '"$repo_root"/target/spectrum-ghostty-package.*)' in package
-    assert 'cargo_features' not in package
-    assert 'cargo_features[@]' not in package
-    assert 'chmod -R u+w "$bundle"' in package
-    assert 'refusing to replace unsafe bundle path' in package
-    assert 'local exit_code=$?' in package
-    assert 'return "$exit_code"' in package
-assert 'cargo build --release --locked -p prism --bins --features ghostty-terminal' in packages[0]
-assert 'cargo build --release --locked -p prism --bins\n' in packages[0]
-assert 'cargo build --release --locked -p lumen-photo --bins --features ghostty-terminal' in packages[1]
-assert 'cargo build --release --locked -p lumen-photo --bins\n' in packages[1]
+assert 'bash "$proof_builder" --storage-root "$proof_root"' in package
+assert 'chain_path_scrubber_sha' in package
+assert 'mktemp -d "$repo_root/target/spectrum-ghostty-package.XXXXXX"' in package
+assert '"$repo_root"/target/spectrum-ghostty-package.*)' in package
+assert 'cargo_features' not in package
+assert 'cargo_features[@]' not in package
+assert 'chmod -R u+w "$bundle"' in package
+assert 'refusing to replace unsafe bundle path' in package
+assert 'local exit_code=$?' in package
+assert 'return "$exit_code"' in package
+assert 'cargo build --release --locked -p spectrum -p prism -p lumen-photo --bins --features spectrum/ghostty-terminal' in package
+assert 'cargo build --release --locked -p spectrum -p prism -p lumen-photo --bins\n' in package
 assert '"$proof_root" == "$private_root/proof"' in consumer
 assert 'bridge packaging rejects externally prepared proof roots' in consumer
-assert all('verified-proof-root' not in package for package in packages)
+assert 'verified-proof-root' not in package
 assert 'public typealias SpectrumGhosttyEventCallback' in bridge_source
 assert '@convention(c)' in bridge_source
 assert surface_source.count('guard ownsPresentedFocus else { return }') >= 2
@@ -654,9 +643,7 @@ test_copy = consumer.index('cp -R -- "$bridge_source/Tests"')
 swift_test = consumer.index('xcrun swift test', test_copy)
 swift_build = consumer.index('xcrun swift build', swift_test)
 assert test_copy < swift_test < swift_build
-assert 'apps/prism/' not in packages[1]
-assert 'packaging/prism/' not in packages[1]
-assert 'scripts/build-prism' not in packages[1]
+assert 'scripts/build-prism' not in package
 PY
 
 echo "Spectrum Ghostty packaging source checks passed"

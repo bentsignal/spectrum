@@ -1,9 +1,8 @@
 # Prism
 
-Prism is the suite's focused layered image editor: a small, fast, native Rust
-application for the work that belongs on a canvas rather than in a photo
-catalog. It complements Lumen instead of adding Photoshop-style complexity to
-Lumen's development workspace.
+Prism is Spectrum's focused layered image editing workspace. It owns the work
+that belongs on a canvas while the photo workspace keeps its development and
+catalog controls.
 
 The practical target is a streamlined Photoshop replacement for creating a
 canvas, combining raster, text, and editable shape layers, transforming and cropping content,
@@ -24,13 +23,13 @@ Prism to another Spectrum app. Flattened exports remain separate outputs.
 Prism follows the same agent-first contract as Lumen:
 
 ```text
-Native GUI (prism-gui) ─┐
-                       ├─> Command -> Project -> compositor / shared imaging kernel
-CLI (prism) ────────────┘
+Spectrum canvas workspace ─┐
+                           ├─> Command -> Project -> compositor / shared imaging kernel
+CLI (prism) ────────────────┘
 ```
 
 Every persistent GUI mutation is a typed core command. The `prism` CLI exposes
-the same commands for people, scripts, and agents, while `prism-gui` provides a
+the same commands for people, scripts, and agents, while Spectrum provides a
 fast native editing surface over that behavior. Project validation, range
 checking, history, rendering, and persistence belong below both interfaces; a
 GUI control is never the only way to perform an operation.
@@ -44,7 +43,7 @@ A Prism GUI workspace is a live in-memory editing session. Do not run a direct
 mutating `prism --project <path> ...` command against that same project while it
 is open in the non-collaborative GUI: the GUI will not reload that unrelated
 session automatically, and a later GUI edit can publish from stale state. Close
-the target tab (open or create another document first) or quit Prism before
+the target tab (open or create another document first) or quit Spectrum before
 direct CLI work, then reopen the project afterward. For coordinated live work,
 use `prism --project <path> agent start --mode together` and pass its reported
 `--session` to every subsequent command.
@@ -127,16 +126,16 @@ Run either interface from the workspace:
 
 ```sh
 cargo run --release -p prism --bin prism -- schema
-cargo run --release -p prism --bin prism-gui
+cargo run --release -p spectrum --bin spectrum-gui
 ```
 
 Build an optimized package on its target operating system:
 
 ```sh
-bash scripts/package-prism-macos.sh
-bash scripts/package-prism-linux.sh
-pwsh scripts/package-prism-windows.ps1
+bash scripts/package-spectrum-macos.sh
+bash scripts/package-spectrum-linux.sh
+pwsh scripts/package-spectrum-windows.ps1
 ```
 
-The scripts only build Cargo package `prism` and stage files beneath
-`target/dist`; they do not modify a Lumen installation or project.
+The scripts package Spectrum with the `lumen` and `prism` CLIs beneath
+`target/dist`; they do not modify existing projects.

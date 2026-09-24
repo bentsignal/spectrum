@@ -469,8 +469,8 @@ mod tests {
     };
     use spectrum_revisions::{Actor, ActorKind, CollaborationMode, SessionId};
 
+    use super::super::TerminalDock;
     use super::*;
-    use crate::TerminalDock;
 
     #[test]
     fn tab_lifecycle_rotates_and_removes_authenticated_discovery() {
@@ -628,7 +628,7 @@ mod tests {
         let original = registry.register(7, &workspace).unwrap().record;
         let capability = registry.directory.load_capability(&original).unwrap();
         let mut terminal = TerminalDock::new(true);
-        terminal.new_session(crate::terminal::terminal_launch(
+        terminal.new_session(super::super::terminal::terminal_launch(
             &workspace,
             Some(original.binding_id),
         ));
@@ -680,7 +680,7 @@ mod tests {
         let mut registry = PrismLiveRegistry::at_root(root).unwrap();
         let record = registry.register(7, &workspace).unwrap().record;
         let mut terminal = TerminalDock::new(true);
-        terminal.new_session(crate::terminal::terminal_launch(
+        terminal.new_session(super::super::terminal::terminal_launch(
             &workspace,
             Some(record.binding_id),
         ));

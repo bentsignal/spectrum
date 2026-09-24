@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Spectrum
+Comment=Native photo and canvas editor
+Exec=spectrum-gui %F
+Icon=com.bentsignal.Spectrum
+Terminal=false
+Categories=Graphics;Photography;RasterGraphics;
+StartupNotify=true

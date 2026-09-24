@@ -31,10 +31,11 @@ artifact. Remove only verified generated directories; moving them to Trash
 does not reclaim space until they are deleted there. Confirm the reclaimed
 space afterward.
 
-This repository is the Spectrum creative-suite monorepo. Applications live in
-`apps/` (`apps/lumen`, `apps/prism`); app-neutral imaging behavior lives in
+This repository is the Spectrum creative-suite monorepo. The unified desktop
+app lives in `apps/spectrum`; the photo and canvas engines and CLIs live in
+`apps/lumen` and `apps/prism`. App-neutral imaging behavior lives in
 `crates/spectrum-imaging`; repository policy checks live in
-`tools/workspace-guardrails`. Preserve each app's focused UI. Do not make one
+`tools/workspace-guardrails`. Preserve each workspace's focused UI. Do not make one
 app depend on another for behavior that belongs in a neutral Spectrum crate.
 
 Use the `lumen` CLI for all photo and catalog automation and the `prism` CLI for

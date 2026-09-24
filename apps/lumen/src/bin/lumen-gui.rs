@@ -1,5 +1,3 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
@@ -158,7 +156,7 @@ fn main() -> eframe::Result {
     macos::run(initial_catalog)
 }
 
-struct LumenApp {
+pub(crate) struct LumenApp {
     workspace: Workspace,
     preview: Option<TextureHandle>,
     preview_source: Option<(u64, DynamicImage)>,
@@ -223,6 +221,43 @@ struct LumenApp {
 }
 
 impl LumenApp {
+    pub(crate) fn for_spectrum(
+        creation: &eframe::CreationContext<'_>,
+        initial_catalog: Option<PathBuf>,
+        open_document_receiver: Receiver<PathBuf>,
+    ) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Self::new(
+                creation,
+                initial_catalog,
+                open_document_receiver,
+                macos::spectrum_menu_bridge(creation.egui_ctx.clone()),
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        Self::new(creation, initial_catalog, open_document_receiver)
+    }
+
+    pub(crate) fn suspend_for_spectrum(&mut self) {
+        #[cfg(all(target_os = "macos", feature = "ghostty-terminal"))]
+        self.native_terminal.hide_all();
+    }
+
+    pub(crate) fn poll_background_for_spectrum(&mut self, context: &egui::Context) {
+        self.receive_open_documents(context);
+        self.drain_live_bridge(context);
+        self.sync_agent_collaborations(context);
+        self.poll_terminal(context);
+        self.receive_prepared_previews(context);
+        self.observe_live_bridge();
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn show_spectrum_menu(&mut self) {
+        self.install_spectrum_menu();
+    }
+
     fn new(
         creation: &eframe::CreationContext<'_>,
         initial_catalog: Option<PathBuf>,

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "apps/spectrum",
     "apps/lumen",
     "apps/prism",
     "crates/spectrum-imaging",

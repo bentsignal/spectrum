@@ -1,9 +1,8 @@
 [package]
-name = "lumen-photo"
-autobins = false
-version = "0.5.0"
+name = "spectrum"
+version = "0.1.0"
 edition.workspace = true
-description = "A lean, cross-platform, CLI-first photo editor written in Rust"
+description = "Unified Spectrum creative desktop app"
 license.workspace = true
 repository.workspace = true
 
@@ -11,31 +10,44 @@ repository.workspace = true
 default = []
 ghostty-terminal = ["spectrum-terminal/ghostty-terminal"]
 
-[lib]
-name = "lumen_core"
-
 [[bin]]
-name = "lumen"
-path = "src/bin/lumen.rs"
+name = "spectrum-gui"
+path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 chrono.workspace = true
-clap.workspace = true
 eframe.workspace = true
+epaint_default_fonts.workspace = true
 flate2.workspace = true
+fontdue.workspace = true
+fs2.workspace = true
 image.workspace = true
-rawler.workspace = true
+icu_locale.workspace = true
+icu_locale_core.workspace = true
+lumen-photo = { path = "../lumen" }
+png.workspace = true
+prism = { path = "../prism" }
 rayon.workspace = true
 rfd.workspace = true
 same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-spectrum-imaging = { path = "../../crates/spectrum-imaging" }
+sha2.workspace = true
+spectrum-fonts = { path = "../../crates/spectrum-fonts" }
 spectrum-history-ui = { path = "../../crates/spectrum-history-ui" }
+spectrum-imaging = { path = "../../crates/spectrum-imaging" }
 spectrum-live-bridge = { path = "../../crates/spectrum-live-bridge" }
 spectrum-revisions = { path = "../../crates/spectrum-revisions" }
 spectrum-terminal = { path = "../../crates/spectrum-terminal" }
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
+tiff = "0.11.3"
+ttf-parser.workspace = true
+unicode-bidi.workspace = true
+unicode-linebreak.workspace = true
+unicode-script.workspace = true
+unicode-segmentation.workspace = true
 vt100.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -44,5 +56,12 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAp
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSObject", "NSString", "NSURL"] }
 winit.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile = "3.27"

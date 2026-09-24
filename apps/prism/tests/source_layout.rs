@@ -205,49 +205,28 @@ fn revision_graph_comes_from_the_shared_spectrum_surface() {
 #[test]
 fn native_macos_menu_disables_winit_replacement_before_launch() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let source = fs::read_to_string(manifest.join("src/bin/prism_gui/macos.rs"))
+    let repository = manifest.join("../..");
+    let source = fs::read_to_string(repository.join("apps/spectrum/src/macos.rs"))
         .expect("macOS integration source should be readable");
     let disable_default = source
         .find("event_loop_builder.with_default_menu(false)")
-        .expect("Prism must own the process-wide macOS menu");
+        .expect("Spectrum must own the process-wide macOS menu");
     let build = source
         .find("event_loop_builder.build()")
         .expect("event loop builder should remain explicit");
     let install = source
-        .find("install_app_integration(open_document_sender, native_menu_sender)")
-        .expect("Prism menu should be installed after creating the event loop");
+        .find("install_open_documents(open_document_sender)")
+        .expect("Spectrum open-document handling should follow event-loop creation");
     assert!(disable_default < build && build < install);
-
-    let binary = fs::read_to_string(manifest.join("src/bin/prism-gui.rs"))
-        .expect("Prism GUI entry point should be readable");
-    let launch = fs::read_to_string(manifest.join("src/bin/prism_gui/launch.rs"))
-        .expect("Prism GUI launch module should be readable");
-    assert!(!binary.contains("with_default_menu("));
-    assert!(binary.contains("fn main() -> eframe::Result"));
-    assert!(binary.contains("launch::run()"));
-    assert!(launch.contains("#[cfg(not(target_os = \"macos\"))]\npub(super) fn run()"));
-    assert!(launch.contains("eframe::run_native("));
 }
 
 #[test]
-fn prism_branding_uses_the_user_crop_in_runtime_and_native_packages() {
+fn prism_branding_source_preserves_the_user_crop() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repository = manifest.join("../..");
     let app = fs::read_to_string(manifest.join("src/bin/prism_gui/launch.rs")).unwrap();
-    let plist = fs::read_to_string(repository.join("packaging/prism/macos/Info.plist")).unwrap();
-    let macos = fs::read_to_string(repository.join("scripts/package-prism-macos.sh")).unwrap();
-    let linux = fs::read_to_string(repository.join("scripts/package-prism-linux.sh")).unwrap();
-    let windows = fs::read_to_string(repository.join("scripts/package-prism-windows.ps1")).unwrap();
-
     assert!(app.contains("with_icon(prism_icon())"));
     assert!(app.contains("assets/branding/prism-app-icon.png"));
-    assert!(plist.contains("<string>Prism.icns</string>"));
-    assert!(plist.contains("<key>CFBundleIconName</key>"));
-    assert!(plist.contains("<string>Prism</string>"));
-    assert!(macos.contains("assets/branding/Prism.icon"));
-    assert!(macos.contains("scripts/stamp-macos-bundle.sh"));
-    assert!(linux.contains("com.bentsignal.Prism.png"));
-    assert!(windows.contains("Prism.png"));
 
     let native_icon = repository.join("assets/branding/Prism.icon");
     let icon_source = fs::read_to_string(native_icon.join("icon.json")).unwrap();
@@ -301,9 +280,9 @@ fn bundled_ubuntu_license_is_exact_and_installed_by_every_native_package() {
         "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002"
     );
     for script in [
-        "scripts/package-prism-macos.sh",
-        "scripts/package-prism-linux.sh",
-        "scripts/package-prism-windows.ps1",
+        "scripts/package-spectrum-macos.sh",
+        "scripts/package-spectrum-linux.sh",
+        "scripts/package-spectrum-windows.ps1",
     ] {
         let source = fs::read_to_string(repository.join(script)).unwrap();
         assert!(
@@ -315,7 +294,7 @@ fn bundled_ubuntu_license_is_exact_and_installed_by_every_native_package() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn prism_macos_package_build_is_bash_3_safe_and_preserves_cargo_failure() {
+fn spectrum_macos_package_build_is_bash_3_safe_and_preserves_cargo_failure() {
     use std::{
         os::unix::fs::PermissionsExt,
         process::Command,
@@ -344,7 +323,7 @@ fn prism_macos_package_build_is_bash_3_safe_and_preserves_cargo_failure() {
     fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new("/bin/bash")
-        .arg(repository.join("scripts/package-prism-macos.sh"))
+        .arg(repository.join("scripts/package-spectrum-macos.sh"))
         .current_dir(&repository)
         .env("PATH", format!("{}:/usr/bin:/bin", shims.display()))
         .env("PRISM_PACKAGE_CARGO_LOG", &cargo_log)
@@ -355,11 +334,11 @@ fn prism_macos_package_build_is_bash_3_safe_and_preserves_cargo_failure() {
     assert!(!String::from_utf8_lossy(&output.stderr).contains("unbound variable"));
     assert_eq!(
         fs::read_to_string(&cargo_log).unwrap(),
-        "build\n--release\n--locked\n-p\nprism\n--bins\n"
+        "build\n--release\n--locked\n-p\nspectrum\n-p\nprism\n-p\nlumen-photo\n--bins\n"
     );
 
-    let package_source = fs::read_to_string(repository.join("scripts/package-prism-macos.sh"))
-        .expect("Prism package script should be readable");
+    let package_source = fs::read_to_string(repository.join("scripts/package-spectrum-macos.sh"))
+        .expect("Spectrum package script should be readable");
     let cleanup_start = package_source
         .find("cleanup_private_root() {")
         .expect("package script should define cleanup_private_root");

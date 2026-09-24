@@ -7,13 +7,11 @@ egui renderer.
 
 Two independent gates are required:
 
-1. Package either application explicitly through the pinned, private proof chain:
+1. Package Spectrum explicitly through the pinned, private proof chain:
 
    ```sh
    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-     bash scripts/package-prism-macos.sh --with-ghostty
-   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-     bash scripts/package-macos.sh --with-ghostty
+     bash scripts/package-spectrum-macos.sh --with-ghostty
    ```
 
    This mode requires the pinned Xcode 26.5 (17F42) through process-local

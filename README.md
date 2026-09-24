@@ -1,8 +1,11 @@
 # Spectrum
 
-Spectrum is a suite of small, fast, native creative tools written in Rust.
+Spectrum is one native creative app with focused photo and canvas workspaces.
 
-- **Lumen** — photo development and library management. Complete.
-- **Prism** — layered image editing and composition. In progress.
+- **Photos** — the existing Lumen development and library workspace.
+- **Canvas** — the existing Prism layered editing workspace.
+
+The `lumen` and `prism` CLIs remain available for automation. Run the desktop
+app with `cargo run -p spectrum --bin spectrum-gui`.
 
 For NixOS setup and build commands, see [Development](docs/DEVELOPMENT.md).

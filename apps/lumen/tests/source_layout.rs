@@ -157,23 +157,12 @@ fn catalog_and_filmstrip_thumbnails_stay_on_the_display_only_proxy_path() {
 }
 
 #[test]
-fn lumen_branding_is_wired_to_runtime_and_native_packages() {
+fn lumen_branding_source_remains_available_for_the_photo_workspace() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repository = manifest.join("../..");
     let app = fs::read_to_string(manifest.join("src/bin/lumen-gui.rs")).unwrap();
-    let plist = fs::read_to_string(repository.join("packaging/macos/Info.plist")).unwrap();
-    let macos = fs::read_to_string(repository.join("scripts/package-macos.sh")).unwrap();
-    let linux = fs::read_to_string(repository.join("scripts/package-linux.sh")).unwrap();
-    let windows = fs::read_to_string(repository.join("scripts/package-windows.ps1")).unwrap();
-
     assert!(app.contains("with_icon(lumen_icon())"));
     assert!(app.contains("lumen-app-icon.png"));
-    assert!(plist.contains("<string>Lumen.icns</string>"));
-    assert!(plist.contains("<key>CFBundleIconName</key><string>Lumen</string>"));
-    assert!(macos.contains("assets/branding/Lumen.icon"));
-    assert!(macos.contains("scripts/stamp-macos-bundle.sh"));
-    assert!(linux.contains("com.bentsignal.Lumen.png"));
-    assert!(windows.contains("Lumen.png"));
 
     let native_icon = repository.join("assets/branding/Lumen.icon");
     let icon_source = fs::read_to_string(native_icon.join("icon.json")).unwrap();
