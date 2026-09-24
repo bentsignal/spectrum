@@ -1,5 +1,5 @@
 ---
-status: in_progress
+status: done
 priority: high
 ---
 
@@ -24,3 +24,16 @@ while the unified command surface is designed.
   existing editing, history, export, and terminal flows remain available.
 - Linux, macOS, and Windows builds and packages expose one Spectrum GUI app.
 - The full required validation loop and affected packaging checks pass.
+
+## Outcome
+
+The Spectrum desktop app now hosts the existing Lumen and Prism views in one
+window. A small workspace switcher moves between Photos and Canvas while each
+editor retains its state. Existing document types open in their respective
+workspaces. The separate GUI packages and launchers have been replaced by one
+Spectrum package; the `lumen` and `prism` CLIs remain available.
+
+The required format, Clippy, and test loop passed locally. The Linux package
+was built and its binaries verified locally; the Photos to Canvas to Photos
+flow was checked in an isolated display. [CI run 36053949146](https://github.com/bentsignal/spectrum/actions/runs/36053949146)
+passed format, lint, tests, and Linux, macOS, and Windows release packaging.
