@@ -5,7 +5,7 @@ On 2026-09-24, the Spectrum UAV export contained 1,003 source records:
 source-project/worktree records. The export generated 900 temporary files,
 including indexes; file count is not record count. Every record was classified
 in a temporary item-level ledger and checked against current code and docs,
-Git history, merged pull requests, the single open PR, and closed issues.
+Git history, merged pull requests, the then-open PR #92, and closed issues.
 
 | Disposition | Records | Result |
 | --- | ---: | --- |
@@ -28,9 +28,10 @@ Git history, merged pull requests, the single open PR, and closed issues.
 - The merged macOS icon scaling was later rejected by the user, and a follow-up
   Icon Composer PR was closed after a failed Dock review. The appearance is
   unresolved and tracked in [macOS icons](../tasks/macos-icons.md).
-- The open [Prism toolbar PR #92](https://github.com/bentsignal/spectrum/pull/92)
-  is a review prototype. No A/B/C behavior has been selected; the user owns
-  that product choice in [toolbar overflow](../tasks/toolbar-overflow.md).
+- [Prism toolbar PR #92](https://github.com/bentsignal/spectrum/pull/92)
+  was a review prototype. The user subsequently closed it without selecting
+  A/B/C, pending a broader Prism redesign. The
+  [task record](../tasks/toolbar-overflow.md) captures that decision.
 
 No other unresolved source conflict was found. Historical UAV source records
 were left intact. Repository docs and task files now hold active project

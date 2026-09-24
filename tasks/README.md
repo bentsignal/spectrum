@@ -11,7 +11,6 @@ here.
 
 ## Product and engineering tasks
 
-- [Prism toolbar overflow](toolbar-overflow.md)
 - [Healing Brush](healing-brush.md)
 - [Layer styles](layer-styles.md)
 - [Revision lifecycle](revision-lifecycle.md)
@@ -21,3 +20,8 @@ here.
 - [Spectrum UI polish](visual-polish.md)
 - [Rust dead-code audit](rust-dead-code-audit.md)
 - [Lumen terminal dock](lumen-terminal-dock.md)
+
+## Closed decisions
+
+- [Prism toolbar overflow prototype](toolbar-overflow.md) — canceled pending a
+  broader Prism redesign.

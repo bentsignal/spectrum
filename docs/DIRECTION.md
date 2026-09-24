@@ -32,7 +32,7 @@ and retention work is tracked in [revision lifecycle](../tasks/revision-lifecycl
 
 ## Current product work
 
-Prism remains in progress. The open [toolbar review](../tasks/toolbar-overflow.md)
-offers three prototypes and awaits a user choice before production integration.
-Other unfinished work is in the [task directory](../tasks/README.md). Keep
-Lumen's photo workflow and Prism's canvas workflow focused as they mature.
+Prism remains in progress. The [toolbar overflow prototype](../tasks/toolbar-overflow.md)
+was closed without selecting a design because a broader Prism overhaul is
+planned. Other unfinished work is in the [task directory](../tasks/README.md).
+Keep Lumen's photo workflow and Prism's canvas workflow focused as they mature.
