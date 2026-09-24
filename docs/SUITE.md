@@ -54,11 +54,11 @@ independent of Prism. Future handoffs should follow the same rule: exchange a
 documented asset or project representation, keep originals immutable, and make
 the operation available from both CLI and GUI.
 
-The next planned application is one unified video and motion editor. It will
-combine the parts of timeline editing and motion graphics that are useful in
-this workflow instead of reproducing Premiere and After Effects as two separate
-products. It should consume exported or linked suite assets through explicit
-handoffs and share the same command-first automation model.
+The intended destination is one Spectrum desktop app with focused photo,
+canvas, video, and audio workspaces. The existing Lumen and Prism applications
+are the current implementation. Their commands and rendering behavior should
+remain usable as the app shell is unified. See [direction](DIRECTION.md) for the
+product intent and the still-open questions about cross-workspace assets.
 
 ## Workspace commands
 

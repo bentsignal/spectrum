@@ -19,6 +19,7 @@ here.
 - [Selection acceptance](selection-user-acceptance.md)
 - [Rust dead-code audit](rust-dead-code-audit.md)
 - [Lumen terminal dock](lumen-terminal-dock.md)
+- [Mac preview builds](macos-preview-builds.md)
 
 ## Closed decisions
 

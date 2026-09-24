@@ -1,11 +1,22 @@
 # Spectrum direction
 
-Spectrum is a suite of focused, fast, native Rust creative tools. Lumen owns
-photo development and catalogs; Prism owns layered composition. **Bloom** is
-the confirmed name for the future single video and motion editor. Its name is
-a product decision, not an implementation commitment. Keep shared behavior in
-app-neutral crates and expose persistent edits through core commands and CLIs.
-See [suite architecture](SUITE.md).
+Spectrum is intended to become one native Rust creative app. It should bring
+photo development, layered composition, video editing, audio editing, and music
+making into one workspace while keeping the editing views focused on their
+respective work. The current Lumen photo/catalog and Prism canvas applications
+are the starting point, not permanent separate products. A user should be able
+to find their catalogs and canvases in Spectrum and use work from one editor in
+another without repeated export and import steps. The exact navigation, asset
+links, and project format remain to be designed.
+
+The near-term sequence is to combine Lumen and Prism into a thin Spectrum app
+using the current UI, explore how their workspaces and assets connect, then
+rebuild the established interface in GPUI. Avoid a full redesign during the
+initial combination. Keep shared behavior in app-neutral crates and expose
+persistent edits through core commands and CLIs. [Suite architecture](SUITE.md)
+describes the current implementation. **Bloom** was previously reserved for a
+separate video and motion editor; the unified Spectrum direction supersedes
+that separate-app plan.
 
 ## Creative history and collaboration
 
@@ -33,6 +44,5 @@ and retention work is tracked in [revision lifecycle](../tasks/revision-lifecycl
 ## Current product work
 
 Prism remains in progress. The [toolbar overflow prototype](../tasks/toolbar-overflow.md)
-was closed without selecting a design because a broader Prism overhaul is
+was closed without selecting a design because a broader interface overhaul is
 planned. Other unfinished work is in the [task directory](../tasks/README.md).
-Keep Lumen's photo workflow and Prism's canvas workflow focused as they mature.
