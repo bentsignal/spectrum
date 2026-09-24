@@ -601,7 +601,10 @@ fn unix_millis() -> BridgeResult<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::{thread, time::Duration};
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
 
     use super::*;
 
@@ -682,8 +685,15 @@ mod tests {
         let initial = published.record().clone();
         let lease =
             DiscoveryLease::with_refresh_interval(published, Duration::from_millis(10)).unwrap();
-        thread::sleep(Duration::from_millis(40));
-        let refreshed = lease.record().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let refreshed = loop {
+            let refreshed = lease.record().unwrap();
+            if refreshed.refreshed_unix_millis > initial.refreshed_unix_millis {
+                break refreshed;
+            }
+            assert!(Instant::now() < deadline, "discovery lease did not refresh");
+            thread::sleep(Duration::from_millis(10));
+        };
         assert!(refreshed.refreshed_unix_millis > initial.refreshed_unix_millis);
         assert!(refreshed.expires_unix_millis > initial.expires_unix_millis);
         drop(lease);

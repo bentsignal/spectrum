@@ -267,7 +267,8 @@ pub(super) fn spectrum_menu_bridge(context: egui::Context) -> NativeMenuBridge {
         .delegate()
         .expect("winit configures the macOS application delegate");
     let delegate_protocol: &ProtocolObject<dyn NSApplicationDelegate> = &delegate;
-    let class = delegate_protocol.as_ref().class();
+    let delegate_object: &AnyObject = delegate_protocol.as_ref();
+    let class = delegate_object.class();
     let implementation: Imp = unsafe {
         std::mem::transmute(perform_native_menu_action as unsafe extern "C-unwind" fn(_, _, _))
     };
@@ -520,7 +521,8 @@ impl PrismApp {
             .delegate()
             .expect("winit configures the macOS application delegate");
         let delegate_protocol: &ProtocolObject<dyn NSApplicationDelegate> = &delegate;
-        install_main_menu(&application, delegate_protocol.as_ref(), marker);
+        let delegate_object: &AnyObject = delegate_protocol.as_ref();
+        install_main_menu(&application, delegate_object, marker);
         self.native_menu.last_state = None;
     }
 

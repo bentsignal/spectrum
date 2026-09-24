@@ -8,7 +8,7 @@ use std::{
 
 use objc2::{
     ffi,
-    runtime::{Imp, ProtocolObject, Sel},
+    runtime::{AnyObject, Imp, ProtocolObject, Sel},
     sel,
 };
 use objc2_app_kit::{NSApplication, NSApplicationDelegate};
@@ -49,7 +49,8 @@ fn install_open_documents(sender: Sender<PathBuf>) {
         .delegate()
         .expect("winit configures the macOS application delegate");
     let delegate_protocol: &ProtocolObject<dyn NSApplicationDelegate> = &delegate;
-    let class = delegate_protocol.as_ref().class();
+    let delegate_object: &AnyObject = delegate_protocol.as_ref();
+    let class = delegate_object.class();
     let implementation: Imp = unsafe {
         std::mem::transmute(application_open_urls as unsafe extern "C-unwind" fn(_, _, _, _))
     };
