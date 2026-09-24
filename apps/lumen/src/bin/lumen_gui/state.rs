@@ -484,7 +484,7 @@ impl LumenApp {
             && self.preview_id == Some(id)
             && self.preview_adjustments == preview_adjustments
             && self.preview_rendered_max_size == self.preview_max_size
-            && !(self.preview_fast && !interacting)
+            && (!self.preview_fast || interacting)
         {
             return;
         }

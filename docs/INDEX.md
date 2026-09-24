@@ -7,6 +7,7 @@ records how the former UAV material was curated.
 | Read | Purpose |
 | --- | --- |
 | [Direction](DIRECTION.md) | Product intent and decisions that remain open |
+| [Development](DEVELOPMENT.md) | Reproducible NixOS setup and daily commands |
 | [Suite](SUITE.md) | App boundaries and shared engineering principles |
 | [Prism](PRISM.md) | Prism workflow and command model |
 | [Architecture](ARCHITECTURE.md) | Lumen architecture and rendering contracts |
