@@ -98,8 +98,9 @@ Lumen and Prism are separate applications with one-way reuse:
 - Lumen owns cataloging, RAW development, culling, batch looks, and photo export.
 - Prism owns canvases, layer stacks, transforms, masks, text, compositing, and
   document export.
-- Prism depends on the shared Lumen imaging kernel for compatible development and
-  color controls. Lumen does not depend on Prism.
+- Prism and Lumen use the app-neutral `spectrum-imaging` crate for compatible
+  development and color controls. Neither app depends on the other for these
+  primitives.
 
 The `from-lumen` handoff creates a layered Prism project from a developed Lumen
 photo. It preserves the focused Lumen workflow, gives the new project a rendered

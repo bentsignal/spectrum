@@ -1,5 +1,7 @@
 //! Workspace-wide architectural checks exercised by `cargo test --workspace`.
 
+pub mod project_docs;
+
 #[cfg(test)]
 mod tests {
     use std::{fs, path::Path};
@@ -41,5 +43,11 @@ mod tests {
             oversized.is_empty(),
             "split Rust sources that exceed {MAX_RUST_LINES} lines: {oversized:#?}"
         );
+    }
+
+    #[test]
+    fn project_docs_and_tasks_are_valid() {
+        let root = super::project_docs::workspace_root();
+        super::project_docs::check(&root).expect("project documentation should be valid");
     }
 }

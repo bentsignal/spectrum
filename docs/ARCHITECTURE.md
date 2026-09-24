@@ -27,8 +27,9 @@ same values directly or deserializes them through `lumen run '<json>'`.
 
 The Lumen library remains named `lumen_core`; both binaries link it in-process.
 `lumen_core` re-exports the shared Spectrum adjustment types for catalog API
-compatibility. There is no daemon, local socket, embedded browser, or network
-requirement.
+compatibility. The apps do not require a remote service or browser runtime.
+Optional authenticated local live bridges let CLI agents collaborate with an
+open GUI; see [Spectrum direction](DIRECTION.md).
 
 ## Catalog guarantees
 

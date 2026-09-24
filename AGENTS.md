@@ -1,9 +1,35 @@
 # Agent guide
 
-Use the project-local UAV skill at `.agents/skills/uav/SKILL.md` at the start of
-every project-work session. Run `uav status` before implementation, keep durable
-feature work in `uav task`, record consequential decisions with `uav remember`,
-and require a successful `uav closeout` before handing work back.
+Read [docs/INDEX.md](docs/INDEX.md) for the authoritative project documents.
+Keep durable work in one Markdown file per task under [tasks/](tasks/), using
+the project-local `create-task` skill. List and validate tasks with
+`cargo run -p workspace-guardrails --bin workspace-tasks -- list`.
+Record lasting product decisions in [docs/DIRECTION.md](docs/DIRECTION.md)
+or the owning architecture document. Git and pull requests retain completed
+work history.
+
+## Source control and local build space
+
+Own source control through handoff. At the start of a run, inspect the branch,
+worktree, and remote state. For completed repository changes, run validation,
+commit on `main`, push to `origin/main`, and verify the pushed commit matches
+the remote before handing work back. Keep related work on a review branch when
+an open PR or an explicit review gate requires it; finish that review and merge
+before reporting the work as landed on `main`. Never overwrite unrelated
+changes or force-push `main`.
+
+Check build-space usage before and after substantial builds with `du -sh target`
+and the build directories in active Git worktrees. Reuse build output where
+practical and serialize local Rust builds and tests. If generated output grows
+by 10 GiB during a run or the repository's build directories exceed 40 GiB in
+total, identify the largest targets and clean obsolete outputs before handoff.
+After a PR closes, remove its unneeded build output and temporary packages;
+keep the current working build and any package still needed for review or user
+testing. Verify exact paths and worktree status before cleanup. Never remove
+source, uncommitted changes, user project files, or the only copy of a review
+artifact. Remove only verified generated directories; moving them to Trash
+does not reclaim space until they are deleted there. Confirm the reclaimed
+space afterward.
 
 This repository is the Spectrum creative-suite monorepo. Applications live in
 `apps/` (`apps/lumen`, `apps/prism`); app-neutral imaging behavior lives in
@@ -49,11 +75,11 @@ cargo test --workspace --all-targets --locked
 If any command fails, fix the cause and restart the complete loop from the
 formatter. Continue until all three commands pass. Do not commit or hand off a
 failed run. The only exception is a genuine external blocker that cannot be
-fixed in the repository; record it in UAV, return the claimed task to an
-appropriate non-complete state, and report the exact failing command.
+fixed in the repository; record it in the relevant task file and report the
+exact failing command.
 
 For rendering or interaction performance changes, also run the affected
 release benchmark with `--strict`. For packaging changes, run the affected
 packaging script and verify its produced application or binary before handoff.
-Only after validation succeeds should you record the outcome with `uav
-remember`, resolve the task, and require a successful `uav closeout`.
+Only after validation succeeds should you record the outcome in the relevant
+task and update its status.
