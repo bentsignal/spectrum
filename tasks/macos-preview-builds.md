@@ -17,6 +17,19 @@ membership; Developer ID signing and notarization through CI remain future
 setup work. The current artifact uses an ad hoc signature and requires the
 macOS Privacy & Security opening exception on first launch.
 
+In September 2026, the user said that repeating the macOS opening exception
+for development builds is becoming tiresome and wants signing addressed soon.
+The current package script signs `Spectrum.app` ad hoc (`codesign --sign -`),
+and the repository has no signing or notarization credentials configured in
+GitHub Actions. The next delivery improvement is to sign all bundled code
+with a Developer ID Application identity, enable hardened runtime and secure
+timestamps, submit the distribution to Apple's notary service, staple the
+ticket, and verify the finished artifact on a Mac. The account owner will
+need to provide a Developer ID certificate with private key and notarization
+credentials through protected CI secrets; the Apple Developer membership
+alone does not make those available to the runner. Keep the current ad hoc
+build usable until the signed path has been verified end to end.
+
 Explore two selectable app tracks: a stable track for production releases and a
 development track that lets the user find and download builds made from recent
 work. The in-app track switcher and build picker are ideas, not settled UX or

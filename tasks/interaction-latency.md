@@ -5,16 +5,11 @@ priority: high
 
 # Diagnose Spectrum interaction latency
 
-On an Apple Silicon Mac, the user reports noticeable lag with one photo and a
-simple text canvas: scrolling the photo sidebar, dragging develop sliders, and
-dragging canvas text all feel slow. A catalog with roughly three shoots of 36
-photos each makes the lag worse. The Mac is otherwise responsive. This report
-is from the combined Spectrum app built in [CI run 36053949146](https://github.com/bentsignal/spectrum/actions/runs/36053949146).
-
-Identify any work introduced by hosting the editors together and separate
-frame scheduling or rendering cost from image development latency. Make only
-targeted fixes justified by evidence because the current egui UI is planned
-for a GPUI rebuild. Keep the existing controls and editing behavior intact.
+On an Apple Silicon Mac, the user reports lag during photo import, sidebar
+scrolling, slider and zoom changes, canvas text entry, and text dragging, even
+with one photo and one text layer. A larger catalog worsens it. The original
+report used [CI run 36053949146](https://github.com/bentsignal/spectrum/actions/runs/36053949146).
+Preserve the current UI and prioritize targeted fixes because GPUI is planned.
 
 ## Acceptance criteria
 
@@ -23,51 +18,58 @@ for a GPUI rebuild. Keep the existing controls and editing behavior intact.
 - Identify what still needs measurement on the user's Mac before claiming the
   subjective lag is resolved.
 
-## Initial investigation
+## Prior investigation and trace mechanism
 
-No runtime code changed in this pass. The source review found synchronous
-thumbnail decoding and transient photo rendering on the UI thread. The unified
-shell also polls the inactive editor, including collaboration and preview
-completion work. These are candidates to measure, not confirmed causes of the
-Mac report. The CI artifact is a native ARM macOS build.
+Source review found synchronous thumbnail and transient photo rendering, plus
+polling of the inactive editor. Earlier Lumen engine benchmarks passed, while
+Prism's interactive-workstation profile missed four complex-render budgets;
+neither result diagnosed simple interaction lag. `SPECTRUM_PERF_LOG` enables
+a CSV of input category, frame gap, and UI phases without project contents.
+The gap includes rendering and scheduling, which the UI phase times exclude.
+The Mac artifact is a native ARM build. The user's trace is now analyzed below.
 
-On the NixOS server, `nix develop -c ./target/release/lumen benchmark --strict`
-passed. The latest sample measured p95 transient adjustment preview at 3.50 ms,
-tone-curve preview at 11.51 ms, and non-prefetched photo readiness at 56.43 ms.
-These engine workloads do not measure displayed frame timing on the Mac.
+## September 2026 Mac trace and targeted fix
 
-`nix develop -c ./target/release/prism benchmark --strict` failed on four complex
-rendering workloads: radial-gradient strips 113.025 ms against 100 ms,
-angle-gradient viewport 32.261 ms against 30 ms, angle-gradient strips
-143.621 ms against 100 ms, and gradient-shadow composition 646.312 ms against
-500 ms. These failures do not establish why a simple text drag feels slow.
+The user's 1,514-frame Apple Silicon trace shows median UI time of 36.74 ms
+and median frame start gap of 39.96 ms, about 25 frames per second. Photo
+drag frames have median UI time of 42.41 ms; photo scroll frames 36.53 ms;
+canvas drag frames 35.15 ms. Even while Canvas is active, polling the hidden
+Photos workspace takes about 23 ms per drag frame. While Photos is active,
+polling the hidden Canvas workspace takes about 12 ms. This is enough to
+explain broad interaction lag without blaming the photo and canvas engines.
 
-Next, capture frame timing on the Mac for sidebar scrolling, slider dragging,
-and text dragging, including time in inactive-editor polling and preview work.
-Use that evidence to choose a small fix or carry the requirement into the GPUI
-implementation. The user explicitly wants to avoid spending heavily on the
-current UI before replacing it. The reported lag remains unresolved.
+Both editors called `DiscoveryLease::refresh` twice per UI frame. That
+atomically wrote and synced the live-discovery record to disk even when the
+event range was unchanged. The lease already has a background timer for TTL
+renewal. Each editor now publishes the event range only when it changes;
+failed publications are retried. Controls, document behavior, and UI layout
+were not changed.
 
-## Mac frame trace
+On this NixOS machine, an empty-app trace's median UI time fell from 9.23 ms
+to 0.38 ms after the change (hidden workspace polling from 3.42 ms to
+0.17 ms). This before/after sample ran on the local desktop session and is
+evidence for reduced local UI-thread work, not a Mac frame-rate claim. A
+separate automated Xvfb session opened a ten-photo catalog and injected
+pointer and sidebar scroll input: 1,200 recorded frames, including 294
+scroll frames and a Canvas switch, had median UI time 0.51 ms and median
+hidden-workspace time 0.05 ms. Its first catalog frame took 365 ms. This
+provides a repeatable Linux interaction check, but it does not reproduce
+Mac hardware, Retina scale, or every widget path.
+The reusable check is `scripts/spectrum-interaction-smoke-linux.sh`; run it
+inside `nix develop -c nix shell nixpkgs#xdotool -c` with a catalog path.
 
-Spectrum now records a CSV when `SPECTRUM_PERF_LOG` points to a writable file.
-It is disabled by default and does not include project names, paths, image
-contents, or text. Each row records the active workspace, pointer/scroll input
-category, time since the prior UI frame, and time spent in document handling,
-the switcher, inactive workspace polling, and active workspace UI. The gap
-includes host scheduling and rendering time, which the UI measurements do not.
+The Mac trace has two adjacent photo frames lasting 4.69 and 1.35 seconds.
+The first may include the native file picker, which runs inside the UI call;
+the trace has no event marker that separates picker wait from actual import.
+The 10-photo core import completed in about 121 ms locally, while the strict
+Lumen batch-import benchmark passed at p95 4.51 ms for its smaller synthetic
+fixture. Neither result measures the user's Mac import from picker to ready
+thumbnails. Canvas text taking seconds to appear is likewise not explained by
+the recorded UI durations, which do not measure async work completion.
 
-For a Mac artifact, close Spectrum and run its executable from Terminal with
-the variable set. From the unzipped artifact's `dist` folder:
-
-```sh
-SPECTRUM_PERF_LOG="$HOME/Desktop/spectrum-frames.csv" \
-  ./Spectrum.app/Contents/MacOS/spectrum-gui
-```
-
-Scroll the Photos sidebar, drag a develop slider, switch to Canvas, and drag
-text. Quit normally and share the CSV along with which interaction felt slow.
-If a prior trace exists at that path, choose a new filename so runs stay
-separate. A Linux packaged-app smoke check wrote 180 valid frame rows. The
-required format, Clippy, and workspace tests passed; strict Lumen and Prism
-release benchmarks passed locally (Prism under the hosted-CI profile).
+The complete format, Clippy, and workspace test loop passed after the fix.
+The Linux package script succeeded, as did both affected strict release
+benchmarks (Prism with the hosted-CI profile). A Mac build and user experience
+check remain needed before calling the subjective lag resolved. Next work
+should target the import-to-thumbnail path and text update latency with
+end-to-end event timestamps, using scripted Linux interactions first.

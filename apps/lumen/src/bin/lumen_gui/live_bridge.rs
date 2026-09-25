@@ -59,6 +59,7 @@ struct LiveBinding {
     accept_worker: Option<thread::JoinHandle<()>>,
     local_interaction: Option<LocalInteraction>,
     next_interaction: u64,
+    published_event_range: (u64, u64),
 }
 
 struct LocalInteraction {
@@ -354,13 +355,19 @@ impl LiveBinding {
             accept_worker: Some(accept_worker),
             local_interaction: None,
             next_interaction: 1,
+            published_event_range: (0, 0),
         })
     }
 
     fn refresh_discovery(&mut self) {
-        let (oldest, newest) = self.server.events().range();
-        if let Some(lease) = &self.lease {
-            let _ = lease.refresh(oldest, newest);
+        let range = self.server.events().range();
+        if range == self.published_event_range {
+            return;
+        }
+        if let Some(lease) = &self.lease
+            && lease.refresh(range.0, range.1).is_ok()
+        {
+            self.published_event_range = range;
         }
     }
 
