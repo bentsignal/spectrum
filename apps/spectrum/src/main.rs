@@ -12,6 +12,7 @@ use eframe::egui;
 mod lumen_gui;
 #[cfg(target_os = "macos")]
 mod macos;
+mod perf;
 #[allow(dead_code)]
 #[path = "../../prism/src/bin/prism-gui.rs"]
 mod prism_gui;
@@ -58,6 +59,7 @@ struct SpectrumApp {
     open_document_receiver: Receiver<PathBuf>,
     photo_document_sender: Sender<PathBuf>,
     canvas_document_sender: Sender<PathBuf>,
+    trace: Option<perf::FrameTrace>,
 }
 
 impl SpectrumApp {
@@ -107,6 +109,7 @@ impl SpectrumApp {
             open_document_receiver,
             photo_document_sender,
             canvas_document_sender,
+            trace: perf::FrameTrace::from_environment(),
         };
         #[cfg(target_os = "macos")]
         {
@@ -168,7 +171,11 @@ impl SpectrumApp {
 
 impl eframe::App for SpectrumApp {
     fn ui(&mut self, root: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let mut trace_sample = self.trace.as_mut().map(|trace| trace.start(root.ctx()));
         self.receive_open_documents(root.ctx());
+        if let Some(sample) = &mut trace_sample {
+            sample.documents_done();
+        }
         let mut next = self.active;
         egui::Panel::top("spectrum-workspace-switcher").show(root, |ui| {
             ui.horizontal(|ui| {
@@ -189,15 +196,27 @@ impl eframe::App for SpectrumApp {
             });
         });
         self.switch_to(next, root.ctx());
+        if let Some(sample) = &mut trace_sample {
+            sample.switcher_done();
+        }
         match self.active {
             WorkspaceKind::Photo => {
                 self.canvas.poll_background_for_spectrum(root.ctx());
+                if let Some(sample) = &mut trace_sample {
+                    sample.inactive_done();
+                }
                 self.photo.ui(root, frame);
             }
             WorkspaceKind::Canvas => {
                 self.photo.poll_background_for_spectrum(root.ctx());
+                if let Some(sample) = &mut trace_sample {
+                    sample.inactive_done();
+                }
                 self.canvas.ui(root, frame);
             }
+        }
+        if let (Some(trace), Some(sample)) = (&mut self.trace, trace_sample) {
+            trace.finish(sample, self.active);
         }
     }
 

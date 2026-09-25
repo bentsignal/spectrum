@@ -1,5 +1,5 @@
 ---
-status: todo
+status: in_progress
 priority: high
 ---
 
@@ -47,3 +47,27 @@ and text dragging, including time in inactive-editor polling and preview work.
 Use that evidence to choose a small fix or carry the requirement into the GPUI
 implementation. The user explicitly wants to avoid spending heavily on the
 current UI before replacing it. The reported lag remains unresolved.
+
+## Mac frame trace
+
+Spectrum now records a CSV when `SPECTRUM_PERF_LOG` points to a writable file.
+It is disabled by default and does not include project names, paths, image
+contents, or text. Each row records the active workspace, pointer/scroll input
+category, time since the prior UI frame, and time spent in document handling,
+the switcher, inactive workspace polling, and active workspace UI. The gap
+includes host scheduling and rendering time, which the UI measurements do not.
+
+For a Mac artifact, close Spectrum and run its executable from Terminal with
+the variable set. From the unzipped artifact's `dist` folder:
+
+```sh
+SPECTRUM_PERF_LOG="$HOME/Desktop/spectrum-frames.csv" \
+  ./Spectrum.app/Contents/MacOS/spectrum-gui
+```
+
+Scroll the Photos sidebar, drag a develop slider, switch to Canvas, and drag
+text. Quit normally and share the CSV along with which interaction felt slow.
+If a prior trace exists at that path, choose a new filename so runs stay
+separate. A Linux packaged-app smoke check wrote 180 valid frame rows. The
+required format, Clippy, and workspace tests passed; strict Lumen and Prism
+release benchmarks passed locally (Prism under the hosted-CI profile).
