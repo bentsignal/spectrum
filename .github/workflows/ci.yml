@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -59,14 +60,53 @@ jobs:
         run: ./target/release/prism benchmark --strict --profile hosted-ci
       - if: runner.os == 'Linux'
         run: ./target/release/live-bridge-benchmark --strict --hosted
+      - name: Install Developer ID certificate
+        if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.SPECTRUM_MACOS_SIGNING_ENABLED == 'true'
+        shell: bash
+        env:
+          CERT_BASE64: ${{ secrets.SPECTRUM_MACOS_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.SPECTRUM_MACOS_CERT_PASSWORD }}
+          TEAM_ID: ${{ vars.SPECTRUM_APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          : "${CERT_BASE64:?missing SPECTRUM_MACOS_CERT_P12_BASE64}"
+          : "${P12_PASSWORD:?missing SPECTRUM_MACOS_CERT_PASSWORD}"
+          : "${TEAM_ID:?missing SPECTRUM_APPLE_TEAM_ID}"
+          certificate="$RUNNER_TEMP/spectrum-developer-id.p12"
+          keychain="$RUNNER_TEMP/spectrum-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$CERT_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk -v team="($TEAM_ID)" 'index($0, "Developer ID Application:") && index($0, team) { print $2 }')"
+          [[ "$identity" =~ ^[[:xdigit:]]{40}$ ]] || { echo "expected one Developer ID Application identity for team $TEAM_ID" >&2; exit 1; }
+          echo "SPECTRUM_CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "SPECTRUM_APPLE_TEAM_ID=$TEAM_ID" >> "$GITHUB_ENV"
       - if: runner.os == 'macOS'
         run: bash scripts/package-spectrum-macos.sh
+      - name: Notarize Spectrum.app
+        if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.SPECTRUM_MACOS_SIGNING_ENABLED == 'true'
+        env:
+          SPECTRUM_APPLE_ID: ${{ secrets.SPECTRUM_APPLE_ID }}
+          SPECTRUM_APPLE_APP_PASSWORD: ${{ secrets.SPECTRUM_APPLE_APP_PASSWORD }}
+        run: bash scripts/notarize-spectrum-macos.sh
       - if: runner.os == 'Linux'
         run: bash scripts/package-spectrum-linux.sh
       - if: runner.os == 'Windows'
         run: |
           pwsh scripts/package-spectrum-windows.ps1
       - uses: actions/upload-artifact@v7
+        if: runner.os == 'macOS'
+        with:
+          name: spectrum-${{ matrix.label }}
+          path: target/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: runner.os != 'macOS'
         with:
           name: spectrum-${{ matrix.label }}
           path: |

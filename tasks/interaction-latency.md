@@ -1,5 +1,5 @@
 ---
-status: in_progress
+status: done
 priority: high
 ---
 
@@ -69,7 +69,9 @@ the recorded UI durations, which do not measure async work completion.
 
 The complete format, Clippy, and workspace test loop passed after the fix.
 The Linux package script succeeded, as did both affected strict release
-benchmarks (Prism with the hosted-CI profile). A Mac build and user experience
-check remain needed before calling the subjective lag resolved. Next work
-should target the import-to-thumbnail path and text update latency with
-end-to-end event timestamps, using scripted Linux interactions first.
+benchmarks (Prism with the hosted-CI profile). The user then tested the Mac
+build from commit `1752ce4` and reported that zoom, scrolling, sliders,
+and canvas text dragging now feel fast, with the overall lag essentially
+gone. This closes the reported interaction-latency issue; later regressions
+can be tracked
+separately with the Linux smoke script and Mac trace.

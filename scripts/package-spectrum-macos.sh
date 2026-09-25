@@ -209,8 +209,12 @@ lumen_cli="$repo_root/target/dist/lumen-macos"
 install -m 0755 "$repo_root/target/release/prism" "$prism_cli"
 install -m 0755 "$repo_root/target/release/lumen" "$lumen_cli"
 
-codesign --force --deep --sign - "$bundle"
-codesign --verify --deep --strict "$bundle"
+if [[ -n "${SPECTRUM_CODESIGN_IDENTITY:-}" ]]; then
+  "$repo_root/scripts/sign-spectrum-macos.sh"
+else
+  codesign --force --deep --sign - "$bundle"
+  codesign --verify --deep --strict "$bundle"
+fi
 if [[ "$ghostty_enabled" == true ]]; then
   verify_chain_sources
 fi
