@@ -11,25 +11,29 @@ without moving the AI development workload onto it. GitHub Actions already
 builds macOS packages and uploads artifacts; use that as a starting point when
 designing a convenient delivery flow.
 
-The user has run the Spectrum macOS CI artifact and accepts manual download
-for now. They have Apple Developer Program membership. The current artifact
-uses an ad hoc signature and needs a macOS opening exception.
+The user accepts manual artifact download for now. Developer ID signing and
+notarization were enabled and verified on September 25, 2026 for main pushes
+and manual main builds. GitHub Actions contains all four required secrets;
+`SPECTRUM_APPLE_TEAM_ID=39K6A9FP99` and
+`SPECTRUM_MACOS_SIGNING_ENABLED=true`. Credentials remain outside the repository.
 
-In September 2026, the user said that repeating the macOS opening exception
-for development builds is becoming tiresome and wants signing addressed soon.
-The current package script signs `Spectrum.app` ad hoc (`codesign --sign -`),
-and the repository has no signing or notarization credentials in GitHub
-Actions. The next delivery improvement is to sign all bundled code
-with a Developer ID Application identity, enable hardened runtime and secure
-timestamps, submit the distribution to Apple's notary service, staple the
-ticket, and verify the finished artifact on a Mac. The account owner will
-need to provide a Developer ID certificate with private key and notarization
-credentials through protected CI secrets; the Apple Developer membership
-alone does not make those available to the runner. Keep the current ad hoc
-build usable until the signed path has been verified end to end. The signing
-scripts and CI gate are ready; main builds use them only when the owner sets
-`SPECTRUM_MACOS_SIGNING_ENABLED=true` after configuring secrets. Missing
-credentials then fail the build. Verify the notarized artifact on a Mac.
+[Verification run 36183500119](https://github.com/bentsignal/spectrum/actions/runs/36183500119)
+built commit `958d16a60cc771403536c03cf545c65806d33d85`. The macOS job signed the
+app with hardened runtime and secure timestamps, received Apple's Accepted
+notarization result, stapled the ticket, and uploaded `spectrum-macOS` containing
+`Spectrum-macos-notarized.zip`. The downloaded ZIP passed
+`codesign --verify --deep --strict --verbose=2`, `xcrun stapler validate`, and
+`spctl --assess --type execute --verbose=2` on the owner's Mac; Gatekeeper reported
+`source=Notarized Developer ID`. With download quarantine applied, the owner
+clicked the ordinary Open confirmation and the app launched without a Privacy
+& Security exception. The running executable matched the downloaded binary.
+The CI format, lint, and test job also passed.
+
+The Developer ID Application certificate belongs to team `39K6A9FP99`, expires
+September 17, 2031, and has SHA-256 fingerprint
+`40:EC:73:82:00:24:F8:8B:EF:04:77:6D:2E:5D:38:6E:DE:27:F3:CE:98:44:E8:69:C9:D8:85:62:9E:20:3B:D8`.
+Download the notarized ZIP inside the artifact for manual installation. Pull
+request builds remain ad hoc; stable/development track design is still open.
 
 Explore two selectable app tracks: a stable track for production releases and a
 development track that lets the user find and download builds made from recent
