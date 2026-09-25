@@ -20,14 +20,15 @@ and `tools/`; files over 1,000 lines fail both local workspace tests and CI.
 | Photos (Lumen engine) | Photo library, RAW development, culling, presets, and batch export | `spectrum-gui`, `lumen` |
 | Canvas (Prism engine) | Layered canvas composition, text, masks, transforms, and image export | `spectrum-gui`, `prism` |
 
-The photo editor is not a layer editor, and the canvas editor is not a photo
-catalog. Spectrum switches between them in one window; the current
-`from-lumen` handoff still creates a rendered canvas layer.
+The current photo editor is not a layer editor, and the current canvas editor
+is not a photo catalog. Spectrum switches between them in one window; the
+current `from-lumen` handoff still creates a rendered canvas layer. These
+boundaries describe today's implementation, not the intended app-managed
+creative library.
 
-Prism's editable document format uses the `.prism` extension. Legacy `.mica`
-projects remain readable and writable. The format is an exchange
-boundary for layered work, not a replacement for source photographs or finished
-image/video exports.
+Prism's current editable document format uses the `.prism` extension. Legacy
+`.mica` projects remain readable and writable today. Neither format is a
+product-level compatibility requirement for Spectrum's future storage model.
 
 ## Shared principles
 
@@ -56,8 +57,8 @@ the operation available from both CLI and GUI.
 
 The intended destination adds video and audio workspaces. The existing Lumen
 and Prism engines provide the current photo and canvas workspaces. See
-[direction](DIRECTION.md) for the still-open questions about cross-workspace
-assets.
+[direction](DIRECTION.md) for the app-managed library and the still-open
+questions about cross-workspace assets.
 
 ## Workspace commands
 

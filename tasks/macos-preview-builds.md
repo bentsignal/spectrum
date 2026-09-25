@@ -11,6 +11,12 @@ without moving the AI development workload onto it. GitHub Actions already
 builds macOS packages and uploads artifacts; use that as a starting point when
 designing a convenient delivery flow.
 
+The user has successfully downloaded and run the Spectrum macOS CI artifact
+and accepts this manual workflow for now. They have Apple Developer Program
+membership; Developer ID signing and notarization through CI remain future
+setup work. The current artifact uses an ad hoc signature and requires the
+macOS Privacy & Security opening exception on first launch.
+
 Explore two selectable app tracks: a stable track for production releases and a
 development track that lets the user find and download builds made from recent
 work. The in-app track switcher and build picker are ideas, not settled UX or

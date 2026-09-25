@@ -37,6 +37,10 @@ app lives in `apps/spectrum`; the photo and canvas engines and CLIs live in
 `crates/spectrum-imaging`; repository policy checks live in
 `tools/workspace-guardrails`. Preserve each workspace's focused UI. Do not make one
 app depend on another for behavior that belongs in a neutral Spectrum crate.
+The product is greenfield: current Lumen/Prism names, project files, and
+compatibility paths are implementation details, not long-term requirements.
+Follow [Spectrum direction](docs/DIRECTION.md) when designing new storage or
+public commands.
 
 Use the `lumen` CLI for all photo and catalog automation and the `prism` CLI for
 all layered-document automation. Do not edit `.lumen`, legacy `.lumencatalog`, `.prism`, or
