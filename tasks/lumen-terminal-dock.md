@@ -3,9 +3,9 @@ status: deferred
 priority: normal
 ---
 
-# Reuse the terminal dock in Lumen
+# Add the shared terminal dock to Spectrum Photos
 
-Prism uses the app-neutral `spectrum-terminal` crate. Add a focused Lumen dock
-with Lumen-specific catalog and live-session context; keep terminal transport
-shared and avoid an app-to-app dependency. Future Spectrum workspaces can use
-the same foundation. Validate process lifecycle, focus, shortcuts, and packaging.
+Canvas uses the app-neutral `spectrum-terminal` crate. Add a focused dock to
+Spectrum's Photos workspace with photo-library and live-session context. Keep
+transport shared and avoid an app-to-app dependency. Validate process
+lifecycle, focus, shortcuts, and packaging.

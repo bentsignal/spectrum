@@ -3,13 +3,11 @@ status: todo
 priority: high
 ---
 
-# Resolve packaged macOS icon appearance
+# Resolve Spectrum's packaged macOS icon appearance
 
-The merged optical scaling in [PR #100](https://github.com/bentsignal/spectrum/pull/100)
-was later rejected by the user. A native Icon Composer revision in
-[closed PR #101](https://github.com/bentsignal/spectrum/pull/101) was also
-blocked by a real Dock review showing an oversized footprint. Revisit the
-source composition, build both exact `.icon` packages with `actool`, package
-Lumen and Prism, and inspect distinctly identified apps in the real Dock at
-multiple sizes. Verify provenance and codesign. Do not infer success from
-asset bounds alone. See [prior scope](https://github.com/bentsignal/spectrum/issues/108).
+Earlier Lumen/Prism icon revisions in [PR #100](https://github.com/bentsignal/spectrum/pull/100)
+and [PR #101](https://github.com/bentsignal/spectrum/pull/101) were rejected
+after real Dock review. Spectrum packages `assets/branding/Spectrum.icon`.
+Review it in the real macOS Dock at multiple sizes. If it needs work, revise the source
+composition, package the signed Spectrum app, and verify provenance and
+codesign. See [prior scope](https://github.com/bentsignal/spectrum/issues/108).

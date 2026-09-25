@@ -1,17 +1,12 @@
 # Remaining work
 
-Each task has its own Markdown file with `status` and `priority` frontmatter.
-Run `cargo run -p workspace-guardrails --bin workspace-tasks -- list` to see
-the active list. The [agent guide](../AGENTS.md) and
-[create-task skill](../.agents/skills/create-task/SKILL.md) define updates.
+Task frontmatter records status and priority. Run
+`cargo run -p workspace-guardrails --bin workspace-tasks -- list` for active work.
+The [agent guide](../AGENTS.md) defines validation; Git retains completed work.
 
-Completed changes belong in Git and pull requests. A task can cite an old
-issue or PR for context, but its current scope and acceptance criteria live
-here.
+## Open work
 
-## Product and engineering tasks
-
-- [Unified Spectrum app](unified-spectrum-app.md)
+- [App-managed library and Spectrum CLI](app-managed-library.md)
 - [Healing Brush](healing-brush.md)
 - [Layer styles](layer-styles.md)
 - [Revision lifecycle](revision-lifecycle.md)
@@ -19,10 +14,13 @@ here.
 - [macOS icons](macos-icons.md)
 - [Selection acceptance](selection-user-acceptance.md)
 - [Rust dead-code audit](rust-dead-code-audit.md)
-- [Lumen terminal dock](lumen-terminal-dock.md)
-- [Mac preview builds](macos-preview-builds.md)
+- [Photos terminal dock](lumen-terminal-dock.md)
+- [Mac build tracks](macos-preview-builds.md)
 
-## Closed decisions
+## Completed and closed
 
-- [Prism toolbar overflow prototype](toolbar-overflow.md) — canceled pending a
-  broader Prism redesign.
+- [Unified Spectrum app](unified-spectrum-app.md)
+- [Interaction latency](interaction-latency.md)
+- [NixOS development](nixos-development.md)
+- [Prism toolbar overflow prototype](toolbar-overflow.md) — canceled for the
+  planned UI rebuild.
