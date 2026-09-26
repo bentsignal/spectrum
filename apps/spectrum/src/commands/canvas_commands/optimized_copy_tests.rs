@@ -7,7 +7,7 @@ const STATIC_FONT: &[u8] =
 fn optimized_copy_cli_requires_an_output_path() {
     let cli = Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         "source.prism",
         "optimized-copy",
         "--output",

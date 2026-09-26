@@ -538,27 +538,22 @@ fn terminal_launch_with_binding(
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
     let mut context = TerminalContext::new(working_directory)
-        .with_env("SPECTRUM_ACTIVE_APP", "lumen")
-        .with_env("SPECTRUM_CATALOG_NAME", &workspace.project.name)
-        .with_env("LUMEN_CATALOG_NAME", &workspace.project.name);
+        .with_env("SPECTRUM_ACTIVE_APP", "images")
+        .with_env("SPECTRUM_CATALOG_NAME", &workspace.project.name);
     if let Some(catalog) = catalog {
         context = context
             .with_env("SPECTRUM_CATALOG", catalog.as_os_str())
-            .with_env("LUMEN_CATALOG", catalog.as_os_str());
+            .with_env("SPECTRUM_IMAGES_DOCUMENT", catalog.as_os_str());
     }
     if let Some(session) = workspace.session_id() {
         let session = session.to_string();
-        context = context
-            .with_env("SPECTRUM_SESSION", &session)
-            .with_env("LUMEN_SESSION", &session);
+        context = context.with_env("SPECTRUM_SESSION", &session);
     }
     if let Some(binding) = live_binding {
         let binding = binding.to_string();
         context = context
             .with_env("SPECTRUM_LIVE_BINDING_ID", &binding)
-            .with_env("LUMEN_LIVE_BINDING_ID", &binding)
-            .with_env("SPECTRUM_LIVE_MODE", "required")
-            .with_env("LUMEN_LIVE_MODE", "required");
+            .with_env("SPECTRUM_LIVE_MODE", "required");
     }
     if let Ok(executable) = std::env::current_exe()
         && let Some(directory) = executable.parent()
@@ -832,12 +827,12 @@ mod tests {
         let launch = terminal_launch(&workspace);
         assert_eq!(launch.context.working_directory(), directory);
         assert_eq!(
-            launch.context.environment("LUMEN_CATALOG"),
+            launch.context.environment("SPECTRUM_IMAGES_DOCUMENT"),
             Some(path.as_os_str())
         );
         assert_eq!(
             launch.context.environment("SPECTRUM_ACTIVE_APP"),
-            Some(std::ffi::OsStr::new("lumen"))
+            Some(std::ffi::OsStr::new("images"))
         );
     }
 
@@ -847,11 +842,11 @@ mod tests {
         let workspace = Workspace::new(Project::new("Live terminal"), None);
         let launch = terminal_launch_with_binding(&workspace, Some(binding));
         assert_eq!(
-            launch.context.environment("LUMEN_LIVE_BINDING_ID"),
+            launch.context.environment("SPECTRUM_LIVE_BINDING_ID"),
             Some(std::ffi::OsStr::new(&binding.to_string()))
         );
         assert_eq!(
-            launch.context.environment("LUMEN_LIVE_MODE"),
+            launch.context.environment("SPECTRUM_LIVE_MODE"),
             Some(std::ffi::OsStr::new("required"))
         );
         assert_eq!(launch.context.environment("LUMEN_LIVE_CAPABILITY"), None);

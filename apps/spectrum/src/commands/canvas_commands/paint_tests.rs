@@ -10,7 +10,7 @@ fn temporary_path(label: &str, extension: &str) -> PathBuf {
 }
 
 fn invoke(project: &Path, arguments: &[&str]) -> Result<Value> {
-    let mut cli = vec!["prism", "--project", project.to_str().unwrap()];
+    let mut cli = vec!["prism", "--document", project.to_str().unwrap()];
     cli.extend_from_slice(arguments);
     run(Cli::try_parse_from(cli).unwrap())
 }

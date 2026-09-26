@@ -4,22 +4,22 @@ pub(super) fn schema() -> Value {
     let command_examples = command_examples();
     json!({
         "ok": true,
-        "application": "Prism",
-        "project_extension": ".prism",
+        "application": "Spectrum canvas",
+        "project_extension": ".spectrum",
         "legacy_project_extensions": [".mica"],
         "project_storage": {
-            "container": "single transactional SQLite .prism file",
+            "container": "single transactional SQLite .spectrum file",
             "persistence": "each completed semantic action is an attributed durable revision",
             "batching": "run arrays commit atomically as one revision",
             "history": "immutable revision tree with session-specific cursors",
             "assets": "embedded and content-addressed",
-            "optimized_copy": "prism --project <source.prism> optimized-copy --output <fresh.prism> rewrites one linear history with verified font subsets and exact per-revision snapshots; it rejects branches, active Undo cursors, unsupported fonts, non-reducing results, and every existing destination; the shareable fresh copy retains revision author/session attribution, resets every retained author session to the new tip, and intentionally omits non-author follower sessions and live collaboration records"
+            "optimized_copy": "spectrum canvas --document <source.spectrum> optimized-copy --output <fresh.spectrum> rewrites one linear history with verified font subsets and exact per-revision snapshots; it rejects branches, active Undo cursors, unsupported fonts, non-reducing results, and every existing destination; the shareable fresh copy retains revision author/session attribution, resets every retained author session to the new tip, and intentionally omits non-author follower sessions and live collaboration records"
         },
         "agent_collaboration": {
             "transport": "CLI JSON; no vendor-specific integration required",
-            "start": "prism --project <path> agent start --mode <together|separate> --name <agent>",
+            "start": "spectrum canvas --document <path> agent start --mode <together|separate> --name <agent>",
             "continue": "pass the returned --session value to every list, edit, run, and export command",
-            "status": "prism --project <path> --session <id> agent status",
+            "status": "spectrum canvas --document <path> --session <id> agent status",
             "together": "starts at the current human cursor; Prism follows until the human makes a competing edit, then both sessions continue separately",
             "separate": "starts at the current human cursor and never moves the human session",
             "agent_prompt": "before starting, ask whether the user wants to continue together or explore separately"
@@ -27,7 +27,7 @@ pub(super) fn schema() -> Value {
         "command_protocol": {
             "encoding": "serde tagged JSON",
             "tag": "command",
-            "operations_family": "spectrum.prism.commands",
+            "operations_family": "spectrum.spectrum.commands",
             "supported_operation_versions": (1..=prism_core::PRISM_COMMAND_OPERATIONS_VERSION).collect::<Vec<_>>(),
             "selection_operations_version": 4,
             "crop_to_selection_operations_version": 5,
@@ -57,12 +57,12 @@ pub(super) fn schema() -> Value {
             "action_family": prism_core::PRISM_LIVE_ACTION_FAMILY,
             "action_version": prism_core::PRISM_LIVE_ACTION_VERSION,
             "actions": ["state", "execute_batch", "undo", "redo", "move_agent_cursor"],
-            "terminal_handoff": ["PRISM_PROJECT", "PRISM_SESSION", "PRISM_LIVE_MODE", "PRISM_LIVE_BINDING_ID"],
+            "terminal_handoff": ["SPECTRUM_CANVAS_DOCUMENT", "SPECTRUM_SESSION", "SPECTRUM_LIVE_MODE", "SPECTRUM_LIVE_BINDING_ID"],
             "capability_in_environment": false,
         },
         "document_lifecycle": {
-            "rename": "prism --project <path> rename-document <name> changes durable document metadata only and appends one revision",
-            "project_path": "rename-document never changes the .prism filename or location; Move Project remains the only GUI path relocation action",
+            "rename": "spectrum canvas --document <path> rename-document <name> changes durable document metadata only and appends one revision",
+            "project_path": "rename-document never changes the .spectrum filename or location; Move Project remains the only GUI path relocation action",
             "close": "Command-W on macOS or Ctrl-W on Windows/Linux closes the active tab; the only remaining tab stays open with an explicit status"
         },
         "gui_interactions": {
@@ -75,7 +75,7 @@ pub(super) fn schema() -> Value {
             "lasso": "L selects Lasso; one bounded freehand drag previews locally and commits exactly one fixed-point selection revision on release; Escape cancels"
         },
         "alignment": {
-            "cli": "prism align <id> <left|horizontal-center|right|top|vertical-center|bottom> [--to-layer <id>]",
+            "cli": "spectrum canvas align <id> <left|horizontal-center|right|top|vertical-center|bottom> [--to-layer <id>]",
             "geometry": "alignment and snapping use actual rotated visual bounds in canvas coordinates"
         },
         "blend_modes": [
@@ -86,7 +86,7 @@ pub(super) fn schema() -> Value {
             "luminosity"
         ],
         "dissolve": {
-            "cli": "prism blend <layer> dissolve [--seed <u32>]",
+            "cli": "spectrum canvas blend <layer> dissolve [--seed <u32>]",
             "seed": "persisted per layer; defaults to zero and can be changed independently with set_dissolve_seed",
             "sampling": "source/mask/clip UNORM8 and once-rounded layer-opacity UNORM16 are combined by rounded integer UNORM multiplication; an integer-only hash of seed and absolute scaled-document x/y turns coverage into present/absent pixels",
             "kept_pixels": "effective alpha is the presence probability; present pixels composite fully opaque, matching conventional Dissolve semantics",
@@ -173,7 +173,7 @@ pub(super) fn schema() -> Value {
             "portable_fonts": "font-import binds a bounded no-follow regular-file snapshot and transactionally embeds those exact bytes as a content-addressed project asset; installable, editable, preview/print, and restricted embedding classes, including bitmap-only flags, import directly for local text, while malformed, unparseable, oversized, or unsafe sources fail closed; Windows final-handle proof rejects junction and 8.3 aliases unless the normalized handle path exactly matches",
             "source_snapshot": "font-source <font-id> reads one full-font blob directly from an immutable SQLite view that ignores live caches and recovery sidecars, verifies its deterministic SHA-256 identity and embedding metadata, and reports proof without modifying the project; --session is rejected",
             "subset_plan": "font-subset-plan <font-id> immutably replays the current document, derives exact Unicode and per-line shaping requirements, runs the fail-closed in-process candidate in memory, and reports deterministic candidate identity/reduction or blockers without emitting bytes or modifying the project; --session is rejected",
-            "subset_storage_decision": "appending a subset cannot shrink a durable project because replayable history retains content-addressed full-font blobs; optimized-copy --output <fresh.prism> instead performs a fail-closed single-track linear-history rewrite, preserves an exact snapshot per revision, copies reachable assets only, and never overwrites a destination",
+            "subset_storage_decision": "appending a subset cannot shrink a durable project because replayable history retains content-addressed full-font blobs; optimized-copy --output <fresh.spectrum> instead performs a fail-closed single-track linear-history rewrite, preserves an exact snapshot per revision, copies reachable assets only, and never overwrites a destination",
             "discovery": "font-list --query <text> searches embedded family and style metadata",
             "optimization_analysis": "font-usage [--font-id <id>] reports deterministic Unicode cmap subset-retention requirements, variation sequences, embedding metadata, provenance, and source size without changing font bytes; --session retains standard session-resume behavior",
             "optimization_limitations": "analysis excludes symbol and other non-Unicode cmaps, shaping, and renderer fallback",
@@ -184,11 +184,11 @@ pub(super) fn schema() -> Value {
             "effects": ["outline", "offset shadow"]
         },
         "layer_transfer": {
-            "format": "spectrum.prism.layer",
+            "format": "spectrum.spectrum.layer",
             "version": prism_core::LAYER_TRANSFER_VERSION,
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
-            "copy": "prism --project <source> layer-copy [<id>] --output <new-transfer.json>",
-            "paste": "prism --project <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
+            "copy": "spectrum canvas --document <source> layer-copy [<id>] --output <new-transfer.json>",
+            "paste": "spectrum canvas --document <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",
             "assets": "referenced raster and OpenType bytes are embedded by the destination durable revision; v3 preserves bounded shape pixel masks; v4 preserves paths and vector masks; v5 preserves Paint programs; v6 preserves Dissolve mode and seed; v7 preserves raster pixel masks; v8 preserves HarfBuzzV1 text; v9 preserves immutable Clone Stamp sources; v10 preserves modern multi-stop shape gradients",
             "history": "layer-paste inserts and selects the new layer as one undoable revision"
         },
@@ -204,7 +204,7 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "add_text", "text": "Hello", "name": null, "font_size": 72.0, "color": [255,255,255,255], "x": 100.0, "y": 120.0}),
         json!({"command": "import_font", "path": "/fonts/Inter-Regular.ttf"}),
         json!({"command": "set_text_typography", "id": 1, "typography": {"font_id": 1, "alignment": "center", "line_height": 1.3, "tracking": 2.0, "box_width": 480.0, "effects": {"outline_width": 1.0, "outline_color": [0,0,0,255], "shadow_offset_x": 4.0, "shadow_offset_y": 6.0, "shadow_color": [0,0,0,128]}}}),
-        json!({"command": "insert_layer", "transfer": {"format": "spectrum.prism.layer", "version": 1, "layer": {"id": 0, "name": "Card", "visible": true, "locked": false, "opacity": 1.0, "blend_mode": "normal", "transform": {}, "adjustments": {}, "mask": {}, "stroke": {}, "clip_to_below": false, "kind": {"type": "rectangle", "width": 320, "height": 180, "color": [174,123,255,255], "corner_radius": 24.0}}}}),
+        json!({"command": "insert_layer", "transfer": {"format": "spectrum.spectrum.layer", "version": 1, "layer": {"id": 0, "name": "Card", "visible": true, "locked": false, "opacity": 1.0, "blend_mode": "normal", "transform": {}, "adjustments": {}, "mask": {}, "stroke": {}, "clip_to_below": false, "kind": {"type": "rectangle", "width": 320, "height": 180, "color": [174,123,255,255], "corner_radius": 24.0}}}}),
         json!({"command": "add_ellipse", "name": "Badge", "width": 320, "height": 320, "color": [247,178,102,255], "x": 100.0, "y": 120.0}),
         json!({"command": "add_path", "name": "Curve", "geometry": {"version": 1, "width": 320, "height": 240, "closed": false, "fill_rule": "even_odd", "anchors": [{"point": [20.0,200.0]}, {"point": [160.0,20.0], "handle_in": [-80.0,0.0], "handle_out": [80.0,0.0]}, {"point": [300.0,200.0]}]}, "color": [255,255,255,255], "x": 100.0, "y": 120.0}),
         json!({"command": "add_paint_layer_with_stroke", "name": "Paint", "width": 1920, "height": 1080, "stroke": {"style": {"mode": "paint", "color": [255,255,255,255], "size": 32.0, "hardness": 0.8, "opacity": 1.0, "spacing": 0.15}, "samples": [{"x": 120.0, "y": 80.0, "pressure": 1.0}]}, "selection": {"source": "current"}}),

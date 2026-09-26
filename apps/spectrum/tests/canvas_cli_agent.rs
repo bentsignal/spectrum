@@ -25,7 +25,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
     .unwrap();
 
     let together = run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "agent",
         "start",
@@ -37,7 +37,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
     assert_eq!(together["mode"], "together");
     let together_session = session(&together);
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "--session",
         &together_session.to_string(),
@@ -64,7 +64,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
         })
         .unwrap();
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "--session",
         &together_session.to_string(),
@@ -82,7 +82,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
     );
 
     let separate = run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "agent",
         "start",
@@ -97,7 +97,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
     );
     let separate_session = session(&separate);
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "--session",
         &separate_session.to_string(),
@@ -125,7 +125,7 @@ fn cli_creates_and_styles_editable_ellipses() {
     std::fs::create_dir_all(&directory).unwrap();
     let project = directory.join("ellipse.prism");
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "init",
         "Ellipse CLI",
@@ -135,7 +135,7 @@ fn cli_creates_and_styles_editable_ellipses() {
         "480",
     ]);
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "add-ellipse",
         "--name",
@@ -152,7 +152,7 @@ fn cli_creates_and_styles_editable_ellipses() {
         "50",
     ]);
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "stroke",
         "1",
@@ -161,7 +161,7 @@ fn cli_creates_and_styles_editable_ellipses() {
         "--color",
         "ffffffff",
     ]);
-    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
     let layer = &listed["document"]["layers"][0];
     assert_eq!(layer["kind"]["type"], "ellipse");
     assert_eq!(layer["stroke"]["enabled"], true);
@@ -178,7 +178,7 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
     std::fs::create_dir_all(&directory).unwrap();
     let project = directory.join("wand.prism");
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "init",
         "Wand CLI",
@@ -189,7 +189,7 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
     ]);
     for x in [2, 14] {
         run_prism(&[
-            "--project",
+            "--document",
             project.to_str().unwrap(),
             "add-rectangle",
             "--width",
@@ -207,7 +207,7 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
         ]);
     }
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "selection",
         "magic-wand",
@@ -217,12 +217,12 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
         "0",
         "--no-antialias",
     ]);
-    let contiguous = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let contiguous = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(contiguous["document"]["selection"]["type"], "rectangle");
     assert_eq!(contiguous["document"]["selection"]["width"], 3);
 
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "selection",
         "magic-wand",
@@ -233,7 +233,7 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
         "--noncontiguous",
         "--no-antialias",
     ]);
-    let global = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let global = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(global["document"]["selection"]["type"], "color_mask");
     assert_eq!(global["document"]["selection"]["x"], 2);
     assert_eq!(global["document"]["selection"]["width"], 15);
@@ -261,7 +261,7 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
     let original = std::fs::read(&source).unwrap();
     let project = directory.join("wand-delete.prism");
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "init",
         "Wand delete CLI",
@@ -273,13 +273,13 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
         "00000000",
     ]);
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "add-image",
         source.to_str().unwrap(),
     ]);
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "selection",
         "magic-wand",
@@ -290,7 +290,7 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
         "--no-antialias",
     ]);
     let deleted = run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "selection",
         "delete",
@@ -299,7 +299,7 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
     assert_eq!(deleted["results"][0]["action"], "delete_selected_pixels");
     assert_eq!(std::fs::read(&source).unwrap(), original);
 
-    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
     let mask = &listed["document"]["layers"][0]["pixel_mask"];
     assert_eq!(mask["width"], 8);
     assert_eq!(mask["height"], 4);
@@ -329,7 +329,7 @@ fn cli_rasterizes_a_shape_through_the_core_command() {
     std::fs::create_dir_all(&directory).unwrap();
     let project = directory.join("rasterize.prism");
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "init",
         "Rasterize CLI",
@@ -339,7 +339,7 @@ fn cli_rasterizes_a_shape_through_the_core_command() {
         "480",
     ]);
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "add-rectangle",
         "--width",
@@ -350,7 +350,7 @@ fn cli_rasterizes_a_shape_through_the_core_command() {
         "3",
     ]);
     let output = run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "rasterize-shape",
         "1",
@@ -358,7 +358,7 @@ fn cli_rasterizes_a_shape_through_the_core_command() {
         "4",
     ]);
     assert_eq!(output["results"][0]["action"], "rasterize_shape");
-    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
     let layer = &listed["document"]["layers"][0];
     assert_eq!(layer["kind"]["type"], "raster");
     assert_eq!(layer["transform"]["scale_x"], 0.25);
@@ -375,22 +375,22 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
     ));
     std::fs::create_dir_all(&directory).unwrap();
     let project = directory.join("blend.prism");
-    run_prism(&["--project", project.to_str().unwrap(), "init", "Blend CLI"]);
-    run_prism(&["--project", project.to_str().unwrap(), "add-rectangle"]);
+    run_prism(&["--document", project.to_str().unwrap(), "init", "Blend CLI"]);
+    run_prism(&["--document", project.to_str().unwrap(), "add-rectangle"]);
     let result = run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "blend",
         "1",
         "vivid-light",
     ]);
     assert_eq!(result["results"][0]["action"], "set_blend_mode");
-    run_prism(&["--project", project.to_str().unwrap(), "clip", "1", "true"]);
-    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    run_prism(&["--document", project.to_str().unwrap(), "clip", "1", "true"]);
+    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(listed["document"]["layers"][0]["blend_mode"], "vivid_light");
     assert_eq!(listed["document"]["layers"][0]["clip_to_below"], true);
     let dissolve = run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "blend",
         "1",
@@ -400,18 +400,18 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
     ]);
     assert_eq!(dissolve["results"][0]["action"], "set_blend_mode");
     assert_eq!(dissolve["results"][1]["action"], "set_dissolve_seed");
-    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(listed["document"]["layers"][0]["blend_mode"], "dissolve");
     assert_eq!(listed["document"]["layers"][0]["dissolve_seed"], 305419896);
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "blend",
         "1",
         "normal",
     ]);
     let dissolve_without_seed = run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "blend",
         "1",
@@ -425,7 +425,7 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
         dissolve_without_seed["results"][0]["action"],
         "set_blend_mode"
     );
-    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(listed["document"]["layers"][0]["blend_mode"], "dissolve");
     assert_eq!(listed["document"]["layers"][0]["dissolve_seed"], 305419896);
     let revisions_before_seed_update = Workspace::open(&project)
@@ -436,7 +436,7 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
         .revisions
         .len();
     let dissolve_with_new_seed = run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "blend",
         "1",
@@ -467,7 +467,7 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
         revisions_after_seed_update,
         revisions_before_seed_update + 1
     );
-    let listed = run_prism(&["--project", project.to_str().unwrap(), "list"]);
+    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(
         listed["document"]["layers"][0]["dissolve_seed"],
         2271560481u64
@@ -477,7 +477,7 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
 
 fn status(project: &Path, session: SessionId) -> Value {
     run_prism(&[
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "--session",
         &session.to_string(),
@@ -491,7 +491,8 @@ fn session(output: &Value) -> SessionId {
 }
 
 fn run_prism(arguments: &[&str]) -> Value {
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_prism"))
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_spectrum"))
+        .arg("canvas")
         .args(arguments)
         .output()
         .unwrap();

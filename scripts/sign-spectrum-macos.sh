@@ -19,8 +19,6 @@ if [[ -f "$bundle/Contents/Frameworks/libSpectrumGhosttyBridge.dylib" ]]; then
   sign_code "$bundle/Contents/Frameworks/libSpectrumGhosttyBridge.dylib" \
     com.bentsignal.spectrum.ghostty-bridge
 fi
-sign_code "$bundle/Contents/MacOS/lumen" com.bentsignal.spectrum.lumen
-sign_code "$bundle/Contents/MacOS/prism" com.bentsignal.spectrum.prism
 sign_code "$bundle/Contents/MacOS/spectrum" com.bentsignal.spectrum.cli
 sign_code "$bundle"
 sign_code "$repo_root/target/dist/spectrum-macos" com.bentsignal.spectrum.cli

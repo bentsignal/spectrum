@@ -21,6 +21,9 @@ greenfield; old names and formats carry no compatibility obligations. See
 - [x] One `spectrum` CLI for library listing, image import/adjustment, canvas
   creation/placement, core JSON commands, copying, and exports; live edits use
   authenticated desktop hosts rather than racing open workspaces.
+- [x] Complete CLI help/schema, editing tools, history, collaboration, benchmarks,
+  and terminal consolidation under `spectrum images` / `spectrum canvas`.
+  Old executable targets and packaged helpers are removed; engines remain internal.
 - [x] Backup/restore procedure and rebuildable preview ownership documented.
 
 ## Verification
@@ -40,14 +43,17 @@ The refresh flicker fix passed the full validation loop, release desktop smoke,
 and the same strict image/hosted-ci canvas benchmarks. Background polls now stay
 silent and leave controls enabled; user actions queue once behind an active poll.
 
+CLI consolidation passed the full fmt/clippy/workspace-test loop, packaged Linux
+schema checks and desktop smoke, and both strict benchmarks (canvas: hosted-ci).
+Tests cover full command dispatch, asset typing, export options, terminal target
+precedence, and existing collaboration sessions. [CLI usage](../docs/CLI.md).
+
 ## Next
 
-- Design editor navigation and library access before GPUI: switching still feels
-  awkward to the user. Establish context preservation and a clear return path;
-  preserve focused editors and avoid broad polishing of disposable egui views.
+- Make rough UI mockups with the user, then rebuild in GPUI. Existing layouts
+  are not constraints; revisit the canvas horizontal toolbar, library access,
+  editor navigation, context preservation, and return paths. Avoid egui redesign.
 - Finish library removal/restore and relocation semantics and retire catalog/file
   management affordances as their replacement workflows are established.
-- Complete CLI help/schema and terminal consolidation; old engine CLIs remain
-  internal dependencies of existing terminal workflows.
 - Stable typed animation property addressing remains future work; retain all
   editable properties and structured canvas content as required by direction.

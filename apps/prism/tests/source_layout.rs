@@ -151,8 +151,10 @@ fn layer_transfer_core_and_cli_stay_in_dedicated_modules() {
     let library = fs::read_to_string(manifest.join("src/lib.rs")).unwrap();
     let commands = fs::read_to_string(manifest.join("src/commands.rs")).unwrap();
     let core = fs::read_to_string(manifest.join("src/transfer.rs")).unwrap();
-    let cli = fs::read_to_string(manifest.join("src/bin/prism_cli/transfer.rs")).unwrap();
-    let binary = fs::read_to_string(manifest.join("src/bin/prism.rs")).unwrap();
+    let cli =
+        fs::read_to_string(manifest.join("../spectrum/src/commands/canvas_commands/transfer.rs"))
+            .unwrap();
+    let binary = fs::read_to_string(manifest.join("../spectrum/src/commands/canvas.rs")).unwrap();
 
     assert!(library.contains("mod transfer;"));
     assert!(commands.contains("InsertLayer"));
@@ -162,17 +164,19 @@ fn layer_transfer_core_and_cli_stay_in_dedicated_modules() {
     assert!(core.contains("document-local font ID"));
     assert!(cli.contains("LayerCopyArgs"));
     assert!(cli.contains("LayerPasteArgs"));
-    assert!(binary.contains("prism_cli/transfer.rs"));
+    assert!(binary.contains("canvas_commands/transfer.rs"));
     assert!(cli.lines().count() < 200);
 }
 
 #[test]
 fn prism_cli_delegates_agent_collaboration_with_binary_headroom() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let binary = fs::read_to_string(manifest.join("src/bin/prism.rs")).unwrap();
-    let agent = fs::read_to_string(manifest.join("src/bin/prism_cli/agent.rs")).unwrap();
+    let binary = fs::read_to_string(manifest.join("../spectrum/src/commands/canvas.rs")).unwrap();
+    let agent =
+        fs::read_to_string(manifest.join("../spectrum/src/commands/canvas_commands/agent.rs"))
+            .unwrap();
 
-    assert!(binary.contains("prism_cli/agent.rs"));
+    assert!(binary.contains("canvas_commands/agent.rs"));
     assert!(!binary.contains("fn agent_command("));
     assert!(agent.contains("pub(super) fn agent_command("));
     assert!(agent.contains("fn local_gui_session_id("));
@@ -182,8 +186,10 @@ fn prism_cli_delegates_agent_collaboration_with_binary_headroom() {
 #[test]
 fn prism_schema_builds_command_examples_without_macro_recursion_overrides() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let schema = fs::read_to_string(manifest.join("src/bin/prism_cli/schema.rs")).unwrap();
-    let binary = fs::read_to_string(manifest.join("src/bin/prism.rs")).unwrap();
+    let schema =
+        fs::read_to_string(manifest.join("../spectrum/src/commands/canvas_commands/schema.rs"))
+            .unwrap();
+    let binary = fs::read_to_string(manifest.join("../spectrum/src/commands/canvas.rs")).unwrap();
 
     assert!(schema.contains("let command_examples = command_examples();"));
     assert!(schema.contains("\"examples\": command_examples"));

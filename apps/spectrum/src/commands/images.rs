@@ -1,7 +1,6 @@
 use std::{
     fs,
     path::PathBuf,
-    process::ExitCode,
     time::{Duration, Instant},
 };
 
@@ -21,17 +20,20 @@ use serde::Serialize;
 use serde_json::json;
 use spectrum_revisions::{CollaborationMode, SessionId};
 
-#[path = "lumen_cli/benchmark.rs"]
+#[path = "image_commands/benchmark.rs"]
 mod benchmark;
-#[path = "lumen_cli/benchmark_live_bridge.rs"]
+#[path = "image_commands/benchmark_live_bridge.rs"]
 mod benchmark_live_bridge;
-#[path = "lumen_cli/collaboration.rs"]
+#[path = "image_commands/benchmark_profile.rs"]
+mod benchmark_profile;
+#[path = "image_commands/collaboration.rs"]
 mod collaboration;
-#[path = "lumen_cli/live_bridge.rs"]
+#[path = "image_commands/live_bridge.rs"]
 mod live_bridge;
-#[path = "lumen_cli/schema.rs"]
+#[path = "image_commands/schema.rs"]
 mod schema;
 use benchmark::benchmark;
+use benchmark_profile::BenchmarkProfile;
 use collaboration::*;
 use live_bridge::{
     CliLiveMode, LiveCommand, live_command, require_direct_mode, resolved_live_mode,
@@ -41,18 +43,24 @@ use schema::schema;
 
 #[derive(Parser)]
 #[command(
-    name = "lumen",
+    name = "images",
     version,
-    about = "CLI-first nondestructive photo editor",
-    long_about = "Lumen's CLI exposes the same command engine as its native GUI. All successful output is JSON."
+    about = "Spectrum image editing commands",
+    long_about = "Spectrum's image CLI exposes the same command engine as its native GUI. All successful output is JSON."
 )]
 struct Cli {
-    /// Portable Lumen project used by this command.
-    #[arg(short, long, global = true, default_value = "untitled.lumen")]
+    /// Advanced: select an internal image document. Prefer library asset IDs.
+    #[arg(
+        short,
+        global = true,
+        env = "SPECTRUM_IMAGES_DOCUMENT",
+        long = "document",
+        default_value = "."
+    )]
     catalog: PathBuf,
 
     /// Continue commands in an existing collaboration session.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "SPECTRUM_SESSION")]
     session: Option<SessionId>,
 
     /// Use the authenticated live GUI bridge or ordinary direct project access.
@@ -65,7 +73,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Inspect or mutate an open Lumen GUI through its authenticated bridge.
+    /// Inspect or mutate an open Spectrum image editor through its authenticated bridge.
     Live {
         #[command(subcommand)]
         command: LiveCommand,
@@ -395,76 +403,6 @@ enum CliExportFormat {
     Webp,
 }
 
-#[derive(Clone, Copy, Default, ValueEnum)]
-enum BenchmarkProfile {
-    #[default]
-    Interactive,
-    HostedCi,
-}
-
-impl BenchmarkProfile {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Interactive => "interactive-workstation",
-            Self::HostedCi => "github-hosted-linux",
-        }
-    }
-
-    fn preview_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 50.0,
-            // The shared two-core Linux runner measured 97 ms p95 at the
-            // workstation-passing baseline. Keep 29% headroom for host jitter.
-            Self::HostedCi => 125.0,
-        }
-    }
-
-    fn live_preview_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 33.0,
-            Self::HostedCi => 85.0,
-        }
-    }
-
-    fn command_budget_ms(self) -> f64 {
-        match self {
-            // A durable command atomically republishes a portable project that
-            // contains a 24 MP source asset. It runs after interaction preview,
-            // so this gate protects completion latency rather than frame time.
-            Self::Interactive => 100.0,
-            Self::HostedCi => 175.0,
-        }
-    }
-
-    fn switch_dispatch_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 4.0,
-            Self::HostedCi => 12.0,
-        }
-    }
-
-    fn prefetched_switch_ready_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 35.0,
-            Self::HostedCi => 75.0,
-        }
-    }
-
-    fn cold_switch_ready_budget_ms(self) -> f64 {
-        match self {
-            // The deterministic 2400x1600 JPEG path measured 120 ms p95
-            // locally. Keep 46% workstation and 150% hosted-runner headroom
-            // without allowing a regression into visibly sluggish switching.
-            Self::Interactive => 175.0,
-            Self::HostedCi => 300.0,
-        }
-    }
-
-    fn requires_incremental_publication(self) -> bool {
-        matches!(self, Self::HostedCi)
-    }
-}
-
 impl From<CliExportFormat> for ExportFormat {
     fn from(value: CliExportFormat) -> Self {
         match value {
@@ -500,24 +438,31 @@ impl From<EditArgs> for AdjustmentPatch {
     }
 }
 
-fn main() -> ExitCode {
-    match run(Cli::parse()) {
-        Ok(value) => {
-            println!("{}", serde_json::to_string_pretty(&value).unwrap());
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "ok": false,
-                    "error": format!("{error:#}")
-                }))
-                .unwrap()
-            );
-            ExitCode::FAILURE
-        }
-    }
+pub(super) fn definition() -> clap::Command {
+    use clap::CommandFactory;
+    Cli::command()
+}
+
+pub(super) fn execute_target(
+    matches: &mut clap::ArgMatches,
+    path: PathBuf,
+) -> Result<serde_json::Value> {
+    use clap::FromArgMatches;
+    let command = if matches.subcommand_name() == Some("inspect") {
+        CliCommand::List
+    } else {
+        CliCommand::from_arg_matches(matches)?
+    };
+    run(Cli {
+        catalog: path,
+        session: matches.get_one::<SessionId>("session").copied(),
+        live: matches.get_one::<CliLiveMode>("live").copied(),
+        command,
+    })
+}
+
+pub(super) fn protocol() -> serde_json::Value {
+    schema()
 }
 
 fn run(cli: Cli) -> Result<serde_json::Value> {

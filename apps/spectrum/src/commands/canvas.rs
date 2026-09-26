@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    process::ExitCode,
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
@@ -13,64 +10,64 @@ use serde_json::{Value, json};
 use spectrum_imaging::RenderOptions;
 use spectrum_revisions::{Actor, ActorKind, SessionId};
 
-#[path = "prism_cli/agent.rs"]
+#[path = "canvas_commands/agent.rs"]
 mod agent;
 use agent::{AgentCommand, agent_command};
-#[path = "prism_cli/live_bridge.rs"]
+#[path = "canvas_commands/live_bridge.rs"]
 mod live_bridge;
 use live_bridge::{
     CliLiveMode, LiveCommand, live_command, live_execute_prepared, prepare_live_semantic,
     resolved_live_mode,
 };
-#[path = "prism_cli/alignment.rs"]
+#[path = "canvas_commands/alignment.rs"]
 mod alignment;
 use alignment::{CliAlignment, GuideCommand};
-#[path = "prism_cli/benchmark.rs"]
+#[path = "canvas_commands/benchmark.rs"]
 mod benchmark;
 use benchmark::{BenchmarkProfile, benchmark};
-#[path = "prism_cli/blend.rs"]
+#[path = "canvas_commands/blend.rs"]
 mod blend;
 use blend::CliBlend;
-#[path = "prism_cli/dispatch.rs"]
+#[path = "canvas_commands/dispatch.rs"]
 mod dispatch;
-#[path = "prism_cli/effects.rs"]
+#[path = "canvas_commands/effects.rs"]
 mod effects;
 use effects::{GradientArgs, ShadowArgs};
-#[path = "prism_cli/from_lumen.rs"]
+#[path = "canvas_commands/from_lumen.rs"]
 mod from_lumen;
 use from_lumen::from_lumen;
-#[path = "prism_cli/paths.rs"]
+#[path = "canvas_commands/paths.rs"]
 mod paths;
 use paths::{PathArgs, PathCommand, VectorMaskArgs};
-#[path = "prism_cli/paint.rs"]
+#[path = "canvas_commands/paint.rs"]
 mod paint;
 use paint::PaintArgs;
-#[path = "prism_cli/schema.rs"]
+#[path = "canvas_commands/schema.rs"]
 mod schema;
 use schema::schema;
-#[path = "prism_cli/selection.rs"]
+#[path = "canvas_commands/selection.rs"]
 mod selection;
 use selection::SelectionArgs;
-#[path = "prism_cli/typography.rs"]
+#[path = "canvas_commands/typography.rs"]
 mod typography;
 use typography::{CliTextLayout, TypographyArgs, text_shaping, updated_typography};
-#[path = "prism_cli/transfer.rs"]
+#[path = "canvas_commands/transfer.rs"]
 mod transfer;
 use transfer::{LayerCopyArgs, LayerPasteArgs};
 
 #[derive(Parser)]
-#[command(name = "prism", version, about = "Agent-first layered image editor")]
+#[command(name = "canvas", version, about = "Spectrum canvas editing commands")]
 struct Cli {
     #[arg(
         short,
-        long,
         global = true,
-        env = "PRISM_PROJECT",
-        default_value = "untitled.prism"
+        env = "SPECTRUM_CANVAS_DOCUMENT",
+        long = "document",
+        default_value = "."
     )]
     project: PathBuf,
     /// Continue commands in an existing collaboration session.
-    #[arg(long, global = true, env = "PRISM_SESSION")]
+    #[arg(long, global = true, env = "SPECTRUM_SESSION")]
     session: Option<SessionId>,
     /// Choose direct project access or require the authenticated running GUI.
     #[arg(long, global = true, value_enum)]
@@ -427,21 +424,31 @@ enum CliCommand {
     },
 }
 
-fn main() -> ExitCode {
-    match run(Cli::parse()) {
-        Ok(value) => {
-            println!("{}", serde_json::to_string_pretty(&value).unwrap());
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!(
-                "{}",
-                serde_json::to_string_pretty(&json!({"ok": false, "error": format!("{error:#}")}))
-                    .unwrap()
-            );
-            ExitCode::FAILURE
-        }
-    }
+pub(super) fn definition() -> clap::Command {
+    use clap::CommandFactory;
+    Cli::command()
+}
+
+pub(super) fn execute_target(
+    matches: &mut clap::ArgMatches,
+    path: PathBuf,
+) -> Result<serde_json::Value> {
+    use clap::FromArgMatches;
+    let command = if matches.subcommand_name() == Some("inspect") {
+        CliCommand::List
+    } else {
+        CliCommand::from_arg_matches(matches)?
+    };
+    run(Cli {
+        project: path,
+        session: matches.get_one::<SessionId>("session").copied(),
+        live: matches.get_one::<CliLiveMode>("live").copied(),
+        command,
+    })
+}
+
+pub(super) fn protocol() -> serde_json::Value {
+    schema()
 }
 
 fn run(cli: Cli) -> Result<Value> {
@@ -568,8 +575,8 @@ fn require_direct_mode(mode: CliLiveMode, command: &str) -> Result<()> {
 
 fn cli_actor() -> Actor {
     Actor {
-        id: "local:prism-cli".into(),
-        display_name: "Prism CLI".into(),
+        id: "local:spectrum-canvas-cli".into(),
+        display_name: "Spectrum canvas CLI".into(),
         kind: ActorKind::Agent,
     }
 }
@@ -589,5 +596,5 @@ fn parse_color(value: &str) -> Result<[u8; 4]> {
 }
 
 #[cfg(test)]
-#[path = "prism_cli/test_modules.rs"]
+#[path = "canvas_commands/test_modules.rs"]
 mod test_modules;

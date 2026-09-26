@@ -651,7 +651,9 @@ mod tests {
         assert!(!project.exists());
         assert_eq!(terminal.live_binding_unavailable(original.binding_id), 1);
         assert_eq!(
-            terminal.sessions[0].context.environment("PRISM_PROJECT"),
+            terminal.sessions[0]
+                .context
+                .environment("SPECTRUM_CANVAS_DOCUMENT"),
             Some(original.canonical_project_path.as_os_str())
         );
         assert!(

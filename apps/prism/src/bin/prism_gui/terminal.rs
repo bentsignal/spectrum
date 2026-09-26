@@ -351,7 +351,7 @@ impl TerminalDock {
         for session in &mut self.sessions {
             if session
                 .context
-                .environment("PRISM_LIVE_BINDING_ID")
+                .environment("SPECTRUM_LIVE_BINDING_ID")
                 .is_some_and(|value| value == std::ffi::OsStr::new(&binding))
             {
                 session.message = Some((message.into(), true));
@@ -839,30 +839,23 @@ pub(super) fn terminal_launch(
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
     let mut context = TerminalContext::new(&working_directory)
-        .with_env("SPECTRUM_ACTIVE_APP", "prism")
-        .with_env("SPECTRUM_DOCUMENT", &workspace.document.name)
-        .with_env("PRISM_DOCUMENT", &workspace.document.name);
+        .with_env("SPECTRUM_ACTIVE_APP", "canvas")
+        .with_env("SPECTRUM_DOCUMENT", &workspace.document.name);
     if let Some(project) = project {
         context = context
             .with_env("SPECTRUM_PROJECT", project.as_os_str())
-            .with_env("PRISM_PROJECT", project.as_os_str());
+            .with_env("SPECTRUM_CANVAS_DOCUMENT", project.as_os_str());
     }
     if let Some(session) = workspace.session_id() {
         let session = session.to_string();
-        context = context
-            .with_env("SPECTRUM_SESSION", &session)
-            .with_env("PRISM_SESSION", &session);
+        context = context.with_env("SPECTRUM_SESSION", &session);
     }
     if project.is_some() || live_binding.is_some() {
-        context = context
-            .with_env("SPECTRUM_LIVE_MODE", "required")
-            .with_env("PRISM_LIVE_MODE", "required");
+        context = context.with_env("SPECTRUM_LIVE_MODE", "required");
     }
     if let Some(binding) = live_binding {
         let binding = binding.to_string();
-        context = context
-            .with_env("SPECTRUM_LIVE_BINDING_ID", &binding)
-            .with_env("PRISM_LIVE_BINDING_ID", &binding);
+        context = context.with_env("SPECTRUM_LIVE_BINDING_ID", &binding);
     }
     if let Ok(executable) = std::env::current_exe()
         && let Some(directory) = executable.parent()

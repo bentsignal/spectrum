@@ -68,11 +68,7 @@ impl From<CliInteractionPolicy> for InteractionPolicy {
 pub(super) fn resolved_live_mode(argument: Option<CliLiveMode>) -> Result<CliLiveMode> {
     match argument {
         Some(mode) => Ok(mode),
-        None => match std::env::var("LUMEN_LIVE_MODE")
-            .or_else(|_| std::env::var("SPECTRUM_LIVE_MODE"))
-            .ok()
-            .as_deref()
-        {
+        None => match std::env::var("SPECTRUM_LIVE_MODE").ok().as_deref() {
             Some("required") => Ok(CliLiveMode::Required),
             Some("off") | None => Ok(CliLiveMode::Off),
             Some(value) => bail!("unsupported live mode {value:?}; expected off or required"),
@@ -316,8 +312,7 @@ fn discover(path: &Path) -> Result<DiscoveredBinding> {
     let directory = DiscoveryDirectory::open(lumen_live_discovery_root()?)?;
     let canonical = std::fs::canonicalize(path)
         .with_context(|| format!("could not resolve live project {}", path.display()))?;
-    let selected = std::env::var("LUMEN_LIVE_BINDING_ID")
-        .or_else(|_| std::env::var("SPECTRUM_LIVE_BINDING_ID"))
+    let selected = std::env::var("SPECTRUM_LIVE_BINDING_ID")
         .ok()
         .map(|value| BindingId::from_str(&value))
         .transpose()
@@ -338,7 +333,7 @@ fn discover(path: &Path) -> Result<DiscoveredBinding> {
             canonical.display()
         ),
         _ => bail!(
-            "multiple live Lumen bindings match {}; set LUMEN_LIVE_BINDING_ID",
+            "multiple live Lumen bindings match {}; set SPECTRUM_LIVE_BINDING_ID",
             canonical.display()
         ),
     };
@@ -533,7 +528,7 @@ pub(super) fn decode_commands(value: &str) -> Result<Vec<Command>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::run;
+    use super::super::run;
     use image::{Rgba, RgbaImage};
     use spectrum_revisions::{Actor, ActorKind};
 

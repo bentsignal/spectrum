@@ -9,7 +9,7 @@ fn temporary_project(label: &str) -> std::path::PathBuf {
 }
 
 fn invoke(project: &std::path::Path, arguments: &[&str]) -> anyhow::Result<()> {
-    let mut argv = vec!["prism", "--project", project.to_str().unwrap()];
+    let mut argv = vec!["prism", "--document", project.to_str().unwrap()];
     argv.extend_from_slice(arguments);
     run(Cli::try_parse_from(argv).unwrap()).map(|_| ())
 }
@@ -133,7 +133,7 @@ fn modern_stops_and_legacy_endpoints_are_mutually_exclusive() {
     for legacy in [["--start", "00ff00ff"], ["--end", "ffffffff"]] {
         let arguments = [
             "prism",
-            "--project",
+            "--document",
             project.to_str().unwrap(),
             "gradient",
             "1",
@@ -206,7 +206,7 @@ fn structured_gradient_json_is_bounded_strict_and_exclusive() {
         vec!["gradient", "1", "--clear", "--start", "ff0000ff"],
         vec!["gradient", "1", "--gradient-json", valid, "--radius", "0.7"],
     ] {
-        let mut argv = vec!["prism", "--project", project.to_str().unwrap()];
+        let mut argv = vec!["prism", "--document", project.to_str().unwrap()];
         argv.extend(arguments);
         assert!(Cli::try_parse_from(argv).is_err());
         assert_eq!(Workspace::load_read_only(&project).unwrap(), after_valid);
@@ -258,7 +258,7 @@ fn required_live_structured_gradient_never_falls_back_to_direct_mutation() {
     let json = r#"{"kind":"radial","stops":[{"position":0,"color":[255,0,0,255]},{"position":1,"color":[0,0,0,0]}],"interpolation":"premultiplied_srgb_v1"}"#;
     let error = run(Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "--session",
         &collaboration.agent_session.to_string(),

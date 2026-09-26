@@ -33,18 +33,15 @@ jobs:
           - os: windows-latest
             label: Windows
             gui: target/release/spectrum-gui.exe
-            cli: target/release/lumen.exe
-            prism_cli: target/release/prism.exe
+            cli: target/release/spectrum.exe
           - os: macos-latest
             label: macOS
             gui: target/release/spectrum-gui
-            cli: target/release/lumen
-            prism_cli: target/release/prism
+            cli: target/release/spectrum
           - os: ubuntu-latest
             label: Linux
             gui: target/release/spectrum-gui
-            cli: target/release/lumen
-            prism_cli: target/release/prism
+            cli: target/release/spectrum
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -54,10 +51,15 @@ jobs:
       - name: Test native live bridge endpoint and security behavior
         run: cargo test -p spectrum-live-bridge --all-targets --locked
       - run: cargo build --release --workspace --bins --locked
+      - name: Verify consolidated CLI on this platform
+        run: |
+          ${{ matrix.cli }} images schema
+          ${{ matrix.cli }} canvas schema
+          ${{ matrix.cli }} --help
       - if: runner.os == 'Linux'
-        run: ./target/release/lumen benchmark --strict --profile hosted-ci
+        run: ./target/release/spectrum images benchmark --strict --profile hosted-ci
       - if: runner.os == 'Linux'
-        run: ./target/release/prism benchmark --strict --profile hosted-ci
+        run: ./target/release/spectrum canvas benchmark --strict --profile hosted-ci
       - if: runner.os == 'Linux'
         run: ./target/release/live-bridge-benchmark --strict --hosted
       - name: Install Developer ID certificate
@@ -112,6 +114,5 @@ jobs:
           path: |
             ${{ matrix.gui }}
             ${{ matrix.cli }}
-            ${{ matrix.prism_cli }}
             target/dist/
           if-no-files-found: error

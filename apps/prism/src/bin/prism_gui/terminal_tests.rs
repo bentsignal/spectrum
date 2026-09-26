@@ -206,15 +206,15 @@ fn active_project_context_is_passed_as_data() {
     let launch = terminal_launch(&workspace, None);
     assert_eq!(launch.context.working_directory(), Path::new("/tmp"));
     assert_eq!(
-        launch.context.environment("PRISM_PROJECT"),
+        launch.context.environment("SPECTRUM_CANVAS_DOCUMENT"),
         Some(std::ffi::OsStr::new("/tmp/project with spaces.prism"))
     );
     assert_eq!(
-        launch.context.environment("PRISM_DOCUMENT"),
+        launch.context.environment("SPECTRUM_DOCUMENT"),
         Some(std::ffi::OsStr::new("$(unsafe) artwork"))
     );
     assert_eq!(
-        launch.context.environment("PRISM_LIVE_MODE"),
+        launch.context.environment("SPECTRUM_LIVE_MODE"),
         Some(std::ffi::OsStr::new("required"))
     );
 }
@@ -225,11 +225,11 @@ fn terminal_live_context_contains_mode_and_binding_but_no_capability() {
     let binding = spectrum_live_bridge::BindingId::new();
     let launch = terminal_launch(&workspace, Some(binding));
     assert_eq!(
-        launch.context.environment("PRISM_LIVE_MODE"),
+        launch.context.environment("SPECTRUM_LIVE_MODE"),
         Some(std::ffi::OsStr::new("required"))
     );
     assert_eq!(
-        launch.context.environment("PRISM_LIVE_BINDING_ID"),
+        launch.context.environment("SPECTRUM_LIVE_BINDING_ID"),
         Some(std::ffi::OsStr::new(&binding.to_string()))
     );
     assert!(
@@ -269,7 +269,7 @@ fn rotated_binding_marks_old_sessions_stale_and_new_session_uses_replacement() {
     assert_eq!(
         dock.sessions[0]
             .context
-            .environment("PRISM_LIVE_BINDING_ID"),
+            .environment("SPECTRUM_LIVE_BINDING_ID"),
         Some(std::ffi::OsStr::new(&old.to_string()))
     );
 
@@ -277,7 +277,7 @@ fn rotated_binding_marks_old_sessions_stale_and_new_session_uses_replacement() {
     assert_eq!(
         dock.sessions[1]
             .context
-            .environment("PRISM_LIVE_BINDING_ID"),
+            .environment("SPECTRUM_LIVE_BINDING_ID"),
         Some(std::ffi::OsStr::new(&replacement.to_string()))
     );
     assert!(dock.sessions.iter().all(|session| {
@@ -318,7 +318,7 @@ fn closing_project_marks_surviving_terminal_with_reopen_recovery() {
     assert_eq!(
         dock.sessions[0]
             .context
-            .environment("PRISM_LIVE_BINDING_ID"),
+            .environment("SPECTRUM_LIVE_BINDING_ID"),
         Some(std::ffi::OsStr::new(&retired.to_string()))
     );
 }

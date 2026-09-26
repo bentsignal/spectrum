@@ -64,7 +64,7 @@ fn path_and_vector_mask_cli_surfaces_mutate_durable_projects_end_to_end() {
         vec!["add-rectangle", "--width", "120", "--height", "60"],
         vec!["vector-mask", "2", closed_arg, "--invert"],
     ] {
-        let mut cli = vec!["prism", "--project", project_arg];
+        let mut cli = vec!["prism", "--document", project_arg];
         cli.extend(arguments);
         run(Cli::try_parse_from(cli).unwrap()).unwrap();
     }
@@ -86,7 +86,7 @@ fn path_and_vector_mask_cli_surfaces_mutate_durable_projects_end_to_end() {
 
     run(Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         project_arg,
         "vector-mask",
         "2",
@@ -127,7 +127,7 @@ fn selection_cli_persists_and_fills_without_touching_existing_layers() {
         vec!["selection", "rectangle", "4", "5", "20", "10"],
         vec!["selection", "fill", "--color", "12345678", "--name", "Wash"],
     ] {
-        let mut cli = vec!["prism", "--project", project_arg];
+        let mut cli = vec!["prism", "--document", project_arg];
         cli.extend(arguments);
         run(Cli::try_parse_from(cli).unwrap()).unwrap();
     }
@@ -178,7 +178,7 @@ fn selection_crop_cli_uses_the_atomic_core_command() {
         vec!["selection", "rectangle", "4", "5", "20", "10"],
         vec!["selection", "crop"],
     ] {
-        let mut cli = vec!["prism", "--project", project_arg];
+        let mut cli = vec!["prism", "--document", project_arg];
         cli.extend(arguments);
         run(Cli::try_parse_from(cli).unwrap()).unwrap();
     }
@@ -232,7 +232,7 @@ fn benchmark_cli_defaults_to_interactive_and_accepts_hosted_ci() {
 fn typography_cli_parses_face_paragraph_and_effect_controls() {
     let cli = Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         "type.prism",
         "typography",
         "7",
@@ -290,7 +290,7 @@ fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_d
         vec!["init", "Shaped CLI", "--width", "320", "--height", "180"],
         vec!["add-text", "office العربية", "--language", "iw-IL"],
     ] {
-        let mut cli = vec!["prism", "--project", project_arg];
+        let mut cli = vec!["prism", "--document", project_arg];
         cli.extend(arguments);
         run(Cli::try_parse_from(cli).unwrap()).unwrap();
     }
@@ -306,7 +306,7 @@ fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_d
 
     run(Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         project_arg,
         "typography",
         "1",
@@ -331,7 +331,7 @@ fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_d
 fn font_list_cli_accepts_an_optional_query() {
     let cli = Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         "type.prism",
         "font-list",
         "--query",
@@ -372,7 +372,7 @@ fn bundled_font_output_is_truthful_and_legacy_family_automation_remains_compatib
 
     let cli = Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         "type.prism",
         "typography",
         "1",
@@ -391,7 +391,7 @@ fn bundled_font_output_is_truthful_and_legacy_family_automation_remains_compatib
 fn font_usage_cli_accepts_an_optional_asset_filter() {
     let cli = Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         "type.prism",
         "font-usage",
         "--font-id",
@@ -407,7 +407,7 @@ fn font_usage_cli_accepts_an_optional_asset_filter() {
 #[test]
 fn font_source_cli_requires_one_embedded_asset() {
     let cli =
-        Cli::try_parse_from(["prism", "--project", "type.prism", "font-source", "12"]).unwrap();
+        Cli::try_parse_from(["prism", "--document", "type.prism", "font-source", "12"]).unwrap();
     let CliCommand::FontSource { font_id } = cli.command else {
         panic!("font-source subcommand should parse");
     };
@@ -416,8 +416,14 @@ fn font_source_cli_requires_one_embedded_asset() {
 
 #[test]
 fn font_subset_plan_cli_requires_one_embedded_asset() {
-    let cli = Cli::try_parse_from(["prism", "--project", "type.prism", "font-subset-plan", "12"])
-        .unwrap();
+    let cli = Cli::try_parse_from([
+        "prism",
+        "--document",
+        "type.prism",
+        "font-subset-plan",
+        "12",
+    ])
+    .unwrap();
     let CliCommand::FontSubsetPlan { font_id } = cli.command else {
         panic!("font-subset-plan subcommand should parse");
     };
@@ -834,7 +840,7 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
 
     let copy = Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         source.to_str().unwrap(),
         "layer-copy",
         "--output",
@@ -848,7 +854,7 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
 
     let paste = Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         destination.to_str().unwrap(),
         "layer-paste",
         transfer.to_str().unwrap(),
@@ -877,7 +883,7 @@ fn layer_copy_refuses_to_overwrite_an_existing_transfer_file() {
     std::fs::write(&transfer, "keep me").unwrap();
     let cli = Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         source.to_str().unwrap(),
         "layer-copy",
         "1",
@@ -897,7 +903,7 @@ fn rotate_cli_persists_the_normalized_angle() {
     initialize_rectangle_project(&project);
     let rotate = Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         project.to_str().unwrap(),
         "rotate",
         "1",
@@ -919,7 +925,7 @@ fn guide_snapping_and_alignment_cli_persist_semantic_commands() {
         vec!["guide", "add", "vertical", "125.5"],
         vec!["align", "1", "horizontal-center"],
     ] {
-        let mut cli = vec!["prism", "--project", project.to_str().unwrap()];
+        let mut cli = vec!["prism", "--document", project.to_str().unwrap()];
         cli.extend(arguments);
         run(Cli::try_parse_from(cli).unwrap()).unwrap();
     }
@@ -941,56 +947,6 @@ pub(super) fn temporary_project(label: &str) -> PathBuf {
         .join(format!("prism-{label}-cli-{stamp}.prism"))
 }
 
-fn tree_snapshot(root: &Path) -> Vec<(PathBuf, bool, Vec<u8>)> {
-    fn visit(root: &Path, directory: &Path, snapshot: &mut Vec<(PathBuf, bool, Vec<u8>)>) {
-        let mut entries = std::fs::read_dir(directory)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect::<Vec<_>>();
-        entries.sort();
-        for path in entries {
-            let relative = path.strip_prefix(root).unwrap().to_owned();
-            let metadata = std::fs::symlink_metadata(&path).unwrap();
-            if metadata.is_dir() {
-                snapshot.push((relative, true, Vec::new()));
-                visit(root, &path, snapshot);
-            } else {
-                snapshot.push((relative, false, std::fs::read(path).unwrap()));
-            }
-        }
-    }
-
-    let mut snapshot = Vec::new();
-    visit(root, root, &mut snapshot);
-    snapshot
-}
-
-fn initialize_rectangle_project(project: &Path) {
-    run(Cli {
-        project: project.to_owned(),
-        session: None,
-        live: None,
-        command: CliCommand::Init {
-            name: "CLI test".into(),
-            width: 400,
-            height: 300,
-            background: "18191dff".into(),
-        },
-    })
-    .unwrap();
-    run(Cli {
-        project: project.to_owned(),
-        session: None,
-        live: None,
-        command: CliCommand::AddRectangle {
-            name: None,
-            width: 100,
-            height: 80,
-            color: "ffffffff".into(),
-            radius: 0.0,
-            x: 10.0,
-            y: 20.0,
-        },
-    })
-    .unwrap();
-}
+#[path = "tests_support.rs"]
+mod support;
+use support::{initialize_rectangle_project, tree_snapshot};

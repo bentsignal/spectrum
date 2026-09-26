@@ -3,12 +3,11 @@ use super::*;
 pub(super) fn schema() -> serde_json::Value {
     json!({
         "ok": true,
-        "project_extension": ".lumen",
-        "legacy_catalog_extensions": [".lumencatalog"],
-        "legacy_catalog_version": lumen_core::project::CATALOG_VERSION,
-        "output": "JSON on stdout; structured errors on stderr; nonzero exit on failure",
+        "project_extension": ".spectrum",
+        "legacy_catalog_extensions": [".spectrumcatalog"],
+                "output": "JSON on stdout; structured errors on stderr; nonzero exit on failure",
         "project_storage": {
-            "container": "single transactional SQLite .lumen file",
+            "container": "single transactional SQLite .spectrum file",
             "history": "one immutable revision tree per photo, with session-specific cursors",
             "persistence": "each completed semantic action is an attributed durable revision",
             "assets": "imported originals are embedded and content-addressed",
@@ -16,9 +15,9 @@ pub(super) fn schema() -> serde_json::Value {
         },
         "agent_collaboration": {
             "agent_prompt": "before starting, ask whether the user wants to continue together or explore separately",
-            "start": "lumen --catalog <path> agent start <photo-id> --mode <together|separate> --name <agent>",
+            "start": "spectrum images --document <path> agent start <photo-id> --mode <together|separate> --name <agent>",
             "continue": "pass the returned --session value to every list, edit, run, and export command",
-            "status": "lumen --catalog <path> --session <id> agent status",
+            "status": "spectrum images --document <path> --session <id> agent status",
             "together": "starts at the human cursor for one photo; other photo histories remain independent",
             "separate": "starts at the human cursor for one photo and never moves the human session",
             "transport": "CLI JSON; no vendor-specific integration required"
@@ -33,7 +32,7 @@ pub(super) fn schema() -> serde_json::Value {
             },
             "mode": {
                 "argument": "--live <off|required>",
-                "environment_precedence": ["LUMEN_LIVE_MODE", "SPECTRUM_LIVE_MODE"],
+                "environment_precedence": ["SPECTRUM_LIVE_MODE"],
                 "default": "off",
                 "required_mode_fallback": false
             },

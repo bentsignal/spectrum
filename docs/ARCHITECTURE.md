@@ -21,7 +21,7 @@ same values directly or deserializes them through `lumen run '<json>'`.
 - `apps/lumen/src/engine.rs`: Lumen-specific RAW decoding and export adapters
 - `apps/lumen/src/command.rs`: the complete mutation boundary, clipboard, and
   undo/redo
-- `apps/lumen/src/bin/lumen_cli/`: structured automation interface modules
+- `apps/spectrum/src/commands/image_commands/`: structured automation interface modules
 - `apps/lumen/src/bin/lumen_gui/`: focused native GUI modules for state, library,
   toolbar, inspector, canvas, dialogs, and drawing helpers
 

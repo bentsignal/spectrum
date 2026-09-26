@@ -16,10 +16,6 @@ ghostty-terminal = ["spectrum-terminal/ghostty-terminal"]
 [lib]
 name = "prism_core"
 
-[[bin]]
-name = "prism"
-path = "src/bin/prism.rs"
-
 [dependencies]
 spectrum-library = { path = "../../crates/spectrum-library" }
 anyhow.workspace = true

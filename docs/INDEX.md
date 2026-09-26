@@ -11,7 +11,7 @@ records how the former UAV material was curated.
 | [Suite](SUITE.md) | App boundaries and shared engineering principles |
 | [Prism](PRISM.md) | Prism workflow and command model |
 | [Architecture](ARCHITECTURE.md) | Lumen architecture and rendering contracts |
-| [CLI](CLI.md) | Lumen automation reference |
+| [CLI](CLI.md) | Spectrum automation reference |
 | [Agent guide](../AGENTS.md) | Working rules and required validation |
 | [Tasks](../tasks/README.md) | Remaining work; one file per task |
 

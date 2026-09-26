@@ -142,9 +142,9 @@ if [[ "$ghostty_enabled" == true ]]; then
   packaged_license_sha="$(sha256_file "$ghostty_stage/GHOSTTY-LICENSE")"
 fi
 if [[ "$ghostty_enabled" == true ]]; then
-  cargo build --release --locked -p spectrum -p prism -p lumen-photo --bins --features spectrum/ghostty-terminal
+  cargo build --release --locked -p spectrum --bins --features spectrum/ghostty-terminal
 else
-  cargo build --release --locked -p spectrum -p prism -p lumen-photo --bins
+  cargo build --release --locked -p spectrum --bins
 fi
 
 if [[ "$ghostty_enabled" == true ]]; then
@@ -166,8 +166,6 @@ fi
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 install -m 0755 "$repo_root/target/release/spectrum-gui" "$bundle/Contents/MacOS/spectrum-gui"
 install -m 0755 "$repo_root/target/release/spectrum" "$bundle/Contents/MacOS/spectrum"
-install -m 0755 "$repo_root/target/release/prism" "$bundle/Contents/MacOS/prism"
-install -m 0755 "$repo_root/target/release/lumen" "$bundle/Contents/MacOS/lumen"
 install -m 0644 "$repo_root/packaging/spectrum/macos/Info.plist" "$bundle/Contents/Info.plist"
 "$repo_root/scripts/stamp-macos-bundle.sh" "$bundle/Contents/Info.plist"
 "$repo_root/scripts/package-macos-icon.sh" \
@@ -195,7 +193,7 @@ if [[ "$ghostty_enabled" == true ]]; then
   plutil -insert SpectrumGhosttyBridgeABI -integer "$bridge_abi" "$bundle/Contents/Info.plist"
   [[ "$(plutil -extract LSMinimumSystemVersion raw -o - "$bundle/Contents/Info.plist")" == "$minimum_macos" ]]
   [[ "$(plutil -extract SpectrumTerminalBackend raw -o - "$bundle/Contents/Info.plist")" == "Ghostty" ]]
-  for binary in "$bundle/Contents/MacOS/spectrum-gui" "$bundle/Contents/MacOS/prism" "$bundle/Contents/MacOS/lumen"; do
+  for binary in "$bundle/Contents/MacOS/spectrum-gui" "$bundle/Contents/MacOS/spectrum"; do
     otool -l "$binary" | awk -v expected="$minimum_macos" '
       $1 == "cmd" && $2 == "LC_BUILD_VERSION" { in_build = 1; next }
       in_build && $1 == "minos" { found = ($2 == expected); exit }

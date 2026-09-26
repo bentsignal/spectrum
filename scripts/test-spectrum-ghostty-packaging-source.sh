@@ -618,8 +618,8 @@ assert 'chmod -R u+w "$bundle"' in package
 assert 'refusing to replace unsafe bundle path' in package
 assert 'local exit_code=$?' in package
 assert 'return "$exit_code"' in package
-assert 'cargo build --release --locked -p spectrum -p prism -p lumen-photo --bins --features spectrum/ghostty-terminal' in package
-assert 'cargo build --release --locked -p spectrum -p prism -p lumen-photo --bins\n' in package
+assert 'cargo build --release --locked -p spectrum --bins --features spectrum/ghostty-terminal' in package
+assert 'cargo build --release --locked -p spectrum --bins\n' in package
 assert '"$proof_root" == "$private_root/proof"' in consumer
 assert 'bridge packaging rejects externally prepared proof roots' in consumer
 assert 'verified-proof-root' not in package

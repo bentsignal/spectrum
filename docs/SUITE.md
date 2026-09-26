@@ -45,9 +45,10 @@ edits an image; `spectrum copy <id>` makes independent content. Both domains hav
 The desktop's Library menu opens assets; Place on canvas and Edit image connect
 existing editing views. Independent copy creates separately editable content.
 
-CLI edits use the authenticated live host when the document is open. The old
-engine CLIs still support existing terminal workflows pending their complete
-command/help consolidation; new library operations use `spectrum` exclusively.
+Library CLI edits use the authenticated live host when the document is open.
+All editor commands, schemas, benchmarks, and collaboration tools now live under
+`spectrum images` and `spectrum canvas`; packages ship no separate engine CLIs.
+Advanced commands select `--asset` or `--document`; see [CLI](CLI.md) for sessions.
 The GPUI rewrite follows validation of these interactions, per [direction](DIRECTION.md).
 
 ## Validation

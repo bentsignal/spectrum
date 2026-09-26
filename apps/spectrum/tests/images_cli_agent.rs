@@ -38,7 +38,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
     .unwrap();
 
     let together = run_lumen(&[
-        "--catalog",
+        "--document",
         project_path.to_str().unwrap(),
         "agent",
         "start",
@@ -51,7 +51,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
     assert_eq!(together["mode"], "together");
     let together_session = session(&together);
     run_lumen(&[
-        "--catalog",
+        "--document",
         project_path.to_str().unwrap(),
         "--session",
         &together_session.to_string(),
@@ -81,7 +81,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
         })
         .unwrap();
     run_lumen(&[
-        "--catalog",
+        "--document",
         project_path.to_str().unwrap(),
         "--session",
         &together_session.to_string(),
@@ -109,7 +109,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
         })
         .unwrap();
     run_lumen(&[
-        "--catalog",
+        "--document",
         project_path.to_str().unwrap(),
         "--session",
         &together_session.to_string(),
@@ -129,7 +129,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
     );
 
     let separate = run_lumen(&[
-        "--catalog",
+        "--document",
         project_path.to_str().unwrap(),
         "agent",
         "start",
@@ -145,7 +145,7 @@ fn cli_agent_sessions_support_together_and_separate_workflows() {
     );
     let separate_session = session(&separate);
     run_lumen(&[
-        "--catalog",
+        "--document",
         project_path.to_str().unwrap(),
         "--session",
         &separate_session.to_string(),
@@ -254,7 +254,7 @@ fn earlier_project_wide_lumen_files_upgrade_to_photo_tracks() {
 
 fn status(project: &Path, session: SessionId) -> Value {
     run_lumen(&[
-        "--catalog",
+        "--document",
         project.to_str().unwrap(),
         "--session",
         &session.to_string(),
@@ -268,7 +268,8 @@ fn session(output: &Value) -> SessionId {
 }
 
 fn run_lumen(arguments: &[&str]) -> Value {
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_lumen"))
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_spectrum"))
+        .arg("images")
         .args(arguments)
         .output()
         .unwrap();

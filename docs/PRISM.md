@@ -34,18 +34,18 @@ fast native editing surface over that behavior. Project validation, range
 checking, history, rendering, and persistence belong below both interfaces; a
 GUI control is never the only way to perform an operation.
 
-Use `prism schema` to discover the machine-facing command protocol and prefer the
+Use `spectrum canvas schema` to discover the machine-facing command protocol and prefer the
 task-oriented CLI subcommands for shell automation. Successful CLI calls emit
 structured JSON so agents can inspect exact IDs and state rather than scraping
 human UI text.
 
 A Prism GUI workspace is a live in-memory editing session. Do not run a direct
-mutating `prism --project <path> ...` command against that same project while it
+mutating `spectrum canvas --document <path> ...` command against that same project while it
 is open in the non-collaborative GUI: the GUI will not reload that unrelated
 session automatically, and a later GUI edit can publish from stale state. Close
 the target tab (open or create another document first) or quit Spectrum before
 direct CLI work, then reopen the project afterward. For coordinated live work,
-use `prism --project <path> agent start --mode together` and pass its reported
+use `spectrum canvas --document <path> agent start --mode together` and pass its reported
 `--session` to every subsequent command.
 
 The global `--project <path>` option selects an editable `.prism` document.
@@ -57,7 +57,7 @@ Lumen handoff. `schema`, raw `run`, and `benchmark` provide discovery, low-level
 agent control, and repeatable performance checks.
 
 Pixel selections are persistent document-space rectangles or bounded alpha
-masks. Use `prism selection rectangle <x> <y> <width> <height>` to replace the
+masks. Use `spectrum canvas selection rectangle <x> <y> <width> <height>` to replace the
 selection, `selection clear` to deselect, and `selection fill` to create an
 editable solid layer without rewriting existing pixels. `selection crop` crops
 the canvas exactly to the validated selection bounds, offsets layers and guides,
@@ -71,7 +71,7 @@ command instead of accepting an envelope they cannot deserialize.
 Rectangle and ellipse geometry stays parametric in project history. Prism
 regenerates shape pixels from fill, stroke, radius, and dimensions for the
 current display zoom and final export scale, so enlarging an editable shape does
-not enlarge an old low-resolution texture. Use `prism rasterize-shape <id>` (or
+not enlarge an old low-resolution texture. Use `spectrum canvas rasterize-shape <id>` (or
 the matching Content-panel action) only when the layer should intentionally be
 frozen into an embedded raster asset. `--scale <factor>` overrides the CLI's
 current-transform-aware raster resolution.
@@ -101,23 +101,17 @@ Lumen and Prism are separate applications with one-way reuse:
   development and color controls. Neither app depends on the other for these
   primitives.
 
-The `from-lumen` handoff creates a layered Prism project from a developed Lumen
-photo. It preserves the focused Lumen workflow, gives the new project a rendered
-base layer to build on, and avoids a reverse package dependency. This boundary
-also lets agents hand a selected catalog photo to Prism without reproducing
-Lumen's RAW/development behavior inside the canvas editor.
+Spectrum's shared library connects the editors through live image references.
+Import once, place the image on a canvas, and subsequent development edits are
+resolved by the canvas preview and export. Originals remain immutable; explicit
+independent copies detach future edits. See [Suite](SUITE.md) for ownership.
 
-Original photos remain immutable. Prism saves editing state into its project and
-exports to a destination selected by the user; handing work across applications
-does not overwrite the Lumen source.
-
-The handoff is available without opening either GUI:
+The linked workflow is available without opening either editor:
 
 ```sh
-prism from-lumen \
-  --catalog path/to/library.lumen \
-  --photo 42 \
-  --output path/to/composition.prism
+spectrum images import path/to/image.jpg
+spectrum canvas new "Composition"
+spectrum canvas place <canvas-uuid> <image-uuid>
 ```
 
 ## Run and package
@@ -125,7 +119,7 @@ prism from-lumen \
 Run either interface from the workspace:
 
 ```sh
-cargo run --release -p prism --bin prism -- schema
+cargo run --release -p spectrum --bin spectrum -- canvas schema
 cargo run --release -p spectrum --bin spectrum-gui
 ```
 
@@ -137,5 +131,5 @@ bash scripts/package-spectrum-linux.sh
 pwsh scripts/package-spectrum-windows.ps1
 ```
 
-The scripts package Spectrum with the `lumen` and `prism` CLIs beneath
+The scripts package Spectrum with its single `spectrum` CLI beneath
 `target/dist`; they do not modify existing projects.

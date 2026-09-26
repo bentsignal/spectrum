@@ -14,10 +14,6 @@ ghostty-terminal = ["spectrum-terminal/ghostty-terminal"]
 [lib]
 name = "lumen_core"
 
-[[bin]]
-name = "lumen"
-path = "src/bin/lumen.rs"
-
 [dependencies]
 spectrum-library = { path = "../../crates/spectrum-library" }
 anyhow.workspace = true

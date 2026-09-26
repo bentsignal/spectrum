@@ -9,7 +9,7 @@ fn rename_document_cli_changes_metadata_without_changing_the_project_path() {
         vec!["init", "Original", "--width", "80", "--height", "60"],
         vec!["rename-document", "Campaign"],
     ] {
-        let mut cli = vec!["prism", "--project", project_arg];
+        let mut cli = vec!["prism", "--document", project_arg];
         cli.extend(arguments);
         run(Cli::try_parse_from(cli).unwrap()).unwrap();
     }

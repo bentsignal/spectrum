@@ -32,7 +32,7 @@ does not reclaim space until they are deleted there. Confirm the reclaimed
 space afterward.
 
 This repository is the Spectrum creative-suite monorepo. The unified desktop
-app lives in `apps/spectrum`; the photo and canvas engines and CLIs live in
+app lives in `apps/spectrum`; the consolidated CLI lives there too; photo and canvas engines live in
 `apps/lumen` and `apps/prism`. App-neutral imaging behavior lives in
 `crates/spectrum-imaging`; repository policy checks live in
 `tools/workspace-guardrails`. Preserve each workspace's focused UI. Do not make one
@@ -42,18 +42,18 @@ compatibility paths are implementation details, not long-term requirements.
 Follow [Spectrum direction](docs/DIRECTION.md) when designing new storage or
 public commands.
 
-Use the `lumen` CLI for all photo and catalog automation and the `prism` CLI for
-all layered-document automation. Do not edit `.lumen`, legacy `.lumencatalog`, `.prism`, or
-legacy `.mica` JSON manually unless recovering a damaged file; the CLIs apply validation,
-transactional mutation, and path checks.
+Use `spectrum images` and `spectrum canvas` for all automation. Do not edit
+managed document storage manually; the CLI applies validation and transactional
+mutation. Library commands take asset UUIDs. Advanced editor commands select
+`--asset <UUID>` or `--document <path>`; image item and canvas layer IDs are local.
 
 Start with:
 
 ```sh
-cargo run --release -p lumen-photo --bin lumen -- schema
-cargo run --release -p lumen-photo --bin lumen -- --catalog <path> list
-cargo run --release -p prism --bin prism -- schema
-cargo run --release -p prism --bin prism -- --project <path> list
+cargo run --release -p spectrum --bin spectrum -- schema
+cargo run --release -p spectrum --bin spectrum -- library
+cargo run --release -p spectrum --bin spectrum -- images --help
+cargo run --release -p spectrum --bin spectrum -- canvas --help
 ```
 
 Every GUI mutation maps to `lumen_core::Command`. When adding a new user-facing

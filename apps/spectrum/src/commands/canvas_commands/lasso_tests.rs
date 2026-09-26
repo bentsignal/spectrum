@@ -15,7 +15,7 @@ fn lasso_cli_persists_fixed_point_soft_selection_and_rejects_short_paths() {
     let project_arg = project.to_str().unwrap();
     run(Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         project_arg,
         "init",
         "Lasso CLI",
@@ -29,7 +29,7 @@ fn lasso_cli_persists_fixed_point_soft_selection_and_rejects_short_paths() {
     assert!(
         run(Cli::try_parse_from([
             "prism",
-            "--project",
+            "--document",
             project_arg,
             "selection",
             "lasso",
@@ -49,7 +49,7 @@ fn lasso_cli_persists_fixed_point_soft_selection_and_rejects_short_paths() {
     );
     run(Cli::try_parse_from([
         "prism",
-        "--project",
+        "--document",
         project_arg,
         "selection",
         "lasso",

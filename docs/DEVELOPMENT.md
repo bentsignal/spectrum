@@ -22,8 +22,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
 cargo build --release --workspace --bins --locked
 bash scripts/package-spectrum-linux.sh
-./target/release/lumen schema
-./target/release/prism schema
+./target/release/spectrum images schema
+./target/release/spectrum canvas schema
 ./target/release/spectrum-gui
 ```
 
