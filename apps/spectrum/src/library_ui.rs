@@ -30,10 +30,11 @@ struct Update {
 pub(crate) struct LibraryUi {
     root: PathBuf,
     sender: Sender<Request>,
-    receiver: Receiver<Result<Update, String>>,
+    receiver: Receiver<(bool, Result<Update, String>)>,
     assets: Vec<Asset>,
     previews: HashMap<AssetId, PathBuf>,
-    busy: bool,
+    polling: bool,
+    acting: bool,
     poll_at: Instant,
     status: String,
 }
@@ -46,12 +47,13 @@ impl LibraryUi {
             let mut service = match Service::open(&worker_root) {
                 Ok(s) => s,
                 Err(e) => {
-                    let _ = responses.send(Err(format!("{e:#}")));
+                    let _ = responses.send((false, Err(format!("{e:#}"))));
                     context.request_repaint();
                     return;
                 }
             };
             while let Ok(request) = requests.recv() {
+                let acting = !matches!(request, Request::Poll(..));
                 let result = (|| -> anyhow::Result<Update> {
                     if let Request::Poll(_, summaries) = &request {
                         for (path, name, links) in summaries {
@@ -86,7 +88,7 @@ impl LibraryUi {
                     })
                 })()
                 .map_err(|e| format!("{e:#}"));
-                if responses.send(result).is_err() {
+                if responses.send((acting, result)).is_err() {
                     break;
                 }
                 context.request_repaint();
@@ -98,17 +100,33 @@ impl LibraryUi {
             receiver,
             assets: Vec::new(),
             previews: HashMap::new(),
-            busy: false,
+            polling: false,
+            acting: false,
             poll_at: Instant::now(),
             status: String::new(),
         }
     }
     fn send(&mut self, request: Request) {
-        if !self.busy {
-            self.busy = self.sender.send(request).is_ok();
-            if self.busy {
-                self.status = "Updating library…".into();
-            }
+        let acting = !matches!(request, Request::Poll(..));
+        if self.acting || (!acting && self.polling) {
+            return;
+        }
+        if self.sender.send(request).is_err() {
+            self.status = "Library worker unavailable; restart Spectrum.".into();
+        } else if acting {
+            // The worker queues this behind any refresh already in flight.
+            self.acting = true;
+            self.status = "Preparing asset…".into();
+        } else {
+            self.polling = true;
+        }
+    }
+    fn complete(&mut self, acting: bool) {
+        if acting {
+            self.acting = false;
+            self.status.clear();
+        } else {
+            self.polling = false;
         }
     }
 }
@@ -126,14 +144,13 @@ impl SpectrumApp {
         }
     }
     pub(crate) fn library_poll(&mut self, context: &egui::Context) {
-        while let Ok(result) = self.library.receiver.try_recv() {
-            self.library.busy = false;
+        while let Ok((acting, result)) = self.library.receiver.try_recv() {
+            self.library.complete(acting);
             match result {
                 Err(error) => self.library.status = error,
                 Ok(update) => {
                     self.library.assets = update.assets;
                     self.library.previews.extend(update.previews);
-                    self.library.status.clear();
                     match update.action {
                         Action::None => {}
                         Action::Place(asset, path, canvas) => {
@@ -160,7 +177,7 @@ impl SpectrumApp {
             }
         }
         self.canvas.library_refresh(&self.library.previews);
-        if Instant::now() >= self.library.poll_at && !self.library.busy {
+        if Instant::now() >= self.library.poll_at && !self.library.polling && !self.library.acting {
             self.library.poll_at = Instant::now() + Duration::from_millis(750);
             self.library.send(Request::Poll(
                 self.canvas.library_references(),
@@ -208,7 +225,7 @@ impl SpectrumApp {
         if let Some(asset) = open {
             self.open_asset(&asset, ui.ctx());
         }
-        ui.add_enabled_ui(!self.library.busy, |ui| {
+        ui.add_enabled_ui(!self.library.acting, |ui| {
             if let Some(asset) = &selected {
                 if asset.kind == "image"
                     && ui.button("Place on canvas").clicked()
@@ -236,5 +253,51 @@ impl SpectrumApp {
         if !self.library.status.is_empty() {
             ui.label(&self.library.status);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_is_silent_and_does_not_drop_or_duplicate_user_actions() {
+        let (sender, requests) = mpsc::channel();
+        let (_, receiver) = mpsc::channel();
+        let mut ui = LibraryUi {
+            root: PathBuf::new(),
+            sender,
+            receiver,
+            assets: Vec::new(),
+            previews: HashMap::new(),
+            polling: false,
+            acting: false,
+            poll_at: Instant::now(),
+            status: String::new(),
+        };
+        ui.send(Request::Poll(Vec::new(), Vec::new()));
+        assert!(ui.status.is_empty());
+        assert!(!ui.acting, "refresh must leave action controls enabled");
+        ui.send(Request::Copy(AssetId::nil()));
+        ui.send(Request::Copy(AssetId::nil()));
+        assert!(matches!(requests.try_recv().unwrap(), Request::Poll(..)));
+        assert!(matches!(requests.try_recv().unwrap(), Request::Copy(..)));
+        assert!(requests.try_recv().is_err());
+        ui.complete(false);
+        assert!(
+            ui.acting,
+            "refresh completion must not complete queued action"
+        );
+        assert_eq!(ui.status, "Preparing asset…");
+        ui.complete(true);
+        assert!(!ui.acting);
+        assert!(ui.status.is_empty());
+        ui.status = "Action failed".into();
+        ui.send(Request::Poll(Vec::new(), Vec::new()));
+        ui.complete(false);
+        assert_eq!(
+            ui.status, "Action failed",
+            "refresh must not hide action errors"
+        );
     }
 }

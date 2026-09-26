@@ -5,7 +5,7 @@ priority: high
 
 # Complete Spectrum's app-managed creative library
 
-The first image/canvas integration is ready for Mac acceptance. Spectrum remains
+The user confirmed the linked image/canvas flow works on Mac. Spectrum remains
 greenfield; old names and formats carry no compatibility obligations. See
 [direction](../docs/DIRECTION.md) and [library architecture](../docs/SUITE.md).
 
@@ -36,10 +36,15 @@ host: radial large, angle small/large, and gradient shadow. The unchanged
 `68f266e` CI binary fails the same cases (109.5/31.7/141.4/658.4 ms versus
 112.5/32.2/144.1/664.3 ms during this run); thresholds were not changed.
 
+The refresh flicker fix passed the full validation loop, release desktop smoke,
+and the same strict image/hosted-ci canvas benchmarks. Background polls now stay
+silent and leave controls enabled; user actions queue once behind an active poll.
+
 ## Next
 
-- Mac acceptance of the new Library / Place on canvas / Edit image / Independent
-  copy workflow, including reopening the app with two linked canvases.
+- Design editor navigation and library access before GPUI: switching still feels
+  awkward to the user. Establish context preservation and a clear return path;
+  preserve focused editors and avoid broad polishing of disposable egui views.
 - Finish library removal/restore and relocation semantics and retire catalog/file
   management affordances as their replacement workflows are established.
 - Complete CLI help/schema and terminal consolidation; old engine CLIs remain
