@@ -7,7 +7,7 @@ respective work. The current Lumen photo/catalog and Prism canvas applications
 are the starting point, not permanent separate products. A user should be able
 to find all their photos and creative work in Spectrum and use work from one
 editor in another without repeated export and import steps. The exact
-navigation and asset links remain to be designed.
+navigation remains to be designed; asset behavior is defined below.
 
 ## App-managed creative library
 
@@ -31,6 +31,26 @@ The public command surface should likewise become one `spectrum` CLI with
 domains such as `images`, `canvas`, `video`, `audio`, and `music`. The existing
 Lumen and Prism command engines can inform this transition, but their product
 names and separate executables are temporary.
+
+### Typed assets and connected editors
+
+Every library asset has a type that determines compatible editors and uses.
+Types must accommodate images, canvases, audio, video, and future editable music
+compositions from a full DAW; the music type's name remains undecided. Any image,
+including graphics imported while composing a canvas, can use the image editor.
+Images can be referenced by canvases; canvases and audio can be used in video.
+Audio does not belong in the image or static canvas editor.
+
+References follow asset edits by default, transitively: editing an image updates
+every referencing canvas and every video using those canvases. Moving between
+editors must preserve those connections without export/import. Explicit deep
+copy creates independently editable content whose changes do not propagate to
+or from the original. Nested-copy and history semantics still need definition.
+
+Future animation should address every editable creative property, including
+image adjustments and toggles, while retaining editable canvas structure.
+Continuous values and discrete switches need appropriate animation semantics.
+Keep this possible in the model; implementing animation or the DAW is later work.
 
 The near-term sequence is to combine Lumen and Prism into a thin Spectrum app
 using the current UI, explore how their workspaces and assets connect, then
