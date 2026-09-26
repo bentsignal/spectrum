@@ -1,5 +1,5 @@
 ---
-status: in_progress
+status: done
 priority: high
 ---
 
@@ -16,5 +16,7 @@ visual approval. Record verification here after the complete required loop passe
 
 Verification: complete fmt/clippy/workspace-test loop passed. Linux release package
 and automated Xvfb/lavapipe interactions passed, including text, dropdowns, slider
-dragging, visibility, scope, sidebar switching, resizing, and quit. Mac CI pending.
+dragging, visibility, scope, sidebar switching, resizing, and quit. All CI jobs passed.
 Build cleanup reclaimed 7 GiB of superseded debug binaries; target is 26 GiB.
+[CI and downloads](https://github.com/bentsignal/spectrum/actions/runs/36278142798).
+Mac signing, notarization, stapling, Gatekeeper, and archive contents verified.

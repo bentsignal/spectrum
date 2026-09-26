@@ -6,7 +6,6 @@ The [agent guide](../AGENTS.md) defines validation; Git retains completed work.
 
 ## Open work
 
-- [GPUI controls demo](gpui-controls-demo.md)
 - [App-managed library and Spectrum CLI](app-managed-library.md)
 - [Healing Brush](healing-brush.md)
 - [Layer styles](layer-styles.md)
@@ -20,6 +19,7 @@ The [agent guide](../AGENTS.md) defines validation; Git retains completed work.
 
 ## Completed and closed
 
+- [GPUI controls demo](gpui-controls-demo.md)
 - [Unified Spectrum app](unified-spectrum-app.md)
 - [Interaction latency](interaction-latency.md)
 - [NixOS development](nixos-development.md)
