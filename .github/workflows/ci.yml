@@ -9,12 +9,21 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+  RUST_TEST_THREADS: 4
+
 jobs:
   quality:
     name: Format, lint, and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Install Linux GPUI dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -32,36 +41,21 @@ jobs:
         include:
           - os: windows-latest
             label: Windows
-            gui: target/release/spectrum-gui.exe
-            cli: target/release/spectrum.exe
           - os: macos-latest
             label: macOS
-            gui: target/release/spectrum-gui
-            cli: target/release/spectrum
           - os: ubuntu-latest
             label: Linux
-            gui: target/release/spectrum-gui
-            cli: target/release/spectrum
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - name: Install Linux GPUI dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test bundled font subset candidate and corpus
-        run: cargo test -p spectrum-fonts --locked
-      - name: Test native live bridge endpoint and security behavior
-        run: cargo test -p spectrum-live-bridge --all-targets --locked
-      - run: cargo build --release --workspace --bins --locked
-      - name: Verify consolidated CLI on this platform
-        run: |
-          ${{ matrix.cli }} images schema
-          ${{ matrix.cli }} canvas schema
-          ${{ matrix.cli }} --help
-      - if: runner.os == 'Linux'
-        run: ./target/release/spectrum images benchmark --strict --profile hosted-ci
-      - if: runner.os == 'Linux'
-        run: ./target/release/spectrum canvas benchmark --strict --profile hosted-ci
-      - if: runner.os == 'Linux'
-        run: ./target/release/live-bridge-benchmark --strict --hosted
+      - name: Ensure Metal compiler is available
+        if: runner.os == 'macOS'
+        run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+      - run: cargo build --release -p spectrum-demo --locked
       - name: Install Developer ID certificate
         if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.SPECTRUM_MACOS_SIGNING_ENABLED == 'true'
         shell: bash
@@ -88,31 +82,17 @@ jobs:
           [[ "$identity" =~ ^[[:xdigit:]]{40}$ ]] || { echo "expected one Developer ID Application identity for team $TEAM_ID" >&2; exit 1; }
           echo "SPECTRUM_CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           echo "SPECTRUM_APPLE_TEAM_ID=$TEAM_ID" >> "$GITHUB_ENV"
-      - if: runner.os == 'macOS'
-        run: bash scripts/package-spectrum-macos.sh
+      - name: Package controls preview
+        shell: bash
+        run: bash scripts/package-spectrum-demo.sh
       - name: Notarize Spectrum.app
         if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.SPECTRUM_MACOS_SIGNING_ENABLED == 'true'
         env:
           SPECTRUM_APPLE_ID: ${{ secrets.SPECTRUM_APPLE_ID }}
           SPECTRUM_APPLE_APP_PASSWORD: ${{ secrets.SPECTRUM_APPLE_APP_PASSWORD }}
         run: bash scripts/notarize-spectrum-macos.sh
-      - if: runner.os == 'Linux'
-        run: bash scripts/package-spectrum-linux.sh
-      - if: runner.os == 'Windows'
-        run: |
-          pwsh scripts/package-spectrum-windows.ps1
       - uses: actions/upload-artifact@v7
-        if: runner.os == 'macOS'
         with:
-          name: spectrum-${{ matrix.label }}
+          name: spectrum-preview-${{ matrix.label }}
           path: target/dist/
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v7
-        if: runner.os != 'macOS'
-        with:
-          name: spectrum-${{ matrix.label }}
-          path: |
-            ${{ matrix.gui }}
-            ${{ matrix.cli }}
-            target/dist/
           if-no-files-found: error

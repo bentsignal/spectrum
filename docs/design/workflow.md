@@ -109,5 +109,13 @@ the transition. The controls page is not approval to replace those editors.
 The user subsequently requested a performance comparison before the GPUI work
 and introduced a browser UI with a local native engine as a possible direction.
 See [UI framework research](ui-framework-research.md) for findings and limitations.
-This pauses the controls-page decision pending discussion. Browser deployment
-is under consideration, not an approved replacement for the desktop app.
+The user subsequently chose GPUI. Browser deployment is optional and must not
+constrain the native implementation. Start a separate GPUI controls demo, then
+project creation and asset import after visual review. CI packages the new demo
+instead of the old desktop app; retain the old app's source and shared engines.
+
+The supplied ChatGPT desktop screenshot establishes a neutral dark gray direction.
+Use spacious layouts, soft rounding, restrained borders, and simple controls.
+Avoid strong accent colors and decorative personality so varied creative work
+looks at home. The screenshot is a style reference, not a request to copy its
+horizontal bars or chat layout. See [controls demo](../../tasks/gpui-controls-demo.md).

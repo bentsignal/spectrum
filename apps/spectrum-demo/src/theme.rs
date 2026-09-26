@@ -1,0 +1,50 @@
+use gpui::{App, Hsla, px, rgb};
+use gpui_component::{Theme, ThemeMode};
+
+pub const BACKGROUND: u32 = 0x1b1b1b;
+pub const SIDEBAR: u32 = 0x252525;
+pub const PANEL: u32 = 0x242424;
+pub const BORDER: u32 = 0x393939;
+pub const TEXT: u32 = 0xe8e8e8;
+pub const MUTED: u32 = 0x999999;
+
+pub fn apply(cx: &mut App) {
+    Theme::change(ThemeMode::Dark, None, cx);
+    let theme = Theme::global_mut(cx);
+    theme.font_size = px(15.);
+    theme.radius = px(9.);
+    theme.radius_lg = px(16.);
+    theme.shadow = false;
+    let gray = |value| -> Hsla { rgb(value).into() };
+    theme.background = gray(BACKGROUND);
+    theme.foreground = gray(TEXT);
+    theme.border = gray(BORDER);
+    theme.input = gray(BORDER);
+    theme.primary = gray(0xe3e3e3);
+    theme.primary_foreground = gray(0x202020);
+    theme.primary_hover = gray(0xffffff);
+    theme.primary_active = gray(0xbdbdbd);
+    theme.secondary = gray(0x303030);
+    theme.secondary_foreground = gray(TEXT);
+    theme.secondary_hover = gray(0x3b3b3b);
+    theme.secondary_active = gray(0x454545);
+    theme.muted = gray(0x333333);
+    theme.muted_foreground = gray(MUTED);
+    theme.accent = gray(0x383838);
+    theme.accent_foreground = gray(TEXT);
+    theme.ring = gray(0xa0a0a0);
+    theme.caret = gray(TEXT);
+    theme.selection = gray(0x555555);
+    theme.slider_bar = gray(0xc8c8c8);
+    theme.slider_thumb = gray(0xf2f2f2);
+    theme.switch = gray(0x4a4a4a);
+    theme.switch_thumb = gray(0xf2f2f2);
+    theme.popover = gray(0x2b2b2b);
+    theme.popover_foreground = gray(TEXT);
+    theme.list = gray(0x2b2b2b);
+    theme.list_hover = gray(0x383838);
+    theme.list_active = gray(0x444444);
+    theme.list_active_border = gray(0x666666);
+    theme.scrollbar_thumb = gray(0x555555);
+    theme.scrollbar_thumb_hover = gray(0x777777);
+}

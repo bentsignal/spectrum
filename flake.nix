@@ -11,6 +11,10 @@
         let
           pkgs = import nixpkgs { inherit system; };
           runtimeLibraries = with pkgs; [
+            openssl
+            fontconfig
+            freetype
+            vulkan-loader
             libGL
             libxkbcommon
             wayland

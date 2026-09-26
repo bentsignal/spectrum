@@ -52,3 +52,9 @@ include or load Ghostty. Compatible hosts use the checksummed official Zig
 Packaged builds include this notice. Anyone distributing the suite should review
 the LGPL requirements for their distribution model and retain a relinkable or
 otherwise compliant form of the application.
+
+The controls preview uses GPUI 0.2.2 under Apache-2.0 and GPUI Component 0.5.1
+under Apache-2.0, including its embedded Lucide icons under ISC.
+Sources and license texts: <https://github.com/zed-industries/zed/tree/main/crates/gpui>,
+<https://github.com/longbridge/gpui-component>, and <https://lucide.dev/license>.
+Exact dependency versions are recorded in `Cargo.lock`.
