@@ -725,6 +725,12 @@ pub(super) fn catalog_label(path: &Path) -> String {
 }
 
 pub(super) fn current_catalog_name(workspace: &Workspace) -> String {
+    if workspace.catalog_path.as_ref().is_some_and(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "spectrum")
+    }) {
+        return workspace.project.name.clone();
+    }
     workspace
         .catalog_path
         .as_ref()

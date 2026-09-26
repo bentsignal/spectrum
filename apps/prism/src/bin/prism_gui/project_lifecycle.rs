@@ -115,25 +115,23 @@ pub(super) fn create_managed_workspace(document: Document) -> anyhow::Result<Wor
 }
 
 fn managed_projects_directory() -> anyhow::Result<PathBuf> {
-    eframe::storage_dir("Prism")
-        .map(|directory| directory.join("Projects"))
-        .ok_or_else(|| anyhow::anyhow!("Prism could not locate its local application folder"))
+    Ok(spectrum_library::default_root()?.join("canvases"))
 }
 
 fn available_project_path(directory: &Path, document_name: &str) -> PathBuf {
     let stem = safe_project_stem(document_name);
-    let initial = directory.join(format!("{stem}.prism"));
+    let initial = directory.join(format!("{stem}.spectrum"));
     if !initial.exists() {
         return initial;
     }
     for copy in 2..u32::MAX {
-        let candidate = directory.join(format!("{stem} {copy}.prism"));
+        let candidate = directory.join(format!("{stem} {copy}.spectrum"));
         if !candidate.exists() {
             return candidate;
         }
     }
     directory.join(format!(
-        "{stem}-{}.prism",
+        "{stem}-{}.spectrum",
         spectrum_revisions::ProjectId::new()
     ))
 }

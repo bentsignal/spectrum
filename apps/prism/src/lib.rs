@@ -217,6 +217,9 @@ pub enum LayerKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layer {
+    /// Live reference to editable library content; raster pixels are a derived cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_asset: Option<spectrum_library::AssetId>,
     pub id: u64,
     pub name: String,
     pub visible: bool,
@@ -243,6 +246,7 @@ pub struct Layer {
 impl Default for Layer {
     fn default() -> Self {
         Self {
+            image_asset: None,
             id: 0,
             name: "Layer".into(),
             visible: true,

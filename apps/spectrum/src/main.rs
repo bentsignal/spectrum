@@ -7,6 +7,7 @@ use std::{
 
 use eframe::egui;
 
+mod library_ui;
 #[allow(dead_code)]
 #[path = "../../lumen/src/bin/lumen-gui.rs"]
 mod lumen_gui;
@@ -36,6 +37,11 @@ impl WorkspaceKind {
     fn from_path(path: &std::path::Path) -> Option<Self> {
         let extension = path.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
+            "spectrum" => match path.parent()?.file_name()?.to_str()? {
+                "images" => Some(Self::Photo),
+                "canvases" => Some(Self::Canvas),
+                _ => None,
+            },
             "lumen" | "lumencatalog" => Some(Self::Photo),
             "prism" | "mica" => Some(Self::Canvas),
             _ => None,
@@ -51,6 +57,7 @@ impl WorkspaceKind {
 }
 
 struct SpectrumApp {
+    library: library_ui::LibraryUi,
     photo: lumen_gui::LumenApp,
     canvas: prism_gui::PrismApp,
     active: WorkspaceKind,
@@ -67,8 +74,26 @@ impl SpectrumApp {
         creation: &eframe::CreationContext<'_>,
         startup_path: Option<PathBuf>,
         open_document_receiver: Receiver<PathBuf>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
+        let library_root = spectrum::library::default_root()?;
+        let service = spectrum::library::Service::open(&library_root)?;
+        let managed_photo = service.ensure_catalog()?;
+        let mut managed_canvas = creation
+            .storage
+            .and_then(|s| s.get_string("spectrum-canvas-path"))
+            .map(PathBuf::from)
+            .filter(|p| p.exists());
+        if managed_canvas.is_none() {
+            managed_canvas = Some(
+                service.library.root().join(
+                    service
+                        .create_canvas("Untitled canvas".into(), 1920, 1080)?
+                        .document,
+                ),
+            );
+        }
         let path_kind = startup_path.as_deref().and_then(WorkspaceKind::from_path);
+        let startup_path = startup_path.or(Some(managed_photo.clone()));
         let requested = path_kind
             .or_else(|| {
                 creation
@@ -81,17 +106,20 @@ impl SpectrumApp {
                     })
             })
             .unwrap_or(WorkspaceKind::Photo);
-        let photo_path = (path_kind == Some(WorkspaceKind::Photo))
+        let photo_path = (path_kind != Some(WorkspaceKind::Canvas))
             .then(|| startup_path.clone())
-            .flatten();
+            .flatten()
+            .or(Some(managed_photo));
         let canvas_path = (path_kind == Some(WorkspaceKind::Canvas))
             .then_some(startup_path.as_deref())
-            .flatten();
+            .flatten()
+            .or(managed_canvas.as_deref());
         let (photo_document_sender, photo_receiver) = mpsc::channel();
         let photo = lumen_gui::LumenApp::for_spectrum(creation, photo_path, photo_receiver);
         let photo_style = (*creation.egui_ctx.style_of(egui::Theme::Dark)).clone();
         let (canvas_document_sender, canvas_receiver) = mpsc::channel();
-        let canvas = prism_gui::PrismApp::for_spectrum(creation, canvas_path, canvas_receiver);
+        let mut canvas = prism_gui::PrismApp::for_spectrum(creation, canvas_path, canvas_receiver);
+        canvas.library_set_exporter(spectrum::library::export_canvas);
         let canvas_style = (*creation.egui_ctx.style_of(egui::Theme::Dark)).clone();
         creation.egui_ctx.set_style_of(
             egui::Theme::Dark,
@@ -101,6 +129,10 @@ impl SpectrumApp {
             },
         );
         let app = Self {
+            library: library_ui::LibraryUi::new(
+                service.library.root().to_path_buf(),
+                creation.egui_ctx.clone(),
+            ),
             photo,
             canvas,
             active: requested,
@@ -115,11 +147,11 @@ impl SpectrumApp {
         {
             let mut app = app;
             app.show_active_native_menu();
-            app
+            Ok(app)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            app
+            Ok(app)
         }
     }
 
@@ -173,6 +205,7 @@ impl eframe::App for SpectrumApp {
     fn ui(&mut self, root: &mut egui::Ui, frame: &mut eframe::Frame) {
         let mut trace_sample = self.trace.as_mut().map(|trace| trace.start(root.ctx()));
         self.receive_open_documents(root.ctx());
+        self.library_poll(root.ctx());
         if let Some(sample) = &mut trace_sample {
             sample.documents_done();
         }
@@ -192,6 +225,12 @@ impl eframe::App for SpectrumApp {
                     .clicked()
                 {
                     next = WorkspaceKind::Canvas;
+                }
+                ui.separator();
+                let before = self.active;
+                self.library_controls(ui);
+                if before != self.active {
+                    next = self.active;
                 }
             });
         });
@@ -223,6 +262,9 @@ impl eframe::App for SpectrumApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(ACTIVE_WORKSPACE_KEY, self.active.storage_value().into());
         self.photo.save(storage);
+        if let Some(path) = self.canvas.library_path() {
+            storage.set_string("spectrum-canvas-path", path.to_string_lossy().into());
+        }
     }
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
@@ -251,7 +293,7 @@ fn main() -> eframe::Result {
                 creation,
                 startup_path.clone(),
                 open_document_receiver,
-            )))
+            )?))
         }),
     )
 }

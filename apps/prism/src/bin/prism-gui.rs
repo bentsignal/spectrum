@@ -118,7 +118,10 @@ use spectrum_terminal::native_ghostty as native_terminal;
 use terminal::TerminalDock;
 use theme::*;
 
+type LibraryExporter = fn(&Document, &Path) -> anyhow::Result<()>;
+
 pub(crate) struct PrismApp {
+    library_exporter: Option<LibraryExporter>,
     workspace: Workspace,
     tab_ids: Vec<u64>,
     active_tab_id: u64,
@@ -269,6 +272,7 @@ impl PrismApp {
             live_bridge_error = Some(format!("Could not publish live project: {error:#}"));
         }
         let mut app = Self {
+            library_exporter: None,
             workspace: initial_workspace.unwrap_or_default(),
             tab_ids: vec![1],
             active_tab_id: 1,
@@ -525,12 +529,17 @@ impl PrismApp {
             return;
         };
         let raster_sources = self.raster_sources.snapshot();
-        match export_document_with_sources(
-            &self.workspace.document,
-            &path,
-            92,
-            raster_sources.as_ref(),
-        ) {
+        let result = if let Some(exporter) = self.library_exporter {
+            exporter(&self.workspace.document, &path)
+        } else {
+            export_document_with_sources(
+                &self.workspace.document,
+                &path,
+                92,
+                raster_sources.as_ref(),
+            )
+        };
+        match result {
             Ok(()) => {
                 self.status = format!("Exported {}", path.display());
                 self.status_error = false;
@@ -964,3 +973,6 @@ mod tests {
         );
     }
 }
+
+#[path = "prism_gui/spectrum_library.rs"]
+mod spectrum_library_bridge;

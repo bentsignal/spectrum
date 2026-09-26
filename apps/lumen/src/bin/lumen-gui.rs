@@ -595,3 +595,6 @@ mod tests {
         assert!(first.1.width() >= 24.0);
     }
 }
+
+#[path = "lumen_gui/spectrum_library.rs"]
+mod spectrum_library_bridge;

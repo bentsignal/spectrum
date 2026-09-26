@@ -93,7 +93,7 @@ pub(super) fn run() -> eframe::Result {
                 creation,
                 startup_path.clone(),
                 open_document_receiver,
-            )))
+            )?))
         }),
         &event_loop,
     );

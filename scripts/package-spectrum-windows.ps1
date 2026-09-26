@@ -10,6 +10,7 @@ try {
     New-Item -Path $destination -ItemType Directory -Force | Out-Null
 
     Copy-Item -LiteralPath (Join-Path $repoRoot "target/release/spectrum-gui.exe") -Destination $destination
+    Copy-Item -LiteralPath (Join-Path $repoRoot "target/release/spectrum.exe") -Destination $destination
     Copy-Item -LiteralPath (Join-Path $repoRoot "target/release/lumen.exe") -Destination $destination
     Copy-Item -LiteralPath (Join-Path $repoRoot "target/release/prism.exe") -Destination $destination
     Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination $destination
@@ -20,7 +21,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $repoRoot "assets/branding/prism-app-icon.png") `
         -Destination (Join-Path $destination "Spectrum.png")
     $manifest = Join-Path $repoRoot "packaging/spectrum/windows/spectrum.manifest"
-    foreach ($binary in "spectrum-gui.exe", "lumen.exe", "prism.exe") {
+    foreach ($binary in "spectrum-gui.exe", "spectrum.exe", "lumen.exe", "prism.exe") {
         Copy-Item -LiteralPath $manifest -Destination (Join-Path $destination "$binary.manifest")
     }
 

@@ -1,74 +1,58 @@
 # Spectrum
 
-This repository is a Rust workspace for one fast, agent-first creative desktop
-app. Its photo and canvas workspaces keep focused editing interfaces while
-sharing rendering primitives and automation conventions.
+Spectrum is one native Rust creative app with focused image and canvas views.
+Applications live under `apps/`, shared behavior under `crates/`, and repository
+policy checks under `tools/`. Rust sources have a 1,000-line maximum.
 
-The repository root is a virtual Cargo workspace. Applications live under
-`apps/`, reusable Spectrum behavior under `crates/`, and repository-wide policy
-checks under `tools/`. `crates/spectrum-imaging` is the first neutral shared
-kernel; it owns adjustment models and app-independent pixel rendering rather
-than placing those concepts inside Lumen.
+## Shared library
 
-`workspace-guardrails` recursively checks Rust sources under `apps/`, `crates/`,
-and `tools/`; files over 1,000 lines fail both local workspace tests and CI.
+`crates/spectrum-library` owns stable UUID asset identities, extensible type
+identifiers, and typed dependency edges. `apps/spectrum/src/library` adapts the
+existing image and canvas command engines to that model. Neutral crates do not
+depend on either application. `spectrum-imaging` owns shared pixel behavior.
 
-## Applications
+The default library is Spectrum's application-data directory plus `Library`.
+`SPECTRUM_LIBRARY` or CLI `--library` selects an isolated library for automation.
+The SQLite index maps editable identities to internal durable `.spectrum`
+documents and image items. It is authoritative and must be backed up. Engine
+revision stores retain immutable originals and history. `previews/` is disposable.
 
-| Workspace | Focus | Binaries |
-| --- | --- | --- |
-| Photos (Lumen engine) | Photo library, RAW development, culling, presets, and batch export | `spectrum-gui`, `lumen` |
-| Canvas (Prism engine) | Layered canvas composition, text, masks, transforms, and image export | `spectrum-gui`, `prism` |
+Canvas raster layers carry a live image asset ID alongside derived pixel paths.
+The desktop resolves changed images on a background worker; exports resolve
+current image edits before rendering. Dependency traversal supports transitive
+updates; type checks and cycle rejection apply when indexing references. Only
+images and canvases have editors today. Asset types alone do not add an editor.
 
-The current photo editor is not a layer editor, and the current canvas editor
-is not a photo catalog. Spectrum switches between them in one window; the
-current `from-lumen` handoff still creates a rendered canvas layer. These
-boundaries describe today's implementation, not the intended app-managed
-creative library.
+Independent image copies have distinct identities and revision stores. Canvas
+copies recursively copy their referenced images, preserving shared references
+inside the copy. Copies start new revision trees at the copied state; original
+revision trees stay intact. Placement transforms remain canvas-local.
 
-Prism's current editable document format uses the `.prism` extension. Legacy
-`.mica` projects remain readable and writable today. Neither format is a
-product-level compatibility requirement for Spectrum's future storage model.
+For backup and portability, close Spectrum and other library writers, then copy
+**the entire library directory**, including the SQLite index and any journal
+files. Restore it as a unit and open with `SPECTRUM_LIBRARY`. Do not reconstruct
+identity by deleting the index. Existing engine recovery storage handles failed
+publication; resolve any reported publication error before making a backup.
+Managed backup/restore UI and history browsing remain future work.
 
-## Shared principles
+## Commands and desktop
 
-- Rust from command engine through native desktop UI.
-- A typed `Command` boundary is the source of truth for every user mutation.
-- The CLI and GUI exercise the same project and rendering behavior.
-- Machine-readable schema and JSON results make every feature usable by agents.
-- Originals are immutable; applications save project state and export new files.
-- Release builds prioritize interaction latency, small distributions, and no web
-  runtime or background service.
-- Windows, macOS, and Linux remain first-class build targets.
+`spectrum library` lists assets; `spectrum images import <paths...>` imports;
+`spectrum canvas new <name>` creates a canvas. `spectrum canvas place <canvas-id>
+<image-id>` creates a live reference. `spectrum images adjust <id> <patch-json>`
+edits an image; `spectrum copy <id>` makes independent content. Both domains have
+`list`, `command <id> <engine-command-json>`, and `export <id> <path>` operations.
+The desktop's Library menu opens assets; Place on canvas and Edit image connect
+existing editing views. Independent copy creates separately editable content.
 
-## Sharing and exchange
+CLI edits use the authenticated live host when the document is open. The old
+engine CLIs still support existing terminal workflows pending their complete
+command/help consolidation; new library operations use `spectrum` exclusively.
+The GPUI rewrite follows validation of these interactions, per [direction](DIRECTION.md).
 
-Common imaging primitives live below the applications so exposure, tone, color,
-crop, encoding, and related behavior do not fork into subtly different engines.
-Application dependencies point toward that shared kernel, never sideways in a
-cycle.
+## Validation
 
-Prism's `from-lumen` flow is the first explicit exchange boundary: it asks the
-Lumen side to develop a catalog photo, then creates a Prism project with that
-result as a layer. Prism can reuse the shared imaging kernel, while Lumen remains
-independent of Prism. Future handoffs should follow the same rule: exchange a
-documented asset or project representation, keep originals immutable, and make
-the operation available from both CLI and GUI.
-
-The intended destination adds video and audio workspaces. The existing Lumen
-and Prism engines provide the current photo and canvas workspaces. See
-[direction](DIRECTION.md) for the app-managed library and the still-open
-questions about cross-workspace assets.
-
-## Workspace commands
-
-Build and test the complete suite:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --all-targets --locked
-cargo build --release --workspace --bins --locked
-```
-
-Build the Spectrum application package with `package-spectrum-<platform>`.
+Run `cargo fmt --all -- --check`, then
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, then
+`cargo test --workspace --all-targets --locked`. Build release packages with
+`scripts/package-spectrum-<platform>`; [development](DEVELOPMENT.md) covers NixOS.

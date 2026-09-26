@@ -2134,6 +2134,7 @@ dependencies = [
  "serde_json",
  "spectrum-history-ui",
  "spectrum-imaging",
+ "spectrum-library",
  "spectrum-live-bridge",
  "spectrum-revisions",
  "spectrum-terminal",
@@ -2941,6 +2942,7 @@ dependencies = [
  "spectrum-fonts",
  "spectrum-history-ui",
  "spectrum-imaging",
+ "spectrum-library",
  "spectrum-live-bridge",
  "spectrum-revisions",
  "spectrum-terminal",
@@ -3569,6 +3571,7 @@ dependencies = [
  "anyhow",
  "base64",
  "chrono",
+ "clap",
  "eframe",
  "epaint_default_fonts",
  "flate2",
@@ -3594,6 +3597,7 @@ dependencies = [
  "spectrum-fonts",
  "spectrum-history-ui",
  "spectrum-imaging",
+ "spectrum-library",
  "spectrum-live-bridge",
  "spectrum-revisions",
  "spectrum-terminal",
@@ -3639,6 +3643,18 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "spectrum-library"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

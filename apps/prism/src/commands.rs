@@ -32,6 +32,15 @@ pub struct CommandOutput {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
+    AddLinkedImage {
+        path: PathBuf,
+        name: String,
+        asset: spectrum_library::AssetId,
+    },
+    LinkImage {
+        id: u64,
+        asset: spectrum_library::AssetId,
+    },
     RenameDocument {
         name: String,
     },

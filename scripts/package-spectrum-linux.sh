@@ -16,6 +16,7 @@ if [[ -e "$destination" || -L "$destination" ]]; then
 fi
 mkdir -p "$destination"
 install -m 0755 "$repo_root/target/release/spectrum-gui" "$destination/spectrum-gui"
+install -m 0755 "$repo_root/target/release/spectrum" "$destination/spectrum"
 install -m 0755 "$repo_root/target/release/lumen" "$destination/lumen"
 install -m 0755 "$repo_root/target/release/prism" "$destination/prism"
 install -m 0644 "$repo_root/LICENSE" "$destination/LICENSE"

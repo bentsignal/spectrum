@@ -576,7 +576,7 @@ impl DurableProject {
                             .push(fs::canonicalize(&*path).unwrap_or_else(|_| path.to_path_buf()));
                     }
                 }
-                Command::AddRaster { path, .. } => {
+                Command::AddRaster { path, .. } | Command::AddLinkedImage { path, .. } => {
                     if let Some(reference) = AssetReference::parse(path) {
                         *path = self.materialize(reference)?;
                         materialized
@@ -681,9 +681,10 @@ pub(crate) fn command_embeds_asset(command: &Command) -> bool {
         return true;
     }
     match command {
-        Command::AddRaster { .. } | Command::ImportFont { .. } | Command::RasterizeShape { .. } => {
-            true
-        }
+        Command::AddRaster { .. }
+        | Command::AddLinkedImage { .. }
+        | Command::ImportFont { .. }
+        | Command::RasterizeShape { .. } => true,
         Command::InsertLayer { transfer, .. } => {
             matches!(&transfer.layer.kind, LayerKind::Raster { .. })
                 || transfer.font_asset.is_some()
@@ -759,7 +760,7 @@ impl PreparedOperations {
             std::collections::BTreeMap::new();
         for command in &mut portable {
             match command {
-                Command::AddRaster { path, .. } => {
+                Command::AddRaster { path, .. } | Command::AddLinkedImage { path, .. } => {
                     let prepared = prepare_asset(path)?;
                     *path = prepared.reference.path();
                     assets.push(prepared.asset);

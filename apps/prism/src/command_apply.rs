@@ -60,6 +60,29 @@ fn apply_command_inner(
     sampled_sources_are_verified_embedded_assets: bool,
 ) -> Result<CommandOutput> {
     match command {
+        Command::AddLinkedImage { path, name, asset } => {
+            let result = apply_command_inner(
+                document,
+                Command::AddRaster {
+                    path,
+                    name: Some(name),
+                    x: 0.0,
+                    y: 0.0,
+                },
+                sampled_sources_are_verified_embedded_assets,
+            )?;
+            let id = result.layer_ids[0];
+            document.layer_mut(id)?.image_asset = Some(asset);
+            Ok(result)
+        }
+        Command::LinkImage { id, asset } => {
+            let layer = document.layer_mut(id)?;
+            if !matches!(layer.kind, LayerKind::Raster { .. }) {
+                bail!("only raster layers can reference images");
+            }
+            layer.image_asset = Some(asset);
+            Ok(output("link_image", "linked image asset", vec![id]))
+        }
         Command::RenameDocument { name } => {
             let name = name.trim();
             if name.is_empty() {

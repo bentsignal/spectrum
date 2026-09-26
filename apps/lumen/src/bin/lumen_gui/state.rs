@@ -846,9 +846,7 @@ pub(super) fn create_workspace_at(project: Project, path: &Path) -> anyhow::Resu
 }
 
 pub(super) fn create_managed_workspace(project: Project) -> anyhow::Result<Workspace> {
-    let directory = eframe::storage_dir("Lumen")
-        .map(|directory| directory.join("Projects"))
-        .ok_or_else(|| anyhow::anyhow!("Lumen could not locate its local application folder"))?;
+    let directory = spectrum_library::default_root()?.join("images");
     std::fs::create_dir_all(&directory)?;
     let path = available_project_path(&directory, &project.name);
     create_workspace_at(project, &path)
@@ -856,18 +854,18 @@ pub(super) fn create_managed_workspace(project: Project) -> anyhow::Result<Works
 
 fn available_project_path(directory: &Path, name: &str) -> PathBuf {
     let stem = safe_project_stem(name);
-    let initial = directory.join(format!("{stem}.lumen"));
+    let initial = directory.join(format!("{stem}.spectrum"));
     if !initial.exists() {
         return initial;
     }
     for copy in 2..u32::MAX {
-        let candidate = directory.join(format!("{stem} {copy}.lumen"));
+        let candidate = directory.join(format!("{stem} {copy}.spectrum"));
         if !candidate.exists() {
             return candidate;
         }
     }
     directory.join(format!(
-        "{stem}-{}.lumen",
+        "{stem}-{}.spectrum",
         spectrum_revisions::ProjectId::new()
     ))
 }

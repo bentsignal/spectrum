@@ -4,6 +4,7 @@ members = [
     "apps/lumen",
     "apps/prism",
     "crates/spectrum-imaging",
+    "crates/spectrum-library",
     "crates/spectrum-history-ui",
     "crates/spectrum-fonts",
     "crates/spectrum-terminal",

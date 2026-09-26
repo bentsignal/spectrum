@@ -15,7 +15,9 @@ name = "spectrum-gui"
 path = "src/main.rs"
 
 [dependencies]
+spectrum-library = { path = "../../crates/spectrum-library" }
 anyhow.workspace = true
+clap.workspace = true
 base64.workspace = true
 chrono.workspace = true
 eframe.workspace = true
@@ -65,3 +67,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globali
 [dev-dependencies]
 rusqlite.workspace = true
 tempfile = "3.27"
+
+[[bin]]
+name = "spectrum"
+path = "src/cli.rs"

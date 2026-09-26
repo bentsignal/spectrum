@@ -21,9 +21,9 @@ if [[ -f "$bundle/Contents/Frameworks/libSpectrumGhosttyBridge.dylib" ]]; then
 fi
 sign_code "$bundle/Contents/MacOS/lumen" com.bentsignal.spectrum.lumen
 sign_code "$bundle/Contents/MacOS/prism" com.bentsignal.spectrum.prism
+sign_code "$bundle/Contents/MacOS/spectrum" com.bentsignal.spectrum.cli
 sign_code "$bundle"
-sign_code "$repo_root/target/dist/lumen-macos" com.bentsignal.spectrum.lumen
-sign_code "$repo_root/target/dist/prism-macos" com.bentsignal.spectrum.prism
+sign_code "$repo_root/target/dist/spectrum-macos" com.bentsignal.spectrum.cli
 codesign --verify --deep --strict --verbose=2 "$bundle"
 
 team_id="${SPECTRUM_APPLE_TEAM_ID:-}"

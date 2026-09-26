@@ -19,6 +19,7 @@ name = "lumen"
 path = "src/bin/lumen.rs"
 
 [dependencies]
+spectrum-library = { path = "../../crates/spectrum-library" }
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true

@@ -165,6 +165,7 @@ if [[ -e "$bundle" || -L "$bundle" ]]; then
 fi
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 install -m 0755 "$repo_root/target/release/spectrum-gui" "$bundle/Contents/MacOS/spectrum-gui"
+install -m 0755 "$repo_root/target/release/spectrum" "$bundle/Contents/MacOS/spectrum"
 install -m 0755 "$repo_root/target/release/prism" "$bundle/Contents/MacOS/prism"
 install -m 0755 "$repo_root/target/release/lumen" "$bundle/Contents/MacOS/lumen"
 install -m 0644 "$repo_root/packaging/spectrum/macos/Info.plist" "$bundle/Contents/Info.plist"
@@ -204,10 +205,8 @@ if [[ "$ghostty_enabled" == true ]]; then
   verify_chain_sources
 fi
 
-prism_cli="$repo_root/target/dist/prism-macos"
-lumen_cli="$repo_root/target/dist/lumen-macos"
-install -m 0755 "$repo_root/target/release/prism" "$prism_cli"
-install -m 0755 "$repo_root/target/release/lumen" "$lumen_cli"
+spectrum_cli="$repo_root/target/dist/spectrum-macos"
+install -m 0755 "$repo_root/target/release/spectrum" "$spectrum_cli"
 
 if [[ -n "${SPECTRUM_CODESIGN_IDENTITY:-}" ]]; then
   "$repo_root/scripts/sign-spectrum-macos.sh"
@@ -218,4 +217,4 @@ fi
 if [[ "$ghostty_enabled" == true ]]; then
   verify_chain_sources
 fi
-echo "Created $bundle, $prism_cli, and $lumen_cli"
+echo "Created $bundle and $spectrum_cli"

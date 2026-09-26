@@ -242,6 +242,36 @@ impl DurableCatalog {
             .with_context(|| format!("agent session {agent_session} is not a collaboration"))
     }
 
+    /// Library indexing needs names and IDs, not original image bytes.
+    pub fn library_entries(path: &Path) -> Result<Vec<(u64, String)>> {
+        let store = LiveRevisionStore::open(path, &live_cache_root(path)?)?;
+        let info = checked_project_info(&store, path)?;
+        let cursor = store
+            .store()
+            .most_recent_cursor_for_track(info.default_track_id)?;
+        let (catalog, _) = load_catalog(&store, cursor)?;
+        let tracks = photo_track_map(&store)?;
+        catalog
+            .photo_ids()
+            .iter()
+            .map(|id| {
+                let track = tracks.get(id).context("image track missing")?;
+                let cursor = store.store().most_recent_cursor_for_track(*track)?;
+                let photo = load_photo_metadata(&store, cursor)?.0;
+                Ok((*id, photo.name))
+            })
+            .collect()
+    }
+
+    /// References retain access to an image even if it is removed from a shoot.
+    pub fn load_photo_current(path: &Path, id: u64) -> Result<Photo> {
+        let store = LiveRevisionStore::open(path, &live_cache_root(path)?)?;
+        let info = checked_project_info(&store, path)?;
+        let track = photo_track(&store, id)?;
+        let cursor = store.store().most_recent_cursor_for_track(track)?;
+        Ok(load_photo(&store, &info, cursor)?.0)
+    }
+
     pub fn load_current(path: &Path) -> Result<Project> {
         let store = LiveRevisionStore::open(path, &live_cache_root(path)?)?;
         let info = checked_project_info(&store, path)?;
@@ -669,16 +699,24 @@ fn load_photo(
     info: &ProjectInfo,
     cursor: RevisionId,
 ) -> Result<(Photo, AssetReference, SnapshotTail)> {
+    let (mut photo, tail) = load_photo_metadata(store, cursor)?;
+    let reference = AssetReference::parse(&photo.path)
+        .context("photo revision does not reference an embedded original")?;
+    photo.path = materialize(store, info, &reference)?;
+    Ok((photo, reference, tail))
+}
+
+fn load_photo_metadata(
+    store: &LiveRevisionStore,
+    cursor: RevisionId,
+) -> Result<(Photo, SnapshotTail)> {
     let plan = store.store().replay_plan(cursor, &PhotoCompatibility)?;
     let mut photo = decode_photo_snapshot(&plan.snapshot)?;
     let tail = snapshot_tail(&plan.steps);
     for step in plan.steps {
         photo = decode_photo_operation(&step.operations)?;
     }
-    let reference = AssetReference::parse(&photo.path)
-        .context("photo revision does not reference an embedded original")?;
-    photo.path = materialize(store, info, &reference)?;
-    Ok((photo, reference, tail))
+    Ok((photo, tail))
 }
 
 fn snapshot_tail(steps: &[spectrum_revisions::ReplayStep]) -> SnapshotTail {
