@@ -27,10 +27,44 @@ work when needed. The library's storage, identity, backup, portability, and
 export model remain design questions. Avoid assuming that a traditional
 project-file workflow is the answer.
 
-The public command surface should likewise become one `spectrum` CLI with
-domains such as `images`, `canvas`, `video`, `audio`, and `music`. The existing
-Lumen and Prism command engines can inform this transition, but their product
-names and separate executables are temporary.
+Spectrum has one CLI with images and canvas commands; video, audio, and music
+commands will follow. Both the CLI and GUI must expose all creative operations. Add commands before or alongside
+GUI controls; keep validation, persistence, history, and asset behavior shared.
+Full existing-feature parity still needs an audit. GUI presentation state can
+remain specific to the interface.
+
+### Organization across media
+
+Organization belongs to the whole app. Keep the ability to import a day's shoot
+and view its photos together, but detach grouping from the photo editor and its
+catalogs. One project may include photos, video, canvases, and music made for the
+same work. Users should organize these together inside Spectrum without managing
+project files. The Lightroom-style catalog workflow was an early imitation,
+not a requirement to preserve. Names such as project, collection, or catalog,
+their hierarchy, and whether assets belong to multiple groups remain undecided.
+
+### Color correction and ordered effects
+
+The current Photos view mainly provides color correction, plus crop and
+transforms. Treat color correction as a capability for compatible visual assets,
+including images used in canvases and future video. A permanent top-level
+Photos/Canvas split is not decided. A dedicated color workspace is a proposal;
+its name, placement, and relationship to other editing tools remain open.
+
+Support repeated color correction operations interleaved with other effects.
+A required example applies color correction, then an effect, then another color
+correction for a smaller change. Processing order must affect the result. Do not
+hard-code a single color stage followed by a separate effects stage. Layers and
+effects must support this editing approach, including future animation of their
+editable properties. Compatible operations should be available where the asset
+is being edited, without export/import detours or artificial editor boundaries.
+
+The user sometimes edits still photos in After Effects because Lightroom cannot
+express the desired layered treatments. Spectrum should support that workflow
+without making still-image work depend on a video workflow. Define which edits
+belong to the shared asset, a particular use of it, a layer, or a composition.
+Effect stacks, adjustment layers, masks, and group/composition effects are design
+questions; no specific structure or scope defaults have been approved yet.
 
 ### Typed assets and connected editors
 
@@ -45,21 +79,19 @@ References follow asset edits by default, transitively: editing an image updates
 every referencing canvas and every video using those canvases. Moving between
 editors must preserve those connections without export/import. Explicit deep
 copy creates independently editable content whose changes do not propagate to
-or from the original. Nested-copy and history semantics still need definition.
+or from the original. Current copy and history behavior is in [Suite](SUITE.md).
 
 Future animation should address every editable creative property, including
 image adjustments and toggles, while retaining editable canvas structure.
 Continuous values and discrete switches need appropriate animation semantics.
 Keep this possible in the model; implementing animation or the DAW is later work.
 
-The near-term sequence is to combine Lumen and Prism into a thin Spectrum app
-using the current UI, explore how their workspaces and assets connect, then
-rebuild the established interface in GPUI. Avoid a full redesign during the
-initial combination. Keep shared behavior in app-neutral crates and expose
-persistent edits through core commands and CLIs. [Suite architecture](SUITE.md)
-describes the current implementation. **Bloom** was previously reserved for a
-separate video and motion editor; the unified Spectrum direction supersedes
-that separate-app plan.
+The desktop and CLI consolidation and initial linked-asset workflow are complete.
+Next, clarify organization, effect ordering and edit scope, then make rough UI
+mockups with the user and rebuild in GPUI. Existing layouts are not constraints;
+the user wants to replace the canvas horizontal toolbar. Keep focused editing
+views. Do internal cleanup as needed for this design, without preserving the old
+app boundaries. Bloom's former separate video-app plan is superseded by Spectrum.
 
 Interaction latency is a product priority. Before the GPUI rebuild, keep
 performance work focused on measured regressions and costs that will survive
@@ -91,6 +123,6 @@ and retention work is tracked in [revision lifecycle](../tasks/revision-lifecycl
 
 ## Current product work
 
-Prism remains in progress. The [toolbar overflow prototype](../tasks/toolbar-overflow.md)
+Canvas editing remains in progress. The [toolbar overflow prototype](../tasks/toolbar-overflow.md)
 was closed without selecting a design because a broader interface overhaul is
 planned. Other unfinished work is in the [task directory](../tasks/README.md).
