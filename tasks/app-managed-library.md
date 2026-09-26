@@ -39,13 +39,11 @@ Tests cover dispatch, targeting, export, and collaboration. See [CLI usage](../d
 
 ## Next
 
-- [Direction](../docs/DIRECTION.md) records organization and effects requirements.
-  Decide mixed-media grouping, reusable color correction, ordered effects, and
-  shared-versus-local edits before choosing editor boundaries. Implementation
-  remains open. Documentation checks passed for this intent update.
-- Make rough UI mockups with the user, then rebuild in GPUI. Existing layouts
-  are not constraints; revisit the canvas horizontal toolbar, library access,
-  editor navigation, context preservation, and return paths. Avoid egui redesign.
+- [Workflow design](../docs/design/workflow.md) records the user's project, asset,
+  shared/local editing, sidebar, keyboard, and component-page preferences.
+  Settle membership and effect ordering; review layout and component mockups.
+  Prepare engine/CLI behavior, then build the agreed GPUI interface gradually.
+  Documentation checks passed; these preferences are not implemented yet.
 - Finish library removal/restore and relocation semantics and retire catalog/file
   management affordances as their replacement workflows are established.
 - Stable typed animation property addressing remains future work; retain all

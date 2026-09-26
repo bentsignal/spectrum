@@ -35,13 +35,12 @@ remain specific to the interface.
 
 ### Organization across media
 
-Organization belongs to the whole app. Keep the ability to import a day's shoot
-and view its photos together, but detach grouping from the photo editor and its
-catalogs. One project may include photos, video, canvases, and music made for the
-same work. Users should organize these together inside Spectrum without managing
-project files. The Lightroom-style catalog workflow was an early imitation,
-not a requirement to preserve. Names such as project, collection, or catalog,
-their hierarchy, and whether assets belong to multiple groups remain undecided.
+Create or open a project, then import assets of any supported kind together.
+Projects contain imported media and work created in Spectrum, with easy asset
+reuse across projects. Keep useful shoot groupings without photo-only catalogs
+or user-managed project files. Asset management, project views, and a possible
+media/composition distinction are described in [workflow design](design/workflow.md).
+Their hierarchy and exact asset membership rules remain open.
 
 ### Color correction and ordered effects
 
@@ -63,8 +62,9 @@ The user sometimes edits still photos in After Effects because Lightroom cannot
 express the desired layered treatments. Spectrum should support that workflow
 without making still-image work depend on a video workflow. Define which edits
 belong to the shared asset, a particular use of it, a layer, or a composition.
-Effect stacks, adjustment layers, masks, and group/composition effects are design
-questions; no specific structure or scope defaults have been approved yet.
+The user accepts shared-asset edits versus placement-only edits, with an explicit
+scope choice when editing from a placement. Defaults and controls remain open,
+as do adjustment layers, masks, and group/composition effects.
 
 ### Typed assets and connected editors
 
@@ -86,12 +86,13 @@ image adjustments and toggles, while retaining editable canvas structure.
 Continuous values and discrete switches need appropriate animation semantics.
 Keep this possible in the model; implementing animation or the DAW is later work.
 
-The desktop and CLI consolidation and initial linked-asset workflow are complete.
-Next, clarify organization, effect ordering and edit scope, then make rough UI
-mockups with the user and rebuild in GPUI. Existing layouts are not constraints;
-the user wants to replace the canvas horizontal toolbar. Keep focused editing
-views. Do internal cleanup as needed for this design, without preserving the old
-app boundaries. Bloom's former separate video-app plan is superseded by Spectrum.
+Desktop/CLI consolidation and initial asset links are complete. Next, agree on
+behavior and review layout mockups and a dummy component page before a gradual
+GPUI redesign. Prepare engine/CLI behavior before connecting production UI.
+The user wants a switchable left/right sidebar and content using the screen
+height, without horizontal top toolbars. Existing layouts are not constraints.
+[Workflow design](design/workflow.md) records preferences and unsettled choices.
+Video, audio, and music follow the current workflow; Bloom is not a separate app.
 
 Interaction latency is a product priority. Before the GPUI rebuild, keep
 performance work focused on measured regressions and costs that will survive
