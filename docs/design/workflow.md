@@ -35,7 +35,9 @@ When opening color correction from an image placed in a canvas, the user wants
 an explicit way to choose shared-asset editing or editing only that placement.
 The user prefers "Edit locally" and "Edit globally" over "Edit this placement",
 which felt confusing. These labels fit the intended developer-oriented audience.
-The default scope and choice of prompt, separate actions, or another control
+Canvas edits default to local. The user expects to place an asset, change it
+for that canvas, and reuse the shared asset elsewhere without those local edits.
+Global editing needs a separate deliberate entry point; its location and control
 remain open. Do not infer approval for a modal prompt on every edit.
 
 Before a global edit, clearly show what it will affect. Include dependent uses
@@ -94,7 +96,10 @@ audio editing, and music after the current image/canvas workflow is established.
 Keep the user's examples and uncertainty in these notes through context
 compaction. Do not replace them with only a summary of settled decisions.
 The user wants concise replies and one next action at a time, with the assistant
-tracking progress against the plan. Proposed next action: make one rough
-clickable sidebar/workflow mockup using an image shared by two canvases. Await
-the user's thumbs-up before starting that prototype. This documentation update
-does not authorize implementation or a production UI rewrite.
+tracking progress against the plan. After questioning the narrow local/global
+mockup, they chose GPUI and a page of controls to style together as the first
+implementation step. New project creation and asset import should follow in
+GPUI, using the framework intended for the finished app. Do not start a browser
+prototype or a full workspace before that controls page. First explain how GPUI
+can coexist with the current app; preserve the existing working editors during
+the transition. The controls page is not approval to replace those editors.

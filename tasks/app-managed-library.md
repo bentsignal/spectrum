@@ -41,7 +41,7 @@ Tests cover dispatch, targeting, export, and collaboration. See [CLI usage](../d
 
 - [Workflow design](../docs/design/workflow.md) records the user's project, asset,
   shared/local editing, sidebar, keyboard, and component-page preferences.
-  Next approval: one rough clickable workflow mockup. Effect ordering is open.
+  Next: a GPUI controls page for style review, then project/import workflows.
   Prepare engine/CLI behavior, then build the agreed GPUI interface gradually.
   Documentation checks passed; these preferences are not implemented yet.
 - Finish library removal/restore and relocation semantics and retire catalog/file
