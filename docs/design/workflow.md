@@ -103,3 +103,11 @@ GPUI, using the framework intended for the finished app. Do not start a browser
 prototype or a full workspace before that controls page. First explain how GPUI
 can coexist with the current app; preserve the existing working editors during
 the transition. The controls page is not approval to replace those editors.
+
+## Browser deployment research
+
+The user subsequently requested a performance comparison before the GPUI work
+and introduced a browser UI with a local native engine as a possible direction.
+See [UI framework research](ui-framework-research.md) for findings and limitations.
+This pauses the controls-page decision pending discussion. Browser deployment
+is under consideration, not an approved replacement for the desktop app.
