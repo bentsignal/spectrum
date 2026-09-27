@@ -28,6 +28,7 @@ pub enum Mode {
 pub enum LibraryView {
     All,
     Unassigned,
+    Trash,
     Project(usize),
 }
 

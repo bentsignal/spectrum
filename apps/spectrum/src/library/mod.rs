@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 pub use spectrum_library::default_root;
 pub mod live;
+pub mod trash;
 pub fn actor() -> Actor {
     Actor {
         id: "spectrum:library".into(),
@@ -160,7 +161,11 @@ impl Service {
         )
     }
     /// Immutable render key; full resolution is retained for export and canvas zoom.
+    /// Trashed and purged images resolve to a same-sized placeholder.
     pub fn preview(&self, id: AssetId) -> Result<PathBuf> {
+        if let Some(removed) = self.library.removed(id)? {
+            return self.placeholder(removed.size);
+        }
         let asset = self.library.get(id)?;
         let stamp = file_stamp(&self.library.path(&asset)?)?;
         if let Some((cached_stamp, path)) = self.previews.borrow().get(&id)
@@ -263,7 +268,9 @@ impl Service {
                 let mut doc = prism_core::Workspace::load_read_only(&self.library.path(&asset)?)?;
                 let mut copied = std::collections::HashMap::new();
                 for layer in &mut doc.layers {
-                    if let Some(source) = layer.image_asset {
+                    if let Some(source) = layer.image_asset
+                        && self.library.removed(source)?.is_none()
+                    {
                         let id = if let Some(id) = copied.get(&source) {
                             *id
                         } else {

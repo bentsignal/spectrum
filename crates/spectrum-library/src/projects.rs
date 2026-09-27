@@ -38,7 +38,7 @@ pub struct ImportBatch {
     pub assets: Vec<AssetId>,
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
@@ -109,6 +109,7 @@ impl Library {
         let mut statement = self.db.prepare(
             "SELECT p.id, p.name, p.created, COUNT(m.asset) FROM projects p
             LEFT JOIN project_assets m ON m.project=p.id
+              AND m.asset NOT IN (SELECT asset FROM removed)
             GROUP BY p.id ORDER BY p.name COLLATE NOCASE, p.id",
         )?;
         let rows = statement.query_map([], |r| {
@@ -167,8 +168,11 @@ impl Library {
     pub fn project_assets(&self, project: ProjectId) -> Result<Vec<Asset>> {
         self.project(project)?;
         self.assets_where(
-            "JOIN project_assets m ON m.asset=a.id WHERE m.project=?1
-            ORDER BY m.added DESC, a.name, a.id",
+            &format!(
+                "JOIN project_assets m ON m.asset=a.id WHERE m.project=?1 AND {}
+                ORDER BY m.added DESC, a.name, a.id",
+                crate::trash::LIVE
+            ),
             [project.to_string()],
         )
     }
@@ -176,8 +180,11 @@ impl Library {
     /// Assets that belong to no project.
     pub fn unassigned(&self) -> Result<Vec<Asset>> {
         self.assets_where(
-            "WHERE NOT EXISTS (SELECT 1 FROM project_assets m WHERE m.asset=a.id)
-            ORDER BY a.name, a.id",
+            &format!(
+                "WHERE {} AND NOT EXISTS (SELECT 1 FROM project_assets m WHERE m.asset=a.id)
+                ORDER BY a.name, a.id",
+                crate::trash::LIVE
+            ),
             [],
         )
     }

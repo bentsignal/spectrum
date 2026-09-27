@@ -16,25 +16,28 @@ use gpui_component::{
 };
 
 const SORTS: [&str; 3] = ["Recently added", "Name", "Kind"];
-const DANGER: u32 = 0xf2555a;
 
 impl Workspace {
     pub fn view_name(&self) -> SharedString {
         match self.view {
             LibraryView::All => "All assets".into(),
             LibraryView::Unassigned => "Unassigned".into(),
+            LibraryView::Trash => "Trash".into(),
             LibraryView::Project(index) => self.projects[index].name.clone(),
         }
     }
 
     /// Assets in the current library view, in the order they were added.
     pub fn view_assets(&self) -> Vec<usize> {
-        let live = |index: &usize| !self.assets[*index].deleted;
+        let live = |index: &usize| !self.assets[*index].trashed;
         match self.view {
             LibraryView::All => (0..self.assets.len()).filter(live).collect(),
             LibraryView::Unassigned => (0..self.assets.len())
                 .filter(live)
                 .filter(|index| !self.projects.iter().any(|p| p.assets.contains(index)))
+                .collect(),
+            LibraryView::Trash => (0..self.assets.len())
+                .filter(|index| self.assets[*index].trashed)
                 .collect(),
             LibraryView::Project(project) => self.projects[project]
                 .assets
@@ -47,12 +50,12 @@ impl Workspace {
 
     pub fn library_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let options = ["All assets".into(), "Unassigned".into()]
+        let options = ["All assets".into(), "Unassigned".into(), "Trash".into()]
             .into_iter()
             .chain(self.projects.iter().map(|p| p.name.clone()))
             .collect();
         let project = Field::new("project", self.view_name())
-            .split_after(1)
+            .split_after(2)
             .action("New project…", {
                 let view = view.clone();
                 move |window, cx| view.update(cx, |this, cx| this.open_new_project(window, cx))
@@ -64,7 +67,8 @@ impl Workspace {
                     move |cx| match view.read(cx).view {
                         LibraryView::All => 0,
                         LibraryView::Unassigned => 1,
-                        LibraryView::Project(index) => index + 2,
+                        LibraryView::Trash => 2,
+                        LibraryView::Project(index) => index + 3,
                     }
                 },
                 {
@@ -74,7 +78,8 @@ impl Workspace {
                             this.view = match index {
                                 0 => LibraryView::All,
                                 1 => LibraryView::Unassigned,
-                                _ => LibraryView::Project(index - 2),
+                                2 => LibraryView::Trash,
+                                _ => LibraryView::Project(index - 3),
                             };
                             cx.notify();
                         })
@@ -169,20 +174,24 @@ impl Workspace {
         if all.is_empty() {
             let detail = match self.view {
                 LibraryView::Unassigned => "Every asset belongs to a project.",
+                LibraryView::Trash => "Deleted assets stay here for 30 days.",
                 LibraryView::All => "Import images to start your library.",
                 LibraryView::Project(_) => "Import images into this project.",
             };
             return empty("No assets", detail)
-                .when(self.view != LibraryView::Unassigned, |el| {
-                    el.child(
-                        Button::new("empty-import")
-                            .icon(IconName::Plus)
-                            .label("Import")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.import_sample(window, cx)),
-                            ),
-                    )
-                })
+                .when(
+                    matches!(self.view, LibraryView::All | LibraryView::Project(_)),
+                    |el| {
+                        el.child(
+                            Button::new("empty-import")
+                                .icon(IconName::Plus)
+                                .label("Import")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.import_sample(window, cx)
+                                })),
+                        )
+                    },
+                )
                 .into_any_element();
         }
         if items.is_empty() {
@@ -239,9 +248,23 @@ impl Workspace {
             .filter(|(_, p)| !p.assets.contains(&index))
             .map(|(i, p)| (i, p.name.clone()))
             .collect();
-        let used = index == 0;
+        let trash = self.view == LibraryView::Trash;
         move |menu, window, cx| {
             let menu = menu.min_w(px(280.));
+            if trash {
+                let view = view.clone();
+                return menu.item(
+                    PopupMenuItem::element(|_, _| {
+                        described("Restore", "Returns it to its projects and canvases.", TEXT)
+                    })
+                    .on_click(move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.assets[index].trashed = false;
+                            cx.notify();
+                        })
+                    }),
+                );
+            }
             let menu = if others.is_empty() {
                 menu
             } else {
@@ -286,19 +309,12 @@ impl Workspace {
                 PopupMenuItem::element(move |_, _| {
                     described(
                         "Delete asset",
-                        if used {
-                            "Deletes it from Spectrum and every project. Spring poster uses it."
-                        } else {
-                            "Deletes it from Spectrum and every project."
-                        },
+                        "Moves it to the trash. Spectrum deletes it permanently after 30 days.",
                         DANGER,
                     )
                 })
-                .on_click(move |_, _, cx| {
-                    view.update(cx, |this, cx| {
-                        this.assets[index].deleted = true;
-                        cx.notify();
-                    })
+                .on_click(move |_, window, cx| {
+                    view.update(cx, |this, cx| this.confirm_delete(index, window, cx))
                 }),
             )
         }
@@ -341,7 +357,7 @@ impl Workspace {
             dimensions: "4000 × 3000",
             hues: (hue, (hue + 0.45).fract()),
             look: Look::default(),
-            deleted: false,
+            trashed: false,
         });
         if let LibraryView::Project(project) = self.view {
             self.projects[project].assets.push(count);
@@ -352,7 +368,7 @@ impl Workspace {
 }
 
 /// A menu item label with an explanation below it.
-fn described(label: &'static str, detail: &'static str, color: u32) -> Div {
+pub fn described(label: &'static str, detail: &'static str, color: u32) -> Div {
     div()
         .py_0p5()
         .flex()
@@ -421,12 +437,13 @@ fn card(
                 .flex()
                 .flex_col()
                 .child(div().text_sm().truncate().child(asset.name.clone()))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(FAINT))
-                        .child(if asset.canvas { "Canvas" } else { "Image" }),
-                ),
+                .child(div().text_xs().text_color(rgb(FAINT)).child(
+                    match (asset.canvas, asset.trashed) {
+                        (_, true) => "30 days left",
+                        (true, _) => "Canvas",
+                        _ => "Image",
+                    },
+                )),
         )
         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
             this.select_asset(index, window, cx);

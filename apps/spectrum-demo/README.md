@@ -22,7 +22,9 @@ Windows). These shortcuts are trial bindings, not approved ones.
 The View menu switches between All assets, Unassigned, and projects;
 "New project…" opens a dialog. Import adds a placeholder image to the current
 project, or leaves it unassigned. Right-click an asset to add it to a project,
-remove it from the current one, or delete it. Double-click an asset to open it in Adjust or Canvas. Adjustments carry
+remove it from the current one, or delete it. Delete asks for confirmation and
+lists the asset's projects. Deleted assets appear under Trash, where they can be
+restored; the canvas shows a placeholder meanwhile. Double-click an asset to open it in Adjust or Canvas. Adjustments carry
 into the canvas that places the photo. The panel button at the top of the
 sidebar moves it to the other edge.
 

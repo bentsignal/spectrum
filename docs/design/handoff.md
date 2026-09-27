@@ -18,8 +18,12 @@ Projects, membership, unassigned assets, and import batches are in
 `images import --project/--new-project`). The demo shows the right-click menu,
 All assets and Unassigned views, and "Image" labels.
 
-Next, settle asset deletion (open questions in workflow preferences), then build
-the GPUI library views on these engine commands, then migrate the editors
+Deletion follows the user's design: confirmation listing projects, a 30-day
+trash (`spectrum delete`, `spectrum trash`), and same-sized canvas placeholders.
+Purging removes an image from its import document and deletes the document once
+empty. Engine revision caches outside the library are not yet cleaned up.
+
+Next, add a command to replace a placeholder's image, then build the GPUI library views on these engine commands, then migrate the editors
 incrementally. A full color selector is future work with
 undecided timing. Do not restart framework research or start a browser build.
 
@@ -135,5 +139,5 @@ priority. Retain the working signing credentials and notarization flow.
 
 Commit completed changes on main, push, and verify the remote revision. Run the
 full required validation loop after code, packaging, or CI changes. Do not ask the
-user to perform checks that can be done on this machine. The next step is settling
-asset deletion.
+user to perform checks that can be done on this machine. The next step is placeholder
+replacement, then the GPUI library views.

@@ -16,6 +16,8 @@ spectrum library [--unassigned]
 spectrum images import /path/to/image.jpg [--project <uuid> | --new-project "Trip"]
 spectrum projects list|create|show|rename|delete|add|remove
 spectrum imports
+spectrum delete <asset-uuid>   # to the trash for 30 days
+spectrum trash list|restore <asset-uuid>|empty
 spectrum images list
 spectrum canvas new "Composition" --width 1920 --height 1080
 spectrum canvas list

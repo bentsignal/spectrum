@@ -40,8 +40,12 @@ Record which assets were imported together, even before the UI shows it, so a
 later view can answer "what did I bring in last week?". Import supports images
 only until video and audio work begins. Label imported images "Image", not "Photo".
 
-Open: whether deleting asks for confirmation, and what happens to canvases that
-use a deleted image. Deletion also needs trash or restore semantics.
+Deleting asks "are you sure?" and needs a second click. If the asset is in any
+projects, the confirmation shows a scrollable list of them; clicking one opens
+that project. Deleted assets go to a Spectrum trash for 30 days, then are purged.
+Canvases that use a deleted image show a missing-image placeholder, so the user
+can restore or replace the image later. Replacing a placeholder with another
+image is not built yet.
 
 ## Shared edits and placement edits
 

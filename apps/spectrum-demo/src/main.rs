@@ -4,6 +4,7 @@ mod controls;
 mod library;
 mod samples;
 mod theme;
+mod trash;
 mod workspace;
 
 use gpui::{

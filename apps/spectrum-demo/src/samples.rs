@@ -9,7 +9,7 @@ pub struct Asset {
     /// Sky and ground hues for the placeholder artwork.
     pub hues: (f32, f32),
     pub look: Look,
-    pub deleted: bool,
+    pub trashed: bool,
 }
 
 pub struct Project {
@@ -47,7 +47,7 @@ pub fn library() -> (Vec<Asset>, Vec<Project>) {
         dimensions,
         hues,
         look: Look::default(),
-        deleted: false,
+        trashed: false,
     };
     let assets = vec![
         photo("Harbor at dusk", "6000 × 4000", (0.62, 0.07)),
@@ -60,7 +60,7 @@ pub fn library() -> (Vec<Asset>, Vec<Project>) {
             dimensions: "1920 × 1080",
             hues: (0.95, 0.62),
             look: Look::default(),
-            deleted: false,
+            trashed: false,
         },
         photo("Field notes", "4032 × 3024", (0.25, 0.14)),
         photo("Night market", "6000 × 4000", (0.7, 0.9)),
@@ -124,6 +124,22 @@ pub fn photo(asset: &Asset, look: Look, width: f32) -> Div {
                         .bg(tone(ground, 0.7, 0.78)),
                 ),
         )
+}
+
+/// Drawn where a canvas uses an image that is in the trash or deleted.
+fn missing(width: f32) -> Div {
+    div()
+        .w(px(width))
+        .h(px(width * 0.75))
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(rgb(0x262626))
+        .border_1()
+        .border_color(rgb(0x484848))
+        .text_size(px((width * 0.045).max(8.)))
+        .text_color(rgb(0x8c8c8c))
+        .child("Missing image")
 }
 
 /// Height over width for an asset's artwork.
@@ -204,7 +220,11 @@ pub fn composition(
                     .opacity(opacity[1])
                     .rounded(px(width * 0.008))
                     .overflow_hidden()
-                    .child(photo(placed, placed.look, width * 0.46)),
+                    .child(if placed.trashed {
+                        missing(width * 0.46)
+                    } else {
+                        photo(placed, placed.look, width * 0.46)
+                    }),
             )
         })
         .when(visible[0], |el| {

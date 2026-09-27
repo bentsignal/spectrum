@@ -35,10 +35,27 @@ enum Domain {
         #[command(subcommand)]
         command: Canvas,
     },
+    /// Move an asset to the trash for 30 days. Canvases that use it show a
+    /// same-sized placeholder until it is restored.
+    Delete { asset: AssetId },
+    /// List, restore, or permanently empty the trash.
+    Trash {
+        #[command(subcommand)]
+        command: Trash,
+    },
     /// Make an independent copy, including referenced images for a canvas.
     Copy { asset: AssetId },
     /// Show typed JSON command formats for editor automation.
     Schema,
+}
+#[derive(Subcommand)]
+enum Trash {
+    /// List trashed assets, most recently deleted first.
+    List,
+    /// Return an asset to the library, its projects, and its canvases.
+    Restore { asset: AssetId },
+    /// Permanently delete everything in the trash now.
+    Empty,
 }
 #[derive(Subcommand)]
 enum Images {
@@ -106,7 +123,24 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
     let mut service = Service::open(&cli.library.map(Ok).unwrap_or_else(default_root)?)?;
     service.ensure_catalog()?;
     service.scan()?;
+    service.purge_expired()?;
     let value = match cli.command {
+        Domain::Delete { asset } => serde_json::to_value(service.delete(asset)?)?,
+        Domain::Trash {
+            command: Trash::List,
+        } => serde_json::to_value(service.library.trashed()?)?,
+        Domain::Trash {
+            command: Trash::Restore { asset },
+        } => serde_json::to_value(service.restore(asset)?)?,
+        Domain::Trash {
+            command: Trash::Empty,
+        } => {
+            let trashed = service.library.trashed()?;
+            for entry in &trashed {
+                service.purge(entry.asset.id)?;
+            }
+            serde_json::json!({"purged": trashed.iter().map(|t| t.asset.id).collect::<Vec<_>>()})
+        }
         Domain::Library { unassigned } => {
             let assets = if unassigned {
                 service.library.unassigned()?

@@ -12,6 +12,7 @@ pub const BORDER: u32 = 0x262626;
 pub const TEXT: u32 = 0xececec;
 pub const MUTED: u32 = 0x8c8c8c;
 pub const FAINT: u32 = 0x5e5e5e;
+pub const DANGER: u32 = 0xf2555a;
 
 pub fn apply(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
@@ -46,6 +47,10 @@ pub fn apply(cx: &mut App) {
     theme.switch_thumb = gray(0xf4f4f4);
     theme.popover = gray(0x1c1c1c);
     theme.popover_foreground = gray(TEXT);
+    theme.danger = gray(DANGER);
+    theme.danger_hover = gray(0xff6b70);
+    theme.danger_active = gray(0xd94449);
+    theme.danger_foreground = gray(0xffffff);
     theme.overlay = gpui::hsla(0., 0., 0., 0.6);
     theme.list = gray(0x1c1c1c);
     theme.list_hover = gray(HOVER);

@@ -9,7 +9,9 @@ use std::{
 pub use uuid::Uuid as AssetId;
 
 mod projects;
+mod trash;
 pub use projects::{BatchId, ImportBatch, Project, ProjectId};
+pub use trash::{Removed, TRASH_DAYS, Trashed};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Asset {
@@ -41,6 +43,7 @@ impl Library {
               PRIMARY KEY(owner,slot));",
         )?;
         db.execute_batch(projects::SCHEMA)?;
+        db.execute_batch(trash::SCHEMA)?;
         Ok(Self { root, db })
     }
     pub fn root(&self) -> &Path {
@@ -81,22 +84,38 @@ impl Library {
             params![document.to_string_lossy(), item_key],
             |r| r.get(0),
         )?;
-        let asset = self.get(id.parse()?)?;
+        let asset = self.lookup(id.parse()?)?;
         if asset.kind != kind {
             bail!("asset type cannot change");
         }
         Ok(asset)
     }
+    /// A live asset. Trashed assets are not returned.
     pub fn get(&self, id: AssetId) -> Result<Asset> {
-        self.list()?
-            .into_iter()
-            .find(|a| a.id == id)
-            .context("asset not found")
+        let asset = self.lookup(id)?;
+        if self.removed(id)?.is_some() {
+            bail!("asset is in the trash");
+        }
+        Ok(asset)
     }
+    /// An indexed asset, including one in the trash.
+    pub fn lookup(&self, id: AssetId) -> Result<Asset> {
+        self.db
+            .query_row(
+                "SELECT id,kind,name,document,item FROM assets WHERE id=?1",
+                [id.to_string()],
+                asset_row,
+            )
+            .optional()?
+            .map(asset_from_row)
+            .context("asset not found")?
+    }
+    /// Live assets, excluding the trash.
     pub fn list(&self) -> Result<Vec<Asset>> {
-        let mut statement = self
-            .db
-            .prepare("SELECT id,kind,name,document,item FROM assets ORDER BY name,id")?;
+        let mut statement = self.db.prepare(&format!(
+            "SELECT id,kind,name,document,item FROM assets a WHERE {} ORDER BY name,id",
+            trash::LIVE
+        ))?;
         let rows = statement.query_map([], asset_row)?;
         rows.map(|row| asset_from_row(row?)).collect()
     }
@@ -108,14 +127,21 @@ impl Library {
         Ok(path)
     }
     /// Replaces the dependency set atomically, rejecting cycles and invalid uses.
+    /// Links to purged assets are skipped; their owners draw placeholders.
     pub fn references(&mut self, owner: AssetId, links: &[(String, AssetId)]) -> Result<()> {
-        let kind = self.get(owner)?.kind;
-        for (_, target) in links {
-            let target_kind = self.get(*target)?.kind;
+        let kind = self.lookup(owner)?.kind;
+        let mut kept = Vec::with_capacity(links.len());
+        for (slot, target) in links {
+            if self.removed(*target)?.is_some_and(|r| r.purged) {
+                continue;
+            }
+            let target_kind = self.lookup(*target)?.kind;
             if !accepts(&kind, &target_kind) {
                 bail!("{kind} cannot reference {target_kind}");
             }
+            kept.push((slot.clone(), *target));
         }
+        let links = kept.as_slice();
         let current: Vec<(String, AssetId)> = {
             let mut statement = self
                 .db

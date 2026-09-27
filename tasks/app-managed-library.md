@@ -17,9 +17,9 @@ See Git for implementation and validation history.
 
 ## Next
 
-- Projects, unassigned assets, and import batches exist in the index and CLI.
-  Next: permanent asset deletion (open questions in [workflow design](../docs/design/workflow.md)),
-  then GPUI project and import views on the shared engine. Browser use is optional.
+- Projects, unassigned assets, import batches, and the 30-day trash exist in the
+  index and CLI. Next: replace a canvas placeholder with another image, then GPUI
+  library views on the shared engine. See [workflow design](../docs/design/workflow.md).
 - Finish library removal/restore and relocation semantics and retire catalog/file
   management affordances as their replacement workflows are established.
 - Stable typed animation property addressing remains future work; retain all
