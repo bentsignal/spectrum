@@ -19,9 +19,10 @@ undecided timing. Do not restart framework research or start a browser build.
 
 ## Build to review
 
-Run the revision locally with the command below, or package it with
-`scripts/package-spectrum-demo.sh`. CI on `main` also produces a signed Mac
-artifact. The first build's source commit was `775df6e`
+Revision source commit `76ec5d8`:
+[CI run](https://github.com/bentsignal/spectrum/actions/runs/36331612200) and
+[signed Mac download](https://github.com/bentsignal/spectrum/actions/runs/36331612200/artifacts/10935833517).
+Run locally with the command below. The first build's source commit was `775df6e`
 ([CI run](https://github.com/bentsignal/spectrum/actions/runs/36278142798)).
 Display name is Spectrum Preview; bundle ID is `com.bentsignal.spectrum.preview`.
 The outer bundle is `Spectrum.app`; keep it apart from the existing app.
