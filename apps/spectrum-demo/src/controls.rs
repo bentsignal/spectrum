@@ -86,6 +86,7 @@ pub struct Field {
     label: SharedString,
     open: bool,
     action: Option<(SharedString, Handler)>,
+    split: Option<usize>,
 }
 
 impl Field {
@@ -95,6 +96,7 @@ impl Field {
             label: label.into(),
             open: false,
             action: None,
+            split: None,
         }
     }
 
@@ -108,6 +110,12 @@ impl Field {
         self
     }
 
+    /// Draw a separator after the option at `index`.
+    pub fn split_after(mut self, index: usize) -> Self {
+        self.split = Some(index);
+        self
+    }
+
     /// Attach a menu listing `options`. `selected` is read each time it opens.
     pub fn options(
         self,
@@ -117,17 +125,23 @@ impl Field {
     ) -> impl IntoElement {
         let on_select = Rc::new(on_select);
         let action = self.action.clone();
+        let split = self.split;
         self.w_full().dropdown_menu(move |menu, _, cx| {
             let current = selected(cx);
             let menu = options.iter().enumerate().fold(
                 menu.min_w(px(SIDEBAR_WIDTH - 33.)),
                 |menu: PopupMenu, (index, name)| {
                     let on_select = on_select.clone();
-                    menu.item(
+                    let menu = menu.item(
                         PopupMenuItem::new(name.clone())
                             .checked(index == current)
                             .on_click(move |_, window, cx| on_select(index, window, cx)),
-                    )
+                    );
+                    if split == Some(index) {
+                        menu.separator()
+                    } else {
+                        menu
+                    }
                 },
             );
             match action.clone() {

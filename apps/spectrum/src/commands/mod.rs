@@ -1,6 +1,7 @@
 mod canvas;
 mod images;
 mod library;
+mod projects;
 
 use anyhow::{Context, Result, bail};
 use clap::{Arg, Command, CommandFactory, FromArgMatches};

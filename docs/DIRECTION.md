@@ -35,12 +35,12 @@ remain specific to the interface.
 
 ### Organization across media
 
-Create or open a project, then import assets of any supported kind together.
-Projects contain imported media and work created in Spectrum, with easy asset
-reuse across projects. Keep useful shoot groupings without photo-only catalogs
-or user-managed project files. Asset management, project views, and a possible
-media/composition distinction are described in [workflow design](design/workflow.md).
-Their hierarchy and exact asset membership rules remain open.
+Projects group library assets without owning them; an asset can be in several
+projects or none. Import may target a project, but need not. Unassigned assets
+and an all-assets view keep loose imports usable. Removing an asset from a project
+keeps it in the library; deleting it is a separate, clearly marked action. Each
+import is recorded as a batch for later "imported together" views. Images are the
+only importable kind today. See [workflow design](design/workflow.md).
 
 ### Color correction and ordered effects
 

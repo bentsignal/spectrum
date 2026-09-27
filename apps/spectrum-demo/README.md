@@ -19,8 +19,10 @@ Windows). These shortcuts are trial bindings, not approved ones.
 | Adjust | Light and color sliders, compare switch | Selected asset, optionally beside the original |
 | Canvas | Layers, blend mode, opacity, local or global edits | Sample canvas |
 
-"New project…" in the project menu opens a dialog. Import adds a placeholder
-photo. Double-click an asset to open it in Adjust or Canvas. Adjustments carry
+The View menu switches between All assets, Unassigned, and projects;
+"New project…" opens a dialog. Import adds a placeholder image to the current
+project, or leaves it unassigned. Right-click an asset to add it to a project,
+remove it from the current one, or delete it. Double-click an asset to open it in Adjust or Canvas. Adjustments carry
 into the canvas that places the photo. The panel button at the top of the
 sidebar moves it to the other edge.
 

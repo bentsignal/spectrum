@@ -12,8 +12,10 @@ uses its platform application-data location. Documents and originals are managed
 inside that directory. Help, schemas, and benchmarks do not initialize a library.
 
 ```sh
-spectrum library
-spectrum images import /path/to/image.jpg
+spectrum library [--unassigned]
+spectrum images import /path/to/image.jpg [--project <uuid> | --new-project "Trip"]
+spectrum projects list|create|show|rename|delete|add|remove
+spectrum imports
 spectrum images list
 spectrum canvas new "Composition" --width 1920 --height 1080
 spectrum canvas list

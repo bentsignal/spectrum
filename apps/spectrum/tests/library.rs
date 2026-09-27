@@ -68,7 +68,7 @@ fn cli_adapter_undo_targets_the_requested_image_and_canvas() {
     image::RgbaImage::from_pixel(8, 8, image::Rgba([64, 64, 64, 255]))
         .save(&source)
         .unwrap();
-    let service = Service::open(&tmp.path().join("library")).unwrap();
+    let mut service = Service::open(&tmp.path().join("library")).unwrap();
     let mut assets = service.import(vec![source.clone()]).unwrap();
     // Add another image to the same internal document to exercise selection.
     let path = service.library.path(&assets[0]).unwrap();

@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use lumen_core::{DurableCatalog, Project};
 use prism_core::{Document, LayerKind};
 use sha2::{Digest, Sha256};
-use spectrum_library::{Asset, AssetId, Library};
+use spectrum_library::{Asset, AssetId, ImportBatch, Library, ProjectId};
 use spectrum_revisions::{Actor, ActorKind, SessionId};
 use std::path::{Path, PathBuf};
 
@@ -98,7 +98,27 @@ impl Service {
         }
         self.library.list()
     }
-    pub fn import(&self, paths: Vec<PathBuf>) -> Result<Vec<Asset>> {
+    pub fn import(&mut self, paths: Vec<PathBuf>) -> Result<Vec<Asset>> {
+        Ok(self.import_into(paths, None)?.1)
+    }
+    /// Imports files as one batch and optionally adds them to a project.
+    pub fn import_into(
+        &mut self,
+        paths: Vec<PathBuf>,
+        project: Option<ProjectId>,
+    ) -> Result<(ImportBatch, Vec<Asset>)> {
+        if let Some(project) = project {
+            self.library.project(project)?;
+        }
+        let assets = self.import_documents(paths)?;
+        let ids = assets.iter().map(|a| a.id).collect::<Vec<_>>();
+        let batch = self.library.record_import(&ids)?;
+        if let Some(project) = project {
+            self.library.add_to_project(project, &ids)?;
+        }
+        Ok((batch, assets))
+    }
+    fn import_documents(&self, paths: Vec<PathBuf>) -> Result<Vec<Asset>> {
         let path = self
             .library
             .root()

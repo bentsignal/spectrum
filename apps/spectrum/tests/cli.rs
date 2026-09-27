@@ -62,7 +62,8 @@ fn consolidated_commands_edit_export_and_keep_linked_assets_current() {
     image::RgbaImage::from_pixel(16, 16, image::Rgba([50, 60, 70, 255]))
         .save(&source)
         .unwrap();
-    let images = ok(&root, &["images", "import", source.to_str().unwrap()]);
+    let imported = ok(&root, &["images", "import", source.to_str().unwrap()]);
+    let images = &imported["assets"];
     let image = images[0]["id"].as_str().unwrap();
     let item = images[0]["item"].as_u64().unwrap().to_string();
     let canvas = ok(
@@ -132,4 +133,76 @@ fn consolidated_commands_edit_export_and_keep_linked_assets_current() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+}
+
+#[test]
+fn imports_are_batched_and_projects_group_assets_without_owning_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("library");
+    let path = |name: &str| {
+        let path = temp.path().join(name);
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([90, 90, 90, 255]))
+            .save(&path)
+            .unwrap();
+        path.to_str().unwrap().to_string()
+    };
+    let (a, b, c) = (path("a.png"), path("b.png"), path("c.png"));
+    let trip = ok(
+        &root,
+        &["images", "import", &a, &b, "--new-project", "Trip"],
+    );
+    let project = trip["project"].as_str().unwrap().to_string();
+    assert_eq!(trip["assets"].as_array().unwrap().len(), 2);
+    let loose = ok(&root, &["images", "import", &c]);
+    assert!(loose["project"].is_null());
+    let unassigned = |root| ok(root, &["library", "--unassigned"])["assets"].clone();
+    assert_eq!(unassigned(&root).as_array().unwrap().len(), 1);
+
+    let batches = ok(&root, &["imports"]);
+    let sizes: Vec<usize> = batches
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["assets"].as_array().unwrap().len())
+        .collect();
+    assert_eq!(sizes.iter().sum::<usize>(), 3);
+    assert!(sizes.contains(&2) && sizes.contains(&1));
+
+    let first = trip["assets"][0]["id"].as_str().unwrap();
+    let shown = ok(&root, &["projects", "remove", &project, first]);
+    assert_eq!(shown["project"]["assets"], 1);
+    assert_eq!(unassigned(&root).as_array().unwrap().len(), 2);
+    assert_eq!(
+        ok(&root, &["library"])["assets"].as_array().unwrap().len(),
+        3
+    );
+
+    let canvas = ok(&root, &["canvas", "new", "Poster", "--project", &project]);
+    let shown = ok(&root, &["projects", "show", &project]);
+    assert_eq!(shown["assets"][0]["id"], canvas["id"]);
+
+    assert!(
+        !call(&root, &["projects", "create", "trip"])
+            .status
+            .success()
+    );
+    let missing = temp.path().join("missing.png");
+    let failed = call(
+        &root,
+        &[
+            "images",
+            "import",
+            missing.to_str().unwrap(),
+            "--new-project",
+            "Broken",
+        ],
+    );
+    assert!(!failed.status.success());
+    assert_eq!(
+        ok(&root, &["projects", "list"]).as_array().unwrap().len(),
+        1
+    );
+
+    ok(&root, &["projects", "delete", &project]);
+    assert_eq!(unassigned(&root).as_array().unwrap().len(), 4);
 }

@@ -8,6 +8,9 @@ use std::{
 };
 pub use uuid::Uuid as AssetId;
 
+mod projects;
+pub use projects::{BatchId, ImportBatch, Project, ProjectId};
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Asset {
     pub id: AssetId,
@@ -37,6 +40,7 @@ impl Library {
               slot TEXT NOT NULL, target TEXT NOT NULL REFERENCES assets(id),
               PRIMARY KEY(owner,slot));",
         )?;
+        db.execute_batch(projects::SCHEMA)?;
         Ok(Self { root, db })
     }
     pub fn root(&self) -> &Path {
@@ -93,26 +97,8 @@ impl Library {
         let mut statement = self
             .db
             .prepare("SELECT id,kind,name,document,item FROM assets ORDER BY name,id")?;
-        let rows = statement.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (id, kind, name, document, item) = row?;
-            Ok(Asset {
-                id: id.parse()?,
-                kind,
-                name,
-                document: document.into(),
-                item: if item < 0 { None } else { Some(item as u64) },
-            })
-        })
-        .collect()
+        let rows = statement.query_map([], asset_row)?;
+        rows.map(|row| asset_from_row(row?)).collect()
     }
     pub fn path(&self, asset: &Asset) -> Result<PathBuf> {
         let path = std::fs::canonicalize(self.root.join(&asset.document))?;
@@ -176,6 +162,22 @@ impl Library {
             .collect()
     }
 }
+type AssetRow = (String, String, String, String, i64);
+
+fn asset_row(r: &rusqlite::Row) -> rusqlite::Result<AssetRow> {
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+}
+
+fn asset_from_row((id, kind, name, document, item): AssetRow) -> Result<Asset> {
+    Ok(Asset {
+        id: id.parse()?,
+        kind,
+        name,
+        document: document.into(),
+        item: if item < 0 { None } else { Some(item as u64) },
+    })
+}
+
 /// Compatibility is explicit. New types can be stored before an editor supports them.
 pub fn accepts(owner: &str, target: &str) -> bool {
     matches!(

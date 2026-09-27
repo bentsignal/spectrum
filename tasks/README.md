@@ -19,7 +19,6 @@ The [agent guide](../AGENTS.md) defines validation; Git retains completed work.
 
 ## Completed and closed
 
-- [GPUI demo design pass](gpui-demo-design-pass.md)
 - [Unified Spectrum app](unified-spectrum-app.md)
 - [Interaction latency](interaction-latency.md)
 - [NixOS development](nixos-development.md)

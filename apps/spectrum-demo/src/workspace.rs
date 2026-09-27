@@ -23,6 +23,14 @@ pub enum Mode {
     Canvas,
 }
 
+/// What the library grid shows.
+#[derive(Clone, Copy, PartialEq)]
+pub enum LibraryView {
+    All,
+    Unassigned,
+    Project(usize),
+}
+
 pub struct Layer {
     pub name: &'static str,
     pub icon: IconName,
@@ -36,11 +44,11 @@ pub struct Workspace {
     pub sidebar_right: bool,
     pub assets: Vec<Asset>,
     pub projects: Vec<Project>,
-    pub project: usize,
+    pub view: LibraryView,
     pub selected: usize,
     pub search: Entity<InputState>,
     pub new_project_name: Entity<InputState>,
-    pub show_photos: bool,
+    pub show_images: bool,
     pub show_canvases: bool,
     pub sort: usize,
     pub thumbnail: Entity<SliderState>,
@@ -96,13 +104,6 @@ impl Workspace {
                 this.layers[layer].opacity = state.read(cx).value().start();
                 cx.notify();
             }),
-            cx.subscribe_in(&new_project_name, window, |this, _, event, window, cx| {
-                if let InputEvent::PressEnter { .. } = event
-                    && this.create_project(cx)
-                {
-                    gpui_component::WindowExt::close_dialog(window, cx);
-                }
-            }),
         ];
         for state in [&exposure, &contrast, &temperature, &saturation] {
             subscriptions.push(cx.subscribe(state, |this, _, _: &SliderEvent, cx| {
@@ -123,11 +124,11 @@ impl Workspace {
             sidebar_right: false,
             assets,
             projects,
-            project: 0,
+            view: LibraryView::Project(0),
             selected: 0,
             search,
             new_project_name,
-            show_photos: true,
+            show_images: true,
             show_canvases: true,
             sort: 0,
             thumbnail,
@@ -197,14 +198,18 @@ impl Workspace {
     /// Add a sample project from the name field. Returns false if it is empty.
     pub fn create_project(&mut self, cx: &mut Context<Self>) -> bool {
         let name = self.new_project_name.read(cx).value().trim().to_string();
-        if name.is_empty() {
+        let taken = self
+            .projects
+            .iter()
+            .any(|p| p.name.to_lowercase() == name.to_lowercase());
+        if name.is_empty() || taken {
             return false;
         }
         self.projects.push(Project {
             name: name.into(),
             assets: Vec::new(),
         });
-        self.project = self.projects.len() - 1;
+        self.view = LibraryView::Project(self.projects.len() - 1);
         self.mode = Mode::Library;
         cx.notify();
         true
@@ -325,10 +330,9 @@ impl Workspace {
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, detail): (SharedString, SharedString) = match self.mode {
             Mode::Library => {
-                let project = &self.projects[self.project];
-                let count = project.assets.len();
+                let count = self.view_assets().len();
                 (
-                    project.name.clone(),
+                    self.view_name(),
                     format!("{count} asset{}", if count == 1 { "" } else { "s" }).into(),
                 )
             }

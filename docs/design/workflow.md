@@ -24,6 +24,25 @@ compositions. The exact taxonomy and compatibility rules remain open. The user
 would welcome a shorter name but accepts composition for now. Direct image
 editing must fit without requiring a composition for every operation.
 
+### Membership, removal, and import batches (2026-09-27)
+
+The user does not want to assign assets to a project at import. They want to
+bring in a shoot first and organize later. Assets may belong to no project; the
+library shows them in an unassigned view, and an all-assets view shows everything.
+
+Right-clicking an asset (two-finger click on Mac) opens a menu. In a project it
+offers "Remove from project", with helper text saying the asset stays in the
+library. "Delete asset" appears in red with a warning that it deletes the asset
+from Spectrum. Removing an asset from its last project is fine; it becomes
+unassigned. The demo also offers "Add to project" in this menu.
+
+Record which assets were imported together, even before the UI shows it, so a
+later view can answer "what did I bring in last week?". Import supports images
+only until video and audio work begins. Label imported images "Image", not "Photo".
+
+Open: whether deleting asks for confirmation, and what happens to canvases that
+use a deleted image. Deletion also needs trash or restore semantics.
+
 ## Shared edits and placement edits
 
 The user agrees that editing the shared asset changes all references, while
@@ -136,4 +155,4 @@ The supplied ChatGPT desktop screenshot establishes a neutral dark gray directio
 Use spacious layouts, soft rounding, restrained borders, and simple controls.
 Avoid strong accent colors and decorative personality so varied creative work
 looks at home. The screenshot is a style reference, not a request to copy its
-horizontal bars or chat layout. See [demo revision](../../tasks/gpui-demo-design-pass.md).
+horizontal bars or chat layout.

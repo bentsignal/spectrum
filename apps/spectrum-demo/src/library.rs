@@ -2,7 +2,7 @@ use crate::{
     controls::{Field, group},
     samples::{self, Asset, Look},
     theme::*,
-    workspace::{Mode, Workspace},
+    workspace::{LibraryView, Mode, Workspace},
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -11,31 +11,71 @@ use gpui_component::{
     checkbox::Checkbox,
     dialog::DialogButtonProps,
     input::Input,
+    menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     slider::Slider,
 };
 
 const SORTS: [&str; 3] = ["Recently added", "Name", "Kind"];
+const DANGER: u32 = 0xf2555a;
 
 impl Workspace {
+    pub fn view_name(&self) -> SharedString {
+        match self.view {
+            LibraryView::All => "All assets".into(),
+            LibraryView::Unassigned => "Unassigned".into(),
+            LibraryView::Project(index) => self.projects[index].name.clone(),
+        }
+    }
+
+    /// Assets in the current library view, in the order they were added.
+    pub fn view_assets(&self) -> Vec<usize> {
+        let live = |index: &usize| !self.assets[*index].deleted;
+        match self.view {
+            LibraryView::All => (0..self.assets.len()).filter(live).collect(),
+            LibraryView::Unassigned => (0..self.assets.len())
+                .filter(live)
+                .filter(|index| !self.projects.iter().any(|p| p.assets.contains(index)))
+                .collect(),
+            LibraryView::Project(project) => self.projects[project]
+                .assets
+                .iter()
+                .copied()
+                .filter(live)
+                .collect(),
+        }
+    }
+
     pub fn library_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let projects = self.projects.iter().map(|p| p.name.clone()).collect();
-        let project = Field::new("project", self.projects[self.project].name.clone())
+        let options = ["All assets".into(), "Unassigned".into()]
+            .into_iter()
+            .chain(self.projects.iter().map(|p| p.name.clone()))
+            .collect();
+        let project = Field::new("project", self.view_name())
+            .split_after(1)
             .action("New project…", {
                 let view = view.clone();
                 move |window, cx| view.update(cx, |this, cx| this.open_new_project(window, cx))
             })
             .options(
-                projects,
+                options,
                 {
                     let view = view.clone();
-                    move |cx| view.read(cx).project
+                    move |cx| match view.read(cx).view {
+                        LibraryView::All => 0,
+                        LibraryView::Unassigned => 1,
+                        LibraryView::Project(index) => index + 2,
+                    }
                 },
                 {
                     let view = view.clone();
                     move |index, _, cx| {
                         view.update(cx, |this, cx| {
-                            this.project = index;
+                            this.view = match index {
+                                0 => LibraryView::All,
+                                1 => LibraryView::Unassigned,
+                                _ => LibraryView::Project(index - 2),
+                            };
                             cx.notify();
                         })
                     }
@@ -54,12 +94,26 @@ impl Workspace {
                 })
             },
         );
+        let kind = |id: &'static str, label: &'static str, checked: bool| {
+            Checkbox::new(id)
+                .label(label)
+                .text_sm()
+                .checked(checked)
+                .on_click(cx.listener(move |this, checked, _, cx| {
+                    if id == "images" {
+                        this.show_images = *checked;
+                    } else {
+                        this.show_canvases = *checked;
+                    }
+                    cx.notify();
+                }))
+        };
         div()
             .flex()
             .flex_col()
             .gap_7()
             .child(
-                group("Project", None).child(project).child(
+                group("View", None).child(project).child(
                     Button::new("import")
                         .primary()
                         .icon(IconName::Plus)
@@ -81,26 +135,8 @@ impl Workspace {
                         div()
                             .flex()
                             .gap_5()
-                            .child(
-                                Checkbox::new("photos")
-                                    .label("Photos")
-                                    .text_sm()
-                                    .checked(self.show_photos)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
-                                        this.show_photos = *checked;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Checkbox::new("canvases")
-                                    .label("Canvases")
-                                    .text_sm()
-                                    .checked(self.show_canvases)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
-                                        this.show_canvases = *checked;
-                                        cx.notify();
-                                    })),
-                            ),
+                            .child(kind("images", "Images", self.show_images))
+                            .child(kind("canvases", "Canvases", self.show_canvases)),
                     ),
             )
             .child(group("Sort by", None).child(sort))
@@ -108,10 +144,9 @@ impl Workspace {
     }
 
     pub fn library(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let project = &self.projects[self.project];
+        let all = self.view_assets();
         let query = self.search.read(cx).value().to_lowercase();
-        let mut items: Vec<usize> = project
-            .assets
+        let mut items: Vec<usize> = all
             .iter()
             .copied()
             .filter(|&index| {
@@ -119,7 +154,7 @@ impl Workspace {
                 let kind = if asset.canvas {
                     self.show_canvases
                 } else {
-                    self.show_photos
+                    self.show_images
                 };
                 kind && asset.name.to_lowercase().contains(&query)
             })
@@ -131,18 +166,24 @@ impl Workspace {
             }),
             _ => items.reverse(),
         }
-        if project.assets.is_empty() {
-            return empty(
-                "No assets yet",
-                "Import photos and canvases into this project.",
-            )
-            .child(
-                Button::new("empty-import")
-                    .icon(IconName::Plus)
-                    .label("Import")
-                    .on_click(cx.listener(|this, _, window, cx| this.import_sample(window, cx))),
-            )
-            .into_any_element();
+        if all.is_empty() {
+            let detail = match self.view {
+                LibraryView::Unassigned => "Every asset belongs to a project.",
+                LibraryView::All => "Import images to start your library.",
+                LibraryView::Project(_) => "Import images into this project.",
+            };
+            return empty("No assets", detail)
+                .when(self.view != LibraryView::Unassigned, |el| {
+                    el.child(
+                        Button::new("empty-import")
+                            .icon(IconName::Plus)
+                            .label("Import")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.import_sample(window, cx)),
+                            ),
+                    )
+                })
+                .into_any_element();
         }
         if items.is_empty() {
             return empty("No matches", "Try another search or filter.").into_any_element();
@@ -163,17 +204,104 @@ impl Workspace {
                     .gap_x_4()
                     .gap_y_6()
                     .children(items.into_iter().map(|index| {
-                        card(
-                            index,
-                            &self.assets[index],
-                            placed,
-                            width,
-                            index == self.selected,
-                            cx,
+                        let menu = self.asset_menu(index, cx);
+                        div().id(("card", index)).child(
+                            card(
+                                index,
+                                &self.assets[index],
+                                placed,
+                                width,
+                                index == self.selected,
+                                cx,
+                            )
+                            .context_menu(menu),
                         )
                     })),
             )
             .into_any_element()
+    }
+
+    /// Right-click menu for an asset card.
+    fn asset_menu(
+        &self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+        let view = cx.entity();
+        let project = match self.view {
+            LibraryView::Project(project) => Some(project),
+            _ => None,
+        };
+        let others: Vec<(usize, SharedString)> = self
+            .projects
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.assets.contains(&index))
+            .map(|(i, p)| (i, p.name.clone()))
+            .collect();
+        let used = index == 0;
+        move |menu, window, cx| {
+            let menu = menu.min_w(px(280.));
+            let menu = if others.is_empty() {
+                menu
+            } else {
+                let view = view.clone();
+                let others = others.clone();
+                menu.submenu("Add to project", window, cx, move |menu, _, _| {
+                    others.iter().fold(menu, |menu, (project, name)| {
+                        let view = view.clone();
+                        let project = *project;
+                        menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.projects[project].assets.push(index);
+                                cx.notify();
+                            })
+                        }))
+                    })
+                })
+            };
+            let menu = match project {
+                Some(project) => {
+                    let view = view.clone();
+                    menu.item(
+                        PopupMenuItem::element(|_, _| {
+                            described(
+                                "Remove from project",
+                                "Removes it from this project. It stays in your library.",
+                                TEXT,
+                            )
+                        })
+                        .on_click(move |_, _, cx| {
+                            view.update(cx, |this, cx| {
+                                this.projects[project].assets.retain(|&a| a != index);
+                                cx.notify();
+                            })
+                        }),
+                    )
+                }
+                None => menu,
+            };
+            let view = view.clone();
+            menu.separator().item(
+                PopupMenuItem::element(move |_, _| {
+                    described(
+                        "Delete asset",
+                        if used {
+                            "Deletes it from Spectrum and every project. Spring poster uses it."
+                        } else {
+                            "Deletes it from Spectrum and every project."
+                        },
+                        DANGER,
+                    )
+                })
+                .on_click(move |_, _, cx| {
+                    view.update(cx, |this, cx| {
+                        this.assets[index].deleted = true;
+                        cx.notify();
+                    })
+                }),
+            )
+        }
     }
 
     pub fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -198,21 +326,46 @@ impl Workspace {
         });
     }
 
-    /// Add a placeholder photo to the library and the current project.
+    /// Add a placeholder image to the library, and to the project being viewed.
     fn import_sample(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.assets.len();
+        let number = 1 + self
+            .assets
+            .iter()
+            .filter(|a| a.name.starts_with("Import "))
+            .count();
         let hue = (count as f32 * 0.37).fract();
         self.assets.push(Asset {
-            name: format!("Import {}", count - 5).into(),
+            name: format!("Import {number}").into(),
             canvas: false,
             dimensions: "4000 × 3000",
             hues: (hue, (hue + 0.45).fract()),
             look: Look::default(),
+            deleted: false,
         });
-        self.projects[self.project].assets.push(count);
+        if let LibraryView::Project(project) = self.view {
+            self.projects[project].assets.push(count);
+        }
         self.sort = 0;
         self.select_asset(count, window, cx);
     }
+}
+
+/// A menu item label with an explanation below it.
+fn described(label: &'static str, detail: &'static str, color: u32) -> Div {
+    div()
+        .py_0p5()
+        .flex()
+        .flex_col()
+        .gap_0p5()
+        .child(div().text_sm().text_color(rgb(color)).child(label))
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(if color == DANGER { 0xb07a7c } else { MUTED }))
+                .whitespace_normal()
+                .child(detail),
+        )
 }
 
 fn empty(title: &'static str, detail: &'static str) -> Div {
@@ -272,7 +425,7 @@ fn card(
                     div()
                         .text_xs()
                         .text_color(rgb(FAINT))
-                        .child(if asset.canvas { "Canvas" } else { "Photo" }),
+                        .child(if asset.canvas { "Canvas" } else { "Image" }),
                 ),
         )
         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {

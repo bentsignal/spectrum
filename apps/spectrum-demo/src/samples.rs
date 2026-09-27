@@ -9,6 +9,7 @@ pub struct Asset {
     /// Sky and ground hues for the placeholder artwork.
     pub hues: (f32, f32),
     pub look: Look,
+    pub deleted: bool,
 }
 
 pub struct Project {
@@ -46,6 +47,7 @@ pub fn library() -> (Vec<Asset>, Vec<Project>) {
         dimensions,
         hues,
         look: Look::default(),
+        deleted: false,
     };
     let assets = vec![
         photo("Harbor at dusk", "6000 × 4000", (0.62, 0.07)),
@@ -58,8 +60,11 @@ pub fn library() -> (Vec<Asset>, Vec<Project>) {
             dimensions: "1920 × 1080",
             hues: (0.95, 0.62),
             look: Look::default(),
+            deleted: false,
         },
         photo("Field notes", "4032 × 3024", (0.25, 0.14)),
+        photo("Night market", "6000 × 4000", (0.7, 0.9)),
+        photo("Test roll", "4000 × 3000", (0.48, 0.1)),
     ];
     let projects = vec![
         Project {

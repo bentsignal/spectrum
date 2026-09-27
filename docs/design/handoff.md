@@ -12,8 +12,15 @@ revision restructures the demo as a mock workspace. The sidebar holds each mode'
 controls and the main area shows the work. The user approved the revision's
 components and visual style on 2026-09-27 and confirmed the GPUI rebuild.
 
-Next, agree on project and import behavior, then build project creation and asset import with the shared engine and CLI, then
-migrate the editors incrementally. A full color selector is future work with
+The user then settled project and import behavior (see workflow preferences).
+Projects, membership, unassigned assets, and import batches are in
+`spectrum-library` and the CLI (`spectrum projects`, `spectrum imports`,
+`images import --project/--new-project`). The demo shows the right-click menu,
+All assets and Unassigned views, and "Image" labels.
+
+Next, settle asset deletion (open questions in workflow preferences), then build
+the GPUI library views on these engine commands, then migrate the editors
+incrementally. A full color selector is future work with
 undecided timing. Do not restart framework research or start a browser build.
 
 ## Build to review
@@ -41,7 +48,6 @@ The outer bundle is `Spectrum.app`; keep it apart from the existing app.
 | `apps/spectrum-demo/README.md` | Usage |
 | `scripts/package-spectrum-demo.sh` | Demo packaging on Mac, Linux, and Windows |
 | `packaging/spectrum-demo/Info.plist` | Separate preview bundle identity |
-| `tasks/gpui-demo-design-pass.md` | Current review task |
 | `tasks/app-managed-library.md` | Ongoing product and engine work |
 
 The demo pins GPUI 0.2.2 and GPUI Component/Assets 0.5.1. Component supplies
@@ -129,5 +135,5 @@ priority. Retain the working signing credentials and notarization flow.
 
 Commit completed changes on main, push, and verify the remote revision. Run the
 full required validation loop after code, packaging, or CI changes. Do not ask the
-user to perform checks that can be done on this machine. The next step is agreeing on
-project and import behavior.
+user to perform checks that can be done on this machine. The next step is settling
+asset deletion.
