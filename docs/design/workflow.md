@@ -85,7 +85,7 @@ Before rebuilding whole editors, make a dummy component page with sliders,
 buttons, labels, and other proposed controls. Review and revise it with the user
 to agree on appearance and interaction, then reuse the approved components.
 Also review rough navigation/layout mockups. The user chose a separate GPUI demo;
-the user reviewed its first build and a revision is awaiting review. See [handoff](handoff.md).
+the user approved the revised components and visual style on 2026-09-27. See [handoff](handoff.md).
 
 Agree on behavior, then prepare and test the engine and CLI before connecting
 new production UI to those operations. Build GPUI incrementally. Add video,

@@ -1,5 +1,5 @@
 ---
-status: in_progress
+status: done
 priority: high
 ---
 
@@ -12,5 +12,6 @@ sidebar so the main area shows assets and canvases. Dropdown items now have a
 small gap so highlights do not touch. The stock color picker is removed; a full
 color selector is future work, timing undecided. See [handoff](../docs/design/handoff.md).
 
-Acceptance: the user approves the revised components or gives the next round of
-feedback. Project creation and import on the real engine follow approval.
+The user approved the revision on 2026-09-27: the components and visual style
+are what they want, and the GPUI rebuild is confirmed. Project creation and
+import on the real engine are next.

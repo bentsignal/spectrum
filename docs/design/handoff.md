@@ -9,11 +9,10 @@ Apply the project-local `unslop` skill to all writing. Keep replies concise.
 The user reviewed the first GPUI demo and approved GPUI and the stock controls.
 Their feedback is in [workflow preferences](workflow.md#first-demo-review). The
 revision restructures the demo as a mock workspace. The sidebar holds each mode's
-controls and the main area shows the work. The revision is committed but not yet
-reviewed. Do not treat it as approval.
+controls and the main area shows the work. The user approved the revision's
+components and visual style on 2026-09-27 and confirmed the GPUI rebuild.
 
-Next, gather the user's feedback on the revision. Once they approve the design,
-build project creation and asset import with the shared engine and CLI, then
+Next, agree on project and import behavior, then build project creation and asset import with the shared engine and CLI, then
 migrate the editors incrementally. A full color selector is future work with
 undecided timing. Do not restart framework research or start a browser build.
 
@@ -130,5 +129,5 @@ priority. Retain the working signing credentials and notarization flow.
 
 Commit completed changes on main, push, and verify the remote revision. Run the
 full required validation loop after code, packaging, or CI changes. Do not ask the
-user to perform checks that can be done on this machine. The next user input is
-visual feedback on the revised demo.
+user to perform checks that can be done on this machine. The next step is agreeing on
+project and import behavior.
