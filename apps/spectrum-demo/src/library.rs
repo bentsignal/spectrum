@@ -296,6 +296,7 @@ impl Workspace {
     }
 
     pub fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_add.clear();
         let input = self.new_project_name.clone();
         input.update(cx, |state, cx| state.set_value("", window, cx));
         let view = cx.entity();

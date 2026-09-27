@@ -26,9 +26,12 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 Control replaces Command on Linux and Windows. Command+S is deliberately unbound.
 
 Import assets accepts images and folders from a file picker or by dropping them
-on the main area; inside a project, imports join it. Asset grids support click,
+on the main area. Inside a project, Import assets also offers "From your
+library…", a picker for assets already in Spectrum; imports join the project. Asset grids support click,
 Shift-click, Command-click, and drag-box selection. Right-click acts on the whole
-selection: rename, add to or remove from a project, delete, or restore. Opening
+selection: rename, add to or remove from a project, delete, or restore. "Add to
+project…" opens a searchable project picker that can also create a project for
+the selection. Dragging a selection box near the top or bottom edge scrolls. Opening
 an image in a project shows Color, whose sliders make real engine edits. The
 sample canvas shows Color acting on a selected layer. Canvases from the library
 cannot be opened here yet.

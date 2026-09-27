@@ -82,6 +82,12 @@ Follow-up review: New project appears only in the Projects tab and Import assets
 only in the Assets tab, styled as the original segmented control. Inside a
 project the Home tabs disappear, and back goes up one level at a time.
 
+Third review: "Add to project" opens a search modal like Command+K, listing
+projects and offering a new project, so a fresh import can go straight into a
+new project. Inside a project, Import assets also brings in assets already in
+the library. The back row matches the mode tabs' height so the divider does not
+shift. Drag-box selection scrolls when the pointer nears the grid's edge.
+
 Asset grids center their block, support click, Shift-click ranges, Command-click
 toggles, drag-box selection, and Command+A, and apply right-click actions to the
 whole selection. Assets can be renamed.

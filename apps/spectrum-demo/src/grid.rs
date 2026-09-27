@@ -124,24 +124,6 @@ impl Workspace {
         }
     }
 
-    fn update_marquee(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some((start, _)) = self.marquee else {
-            return;
-        };
-        self.marquee = Some((start, position));
-        let area = Bounds::from_corners(
-            point(start.x.min(position.x), start.y.min(position.y)),
-            point(start.x.max(position.x), start.y.max(position.y)),
-        );
-        let bounds = self.card_bounds.borrow();
-        self.selection = self
-            .visible_ids(cx)
-            .into_iter()
-            .filter(|id| bounds.get(id).is_some_and(|b| b.intersects(&area)))
-            .collect();
-        cx.notify();
-    }
-
     pub fn asset_grid(&self, available: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let store = match &self.store {
             Ok(store) => store,
@@ -195,14 +177,15 @@ impl Workspace {
             })
             .collect();
         let block = block_width(available - PADDING * 2., width + 8.);
-        let origin = self.grid_origin.clone();
+        let grid_bounds = self.grid_bounds.clone();
         div()
             .id("grid-wrap")
             .relative()
             .size_full()
+            .overflow_hidden()
             .child(
                 canvas(
-                    move |bounds, _, _| *origin.borrow_mut() = bounds.origin,
+                    move |bounds, _, _| *grid_bounds.borrow_mut() = bounds,
                     |_, _, _, _| {},
                 )
                 .absolute()
@@ -213,6 +196,7 @@ impl Workspace {
                     .id("library-grid")
                     .size_full()
                     .overflow_y_scroll()
+                    .track_scroll(&self.grid_scroll)
                     .px(px(PADDING))
                     .pt_2()
                     .pb_8()
@@ -227,14 +211,14 @@ impl Workspace {
                             .children(cards),
                     ),
             )
-            .children(self.marquee.map(|(a, b)| {
-                let origin = *self.grid_origin.borrow();
+            .children(self.marquee_area().map(|area| {
+                let origin = self.grid_bounds.borrow().origin;
                 div()
                     .absolute()
-                    .left(a.x.min(b.x) - origin.x)
-                    .top(a.y.min(b.y) - origin.y)
-                    .w((a.x - b.x).abs())
-                    .h((a.y - b.y).abs())
+                    .left(area.origin.x - origin.x)
+                    .top(area.origin.y - origin.y)
+                    .w(area.size.width)
+                    .h(area.size.height)
                     .rounded_sm()
                     .bg(hsla(0., 0., 1., 0.06))
                     .border_1()
@@ -243,31 +227,22 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    if !event.modifiers.shift && !event.modifiers.secondary() {
-                        this.selection.clear();
-                    }
-                    this.marquee = Some((event.position, event.position));
-                    cx.notify();
+                    let additive = event.modifiers.shift || event.modifiers.secondary();
+                    this.start_marquee(event.position, additive, cx)
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if event.pressed_button == Some(MouseButton::Left) {
-                    this.update_marquee(event.position, cx);
+                    this.move_marquee(event.position, cx);
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.marquee = None;
-                    cx.notify();
-                }),
+                cx.listener(|this, _, _, cx| this.end_marquee(cx)),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.marquee = None;
-                    cx.notify();
-                }),
+                cx.listener(|this, _, _, cx| this.end_marquee(cx)),
             )
             .into_any_element()
     }
@@ -282,6 +257,7 @@ impl Workspace {
             .iter()
             .map(|e| e.asset.id)
             .chain(store.covers.values().copied())
+            .chain(self.picker_assets.iter().map(|a| a.id))
             .filter(|id| !store.thumbs.contains_key(id))
             .collect();
         for id in missing {
@@ -315,9 +291,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let view = cx.entity();
-        move |menu, window, cx| {
+        move |menu, _, cx| {
             let menu = menu.min_w(px(280.));
-            let (ids, current, place, projects, name) = {
+            let (ids, current, place, name) = {
                 let this = view.read(cx);
                 let Ok(store) = &this.store else {
                     return menu;
@@ -328,19 +304,13 @@ impl Workspace {
                     vec![id]
                 };
                 let place = this.place;
-                let projects: Vec<_> = store
-                    .projects
-                    .iter()
-                    .filter(|p| place != Place::Project(p.id))
-                    .map(|p| (p.id, SharedString::from(p.name.clone())))
-                    .collect();
                 let name = store
                     .entries
                     .iter()
                     .find(|e| e.asset.id == id)
                     .map(|e| e.asset.name.clone())
                     .unwrap_or_default();
-                (ids, this.view, place, projects, name)
+                (ids, this.view, place, name)
             };
             let count = ids.len();
             let noun = |n: usize| {
@@ -390,28 +360,15 @@ impl Workspace {
             } else {
                 menu
             };
-            let menu = if projects.is_empty() {
-                menu
-            } else {
+            let menu = {
                 let view = view.clone();
                 let ids = ids.clone();
-                menu.submenu("Add to project", window, cx, move |menu, _, _| {
-                    projects.iter().fold(menu, |menu, (project, name)| {
-                        let view = view.clone();
-                        let project = *project;
+                menu.item(
+                    PopupMenuItem::new("Add to project…").on_click(move |_, window, cx| {
                         let ids = ids.clone();
-                        menu.item(PopupMenuItem::new(name.clone()).on_click(
-                            move |_, window, cx| {
-                                let ids = ids.clone();
-                                view.update(cx, |this, cx| {
-                                    this.change(window, cx, |store| {
-                                        store.service.library.add_to_project(project, &ids)
-                                    })
-                                })
-                            },
-                        ))
-                    })
-                })
+                        view.update(cx, |this, cx| this.open_add_to_project(ids, window, cx))
+                    }),
+                )
             };
             let menu = match place {
                 Place::Project(project) => {

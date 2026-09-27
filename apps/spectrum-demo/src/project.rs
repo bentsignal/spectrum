@@ -4,11 +4,42 @@ use crate::{
     workspace::{Open, Workspace},
 };
 use gpui::{prelude::*, *};
-use gpui_component::{Icon, IconName, Sizable, input::Input};
+use gpui_component::{
+    Icon, IconName, Sizable,
+    button::{Button, ButtonVariants},
+    input::Input,
+    menu::{DropdownMenu, PopupMenuItem},
+};
 
 impl Workspace {
     pub fn project_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let import = self.import_button(cx);
+        let view = cx.entity();
+        let importing = self.importing;
+        let import = Button::new("import")
+            .primary()
+            .icon(IconName::Plus)
+            .label(if importing > 0 {
+                format!("Importing {importing}…")
+            } else {
+                "Import assets".into()
+            })
+            .loading(importing > 0)
+            .dropdown_caret(true)
+            .w_full()
+            .dropdown_menu(move |menu, _, _| {
+                let (files, library) = (view.clone(), view.clone());
+                menu.min_w(px(256.))
+                    .item(PopupMenuItem::new("From your computer…").on_click(
+                        move |_, window, cx| {
+                            files.update(cx, |this, cx| this.choose_import(window, cx))
+                        },
+                    ))
+                    .item(PopupMenuItem::new("From your library…").on_click(
+                        move |_, window, cx| {
+                            library.update(cx, |this, cx| this.open_picker(window, cx))
+                        },
+                    ))
+            });
         let chips = self.kind_chips(cx).into_any_element();
         div()
             .flex()

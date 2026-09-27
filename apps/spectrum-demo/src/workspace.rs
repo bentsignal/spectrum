@@ -92,13 +92,23 @@ pub struct Workspace {
     pub selection: Vec<AssetId>,
     pub anchor: Option<AssetId>,
     /// Drag-box selection, in window coordinates: start and current point.
-    pub marquee: Option<(Point<Pixels>, Point<Pixels>)>,
+    pub marquee: Option<crate::marquee::Marquee>,
+    pub autoscrolling: bool,
+    pub grid_scroll: ScrollHandle,
     /// Card bounds from the last frame, for drag-box selection.
     pub card_bounds: Rc<RefCell<HashMap<AssetId, Bounds<Pixels>>>>,
-    pub grid_origin: Rc<RefCell<Point<Pixels>>>,
+    pub grid_bounds: Rc<RefCell<Bounds<Pixels>>>,
     pub palette_open: bool,
     pub palette_query: Entity<InputState>,
     pub palette_index: usize,
+    /// Assets the palette is adding to a project; empty when it navigates.
+    pub palette_adding: Vec<AssetId>,
+    pub picker_open: bool,
+    pub picker_query: Entity<InputState>,
+    pub picker_selected: Vec<AssetId>,
+    pub picker_assets: Vec<spectrum_library::Asset>,
+    /// Assets to add to the next project created.
+    pub pending_add: Vec<AssetId>,
     pub importing: usize,
     pub search: Entity<InputState>,
     pub project_search: Entity<InputState>,
@@ -158,6 +168,7 @@ impl Workspace {
         let project_search = input("Search projects", cx);
         let palette_query = input("Go to a project, asset, or place", cx);
         let new_project_name = input("Project name", cx);
+        let picker_query = input("Search your library", cx);
         let rename_input = input("Name", cx);
         let thumbnail = slider(cx, 140., 280., 1., 196.);
         let exposure = slider(cx, -2., 2., 0.05, 0.);
@@ -172,6 +183,7 @@ impl Workspace {
         let mut subscriptions = vec![
             cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()),
             cx.subscribe(&project_search, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.subscribe(&picker_query, |_, _, _: &InputEvent, cx| cx.notify()),
             cx.subscribe(&thumbnail, |_, _, _: &SliderEvent, cx| cx.notify()),
             cx.subscribe_in(&palette_query, window, |this, _, event, window, cx| {
                 this.palette_input(event, window, cx)
@@ -215,11 +227,19 @@ impl Workspace {
             selection: Vec::new(),
             anchor: None,
             marquee: None,
+            autoscrolling: false,
+            grid_scroll: ScrollHandle::new(),
             card_bounds: Default::default(),
-            grid_origin: Default::default(),
+            grid_bounds: Default::default(),
             palette_open: false,
             palette_query,
             palette_index: 0,
+            palette_adding: Vec::new(),
+            pending_add: Vec::new(),
+            picker_open: false,
+            picker_query,
+            picker_selected: Vec::new(),
+            picker_assets: Vec::new(),
             importing: 0,
             search,
             project_search,
@@ -368,9 +388,23 @@ impl Workspace {
         let Ok(store) = &mut self.store else {
             return false;
         };
-        match store.service.library.create_project(&name) {
-            Ok(project) => {
+        let adding = std::mem::take(&mut self.pending_add);
+        let created = store
+            .service
+            .library
+            .create_project(&name)
+            .and_then(|project| {
+                store.service.library.add_to_project(project.id, &adding)?;
+                Ok(project)
+            });
+        match created {
+            Ok(project) if adding.is_empty() => {
                 self.enter_project(project.id, window, cx);
+                true
+            }
+            Ok(project) => {
+                self.added_notice(adding.len(), &project.name, window, cx);
+                self.change(window, cx, |_| Ok(()));
                 true
             }
             Err(error) => {
@@ -448,7 +482,8 @@ impl Workspace {
             .children(back.map(|label| {
                 div()
                     .id("back")
-                    .h(px(30.))
+                    // Matches the mode tabs' height so the divider stays put.
+                    .h(px(36.))
                     .px_1()
                     .flex()
                     .items_center()
@@ -646,8 +681,10 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
-            .on_action(cx.listener(|this, _: &ClearSelection, _, cx| {
-                if this.palette_open {
+            .on_action(cx.listener(|this, _: &ClearSelection, window, cx| {
+                if this.picker_open {
+                    this.close_picker(window, cx)
+                } else if this.palette_open {
                     this.close_palette(cx)
                 } else {
                     this.clear_selection(cx)
@@ -661,6 +698,7 @@ impl Render for Workspace {
                 }
             })
             .when(self.palette_open, |el| el.child(self.palette(cx)))
+            .when(self.picker_open, |el| el.child(self.picker(cx)))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
     }

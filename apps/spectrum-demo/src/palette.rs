@@ -6,13 +6,15 @@ use crate::{
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Icon, IconName, Sizable,
+    Icon, IconName, Sizable, WindowExt,
     input::{Input, InputEvent},
+    notification::Notification,
 };
-use spectrum_library::ProjectId;
+use spectrum_library::{AssetId, ProjectId};
 
 #[derive(Clone)]
 enum Choice {
+    AddTo(ProjectId, SharedString),
     Home,
     Place(LibraryView),
     Enter(ProjectId),
@@ -30,6 +32,36 @@ struct Item {
 
 impl Workspace {
     pub fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette_adding.clear();
+        self.show_palette(window, cx);
+    }
+
+    /// Opens the palette to choose, or create, a project for `ids`.
+    pub fn open_add_to_project(
+        &mut self,
+        ids: Vec<AssetId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.palette_adding = ids;
+        self.show_palette(window, cx);
+    }
+
+    pub fn added_notice(
+        &mut self,
+        count: usize,
+        project: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let noun = if count == 1 { "asset" } else { "assets" };
+        window.push_notification(
+            Notification::success(format!("Added {count} {noun} to {project}.")),
+            cx,
+        );
+    }
+
+    fn show_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = true;
         self.palette_index = 0;
         self.palette_query.update(cx, |state, cx| {
@@ -65,7 +97,23 @@ impl Workspace {
             return Vec::new();
         };
         let mut items = Vec::new();
-        if let Place::Project(_) = self.place {
+        if !self.palette_adding.is_empty() {
+            items.extend(
+                store
+                    .projects
+                    .iter()
+                    .filter(|p| self.place != Place::Project(p.id) && matches(&p.name))
+                    .map(|p| Item {
+                        icon: IconName::FolderClosed,
+                        label: p.name.clone().into(),
+                        detail: Some(
+                            format!("{} asset{}", p.assets, if p.assets == 1 { "" } else { "s" })
+                                .into(),
+                        ),
+                        choice: Choice::AddTo(p.id, p.name.clone().into()),
+                    }),
+            );
+        } else if let Place::Project(_) = self.place {
             if matches("Overview") {
                 items.push(Item {
                     icon: IconName::LayoutDashboard,
@@ -87,45 +135,47 @@ impl Workspace {
                     }),
             );
         }
-        items.extend(
-            [
-                (IconName::FolderClosed, "Projects", Choice::Home),
-                (
-                    IconName::LayoutDashboard,
-                    "All assets",
-                    Choice::Place(LibraryView::All),
-                ),
-                (
-                    IconName::Inbox,
-                    "Unassigned",
-                    Choice::Place(LibraryView::Unassigned),
-                ),
-                (IconName::Delete, "Trash", Choice::Place(LibraryView::Trash)),
-            ]
-            .into_iter()
-            .filter(|(_, label, _)| matches(label))
-            .map(|(icon, label, choice)| Item {
-                icon,
-                label: label.into(),
-                detail: Some("Home".into()),
-                choice,
-            }),
-        );
-        items.extend(
-            store
-                .projects
-                .iter()
-                .filter(|p| matches(&p.name))
-                .map(|p| Item {
-                    icon: IconName::FolderClosed,
-                    label: p.name.clone().into(),
-                    detail: Some(
-                        format!("{} asset{}", p.assets, if p.assets == 1 { "" } else { "s" })
-                            .into(),
+        if self.palette_adding.is_empty() {
+            items.extend(
+                [
+                    (IconName::FolderClosed, "Projects", Choice::Home),
+                    (
+                        IconName::LayoutDashboard,
+                        "All assets",
+                        Choice::Place(LibraryView::All),
                     ),
-                    choice: Choice::Enter(p.id),
+                    (
+                        IconName::Inbox,
+                        "Unassigned",
+                        Choice::Place(LibraryView::Unassigned),
+                    ),
+                    (IconName::Delete, "Trash", Choice::Place(LibraryView::Trash)),
+                ]
+                .into_iter()
+                .filter(|(_, label, _)| matches(label))
+                .map(|(icon, label, choice)| Item {
+                    icon,
+                    label: label.into(),
+                    detail: Some("Home".into()),
+                    choice,
                 }),
-        );
+            );
+            items.extend(
+                store
+                    .projects
+                    .iter()
+                    .filter(|p| matches(&p.name))
+                    .map(|p| Item {
+                        icon: IconName::FolderClosed,
+                        label: p.name.clone().into(),
+                        detail: Some(
+                            format!("{} asset{}", p.assets, if p.assets == 1 { "" } else { "s" })
+                                .into(),
+                        ),
+                        choice: Choice::Enter(p.id),
+                    }),
+            );
+        }
         let exact = store
             .projects
             .iter()
@@ -159,8 +209,20 @@ impl Workspace {
             }
             Choice::Enter(id) => self.enter_project(id, window, cx),
             Choice::Open(open) => self.open_item(open, window, cx),
-            Choice::NewProject => self.open_new_project(window, cx),
+            Choice::AddTo(project, name) => {
+                let ids = std::mem::take(&mut self.palette_adding);
+                self.change(window, cx, |store| {
+                    store.service.library.add_to_project(project, &ids)
+                });
+                self.added_notice(ids.len(), &name, window, cx);
+            }
+            Choice::NewProject => {
+                let ids = std::mem::take(&mut self.palette_adding);
+                self.open_new_project(window, cx);
+                self.pending_add = ids;
+            }
             Choice::Create(name) => {
+                self.pending_add = std::mem::take(&mut self.palette_adding);
                 self.new_project_name
                     .update(cx, |state, cx| state.set_value(name, window, cx));
                 self.create_project(window, cx);
@@ -260,6 +322,17 @@ impl Workspace {
                                     cx.notify();
                                 },
                             ))
+                            .when(!self.palette_adding.is_empty(), |el| {
+                                let n = self.palette_adding.len();
+                                el.child(
+                                    div().px_4().pt_3().text_xs().text_color(rgb(MUTED)).child(
+                                        format!(
+                                            "Add {n} asset{} to a project",
+                                            if n == 1 { "" } else { "s" }
+                                        ),
+                                    ),
+                                )
+                            })
                             .child(
                                 div()
                                     .px_2()
