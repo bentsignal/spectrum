@@ -85,7 +85,7 @@ Before rebuilding whole editors, make a dummy component page with sliders,
 buttons, labels, and other proposed controls. Review and revise it with the user
 to agree on appearance and interaction, then reuse the approved components.
 Also review rough navigation/layout mockups. The user chose a separate GPUI demo;
-its first build is delivered and awaiting visual feedback. See [handoff](handoff.md).
+the user reviewed its first build and a revision is awaiting review. See [handoff](handoff.md).
 
 Agree on behavior, then prepare and test the engine and CLI before connecting
 new production UI to those operations. Build GPUI incrementally. Add video,
@@ -103,6 +103,25 @@ GPUI, using the framework intended for the finished app. Do not start a browser
 prototype or a full workspace before that controls page. The separate demo now coexists with the current app. Preserve the existing
 working editors during the transition. The controls page is not approval to replace those editors.
 
+## First demo review
+
+After the first GPUI demo, the user said GPUI was the right call. They liked the
+stock sliders, switches, buttons, and icons, which looked far more modern than
+the egui app. Their requested changes:
+
+- The theme sat between dark and middle gray. Move closer to black, a dark
+  gray-black rather than pure black.
+- The macOS close, minimize, and zoom buttons felt cramped, and the "Spectrum"
+  heading under them looked odd.
+- A GPT model wrote the first demo, and it showed. Remove filler copy and
+  decoration aggressively.
+- The sidebar is not only navigation. It holds most controls, and the main area
+  shows assets, the canvas, or future video tracks and preview.
+- Dropdowns are acceptable, but items need a small gap. Hovering the item above
+  the selected one made the highlights touch.
+- The stock color picker will not work. Spectrum needs a full color selector;
+  the user is unsure whether to build it now.
+
 ## Browser deployment research
 
 The user subsequently requested a performance comparison before the GPUI work
@@ -117,4 +136,4 @@ The supplied ChatGPT desktop screenshot establishes a neutral dark gray directio
 Use spacious layouts, soft rounding, restrained borders, and simple controls.
 Avoid strong accent colors and decorative personality so varied creative work
 looks at home. The screenshot is a style reference, not a request to copy its
-horizontal bars or chat layout. See [controls demo](../../tasks/gpui-controls-demo.md).
+horizontal bars or chat layout. See [demo revision](../../tasks/gpui-demo-design-pass.md).

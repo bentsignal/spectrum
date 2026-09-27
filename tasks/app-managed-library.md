@@ -19,7 +19,7 @@ See Git for implementation and validation history.
 
 - [Workflow design](../docs/design/workflow.md) records the user's project, asset,
   shared/local editing, sidebar, keyboard, and component-page preferences.
-  The user chose GPUI. See the [controls demo](gpui-controls-demo.md); project/import
+  The user chose GPUI. See the [demo revision](gpui-demo-design-pass.md); project/import
   workflows follow visual approval. Browser use is optional.
   Prepare engine/CLI behavior, then build the agreed GPUI interface gradually.
 - Finish library removal/restore and relocation semantics and retire catalog/file

@@ -8,21 +8,21 @@ or mutates the Spectrum library. Browser support is not a requirement.
 nix develop -c cargo run --release -p spectrum-demo --locked
 ```
 
-Review Controls, Adjustments, Assets, and Layers in the sidebar. Try typing,
-opening the blend menu, dragging sliders, toggling switches and layer visibility,
-selecting cards, and moving the sidebar to either edge. Use Reset demo to restore
-the starting state. Command+Q on Mac or Control+Q quits.
+The window is a mock workspace with sample assets. The sidebar holds the
+controls for the current mode, and the main area shows the work. Switch modes
+with the segmented control or Command+1, 2, and 3 (Control on Linux and
+Windows). These shortcuts are trial bindings, not approved ones.
 
-## Control coverage
+| Mode | Sidebar | Main area |
+| --- | --- | --- |
+| Library | Project menu, import, search, kind filters, sort, thumbnail size | Asset grid |
+| Adjust | Light and color sliders, compare switch | Selected asset, optionally beside the original |
+| Canvas | Layers, blend mode, opacity, local or global edits | Sample canvas |
 
-| Existing controls | Preview location |
-| --- | --- |
-| Project/import/export buttons and disabled actions | Controls |
-| Names, checkboxes, switches, blend dropdown | Controls |
-| Image adjustment sliders and reset | Adjustments |
-| Library thumbnails, selection, empty state | Assets |
-| Layer list, visibility, opacity, blend and fill color | Layers |
-| Local/global editing choice | Layers |
+"New project…" in the project menu opens a dialog. Import adds a placeholder
+photo. Double-click an asset to open it in Adjust or Canvas. Adjustments carry
+into the canvas that places the photo. The panel button at the top of the
+sidebar moves it to the other edge.
 
 GPUI 0.2.2 and GPUI Component 0.5.1 are pinned. Spectrum owns its grayscale theme
 in `src/theme.rs`. Component supplies text editing and common control behavior;
