@@ -36,9 +36,9 @@ undecided timing. Do not restart framework research or start a browser build.
 
 ## Build to review
 
-Latest demo commit `bc6023e`:
-[CI run](https://github.com/bentsignal/spectrum/actions/runs/36336360384) and
-[signed Mac download](https://github.com/bentsignal/spectrum/actions/runs/36336360384/artifacts/10937636257).
+Latest demo commit `aec7a80`:
+[CI run](https://github.com/bentsignal/spectrum/actions/runs/36339177487) and
+[signed Mac download](https://github.com/bentsignal/spectrum/actions/runs/36339177487/artifacts/10938028492).
 Run locally with the command below. The first build's source commit was `775df6e`
 ([CI run](https://github.com/bentsignal/spectrum/actions/runs/36278142798)).
 Display name is Spectrum Preview; bundle ID is `com.bentsignal.spectrum.preview`.
