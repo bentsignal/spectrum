@@ -10,12 +10,12 @@ requirement.
 nix develop -c cargo run --release -p spectrum-demo --locked
 ```
 
-The app opens to Home. Its Projects mode lists projects as covers; its Assets
-mode shows the whole library with All assets, Unassigned, and Trash. Opening a
-project scopes everything to it: the main area shows the project overview, an
-image, or the sample canvas, and the sidebar shows one mode at a time. Modes are
-capabilities, offered only when they apply: Assets, Color, and Layers. The strip
-at the top of the sidebar shows the project and the mode buttons.
+The app opens to Home, with Projects (covers and New project) and Assets (the
+whole library with Import assets, All assets, Unassigned, and Trash) tabs.
+Opening a project scopes everything to it. Its overview shows the project's
+assets; opening an image or the sample canvas shows editing modes, one at a
+time: Color for images, Layers and Color for the canvas. The back button at the
+top of the sidebar goes up one level, from an item to the project, then Home.
 
 | Shortcut | Action |
 | --- | --- |

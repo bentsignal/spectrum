@@ -14,8 +14,8 @@ mod trash;
 mod workspace;
 
 use gpui::{
-    Action, App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions,
-    prelude::*, px, size,
+    App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, prelude::*,
+    px, size,
 };
 use gpui_component::Root;
 use gpui_component_assets::Assets;
@@ -35,18 +35,6 @@ gpui::actions!(
         ClearSelection
     ]
 );
-
-/// The action bound to the nth sidebar mode, for tooltips.
-pub fn mode_action(index: usize) -> Option<Box<dyn Action>> {
-    Some(match index {
-        0 => Box::new(Mode1),
-        1 => Box::new(Mode2),
-        2 => Box::new(Mode3),
-        3 => Box::new(Mode4),
-        4 => Box::new(Mode5),
-        _ => return None,
-    })
-}
 
 fn main() {
     if std::env::args().any(|arg| arg == "--version") {

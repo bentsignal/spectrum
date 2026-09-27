@@ -10,7 +10,6 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
-    tooltip::Tooltip,
 };
 use spectrum_library::{AssetId, ProjectId};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -261,9 +260,9 @@ impl Workspace {
     pub fn modes(&self) -> Vec<Mode> {
         match (self.place, self.open) {
             (Place::Home, _) => vec![Mode::Projects, Mode::Assets],
-            (_, Open::Overview) => vec![Mode::Assets],
-            (_, Open::Image(_)) => vec![Mode::Assets, Mode::Color],
-            (_, Open::Sample) => vec![Mode::Assets, Mode::Layers, Mode::Color],
+            (_, Open::Overview) => Vec::new(),
+            (_, Open::Image(_)) => vec![Mode::Color],
+            (_, Open::Sample) => vec![Mode::Layers, Mode::Color],
         }
     }
 
@@ -412,29 +411,43 @@ impl Workspace {
             }))
     }
 
-    /// The fixed strip: where you are, then one button per available mode.
+    /// Goes up one level: from an open item to the project, then to Home.
+    pub fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match (self.place, self.open) {
+            (Place::Project(_), Open::Overview) => self.go_home(Mode::Projects, window, cx),
+            (Place::Project(_), _) => self.open_item(Open::Overview, window, cx),
+            (Place::Home, _) => {}
+        }
+    }
+
+    /// The fixed strip: a back button inside projects, then the mode tabs.
     fn strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let modes = self.modes();
-        let project = match self.place {
-            Place::Project(id) => self
+        let back: Option<SharedString> = match (self.place, self.open) {
+            (Place::Home, _) => None,
+            (Place::Project(_), Open::Overview) => Some("Home".into()),
+            (Place::Project(id), _) => self
                 .store
                 .as_ref()
                 .ok()
                 .and_then(|s| s.project_name(id))
-                .map(|name| SharedString::from(name.to_string())),
-            Place::Home => None,
+                .map(|name| name.to_string().into()),
         };
+        let selected = modes.iter().position(|m| *m == self.mode).unwrap_or(0);
+        let view = cx.entity();
+        let tabs = modes.clone();
         div()
             .px_3()
             .pb_3()
             .flex()
             .flex_col()
             .gap_2()
-            .border_b_1()
-            .border_color(rgb(BORDER))
-            .children(project.map(|name| {
+            .when(back.is_some() || !modes.is_empty(), |el| {
+                el.border_b_1().border_color(rgb(BORDER))
+            })
+            .children(back.map(|label| {
                 div()
-                    .id("back-home")
+                    .id("back")
                     .h(px(30.))
                     .px_1()
                     .flex()
@@ -442,59 +455,30 @@ impl Workspace {
                     .gap_1p5()
                     .rounded_md()
                     .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .hover(|el| el.bg(rgb(HOVER)))
-                    .child(
-                        Icon::new(IconName::ChevronLeft)
-                            .small()
-                            .text_color(rgb(MUTED)),
-                    )
-                    .child(div().truncate().child(name))
-                    .tooltip(|window, cx| Tooltip::new("Back to Home").build(window, cx))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.go_home(Mode::Projects, window, cx)),
-                    )
+                    .text_color(rgb(MUTED))
+                    .hover(|el| el.bg(rgb(HOVER)).text_color(rgb(TEXT)))
+                    .child(Icon::new(IconName::ChevronLeft).small())
+                    .child(div().truncate().child(label))
+                    .on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))
             }))
-            .child(
-                div()
-                    .flex()
-                    .gap_1()
-                    .children(modes.into_iter().enumerate().map(|(index, mode)| {
-                        let selected = mode == self.mode;
-                        div()
-                            .id(("mode", index))
-                            .h(px(30.))
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(rgb(if selected { TEXT } else { MUTED }))
-                            .when(selected, |el| el.bg(rgb(SELECTED)))
-                            .when(!selected, |el| {
-                                el.hover(|el| el.bg(rgb(HOVER)).text_color(rgb(TEXT)))
-                            })
-                            .child(Icon::new(mode.icon()).small())
-                            .when(selected, |el| el.child(mode.label()))
-                            .tooltip(move |window, cx| {
-                                let action = crate::mode_action(index);
-                                Tooltip::new(mode.label())
-                                    .when_some(action, |t, action| t.action(action.as_ref(), None))
-                                    .build(window, cx)
-                            })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.set_mode(mode, window, cx)
-                            }))
-                    })),
-            )
+            .when(!modes.is_empty(), |el| {
+                el.child(crate::controls::segmented(
+                    "modes",
+                    modes.iter().map(|m| (Some(m.icon()), m.label())),
+                    selected,
+                    move |index, window, cx| {
+                        let mode = tabs[index];
+                        view.update(cx, |this, cx| this.set_mode(mode, window, cx));
+                    },
+                ))
+            })
     }
 
     fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match (self.place, self.mode) {
             (Place::Home, Mode::Projects) => self.projects_sidebar(cx).into_any_element(),
             (Place::Home, _) => self.library_sidebar(cx).into_any_element(),
-            (_, Mode::Assets) => self.project_sidebar(cx).into_any_element(),
+            (_, _) if self.open == Open::Overview => self.project_sidebar(cx).into_any_element(),
             (_, Mode::Color) if self.open == Open::Sample => {
                 self.sample_color_sidebar(cx).into_any_element()
             }
@@ -575,17 +559,26 @@ impl Workspace {
                 (_, Open::Image(id)) => (self.asset_name(id), "Image".into(), false),
                 (_, Open::Sample) => ("Spring poster".into(), "Sample canvas".into(), false),
             };
-        self.drag_area("main-header", cx)
-            .pl(px(if self.sidebar_right {
-                TRAFFIC_LIGHTS.max(24.)
-            } else {
-                24.
-            }))
+        // Only the title area moves the window, so controls here drag normally.
+        div()
+            .h(px(HEADER_HEIGHT))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
             .pr_6()
-            .gap_3()
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
-            .child(div().text_sm().text_color(rgb(FAINT)).child(detail))
-            .child(div().flex_1())
+            .child(
+                self.drag_area("main-header", cx)
+                    .flex_1()
+                    .min_w_0()
+                    .pl(px(if self.sidebar_right {
+                        TRAFFIC_LIGHTS.max(24.)
+                    } else {
+                        24.
+                    }))
+                    .gap_3()
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
+                    .child(div().text_sm().text_color(rgb(FAINT)).child(detail)),
+            )
             .when(grid, |el| el.child(self.grid_controls(cx)))
     }
 }

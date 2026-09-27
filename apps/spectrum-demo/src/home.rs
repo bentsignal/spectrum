@@ -23,7 +23,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_5()
-            .child(self.top_buttons(false, cx))
+            .child(self.new_project_button(cx))
             .child(
                 Input::new(&self.project_search)
                     .prefix(Icon::new(IconName::Search).small().text_color(rgb(MUTED)))

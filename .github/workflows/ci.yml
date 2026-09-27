@@ -46,6 +46,8 @@ jobs:
           - os: ubuntu-latest
             label: Linux
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - name: Install Linux GPUI dependencies
@@ -96,3 +98,21 @@ jobs:
           name: spectrum-preview-${{ matrix.label }}
           path: target/dist/
           if-no-files-found: error
+      # A fixed download link for reviewing main: releases/download/preview/<zip>.
+      - name: Publish signed Mac preview
+        if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.SPECTRUM_MACOS_SIGNING_ENABLED == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          file=target/dist/Spectrum-macos-notarized.zip
+          test -f "$file"
+          if ! gh release view preview >/dev/null 2>&1; then
+            gh release create preview --prerelease --target "$GITHUB_SHA" \
+              --title "Spectrum preview" --notes "Latest signed Mac preview from main."
+          fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/preview" \
+            -f sha="$GITHUB_SHA" -F force=true
+          gh release edit preview --notes "Latest signed Mac preview, built from $GITHUB_SHA."
+          gh release upload preview "$file" --clobber

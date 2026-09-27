@@ -96,10 +96,10 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Import assets and New project, side by side, with `primary` emphasized.
-    pub fn top_buttons(&self, import_first: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn import_button(&self, cx: &mut Context<Self>) -> Button {
         let importing = self.importing;
-        let import = Button::new("import")
+        Button::new("import")
+            .primary()
             .icon(IconName::Plus)
             .label(if importing > 0 {
                 format!("Importing {importing}…")
@@ -107,30 +107,22 @@ impl Workspace {
                 "Import assets".into()
             })
             .loading(importing > 0)
-            .flex_1()
-            .on_click(cx.listener(|this, _, window, cx| this.choose_import(window, cx)));
-        let project = Button::new("new-project")
-            .icon(IconName::FolderClosed)
+            .w_full()
+            .on_click(cx.listener(|this, _, window, cx| this.choose_import(window, cx)))
+    }
+
+    pub fn new_project_button(&self, cx: &mut Context<Self>) -> Button {
+        Button::new("new-project")
+            .primary()
+            .icon(IconName::Plus)
             .label("New project")
-            .flex_1()
-            .on_click(cx.listener(|this, _, window, cx| this.open_new_project(window, cx)));
-        let (import, project) = if import_first {
-            (import.primary(), project)
-        } else {
-            (import, project.primary())
-        };
-        div().flex().flex_col().gap_2().map(|el| {
-            if import_first {
-                el.child(import).child(project)
-            } else {
-                el.child(project).child(import)
-            }
-        })
+            .w_full()
+            .on_click(cx.listener(|this, _, window, cx| this.open_new_project(window, cx)))
     }
 
     /// Home's Assets mode: the whole library.
     pub fn library_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let buttons = self.top_buttons(true, cx).into_any_element();
+        let buttons = self.import_button(cx).into_any_element();
         let chips = self.kind_chips(cx).into_any_element();
         let place = |id: &'static str, icon, label: &'static str, view: LibraryView| {
             let selected = self.view == view;

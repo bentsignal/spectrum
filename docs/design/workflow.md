@@ -78,6 +78,10 @@ Command+1 to 9 switch sidebar modes. Command+K opens the search palette for
 projects, places, and assets. Do not bind Command+S: people press it by habit to
 save, and Spectrum saves automatically, so it should do nothing.
 
+Follow-up review: New project appears only in the Projects tab and Import assets
+only in the Assets tab, styled as the original segmented control. Inside a
+project the Home tabs disappear, and back goes up one level at a time.
+
 Asset grids center their block, support click, Shift-click ranges, Command-click
 toggles, drag-box selection, and Command+A, and apply right-click actions to the
 whole selection. Assets can be renamed.
