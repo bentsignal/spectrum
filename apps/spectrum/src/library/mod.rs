@@ -141,6 +141,52 @@ impl Service {
                 .collect()
         })
     }
+    /// Renames an image or canvas in its engine document and the index, so a
+    /// later scan keeps the new name.
+    pub fn rename(&mut self, id: AssetId, name: &str) -> Result<Asset> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("asset name cannot be empty");
+        }
+        let asset = self.library.get(id)?;
+        let path = self.library.path(&asset)?;
+        match asset.kind.as_str() {
+            "image" => {
+                let item = asset.item.context("image missing item")?;
+                live::image(
+                    &path,
+                    item,
+                    lumen_core::Command::RenamePhoto {
+                        id: item,
+                        name: name.into(),
+                    },
+                )?;
+            }
+            "canvas" => {
+                live::canvas(
+                    &path,
+                    vec![prism_core::Command::RenameDocument { name: name.into() }],
+                )?;
+            }
+            kind => bail!("renaming is not implemented for {kind}"),
+        }
+        self.library.register(&asset.kind, name, &path, asset.item)
+    }
+    /// Applies an adjustment patch to an image, through the desktop host when
+    /// it has the document open.
+    pub fn adjust(&self, id: AssetId, patch: lumen_core::AdjustmentPatch) -> Result<()> {
+        let asset = self.library.get(id)?;
+        if asset.kind != "image" {
+            bail!("expected image asset");
+        }
+        let item = asset.item.context("image missing item")?;
+        live::image(
+            &self.library.path(&asset)?,
+            item,
+            lumen_core::Command::Adjust { id: item, patch },
+        )?;
+        Ok(())
+    }
     pub fn create_canvas(&self, name: String, width: u32, height: u32) -> Result<Asset> {
         let path = self
             .library

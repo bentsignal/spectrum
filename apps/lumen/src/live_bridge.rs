@@ -103,6 +103,7 @@ impl LumenLiveAction {
 fn validate_photo_command(command: &Command, photo_id: u64) -> Result<()> {
     let command_photo = match command {
         Command::Adjust { id, .. }
+        | Command::RenamePhoto { id, .. }
         | Command::SetAdjustments { id, .. }
         | Command::Rotate { id, .. }
         | Command::FlipHorizontal { id }

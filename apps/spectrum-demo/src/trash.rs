@@ -1,7 +1,4 @@
-use crate::{
-    theme::*,
-    workspace::{LibraryView, Workspace},
-};
+use crate::{theme::*, workspace::Workspace};
 use gpui::{prelude::*, *};
 use gpui_component::{
     Icon, IconName, Sizable, WindowExt, button::ButtonVariant, dialog::DialogButtonProps,
@@ -10,27 +7,46 @@ use spectrum::library::Service;
 use spectrum_library::AssetId;
 
 impl Workspace {
-    /// Ask before moving an asset to the trash, listing the projects it is in.
-    pub fn confirm_delete(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
+    /// Ask before moving assets to the trash, listing every project they are in.
+    pub fn confirm_delete(
+        &mut self,
+        ids: Vec<AssetId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Ok(store) = &self.store else {
             return;
         };
-        let (name, usage) = match store
-            .service
-            .library
-            .get(id)
-            .and_then(|asset| Ok((asset.name, store.service.usage(id)?)))
-        {
-            Ok(found) => found,
-            Err(error) => return self.notify_error(error, window, cx),
+        let mut projects: Vec<(spectrum_library::ProjectId, SharedString)> = Vec::new();
+        let mut dependents: Vec<String> = Vec::new();
+        let mut name = String::new();
+        for id in &ids {
+            let found = store
+                .service
+                .library
+                .get(*id)
+                .and_then(|asset| Ok((asset.name, store.service.usage(*id)?)));
+            let (asset, usage) = match found {
+                Ok(found) => found,
+                Err(error) => return self.notify_error(error, window, cx),
+            };
+            name = asset;
+            for project in usage.projects {
+                if !projects.iter().any(|(id, _)| *id == project.id) {
+                    projects.push((project.id, project.name.into()));
+                }
+            }
+            for dependent in usage.dependents {
+                if !dependents.contains(&dependent.name) {
+                    dependents.push(dependent.name);
+                }
+            }
+        }
+        let title = match ids.len() {
+            1 => format!("Delete \"{name}\"?"),
+            n => format!("Delete {n} assets?"),
         };
         let root = store.root.clone();
-        let projects: Vec<_> = usage
-            .projects
-            .iter()
-            .map(|p| (p.id, SharedString::from(p.name.clone())))
-            .collect();
-        let dependents: Vec<String> = usage.dependents.iter().map(|a| a.name.clone()).collect();
         let view = cx.entity();
         window.open_dialog(cx, move |dialog, _, _| {
             let rows = projects.iter().map(|(project, name)| {
@@ -46,22 +62,12 @@ impl Workspace {
                     .rounded_md()
                     .text_sm()
                     .hover(|el| el.bg(rgb(HOVER)))
-                    .child(
-                        Icon::new(IconName::FolderClosed)
-                            .small()
-                            .text_color(rgb(MUTED)),
-                    )
+                    .child(Icon::new(IconName::FolderClosed).small().text_color(rgb(MUTED)))
                     .child(div().flex_1().truncate().child(name.clone()))
-                    .child(
-                        Icon::new(IconName::ChevronRight)
-                            .xsmall()
-                            .text_color(rgb(FAINT)),
-                    )
+                    .child(Icon::new(IconName::ChevronRight).xsmall().text_color(rgb(FAINT)))
                     .on_click(move |_, window, cx| {
                         window.close_dialog(cx);
-                        view.update(cx, |this, cx| {
-                            this.show(LibraryView::Project(project), window, cx)
-                        })
+                        view.update(cx, |this, cx| this.enter_project(project, window, cx))
                     })
             });
             let count = projects.len();
@@ -71,14 +77,15 @@ impl Workspace {
                     "{one} uses it and will show a placeholder until you restore it."
                 )),
                 many => Some(format!(
-                    "{} canvases use it and will show a placeholder until you restore it.",
+                    "{} canvases use these and will show placeholders until you restore them.",
                     many.len()
                 )),
             };
             let view = view.clone();
             let root = root.clone();
+            let ids = ids.clone();
             dialog
-                .title(format!("Delete \"{name}\"?"))
+                .title(title.clone())
                 .w(px(420.))
                 .child(
                     div()
@@ -87,7 +94,7 @@ impl Workspace {
                         .gap_4()
                         .text_sm()
                         .child(div().text_color(rgb(MUTED)).child(
-                            "It moves to the trash. Spectrum deletes it permanently after 30 days.",
+                            "They move to the trash. Spectrum deletes them permanently after 30 days.",
                         ))
                         .when(count > 0, |el| {
                             el.child(
@@ -111,10 +118,7 @@ impl Workspace {
                                     ),
                             )
                         })
-                        .children(
-                            used.clone()
-                                .map(|text| div().text_color(rgb(MUTED)).child(text)),
-                        ),
+                        .children(used.clone().map(|text| div().text_color(rgb(MUTED)).child(text))),
                 )
                 .confirm()
                 .button_props(
@@ -124,14 +128,17 @@ impl Workspace {
                 )
                 .on_ok(move |_, window, cx| {
                     let root = root.clone();
+                    let ids = ids.clone();
                     view.update(cx, |_, cx| {
-                        // Deleting renders the image once to size its placeholder.
-                        let delete = cx
-                            .background_executor()
-                            .spawn(async move { Service::open(&root)?.delete(id).map(|_| ()) });
+                        // Deleting renders each image once to size its placeholder.
+                        let delete = cx.background_executor().spawn(async move {
+                            let mut service = Service::open(&root)?;
+                            ids.iter().try_for_each(|id| service.delete(*id).map(|_| ()))
+                        });
                         cx.spawn_in(window, async move |this, cx| {
                             let result = delete.await;
                             this.update_in(cx, |this, window, cx| {
+                                this.selection.clear();
                                 if let Err(error) = result.and_then(|_| this.reload()) {
                                     this.notify_error(error, window, cx);
                                 }

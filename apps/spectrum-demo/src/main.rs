@@ -1,8 +1,12 @@
 mod adjust;
 mod canvas;
+mod color;
 mod controls;
+mod grid;
+mod home;
 mod library;
 mod palette;
+mod project;
 mod samples;
 mod store;
 mod theme;
@@ -10,27 +14,58 @@ mod trash;
 mod workspace;
 
 use gpui::{
-    App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, prelude::*,
-    px, size,
+    Action, App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions,
+    prelude::*, px, size,
 };
 use gpui_component::Root;
 use gpui_component_assets::Assets;
-use workspace::{Mode, Workspace};
+use workspace::Workspace;
 
-gpui::actions!(spectrum_demo, [Quit, ShowLibrary, ShowAdjust, ShowCanvas]);
+gpui::actions!(
+    spectrum_demo,
+    [
+        Quit,
+        Mode1,
+        Mode2,
+        Mode3,
+        Mode4,
+        Mode5,
+        OpenPalette,
+        SelectAll,
+        ClearSelection
+    ]
+);
+
+/// The action bound to the nth sidebar mode, for tooltips.
+pub fn mode_action(index: usize) -> Option<Box<dyn Action>> {
+    Some(match index {
+        0 => Box::new(Mode1),
+        1 => Box::new(Mode2),
+        2 => Box::new(Mode3),
+        3 => Box::new(Mode4),
+        4 => Box::new(Mode5),
+        _ => return None,
+    })
+}
 
 fn main() {
     if std::env::args().any(|arg| arg == "--version") {
-        println!("Spectrum controls demo {}", env!("CARGO_PKG_VERSION"));
+        println!("Spectrum preview {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
+        // Command+S stays unbound: people press it by habit, and Spectrum saves as it goes.
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),
-            KeyBinding::new("secondary-1", ShowLibrary, None),
-            KeyBinding::new("secondary-2", ShowAdjust, None),
-            KeyBinding::new("secondary-3", ShowCanvas, None),
+            KeyBinding::new("secondary-1", Mode1, None),
+            KeyBinding::new("secondary-2", Mode2, None),
+            KeyBinding::new("secondary-3", Mode3, None),
+            KeyBinding::new("secondary-4", Mode4, None),
+            KeyBinding::new("secondary-5", Mode5, None),
+            KeyBinding::new("secondary-k", OpenPalette, None),
+            KeyBinding::new("secondary-a", SelectAll, None),
+            KeyBinding::new("escape", ClearSelection, None),
         ]);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -54,23 +89,11 @@ fn main() {
             },
             |window, cx| {
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
-                for (mode, bind) in [(Mode::Library, 0), (Mode::Adjust, 1), (Mode::Canvas, 2)] {
-                    let workspace = workspace.downgrade();
-                    let show = move |cx: &mut App| {
-                        workspace
-                            .update(cx, |this, cx| this.set_mode(mode, cx))
-                            .ok();
-                    };
-                    match bind {
-                        0 => cx.on_action(move |_: &ShowLibrary, cx| show(cx)),
-                        1 => cx.on_action(move |_: &ShowAdjust, cx| show(cx)),
-                        _ => cx.on_action(move |_: &ShowCanvas, cx| show(cx)),
-                    }
-                }
+                workspace.read(cx).focus_handle.focus(window);
                 cx.new(|cx| Root::new(workspace, window, cx))
             },
         )
-        .expect("could not open Spectrum controls demo");
+        .expect("could not open Spectrum");
         cx.activate(true);
     });
 }

@@ -645,6 +645,7 @@ fn command_count_for_photo(commands: &[Command], photo_id: u64) -> u32 {
         .iter()
         .filter(|command| match command {
             Command::Adjust { id, .. }
+            | Command::RenamePhoto { id, .. }
             | Command::SetAdjustments { id, .. }
             | Command::Rotate { id, .. }
             | Command::FlipHorizontal { id }

@@ -1,18 +1,22 @@
-//! A search palette for choosing library views and projects, centered over
-//! the content area so it never covers the sidebar.
+//! The Command+K palette for projects, places, and assets, centered over the
+//! content area so it never covers the sidebar.
 use crate::{
     theme::*,
-    workspace::{LibraryView, SIDEBAR_WIDTH, Workspace},
+    workspace::{LibraryView, Mode, Open, Place, SIDEBAR_WIDTH, Workspace},
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
     Icon, IconName, Sizable,
     input::{Input, InputEvent},
 };
+use spectrum_library::ProjectId;
 
 #[derive(Clone)]
 enum Choice {
-    View(LibraryView),
+    Home,
+    Place(LibraryView),
+    Enter(ProjectId),
+    Open(Open),
     NewProject,
     Create(String),
 }
@@ -40,6 +44,11 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Returns focus to the workspace so shortcuts keep working.
+    fn refocus(&self, window: &mut Window) {
+        self.focus_handle.focus(window);
+    }
+
     pub fn palette_input(&mut self, event: &InputEvent, _: &mut Window, cx: &mut Context<Self>) {
         if let InputEvent::Change = event {
             self.palette_index = 0;
@@ -47,65 +56,109 @@ impl Workspace {
         }
     }
 
-    /// Views and projects matching the query, then project creation.
+    /// The open project's items, then Home's places, then projects.
     fn palette_items(&self, cx: &App) -> Vec<Item> {
         let query = self.palette_query.read(cx).value().trim().to_string();
         let lower = query.to_lowercase();
         let matches = |label: &str| label.to_lowercase().contains(&lower);
-        let mut items: Vec<Item> = [
-            (IconName::LayoutDashboard, "All assets", LibraryView::All),
-            (IconName::Inbox, "Unassigned", LibraryView::Unassigned),
-            (IconName::Delete, "Trash", LibraryView::Trash),
-        ]
-        .into_iter()
-        .filter(|(_, label, _)| matches(label))
-        .map(|(icon, label, view)| Item {
-            icon,
-            label: label.into(),
-            detail: None,
-            choice: Choice::View(view),
-        })
-        .collect();
-        if let Ok(store) = &self.store {
+        let Ok(store) = &self.store else {
+            return Vec::new();
+        };
+        let mut items = Vec::new();
+        if let Place::Project(_) = self.place {
+            if matches("Overview") {
+                items.push(Item {
+                    icon: IconName::LayoutDashboard,
+                    label: "Overview".into(),
+                    detail: Some(self.view_name()),
+                    choice: Choice::Open(Open::Overview),
+                });
+            }
             items.extend(
                 store
-                    .projects
+                    .entries
                     .iter()
-                    .filter(|p| matches(&p.name))
-                    .map(|p| Item {
-                        icon: IconName::FolderClosed,
-                        label: p.name.clone().into(),
-                        detail: Some(format!("{}", p.assets).into()),
-                        choice: Choice::View(LibraryView::Project(p.id)),
+                    .filter(|e| e.asset.kind == "image" && matches(&e.asset.name))
+                    .map(|e| Item {
+                        icon: IconName::Frame,
+                        label: e.asset.name.clone().into(),
+                        detail: Some("Image".into()),
+                        choice: Choice::Open(Open::Image(e.asset.id)),
                     }),
             );
-            let exact = store
+        }
+        items.extend(
+            [
+                (IconName::FolderClosed, "Projects", Choice::Home),
+                (
+                    IconName::LayoutDashboard,
+                    "All assets",
+                    Choice::Place(LibraryView::All),
+                ),
+                (
+                    IconName::Inbox,
+                    "Unassigned",
+                    Choice::Place(LibraryView::Unassigned),
+                ),
+                (IconName::Delete, "Trash", Choice::Place(LibraryView::Trash)),
+            ]
+            .into_iter()
+            .filter(|(_, label, _)| matches(label))
+            .map(|(icon, label, choice)| Item {
+                icon,
+                label: label.into(),
+                detail: Some("Home".into()),
+                choice,
+            }),
+        );
+        items.extend(
+            store
                 .projects
                 .iter()
-                .any(|p| p.name.to_lowercase() == lower);
-            items.push(if query.is_empty() || exact {
-                Item {
-                    icon: IconName::Plus,
-                    label: "New project…".into(),
-                    detail: None,
-                    choice: Choice::NewProject,
-                }
-            } else {
-                Item {
-                    icon: IconName::Plus,
-                    label: format!("Create project \"{query}\"").into(),
-                    detail: None,
-                    choice: Choice::Create(query.clone()),
-                }
-            });
-        }
+                .filter(|p| matches(&p.name))
+                .map(|p| Item {
+                    icon: IconName::FolderClosed,
+                    label: p.name.clone().into(),
+                    detail: Some(
+                        format!("{} asset{}", p.assets, if p.assets == 1 { "" } else { "s" })
+                            .into(),
+                    ),
+                    choice: Choice::Enter(p.id),
+                }),
+        );
+        let exact = store
+            .projects
+            .iter()
+            .any(|p| p.name.to_lowercase() == lower);
+        items.push(if query.is_empty() || exact {
+            Item {
+                icon: IconName::Plus,
+                label: "New project…".into(),
+                detail: None,
+                choice: Choice::NewProject,
+            }
+        } else {
+            Item {
+                icon: IconName::Plus,
+                label: format!("Create project \"{query}\"").into(),
+                detail: None,
+                choice: Choice::Create(query.clone()),
+            }
+        });
         items
     }
 
     fn choose(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
         self.close_palette(cx);
+        self.refocus(window);
         match choice {
-            Choice::View(view) => self.show(view, window, cx),
+            Choice::Home => self.go_home(Mode::Projects, window, cx),
+            Choice::Place(view) => {
+                self.go_home(Mode::Assets, window, cx);
+                self.show(view, window, cx);
+            }
+            Choice::Enter(id) => self.enter_project(id, window, cx),
+            Choice::Open(open) => self.open_item(open, window, cx),
             Choice::NewProject => self.open_new_project(window, cx),
             Choice::Create(name) => {
                 self.new_project_name
@@ -119,15 +172,6 @@ impl Workspace {
         let items = self.palette_items(cx);
         let count = items.len();
         let selected = self.palette_index.min(count.saturating_sub(1));
-        let fixed = items
-            .iter()
-            .take_while(|i| {
-                !matches!(
-                    i.choice,
-                    Choice::View(LibraryView::Project(_)) | Choice::NewProject | Choice::Create(_)
-                )
-            })
-            .count();
         let rows = items.into_iter().enumerate().map(|(index, item)| {
             let choice = item.choice.clone();
             div()
@@ -150,7 +194,6 @@ impl Workspace {
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.choose(choice.clone(), window, cx)),
                 )
-                .when(index + 1 == fixed && fixed < count, |el| el.mb_1())
         });
         let (left, right) = if self.sidebar_right {
             (0., SIDEBAR_WIDTH)
@@ -201,7 +244,10 @@ impl Workspace {
                                                 (selected + 1).min(count.saturating_sub(1))
                                         }
                                         "up" => this.palette_index = selected.saturating_sub(1),
-                                        "escape" => this.close_palette(cx),
+                                        "escape" => {
+                                            this.close_palette(cx);
+                                            this.refocus(window);
+                                        }
                                         "enter" => {
                                             let items = this.palette_items(cx);
                                             if let Some(item) = items.into_iter().nth(selected) {

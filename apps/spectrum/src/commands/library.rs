@@ -35,6 +35,8 @@ enum Domain {
         #[command(subcommand)]
         command: Canvas,
     },
+    /// Rename an image or canvas.
+    Rename { asset: AssetId, name: String },
     /// Move an asset to the trash for 30 days. Canvases that use it show a
     /// same-sized placeholder until it is restored.
     Delete { asset: AssetId },
@@ -125,6 +127,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
     service.scan()?;
     service.purge_expired()?;
     let value = match cli.command {
+        Domain::Rename { asset, name } => serde_json::to_value(service.rename(asset, &name)?)?,
         Domain::Delete { asset } => serde_json::to_value(service.delete(asset)?)?,
         Domain::Trash {
             command: Trash::List,

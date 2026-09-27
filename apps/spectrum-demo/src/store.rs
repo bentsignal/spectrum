@@ -2,7 +2,7 @@
 use crate::workspace::LibraryView;
 use anyhow::Result;
 use spectrum::library::{Service, default_root};
-use spectrum_library::{Asset, AssetId, Project};
+use spectrum_library::{Asset, AssetId, Project, ProjectId};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -28,6 +28,10 @@ pub struct Store {
     pub projects: Vec<Project>,
     pub entries: Vec<Entry>,
     pub thumbs: HashMap<AssetId, Thumb>,
+    /// Large renders for the open image, keyed by asset.
+    pub large: HashMap<AssetId, Thumb>,
+    /// Each project's most recently added asset, used as its cover.
+    pub covers: HashMap<ProjectId, AssetId>,
 }
 
 /// Files and folders are expanded to the image files inside them.
@@ -66,6 +70,8 @@ impl Store {
             projects: Vec::new(),
             entries: Vec::new(),
             thumbs: HashMap::new(),
+            large: HashMap::new(),
+            covers: HashMap::new(),
         })
     }
 
@@ -75,6 +81,14 @@ impl Store {
         self.service.scan()?;
         let library = &self.service.library;
         self.projects = library.projects()?;
+        self.covers = self
+            .projects
+            .iter()
+            .filter_map(|p| {
+                let first = library.project_assets(p.id).ok()?.into_iter().next()?;
+                Some((p.id, first.id))
+            })
+            .collect();
         let added: HashMap<AssetId, i64> = library
             .imports()?
             .into_iter()
@@ -120,7 +134,7 @@ impl Store {
         Ok(view)
     }
 
-    pub fn project_name(&self, id: spectrum_library::ProjectId) -> Option<&str> {
+    pub fn project_name(&self, id: ProjectId) -> Option<&str> {
         self.projects
             .iter()
             .find(|p| p.id == id)

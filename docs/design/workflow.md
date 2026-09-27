@@ -56,6 +56,32 @@ content area, not the whole window, and near the top. Sorting and the Images and
 Canvases toggles sit below. The separate View and Filter headings are gone. The
 user also suggested an import button in the projects view; its placement is open.
 
+### Home, projects, and sidebar modes (agreed 2026-09-27)
+
+The app opens to Home, outside any project. Home has two sidebar modes: Projects
+(a searchable project grid with New project) and Assets (the whole library: All
+assets, Unassigned, Trash, with Import assets). Opening a project enters its
+workspace, where everything is scoped to that project.
+
+Inside a project the main area shows one thing: the project overview grid, an
+image, or a canvas (later a video). The sidebar shows exactly one mode at a time,
+never assets and controls stacked together; the user dislikes the After Effects
+pattern of cramming panels vertically. Modes are capabilities, not asset types:
+Assets (the project's assets, used to open items), Color (color correction for
+whatever is selected: an image, a canvas layer, later a clip), Layers, and later
+Effects, Timeline, and Audio. Only modes that apply to the current selection
+appear. A compact fixed strip at the top of the sidebar shows the project and
+the mode icons. Opening an image selects Color as a default, but color tools
+must not be scoped to images.
+
+Command+1 to 9 switch sidebar modes. Command+K opens the search palette for
+projects, places, and assets. Do not bind Command+S: people press it by habit to
+save, and Spectrum saves automatically, so it should do nothing.
+
+Asset grids center their block, support click, Shift-click ranges, Command-click
+toggles, drag-box selection, and Command+A, and apply right-click actions to the
+whole selection. Assets can be renamed.
+
 ## Shared edits and placement edits
 
 The user agrees that editing the shared asset changes all references, while
@@ -100,8 +126,9 @@ is a proposal, not an approved layout. Keep the fixed area compact so it does
 not consume much sidebar height. The user is still unsure what should change
 with each mode.
 
-Keyboard access matters. The user suggested a switcher chord such as Command+S
-followed by a number. Their examples were Command+S then 2 to switch from asset
+Keyboard access matters. The user first suggested a switcher chord such as Command+S
+followed by a number; they later ruled out Command+S (see Home, projects, and
+sidebar modes). Their examples were Command+S then 2 to switch from asset
 management to composition controls, and Command+S then 3 for color correction.
 They also suggested direct Command+1 and Command+2 shortcuts. Preserve these
 examples through context compaction. They are not approved bindings; conflicts

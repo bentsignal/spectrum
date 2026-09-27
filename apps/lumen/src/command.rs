@@ -42,6 +42,11 @@ pub enum Command {
         id: u64,
         name: String,
     },
+    /// Rename one image. Names are trimmed and cannot be empty.
+    RenamePhoto {
+        id: u64,
+        name: String,
+    },
     Adjust {
         id: u64,
         patch: AdjustmentPatch,
@@ -625,6 +630,20 @@ impl Workspace {
                     "rename-batch",
                     format!("renamed batch {id}"),
                     vec![],
+                ))
+            }
+            Command::RenamePhoto { id, name } => {
+                let name = name.trim();
+                if name.is_empty() {
+                    bail!("image name cannot be empty");
+                }
+                self.project.photo(id)?;
+                self.record_undo();
+                self.project.photo_mut(id)?.name = name.to_owned();
+                Ok(CommandOutput::success(
+                    "rename-photo",
+                    format!("renamed photo {id}"),
+                    vec![id],
                 ))
             }
             Command::Adjust { id, patch } => {

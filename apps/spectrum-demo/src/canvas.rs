@@ -19,7 +19,7 @@ const BLENDS: [&str; 6] = [
     "Color",
 ];
 /// Index of the canvas asset and of the photo layer placed in it.
-const CANVAS: usize = 4;
+const CANVAS: usize = 1;
 const PHOTO_LAYER: usize = 1;
 
 impl Workspace {
@@ -135,11 +135,10 @@ impl Workspace {
                         .when(self.global, |el| {
                             el.child(
                                 Button::new("adjust-asset")
-                                    .label("Open in Adjust")
+                                    .label("Adjust color")
                                     .w_full()
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.select_asset(0, window, cx);
-                                        this.set_mode(Mode::Adjust, cx);
+                                        this.set_mode(Mode::Color, window, cx)
                                     })),
                             )
                         }),

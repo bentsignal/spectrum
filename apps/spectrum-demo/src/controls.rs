@@ -170,11 +170,6 @@ pub fn chip(id: &'static str, label: &'static str, on: bool) -> Stateful<Div> {
         .child(label)
 }
 
-/// A full-width button styled like a field, for choosers that open elsewhere.
-pub fn picker(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
-    field_box(div().id(id.into()), label.into(), false)
-}
-
 fn field_box(base: Stateful<Div>, label: SharedString, open: bool) -> Stateful<Div> {
     base.w_full()
         .h(px(34.))

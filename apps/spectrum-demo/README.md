@@ -1,32 +1,37 @@
 # Spectrum preview
 
 The GPUI application that will become Spectrum. The current editors remain in
-`apps/spectrum`. Library mode reads and changes the real Spectrum library through
+`apps/spectrum`. Home and projects read and change the real Spectrum library through
 the same engine as the `spectrum` CLI. Set `SPECTRUM_LIBRARY` to use a separate
-library. Adjust and Canvas still show sample content. Browser support is not a
+library. The canvas editor is still a sample. Browser support is not a
 requirement.
 
 ```sh
 nix develop -c cargo run --release -p spectrum-demo --locked
 ```
 
-The sidebar holds the controls for the current mode, and the main area shows the
-work. Switch modes with the segmented control or Command+1, 2, and 3 (Control on
-Linux and Windows). These shortcuts are trial bindings, not approved ones.
+The app opens to Home. Its Projects mode lists projects as covers; its Assets
+mode shows the whole library with All assets, Unassigned, and Trash. Opening a
+project scopes everything to it: the main area shows the project overview, an
+image, or the sample canvas, and the sidebar shows one mode at a time. Modes are
+capabilities, offered only when they apply: Assets, Color, and Layers. The strip
+at the top of the sidebar shows the project and the mode buttons.
 
-| Mode | Sidebar | Main area |
-| --- | --- | --- |
-| Library | Import, search, view, sort, kind toggles, thumbnail size | Your library |
-| Adjust | Light and color sliders, compare switch | Sample image, optionally beside the original |
-| Canvas | Layers, blend mode, opacity, local or global edits | Sample canvas |
+| Shortcut | Action |
+| --- | --- |
+| Command+1 to 5 | Switch to the nth sidebar mode |
+| Command+K | Go to a project, place, or asset |
+| Command+A, Esc | Select all assets, clear the selection |
 
-Import opens a file picker that accepts images and folders; dropping files on the
-main area also imports them. Imports go into the project being viewed, or stay
-unassigned. Thumbnails render in the background. The view button opens a search
-palette over the content area for All assets, Unassigned, Trash, and projects;
-typing a new name offers to create that project. Right-click an asset to add it
-to a project, remove it from the current one, delete it, or restore it from the
-trash. Delete asks for confirmation and links to the asset's projects.
+Control replaces Command on Linux and Windows. Command+S is deliberately unbound.
+
+Import assets accepts images and folders from a file picker or by dropping them
+on the main area; inside a project, imports join it. Asset grids support click,
+Shift-click, Command-click, and drag-box selection. Right-click acts on the whole
+selection: rename, add to or remove from a project, delete, or restore. Opening
+an image in a project shows Color, whose sliders make real engine edits. The
+sample canvas shows Color acting on a selected layer. Canvases from the library
+cannot be opened here yet.
 
 GPUI 0.2.2 and GPUI Component 0.5.1 are pinned. Spectrum owns its grayscale theme
 in `src/theme.rs`. Component supplies text editing and common control behavior;

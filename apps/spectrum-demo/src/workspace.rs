@@ -1,31 +1,71 @@
 use crate::{
-    controls,
+    ClearSelection, Mode1, Mode2, Mode3, Mode4, Mode5, OpenPalette, SelectAll, color,
     samples::{self, Asset, Look},
     store::Store,
     theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    IconName, InteractiveElementExt, Root, Sizable,
+    Icon, IconName, InteractiveElementExt, Root, Sizable,
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
+    tooltip::Tooltip,
 };
 use spectrum_library::{AssetId, ProjectId};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 pub const SIDEBAR_WIDTH: f32 = 288.;
 pub const HEADER_HEIGHT: f32 = 52.;
 /// Room for the macOS window buttons at the top-left of the window.
 const TRAFFIC_LIGHTS: f32 = if cfg!(target_os = "macos") { 86. } else { 0. };
 
+/// Where the user is: Home, or inside one project.
 #[derive(Clone, Copy, PartialEq)]
-pub enum Mode {
-    Library,
-    Adjust,
-    Canvas,
+pub enum Place {
+    Home,
+    Project(ProjectId),
 }
 
-/// What the library grid shows.
+/// What fills the main area inside a project.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Open {
+    Overview,
+    Image(AssetId),
+    /// The sample canvas, until canvases are editable in this app.
+    Sample,
+}
+
+/// Sidebar modes are capabilities; only those that apply are offered.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Mode {
+    Projects,
+    Assets,
+    Color,
+    Layers,
+}
+
+impl Mode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Projects => "Projects",
+            Mode::Assets => "Assets",
+            Mode::Color => "Color",
+            Mode::Layers => "Layers",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Mode::Projects => IconName::FolderClosed,
+            Mode::Assets => IconName::LayoutDashboard,
+            Mode::Color => IconName::Sun,
+            Mode::Layers => IconName::GalleryVerticalEnd,
+        }
+    }
+}
+
+/// Which library assets a grid shows.
 #[derive(Clone, Copy, PartialEq)]
 pub enum LibraryView {
     All,
@@ -43,35 +83,49 @@ pub struct Layer {
 }
 
 pub struct Workspace {
+    pub place: Place,
     pub mode: Mode,
+    pub open: Open,
     pub sidebar_right: bool,
-    /// Sample assets for the Adjust and Canvas previews.
-    pub assets: Vec<Asset>,
     /// The real library, or why it could not open.
     pub store: Result<Store, SharedString>,
     pub view: LibraryView,
-    pub library_selected: Option<AssetId>,
+    pub selection: Vec<AssetId>,
+    pub anchor: Option<AssetId>,
+    /// Drag-box selection, in window coordinates: start and current point.
+    pub marquee: Option<(Point<Pixels>, Point<Pixels>)>,
+    /// Card bounds from the last frame, for drag-box selection.
+    pub card_bounds: Rc<RefCell<HashMap<AssetId, Bounds<Pixels>>>>,
+    pub grid_origin: Rc<RefCell<Point<Pixels>>>,
     pub palette_open: bool,
     pub palette_query: Entity<InputState>,
     pub palette_index: usize,
-    /// Files being imported in the background.
     pub importing: usize,
-    pub selected: usize,
     pub search: Entity<InputState>,
+    pub project_search: Entity<InputState>,
     pub new_project_name: Entity<InputState>,
+    pub rename_input: Entity<InputState>,
     pub show_images: bool,
     pub show_canvases: bool,
     pub sort: usize,
     pub thumbnail: Entity<SliderState>,
+    /// Real color correction sliders, in `color::FIELDS` order.
+    pub color: Vec<Entity<SliderState>>,
+    /// A color edit is running; `color_dirty` asks for another when it ends.
+    pub color_busy: bool,
+    pub color_dirty: bool,
+    /// Sample content for the sample canvas.
+    pub assets: Vec<Asset>,
     pub exposure: Entity<SliderState>,
     pub contrast: Entity<SliderState>,
     pub temperature: Entity<SliderState>,
     pub saturation: Entity<SliderState>,
-    pub compare: bool,
     pub layers: Vec<Layer>,
     pub layer: usize,
     pub opacity: Entity<SliderState>,
     pub global: bool,
+    /// Keeps keyboard shortcuts working when no field has focus.
+    pub focus_handle: FocusHandle,
     dragging: bool,
     /// Frames left to re-render after a layout change. GPUI Component sliders
     /// position their thumbs from the previous frame's bounds.
@@ -79,7 +133,7 @@ pub struct Workspace {
     _subscriptions: Vec<Subscription>,
 }
 
-fn slider(
+pub fn slider(
     cx: &mut Context<Workspace>,
     min: f32,
     max: f32,
@@ -98,23 +152,31 @@ fn slider(
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let assets = samples::library();
-        let palette_query =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search projects and views"));
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
-        let new_project_name = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
+        let mut input = |placeholder: &'static str, cx: &mut Context<Self>| {
+            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
+        };
+        let search = input("Search assets", cx);
+        let project_search = input("Search projects", cx);
+        let palette_query = input("Go to a project, asset, or place", cx);
+        let new_project_name = input("Project name", cx);
+        let rename_input = input("Name", cx);
         let thumbnail = slider(cx, 140., 280., 1., 196.);
         let exposure = slider(cx, -2., 2., 0.05, 0.);
         let contrast = slider(cx, -100., 100., 1., 0.);
         let temperature = slider(cx, -100., 100., 1., 0.);
         let saturation = slider(cx, -100., 100., 1., 0.);
         let opacity = slider(cx, 0., 100., 1., 100.);
+        let color: Vec<_> = color::FIELDS
+            .iter()
+            .map(|field| slider(cx, field.min, field.max, field.step, 0.))
+            .collect();
         let mut subscriptions = vec![
             cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.subscribe(&project_search, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.subscribe(&thumbnail, |_, _, _: &SliderEvent, cx| cx.notify()),
             cx.subscribe_in(&palette_query, window, |this, _, event, window, cx| {
                 this.palette_input(event, window, cx)
             }),
-            cx.subscribe(&thumbnail, |_, _, _: &SliderEvent, cx| cx.notify()),
             cx.subscribe(&opacity, |this, state, _: &SliderEvent, cx| {
                 let layer = this.layer;
                 this.layers[layer].opacity = state.read(cx).value().start();
@@ -123,49 +185,68 @@ impl Workspace {
         ];
         for state in [&exposure, &contrast, &temperature, &saturation] {
             subscriptions.push(cx.subscribe(state, |this, _, _: &SliderEvent, cx| {
-                let look = this.look(cx);
-                this.assets[this.selected].look = look;
+                let look = this.sample_look(cx);
+                if let Some(target) = this.sample_target() {
+                    this.assets[target].look = look;
+                }
                 cx.notify();
             }));
         }
-        let layer = |name, icon, blend| Layer {
+        for state in &color {
+            subscriptions.push(cx.subscribe_in(
+                state,
+                window,
+                |this, _, _: &SliderEvent, window, cx| this.schedule_color_edit(window, cx),
+            ));
+        }
+        let layer = |name, icon| Layer {
             name,
             icon,
             visible: true,
             opacity: 100.,
-            blend,
+            blend: 0,
         };
         let mut workspace = Self {
-            mode: Mode::Library,
+            place: Place::Home,
+            mode: Mode::Projects,
+            open: Open::Overview,
             sidebar_right: false,
-            assets,
             store: Store::open().map_err(|e| format!("{e:#}").into()),
             view: LibraryView::All,
-            library_selected: None,
+            selection: Vec::new(),
+            anchor: None,
+            marquee: None,
+            card_bounds: Default::default(),
+            grid_origin: Default::default(),
             palette_open: false,
             palette_query,
             palette_index: 0,
             importing: 0,
-            selected: 0,
             search,
+            project_search,
             new_project_name,
+            rename_input,
             show_images: true,
             show_canvases: true,
             sort: 0,
             thumbnail,
+            color,
+            color_busy: false,
+            color_dirty: false,
+            assets: samples::library(),
             exposure,
             contrast,
             temperature,
             saturation,
-            compare: false,
             layers: vec![
-                layer("Title", IconName::ALargeSmall, 0),
-                layer("Harbor at dusk", IconName::Frame, 0),
-                layer("Background", IconName::Frame, 0),
+                layer("Title", IconName::ALargeSmall),
+                layer("Harbor at dusk", IconName::Frame),
+                layer("Background", IconName::Frame),
             ],
             layer: 0,
             opacity,
             global: false,
+            focus_handle: cx.focus_handle(),
             dragging: false,
             settle: 1,
             _subscriptions: subscriptions,
@@ -176,14 +257,84 @@ impl Workspace {
         workspace
     }
 
-    pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+    /// Sidebar modes that apply to what is on screen, in shortcut order.
+    pub fn modes(&self) -> Vec<Mode> {
+        match (self.place, self.open) {
+            (Place::Home, _) => vec![Mode::Projects, Mode::Assets],
+            (_, Open::Overview) => vec![Mode::Assets],
+            (_, Open::Image(_)) => vec![Mode::Assets, Mode::Color],
+            (_, Open::Sample) => vec![Mode::Assets, Mode::Layers, Mode::Color],
+        }
+    }
+
+    pub fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.modes().contains(&mode) {
+            return;
+        }
         self.mode = mode;
         self.settle = 1;
+        if mode == Mode::Assets && self.place == Place::Home {
+            let view = match self.view {
+                LibraryView::Project(_) => LibraryView::All,
+                view => view,
+            };
+            self.show(view, window, cx);
+        }
         cx.notify();
     }
 
-    /// The look described by the adjustment sliders.
-    fn look(&self, cx: &App) -> Look {
+    /// Command+1 to 9: the nth mode offered.
+    pub fn nth_mode(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(mode) = self.modes().get(index).copied() {
+            self.set_mode(mode, window, cx);
+        }
+    }
+
+    pub fn go_home(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        self.place = Place::Home;
+        self.open = Open::Overview;
+        self.mode = mode;
+        self.settle = 1;
+        let view = match self.view {
+            LibraryView::Project(_) => LibraryView::All,
+            view => view,
+        };
+        self.show(view, window, cx);
+    }
+
+    pub fn enter_project(&mut self, id: ProjectId, window: &mut Window, cx: &mut Context<Self>) {
+        self.place = Place::Project(id);
+        self.open = Open::Overview;
+        self.mode = Mode::Assets;
+        self.settle = 1;
+        self.show(LibraryView::Project(id), window, cx);
+    }
+
+    /// Shows an item in the main area and picks the mode that fits it.
+    pub fn open_item(&mut self, open: Open, window: &mut Window, cx: &mut Context<Self>) {
+        self.open = open;
+        self.settle = 1;
+        self.mode = match open {
+            Open::Overview => Mode::Assets,
+            Open::Image(id) => {
+                self.load_color(id, window, cx);
+                Mode::Color
+            }
+            Open::Sample => Mode::Layers,
+        };
+        cx.notify();
+    }
+
+    /// The sample asset whose look the sample Color mode edits.
+    pub fn sample_target(&self) -> Option<usize> {
+        match self.layer {
+            1 => Some(0),
+            2 => Some(1),
+            _ => None,
+        }
+    }
+
+    fn sample_look(&self, cx: &App) -> Look {
         let value = |state: &Entity<SliderState>| state.read(cx).value().start();
         Look {
             exposure: value(&self.exposure),
@@ -193,30 +344,22 @@ impl Workspace {
         }
     }
 
-    /// Select an asset and load its look into the adjustment sliders.
-    pub fn select_asset(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.selected = index;
-        self.load_look(window, cx);
-        cx.notify();
-    }
-
-    pub fn load_look(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let look = self.assets[self.selected].look;
-        for (state, value) in [
-            (&self.exposure, look.exposure),
-            (&self.contrast, look.contrast),
-            (&self.temperature, look.temperature),
-            (&self.saturation, look.saturation),
-        ] {
-            state.update(cx, |state, cx| state.set_value(value, window, cx));
-        }
-    }
-
     pub fn select_layer(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.layer = index;
         let opacity = self.layers[index].opacity;
         self.opacity
             .update(cx, |state, cx| state.set_value(opacity, window, cx));
+        if let Some(target) = self.sample_target() {
+            let look = self.assets[target].look;
+            for (state, value) in [
+                (&self.exposure, look.exposure),
+                (&self.contrast, look.contrast),
+                (&self.temperature, look.temperature),
+                (&self.saturation, look.saturation),
+            ] {
+                state.update(cx, |state, cx| state.set_value(value, window, cx));
+            }
+        }
         cx.notify();
     }
 
@@ -228,8 +371,7 @@ impl Workspace {
         };
         match store.service.library.create_project(&name) {
             Ok(project) => {
-                self.mode = Mode::Library;
-                self.show(LibraryView::Project(project.id), window, cx);
+                self.enter_project(project.id, window, cx);
                 true
             }
             Err(error) => {
@@ -237,26 +379,6 @@ impl Workspace {
                 false
             }
         }
-    }
-
-    fn header_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("sidebar-side")
-            .ghost()
-            .small()
-            .icon(if self.sidebar_right {
-                IconName::PanelLeft
-            } else {
-                IconName::PanelRight
-            })
-            .tooltip(if self.sidebar_right {
-                "Move sidebar left"
-            } else {
-                "Move sidebar right"
-            })
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.sidebar_right = !this.sidebar_right;
-                cx.notify();
-            }))
     }
 
     /// A strip that moves the window when dragged, like a native title bar.
@@ -290,18 +412,94 @@ impl Workspace {
             }))
     }
 
+    /// The fixed strip: where you are, then one button per available mode.
+    fn strip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let modes = self.modes();
+        let project = match self.place {
+            Place::Project(id) => self
+                .store
+                .as_ref()
+                .ok()
+                .and_then(|s| s.project_name(id))
+                .map(|name| SharedString::from(name.to_string())),
+            Place::Home => None,
+        };
+        div()
+            .px_3()
+            .pb_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .children(project.map(|name| {
+                div()
+                    .id("back-home")
+                    .h(px(30.))
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .rounded_md()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .hover(|el| el.bg(rgb(HOVER)))
+                    .child(
+                        Icon::new(IconName::ChevronLeft)
+                            .small()
+                            .text_color(rgb(MUTED)),
+                    )
+                    .child(div().truncate().child(name))
+                    .tooltip(|window, cx| Tooltip::new("Back to Home").build(window, cx))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.go_home(Mode::Projects, window, cx)),
+                    )
+            }))
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .children(modes.into_iter().enumerate().map(|(index, mode)| {
+                        let selected = mode == self.mode;
+                        div()
+                            .id(("mode", index))
+                            .h(px(30.))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .rounded_md()
+                            .text_sm()
+                            .text_color(rgb(if selected { TEXT } else { MUTED }))
+                            .when(selected, |el| el.bg(rgb(SELECTED)))
+                            .when(!selected, |el| {
+                                el.hover(|el| el.bg(rgb(HOVER)).text_color(rgb(TEXT)))
+                            })
+                            .child(Icon::new(mode.icon()).small())
+                            .when(selected, |el| el.child(mode.label()))
+                            .tooltip(move |window, cx| {
+                                let action = crate::mode_action(index);
+                                Tooltip::new(mode.label())
+                                    .when_some(action, |t, action| t.action(action.as_ref(), None))
+                                    .build(window, cx)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.set_mode(mode, window, cx)
+                            }))
+                    })),
+            )
+    }
+
     fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let modes = [
-            (Some(IconName::LayoutDashboard), "Library"),
-            (Some(IconName::Sun), "Adjust"),
-            (Some(IconName::Frame), "Canvas"),
-        ];
-        let selected = self.mode as usize;
-        let view = cx.entity();
-        let content = match self.mode {
-            Mode::Library => self.library_sidebar(cx).into_any_element(),
-            Mode::Adjust => self.adjust_sidebar(cx).into_any_element(),
-            Mode::Canvas => self.canvas_sidebar(window, cx).into_any_element(),
+        let content = match (self.place, self.mode) {
+            (Place::Home, Mode::Projects) => self.projects_sidebar(cx).into_any_element(),
+            (Place::Home, _) => self.library_sidebar(cx).into_any_element(),
+            (_, Mode::Assets) => self.project_sidebar(cx).into_any_element(),
+            (_, Mode::Color) if self.open == Open::Sample => {
+                self.sample_color_sidebar(cx).into_any_element()
+            }
+            (_, Mode::Color) => self.color_sidebar(cx).into_any_element(),
+            _ => self.canvas_sidebar(window, cx).into_any_element(),
         };
         div()
             .w(px(SIDEBAR_WIDTH))
@@ -327,45 +525,56 @@ impl Workspace {
                     }))
                     .pr_3()
                     .justify_end()
-                    .child(self.header_actions(cx)),
+                    .child(
+                        Button::new("sidebar-side")
+                            .ghost()
+                            .small()
+                            .icon(if self.sidebar_right {
+                                IconName::PanelLeft
+                            } else {
+                                IconName::PanelRight
+                            })
+                            .tooltip(if self.sidebar_right {
+                                "Move sidebar left"
+                            } else {
+                                "Move sidebar right"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sidebar_right = !this.sidebar_right;
+                                cx.notify();
+                            })),
+                    ),
             )
-            .child(div().px_3().child(controls::segmented(
-                "mode",
-                modes,
-                selected,
-                move |index, _, cx| {
-                    let mode = [Mode::Library, Mode::Adjust, Mode::Canvas][index];
-                    view.update(cx, |this, cx| this.set_mode(mode, cx));
-                },
-            )))
+            .child(self.strip(cx))
             .child(
                 div()
-                    .id(("sidebar-body", selected))
+                    .id(SharedString::from(format!("sidebar-{}", self.mode.label())))
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     .px_4()
-                    .pt_5()
+                    .pt_4()
                     .pb_6()
                     .child(content),
             )
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (title, detail): (SharedString, SharedString) = match self.mode {
-            Mode::Library => {
-                let count = self.store.as_ref().map_or(0, |s| s.entries.len());
-                (
-                    self.view_name(),
-                    format!("{count} asset{}", if count == 1 { "" } else { "s" }).into(),
-                )
-            }
-            Mode::Adjust => {
-                let asset = &self.assets[self.selected];
-                (asset.name.clone(), asset.dimensions.into())
-            }
-            Mode::Canvas => ("Spring poster".into(), "1920 × 1080".into()),
+        let count = |n: usize, noun: &str| -> SharedString {
+            format!("{n} {noun}{}", if n == 1 { "" } else { "s" }).into()
         };
+        let entries = self.store.as_ref().map_or(0, |s| s.entries.len());
+        let (title, detail, grid): (SharedString, SharedString, bool) =
+            match (self.place, self.open) {
+                (Place::Home, _) if self.mode == Mode::Projects => {
+                    let n = self.store.as_ref().map_or(0, |s| s.projects.len());
+                    ("Projects".into(), count(n, "project"), false)
+                }
+                (Place::Home, _) => (self.view_name(), count(entries, "asset"), true),
+                (_, Open::Overview) => (self.view_name(), count(entries, "asset"), true),
+                (_, Open::Image(id)) => (self.asset_name(id), "Image".into(), false),
+                (_, Open::Sample) => ("Spring poster".into(), "Sample canvas".into(), false),
+            };
         self.drag_area("main-header", cx)
             .pl(px(if self.sidebar_right {
                 TRAFFIC_LIGHTS.max(24.)
@@ -376,6 +585,8 @@ impl Workspace {
             .gap_3()
             .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
             .child(div().text_sm().text_color(rgb(FAINT)).child(detail))
+            .child(div().flex_1())
+            .when(grid, |el| el.child(self.grid_controls(cx)))
     }
 }
 
@@ -390,13 +601,17 @@ impl Render for Workspace {
             f32::from(viewport.width) - SIDEBAR_WIDTH,
             f32::from(viewport.height) - HEADER_HEIGHT,
         );
-        if self.mode == Mode::Library {
-            self.request_thumbnails(cx);
-        }
-        let content = match self.mode {
-            Mode::Library => self.library(cx).into_any_element(),
-            Mode::Adjust => self.adjust(area).into_any_element(),
-            Mode::Canvas => self.canvas(area, cx).into_any_element(),
+        self.request_thumbnails(cx);
+        self.request_large(cx);
+        let content = match (self.place, self.open) {
+            (Place::Home, _) if self.mode == Mode::Projects => {
+                self.projects_grid(area.width, cx).into_any_element()
+            }
+            (Place::Home, _) | (_, Open::Overview) => {
+                self.asset_grid(area.width, cx).into_any_element()
+            }
+            (_, Open::Image(id)) => self.image_view(id, cx).into_any_element(),
+            (_, Open::Sample) => self.canvas(area, cx).into_any_element(),
         };
         let main = div()
             .flex_1()
@@ -406,18 +621,45 @@ impl Render for Workspace {
             .flex_col()
             .child(self.header(cx))
             .child(div().flex_1().min_h_0().child(content))
-            .when(self.mode == Mode::Library, |el| {
-                el.drag_over::<ExternalPaths>(|el, _, _, _| el.bg(rgb(0x141414)))
-                    .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                        this.import_paths(paths.paths().to_vec(), window, cx)
-                    }))
-            });
+            .drag_over::<ExternalPaths>(|el, _, _, _| el.bg(rgb(0x141414)))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.import_paths(paths.paths().to_vec(), window, cx)
+            }));
         let sidebar = self.sidebar(window, cx).into_any_element();
         div()
             .size_full()
             .flex()
             .bg(rgb(BACKGROUND))
             .text_color(rgb(TEXT))
+            .track_focus(&self.focus_handle)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if window.focused(cx).is_none() {
+                        this.focus_handle.focus(window);
+                    }
+                }),
+            )
+            .on_action(cx.listener(|this, _: &Mode1, window, cx| this.nth_mode(0, window, cx)))
+            .on_action(cx.listener(|this, _: &Mode2, window, cx| this.nth_mode(1, window, cx)))
+            .on_action(cx.listener(|this, _: &Mode3, window, cx| this.nth_mode(2, window, cx)))
+            .on_action(cx.listener(|this, _: &Mode4, window, cx| this.nth_mode(3, window, cx)))
+            .on_action(cx.listener(|this, _: &Mode5, window, cx| this.nth_mode(4, window, cx)))
+            .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
+                if this.palette_open {
+                    this.close_palette(cx)
+                } else {
+                    this.open_palette(window, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &ClearSelection, _, cx| {
+                if this.palette_open {
+                    this.close_palette(cx)
+                } else {
+                    this.clear_selection(cx)
+                }
+            }))
             .map(|el| {
                 if self.sidebar_right {
                     el.child(main).child(sidebar)

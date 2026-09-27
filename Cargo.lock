@@ -7427,6 +7427,7 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "lumen-photo",
+ "serde_json",
  "spectrum",
  "spectrum-library",
 ]

@@ -4,12 +4,9 @@ use gpui::{prelude::*, *};
 #[derive(Clone)]
 pub struct Asset {
     pub name: SharedString,
-    pub canvas: bool,
-    pub dimensions: &'static str,
     /// Sky and ground hues for the placeholder artwork.
     pub hues: (f32, f32),
     pub look: Look,
-    pub trashed: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -35,33 +32,17 @@ impl Look {
     }
 }
 
+/// The placed photo, then the canvas that places it.
 pub fn library() -> Vec<Asset> {
-    let photo = |name: &str, dimensions, hues| Asset {
+    let asset = |name: &str, hues| Asset {
         name: SharedString::from(name.to_string()),
-        canvas: false,
-        dimensions,
         hues,
         look: Look::default(),
-        trashed: false,
     };
-    let assets = vec![
-        photo("Harbor at dusk", "6000 × 4000", (0.62, 0.07)),
-        photo("Ridge line", "5472 × 3648", (0.55, 0.3)),
-        photo("Studio portrait", "4000 × 3000", (0.08, 0.02)),
-        photo("Market street", "6000 × 4000", (0.12, 0.58)),
-        Asset {
-            name: "Spring poster".into(),
-            canvas: true,
-            dimensions: "1920 × 1080",
-            hues: (0.95, 0.62),
-            look: Look::default(),
-            trashed: false,
-        },
-        photo("Field notes", "4032 × 3024", (0.25, 0.14)),
-        photo("Night market", "6000 × 4000", (0.7, 0.9)),
-        photo("Test roll", "4000 × 3000", (0.48, 0.1)),
-    ];
-    assets
+    vec![
+        asset("Harbor at dusk", (0.62, 0.07)),
+        asset("Spring poster", (0.95, 0.62)),
+    ]
 }
 
 /// Stand-in artwork for a photo: a sky gradient with a sun setting behind
@@ -107,36 +88,6 @@ pub fn photo(asset: &Asset, look: Look, width: f32) -> Div {
         )
 }
 
-/// Drawn where a canvas uses an image that is in the trash or deleted.
-fn missing(width: f32) -> Div {
-    div()
-        .w(px(width))
-        .h(px(width * 0.75))
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgb(0x262626))
-        .border_1()
-        .border_color(rgb(0x484848))
-        .text_size(px((width * 0.045).max(8.)))
-        .text_color(rgb(0x8c8c8c))
-        .child("Missing image")
-}
-
-/// Height over width for an asset's artwork.
-pub fn aspect(asset: &Asset) -> f32 {
-    if asset.canvas { 9. / 16. } else { 0.75 }
-}
-
-/// An asset's artwork at `width` with `look` applied. Canvases show `placed`.
-pub fn artwork(asset: &Asset, look: Look, placed: &Asset, width: f32) -> Div {
-    if asset.canvas {
-        composition(asset, look, placed, width, [true; 3], [1.; 3])
-    } else {
-        photo(asset, look, width)
-    }
-}
-
 /// The sample canvas. `visible` and `opacity` are ordered like the layer list:
 /// title, placed photo, background. `look` applies to the background.
 pub fn composition(
@@ -179,11 +130,7 @@ pub fn composition(
                     .opacity(opacity[1])
                     .rounded(px(width * 0.008))
                     .overflow_hidden()
-                    .child(if placed.trashed {
-                        missing(width * 0.46)
-                    } else {
-                        photo(placed, placed.look, width * 0.46)
-                    }),
+                    .child(photo(placed, placed.look, width * 0.46)),
             )
         })
         .when(visible[0], |el| {

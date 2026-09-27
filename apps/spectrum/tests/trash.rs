@@ -87,3 +87,33 @@ fn deleted_images_wait_in_trash_and_canvases_draw_placeholders() {
     let copy = ok(&root, &["copy", &canvas]);
     assert_eq!(copy["kind"], "canvas");
 }
+
+#[test]
+fn renamed_assets_keep_their_names_after_rescans() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("library");
+    let source = temp.path().join("IMG_0001.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([9, 9, 9, 255]))
+        .save(&source)
+        .unwrap();
+    let imported = ok(&root, &["images", "import", source.to_str().unwrap()]);
+    let image = imported["assets"][0]["id"].as_str().unwrap().to_string();
+    let canvas = ok(&root, &["canvas", "new", "Draft"]);
+    let canvas = canvas["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        ok(&root, &["rename", &image, "  Harbor at dusk "])["name"],
+        "Harbor at dusk"
+    );
+    assert_eq!(ok(&root, &["rename", &canvas, "Poster"])["name"], "Poster");
+    let names: Vec<String> = ok(&root, &["library"])["assets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"Harbor at dusk".to_string()));
+    assert!(names.contains(&"Poster".to_string()));
+    let item = imported["assets"][0]["item"].as_u64().unwrap().to_string();
+    let inspected = ok(&root, &["images", "--asset", &image, "get", &item]);
+    assert!(inspected.to_string().contains("Harbor at dusk"));
+}

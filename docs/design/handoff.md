@@ -29,8 +29,17 @@ app's Library mode now uses the real library through `spectrum::library::Service
 folder import, drag and drop, background thumbnails, the view palette, and the
 right-click actions. Adjust and Canvas still use sample data.
 
-Next, open real images in Adjust with engine adjustments, then placeholder
-replacement and the canvas editor on these engine commands, then migrate the editors
+The user then asked for Home and project levels. The agreed structure is in
+workflow preferences ("Home, projects, and sidebar modes"). The preview now opens
+to Home (Projects, Assets), enters projects, shows one sidebar mode at a time,
+and edits real images in Color through `Service::adjust`. Multi-select, drag-box
+selection, bulk actions, and rename (`lumen_core::Command::RenamePhoto`,
+`spectrum rename`) work. Command+1 to 5 and Command+K are handled on the
+workspace element; app-level action handlers cannot update the window that is
+dispatching the key.
+
+Next, gather feedback on this structure, then move the canvas editor to real
+canvases and placeholder replacement on these engine commands, then migrate the editors
 incrementally. A full color selector is future work with
 undecided timing. Do not restart framework research or start a browser build.
 
@@ -146,5 +155,5 @@ priority. Retain the working signing credentials and notarization flow.
 
 Commit completed changes on main, push, and verify the remote revision. Run the
 full required validation loop after code, packaging, or CI changes. Do not ask the
-user to perform checks that can be done on this machine. The next step is opening real
-images in Adjust.
+user to perform checks that can be done on this machine. The next step is feedback on the
+Home and project structure.
