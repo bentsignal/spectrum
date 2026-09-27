@@ -84,8 +84,8 @@ instruction to preserve the old UI does not constrain that design phase.
 Before rebuilding whole editors, make a dummy component page with sliders,
 buttons, labels, and other proposed controls. Review and revise it with the user
 to agree on appearance and interaction, then reuse the approved components.
-Also review rough navigation/layout mockups. Whether to prototype in the current
-framework or elsewhere is unresolved; no egui redesign has been approved.
+Also review rough navigation/layout mockups. The user chose a separate GPUI demo;
+its first build is delivered and awaiting visual feedback. See [handoff](handoff.md).
 
 Agree on behavior, then prepare and test the engine and CLI before connecting
 new production UI to those operations. Build GPUI incrementally. Add video,
@@ -100,9 +100,8 @@ tracking progress against the plan. After questioning the narrow local/global
 mockup, they chose GPUI and a page of controls to style together as the first
 implementation step. New project creation and asset import should follow in
 GPUI, using the framework intended for the finished app. Do not start a browser
-prototype or a full workspace before that controls page. First explain how GPUI
-can coexist with the current app; preserve the existing working editors during
-the transition. The controls page is not approval to replace those editors.
+prototype or a full workspace before that controls page. The separate demo now coexists with the current app. Preserve the existing
+working editors during the transition. The controls page is not approval to replace those editors.
 
 ## Browser deployment research
 

@@ -19,4 +19,4 @@ and automated Xvfb/lavapipe interactions passed, including text, dropdowns, slid
 dragging, visibility, scope, sidebar switching, resizing, and quit. All CI jobs passed.
 Build cleanup reclaimed 7 GiB of superseded debug binaries; target is 26 GiB.
 [CI and downloads](https://github.com/bentsignal/spectrum/actions/runs/36278142798).
-Mac signing, notarization, stapling, Gatekeeper, and archive contents verified.
+Mac signing, notarization, stapling, Gatekeeper, and archive contents verified. [Handoff](../docs/design/handoff.md).
