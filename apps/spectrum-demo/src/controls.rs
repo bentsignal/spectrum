@@ -76,8 +76,6 @@ pub fn segmented(
         }))
 }
 
-type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
-
 /// A full-width dropdown field. Opens a popup menu, whose items are spaced
 /// so hover and selection highlights never touch.
 #[derive(IntoElement)]
@@ -85,8 +83,6 @@ pub struct Field {
     base: Stateful<Div>,
     label: SharedString,
     open: bool,
-    action: Option<(SharedString, Handler)>,
-    split: Option<usize>,
 }
 
 impl Field {
@@ -95,25 +91,7 @@ impl Field {
             base: div().id(id.into()),
             label: label.into(),
             open: false,
-            action: None,
-            split: None,
         }
-    }
-
-    /// Add a command below the options, such as "New project…".
-    pub fn action(
-        mut self,
-        label: impl Into<SharedString>,
-        handler: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.action = Some((label.into(), Rc::new(handler)));
-        self
-    }
-
-    /// Draw a separator after the option at `index`.
-    pub fn split_after(mut self, index: usize) -> Self {
-        self.split = Some(index);
-        self
     }
 
     /// Attach a menu listing `options`. `selected` is read each time it opens.
@@ -124,32 +102,19 @@ impl Field {
         on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
         let on_select = Rc::new(on_select);
-        let action = self.action.clone();
-        let split = self.split;
         self.w_full().dropdown_menu(move |menu, _, cx| {
             let current = selected(cx);
-            let menu = options.iter().enumerate().fold(
+            options.iter().enumerate().fold(
                 menu.min_w(px(SIDEBAR_WIDTH - 33.)),
                 |menu: PopupMenu, (index, name)| {
                     let on_select = on_select.clone();
-                    let menu = menu.item(
+                    menu.item(
                         PopupMenuItem::new(name.clone())
                             .checked(index == current)
                             .on_click(move |_, window, cx| on_select(index, window, cx)),
-                    );
-                    if split == Some(index) {
-                        menu.separator()
-                    } else {
-                        menu
-                    }
+                    )
                 },
-            );
-            match action.clone() {
-                Some((label, handler)) => menu.separator().item(
-                    PopupMenuItem::new(label).on_click(move |_, window, cx| handler(window, cx)),
-                ),
-                None => menu,
-            }
+            )
         })
     }
 }
@@ -179,25 +144,60 @@ impl Selectable for Field {
 
 impl DropdownMenu for Field {}
 
+/// A toggle that fills its row share; on shows a raised surface.
+pub fn chip(id: &'static str, label: &'static str, on: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_1()
+        .h(px(30.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .border_1()
+        .text_sm()
+        .map(|el| {
+            if on {
+                el.bg(rgb(SELECTED))
+                    .border_color(rgb(0x3a3a3a))
+                    .text_color(rgb(TEXT))
+            } else {
+                el.border_color(rgb(0x262626))
+                    .text_color(rgb(FAINT))
+                    .hover(|el| el.text_color(rgb(MUTED)))
+            }
+        })
+        .child(label)
+}
+
+/// A full-width button styled like a field, for choosers that open elsewhere.
+pub fn picker(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    field_box(div().id(id.into()), label.into(), false)
+}
+
+fn field_box(base: Stateful<Div>, label: SharedString, open: bool) -> Stateful<Div> {
+    base.w_full()
+        .h(px(34.))
+        .px_3()
+        .flex()
+        .items_center()
+        .justify_between()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(if open { 0x444444 } else { 0x2e2e2e }))
+        .bg(rgb(SURFACE))
+        .text_sm()
+        .hover(|el| el.bg(rgb(HOVER)))
+        .child(div().truncate().child(label))
+        .child(
+            Icon::new(IconName::ChevronsUpDown)
+                .xsmall()
+                .text_color(rgb(MUTED)),
+        )
+}
+
 impl RenderOnce for Field {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        self.base
-            .h(px(34.))
-            .px_3()
-            .flex()
-            .items_center()
-            .justify_between()
-            .rounded_lg()
-            .border_1()
-            .border_color(rgb(if self.open { 0x444444 } else { 0x2e2e2e }))
-            .bg(rgb(SURFACE))
-            .text_sm()
-            .hover(|el| el.bg(rgb(HOVER)))
-            .child(self.label)
-            .child(
-                Icon::new(IconName::ChevronsUpDown)
-                    .xsmall()
-                    .text_color(rgb(MUTED)),
-            )
+        field_box(self.base, self.label, self.open)
     }
 }

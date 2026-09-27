@@ -47,6 +47,15 @@ Canvases that use a deleted image show a missing-image placeholder, so the user
 can restore or replace the image later. Replacing a placeholder with another
 image is not built yet.
 
+### Library sidebar and views (2026-09-27)
+
+The Library sidebar order is Import, asset search, then the view button. The view
+button keeps its field look but opens a search palette instead of a dropdown, so
+many projects stay easy to find. The palette sits horizontally centered in the
+content area, not the whole window, and near the top. Sorting and the Images and
+Canvases toggles sit below. The separate View and Filter headings are gone. The
+user also suggested an import button in the projects view; its placement is open.
+
 ## Shared edits and placement edits
 
 The user agrees that editing the shared asset changes all references, while

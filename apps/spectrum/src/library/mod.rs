@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 pub use spectrum_library::default_root;
 pub mod live;
+pub mod thumbnail;
 pub mod trash;
 pub fn actor() -> Actor {
     Actor {

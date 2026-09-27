@@ -23,7 +23,14 @@ trash (`spectrum delete`, `spectrum trash`), and same-sized canvas placeholders.
 Purging removes an image from its import document and deletes the document once
 empty. Engine revision caches outside the library are not yet cleaned up.
 
-Next, add a command to replace a placeholder's image, then build the GPUI library views on these engine commands, then migrate the editors
+The user then asked for real imports and a search palette for views. The GPUI
+app's Library mode now uses the real library through `spectrum::library::Service`
+(the demo depends on the `spectrum` crate until the egui GUI retires): file and
+folder import, drag and drop, background thumbnails, the view palette, and the
+right-click actions. Adjust and Canvas still use sample data.
+
+Next, open real images in Adjust with engine adjustments, then placeholder
+replacement and the canvas editor on these engine commands, then migrate the editors
 incrementally. A full color selector is future work with
 undecided timing. Do not restart framework research or start a browser build.
 
@@ -139,5 +146,5 @@ priority. Retain the working signing credentials and notarization flow.
 
 Commit completed changes on main, push, and verify the remote revision. Run the
 full required validation loop after code, packaging, or CI changes. Do not ask the
-user to perform checks that can be done on this machine. The next step is placeholder
-replacement, then the GPUI library views.
+user to perform checks that can be done on this machine. The next step is opening real
+images in Adjust.

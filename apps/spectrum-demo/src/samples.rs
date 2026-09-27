@@ -12,11 +12,6 @@ pub struct Asset {
     pub trashed: bool,
 }
 
-pub struct Project {
-    pub name: SharedString,
-    pub assets: Vec<usize>,
-}
-
 #[derive(Clone, Copy, Default, PartialEq)]
 pub struct Look {
     pub exposure: f32,
@@ -40,7 +35,7 @@ impl Look {
     }
 }
 
-pub fn library() -> (Vec<Asset>, Vec<Project>) {
+pub fn library() -> Vec<Asset> {
     let photo = |name: &str, dimensions, hues| Asset {
         name: SharedString::from(name.to_string()),
         canvas: false,
@@ -66,21 +61,7 @@ pub fn library() -> (Vec<Asset>, Vec<Project>) {
         photo("Night market", "6000 × 4000", (0.7, 0.9)),
         photo("Test roll", "4000 × 3000", (0.48, 0.1)),
     ];
-    let projects = vec![
-        Project {
-            name: "Spring campaign".into(),
-            assets: vec![0, 1, 3, 4],
-        },
-        Project {
-            name: "Portfolio".into(),
-            assets: vec![0, 2, 5],
-        },
-        Project {
-            name: "Archive".into(),
-            assets: vec![1, 2, 3, 5],
-        },
-    ];
-    (assets, projects)
+    assets
 }
 
 /// Stand-in artwork for a photo: a sky gradient with a sun setting behind
@@ -154,28 +135,6 @@ pub fn artwork(asset: &Asset, look: Look, placed: &Asset, width: f32) -> Div {
     } else {
         photo(asset, look, width)
     }
-}
-
-/// A library thumbnail with a 4:3 frame for every kind of asset.
-pub fn thumbnail(asset: &Asset, placed: &Asset, width: f32) -> Div {
-    if !asset.canvas {
-        return photo(asset, asset.look, width);
-    }
-    div()
-        .w(px(width))
-        .h(px(width * 0.75))
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgb(0x1c1c1c))
-        .child(composition(
-            asset,
-            asset.look,
-            placed,
-            width * 0.86,
-            [true; 3],
-            [1.; 3],
-        ))
 }
 
 /// The sample canvas. `visible` and `opacity` are ordered like the layer list:

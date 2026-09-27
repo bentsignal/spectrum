@@ -1,32 +1,32 @@
-# Spectrum controls preview
+# Spectrum preview
 
-A separate GPUI application for reviewing Spectrum's next design. The current
-editors remain in `apps/spectrum`. This app uses sample state only and never opens
-or mutates the Spectrum library. Browser support is not a requirement.
+The GPUI application that will become Spectrum. The current editors remain in
+`apps/spectrum`. Library mode reads and changes the real Spectrum library through
+the same engine as the `spectrum` CLI. Set `SPECTRUM_LIBRARY` to use a separate
+library. Adjust and Canvas still show sample content. Browser support is not a
+requirement.
 
 ```sh
 nix develop -c cargo run --release -p spectrum-demo --locked
 ```
 
-The window is a mock workspace with sample assets. The sidebar holds the
-controls for the current mode, and the main area shows the work. Switch modes
-with the segmented control or Command+1, 2, and 3 (Control on Linux and
-Windows). These shortcuts are trial bindings, not approved ones.
+The sidebar holds the controls for the current mode, and the main area shows the
+work. Switch modes with the segmented control or Command+1, 2, and 3 (Control on
+Linux and Windows). These shortcuts are trial bindings, not approved ones.
 
 | Mode | Sidebar | Main area |
 | --- | --- | --- |
-| Library | Project menu, import, search, kind filters, sort, thumbnail size | Asset grid |
-| Adjust | Light and color sliders, compare switch | Selected asset, optionally beside the original |
+| Library | Import, search, view, sort, kind toggles, thumbnail size | Your library |
+| Adjust | Light and color sliders, compare switch | Sample image, optionally beside the original |
 | Canvas | Layers, blend mode, opacity, local or global edits | Sample canvas |
 
-The View menu switches between All assets, Unassigned, and projects;
-"New project…" opens a dialog. Import adds a placeholder image to the current
-project, or leaves it unassigned. Right-click an asset to add it to a project,
-remove it from the current one, or delete it. Delete asks for confirmation and
-lists the asset's projects. Deleted assets appear under Trash, where they can be
-restored; the canvas shows a placeholder meanwhile. Double-click an asset to open it in Adjust or Canvas. Adjustments carry
-into the canvas that places the photo. The panel button at the top of the
-sidebar moves it to the other edge.
+Import opens a file picker that accepts images and folders; dropping files on the
+main area also imports them. Imports go into the project being viewed, or stay
+unassigned. Thumbnails render in the background. The view button opens a search
+palette over the content area for All assets, Unassigned, Trash, and projects;
+typing a new name offers to create that project. Right-click an asset to add it
+to a project, remove it from the current one, delete it, or restore it from the
+trash. Delete asks for confirmation and links to the asset's projects.
 
 GPUI 0.2.2 and GPUI Component 0.5.1 are pinned. Spectrum owns its grayscale theme
 in `src/theme.rs`. Component supplies text editing and common control behavior;

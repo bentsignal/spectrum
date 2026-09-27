@@ -7422,9 +7422,13 @@ dependencies = [
 name = "spectrum-demo"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+ "lumen-photo",
+ "spectrum",
+ "spectrum-library",
 ]
 
 [[package]]

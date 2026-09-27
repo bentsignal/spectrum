@@ -1,6 +1,7 @@
 use crate::{
     controls,
-    samples::{self, Asset, Look, Project},
+    samples::{self, Asset, Look},
+    store::Store,
     theme::*,
 };
 use gpui::{prelude::*, *};
@@ -10,6 +11,7 @@ use gpui_component::{
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
 };
+use spectrum_library::{AssetId, ProjectId};
 
 pub const SIDEBAR_WIDTH: f32 = 288.;
 pub const HEADER_HEIGHT: f32 = 52.;
@@ -29,7 +31,7 @@ pub enum LibraryView {
     All,
     Unassigned,
     Trash,
-    Project(usize),
+    Project(ProjectId),
 }
 
 pub struct Layer {
@@ -43,9 +45,17 @@ pub struct Layer {
 pub struct Workspace {
     pub mode: Mode,
     pub sidebar_right: bool,
+    /// Sample assets for the Adjust and Canvas previews.
     pub assets: Vec<Asset>,
-    pub projects: Vec<Project>,
+    /// The real library, or why it could not open.
+    pub store: Result<Store, SharedString>,
     pub view: LibraryView,
+    pub library_selected: Option<AssetId>,
+    pub palette_open: bool,
+    pub palette_query: Entity<InputState>,
+    pub palette_index: usize,
+    /// Files being imported in the background.
+    pub importing: usize,
     pub selected: usize,
     pub search: Entity<InputState>,
     pub new_project_name: Entity<InputState>,
@@ -88,7 +98,9 @@ fn slider(
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (assets, projects) = samples::library();
+        let assets = samples::library();
+        let palette_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search projects and views"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
         let new_project_name = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
         let thumbnail = slider(cx, 140., 280., 1., 196.);
@@ -99,6 +111,9 @@ impl Workspace {
         let opacity = slider(cx, 0., 100., 1., 100.);
         let mut subscriptions = vec![
             cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()),
+            cx.subscribe_in(&palette_query, window, |this, _, event, window, cx| {
+                this.palette_input(event, window, cx)
+            }),
             cx.subscribe(&thumbnail, |_, _, _: &SliderEvent, cx| cx.notify()),
             cx.subscribe(&opacity, |this, state, _: &SliderEvent, cx| {
                 let layer = this.layer;
@@ -120,12 +135,17 @@ impl Workspace {
             opacity: 100.,
             blend,
         };
-        Self {
+        let mut workspace = Self {
             mode: Mode::Library,
             sidebar_right: false,
             assets,
-            projects,
-            view: LibraryView::Project(0),
+            store: Store::open().map_err(|e| format!("{e:#}").into()),
+            view: LibraryView::All,
+            library_selected: None,
+            palette_open: false,
+            palette_query,
+            palette_index: 0,
+            importing: 0,
             selected: 0,
             search,
             new_project_name,
@@ -149,7 +169,11 @@ impl Workspace {
             dragging: false,
             settle: 1,
             _subscriptions: subscriptions,
+        };
+        if let Err(error) = workspace.reload() {
+            workspace.store = Err(format!("{error:#}").into());
         }
+        workspace
     }
 
     pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
@@ -196,24 +220,23 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Add a sample project from the name field. Returns false if it is empty.
-    pub fn create_project(&mut self, cx: &mut Context<Self>) -> bool {
-        let name = self.new_project_name.read(cx).value().trim().to_string();
-        let taken = self
-            .projects
-            .iter()
-            .any(|p| p.name.to_lowercase() == name.to_lowercase());
-        if name.is_empty() || taken {
+    /// Create a project from the name field. Returns false to keep the dialog open.
+    pub fn create_project(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let name = self.new_project_name.read(cx).value().to_string();
+        let Ok(store) = &mut self.store else {
             return false;
+        };
+        match store.service.library.create_project(&name) {
+            Ok(project) => {
+                self.mode = Mode::Library;
+                self.show(LibraryView::Project(project.id), window, cx);
+                true
+            }
+            Err(error) => {
+                self.notify_error(error, window, cx);
+                false
+            }
         }
-        self.projects.push(Project {
-            name: name.into(),
-            assets: Vec::new(),
-        });
-        self.view = LibraryView::Project(self.projects.len() - 1);
-        self.mode = Mode::Library;
-        cx.notify();
-        true
     }
 
     fn header_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -331,7 +354,7 @@ impl Workspace {
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, detail): (SharedString, SharedString) = match self.mode {
             Mode::Library => {
-                let count = self.view_assets().len();
+                let count = self.store.as_ref().map_or(0, |s| s.entries.len());
                 (
                     self.view_name(),
                     format!("{count} asset{}", if count == 1 { "" } else { "s" }).into(),
@@ -367,6 +390,9 @@ impl Render for Workspace {
             f32::from(viewport.width) - SIDEBAR_WIDTH,
             f32::from(viewport.height) - HEADER_HEIGHT,
         );
+        if self.mode == Mode::Library {
+            self.request_thumbnails(cx);
+        }
         let content = match self.mode {
             Mode::Library => self.library(cx).into_any_element(),
             Mode::Adjust => self.adjust(area).into_any_element(),
@@ -379,7 +405,13 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .child(self.header(cx))
-            .child(div().flex_1().min_h_0().child(content));
+            .child(div().flex_1().min_h_0().child(content))
+            .when(self.mode == Mode::Library, |el| {
+                el.drag_over::<ExternalPaths>(|el, _, _, _| el.bg(rgb(0x141414)))
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                        this.import_paths(paths.paths().to_vec(), window, cx)
+                    }))
+            });
         let sidebar = self.sidebar(window, cx).into_any_element();
         div()
             .size_full()
@@ -393,6 +425,8 @@ impl Render for Workspace {
                     el.child(sidebar).child(main)
                 }
             })
+            .when(self.palette_open, |el| el.child(self.palette(cx)))
             .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
     }
 }
