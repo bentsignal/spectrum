@@ -145,12 +145,23 @@ impl Workspace {
                 store
                     .entries
                     .iter()
-                    .filter(|e| e.asset.kind == "image" && matches(&e.asset.name))
-                    .map(|e| Item {
-                        icon: IconName::Frame,
-                        label: e.asset.name.clone().into(),
-                        detail: Some("Image".into()),
-                        choice: Choice::Open(Open::Image(e.asset.id)),
+                    .filter(|e| matches(&e.asset.name))
+                    .map(|e| {
+                        let canvas = e.asset.kind == "canvas";
+                        Item {
+                            icon: if canvas {
+                                IconName::LayoutDashboard
+                            } else {
+                                IconName::Frame
+                            },
+                            label: e.asset.name.clone().into(),
+                            detail: Some(if canvas { "Canvas" } else { "Image" }.into()),
+                            choice: Choice::Open(if canvas {
+                                Open::Canvas(e.asset.id)
+                            } else {
+                                Open::Image(e.asset.id)
+                            }),
+                        }
                     }),
             );
         }

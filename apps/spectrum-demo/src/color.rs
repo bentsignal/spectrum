@@ -40,7 +40,47 @@ fn render_large(
     Ok((path, histogram))
 }
 
+/// What Color mode edits.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Target {
+    Image(AssetId),
+    /// A canvas layer's own adjustments.
+    Layer(u64),
+    /// The shared image behind a canvas layer, used everywhere it appears.
+    Shared(AssetId),
+}
+
 impl Workspace {
+    pub fn color_target(&self) -> Option<Target> {
+        match self.open {
+            Open::Image(id) => Some(Target::Image(id)),
+            Open::Canvas(_) => {
+                let canvas = self.canvas.as_ref()?;
+                let layer = self.selected_layer()?;
+                Some(match layer.image_asset {
+                    Some(asset) if canvas.global => Target::Shared(asset),
+                    _ => Target::Layer(layer.id),
+                })
+            }
+            Open::Overview => None,
+        }
+    }
+
+    /// Loads the selected layer's adjustments, or its image's when editing globally.
+    pub fn load_layer_color(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.color_target() {
+            Some(Target::Shared(asset)) => self.load_color(asset, window, cx),
+            Some(Target::Layer(_)) => {
+                self.adjust = self
+                    .selected_layer()
+                    .map(|l| l.adjustments.clone())
+                    .unwrap_or_default();
+                self.sync_color_sliders(window, cx);
+            }
+            _ => {}
+        }
+    }
+
     fn open_image(&self) -> Option<AssetId> {
         match self.open {
             Open::Image(id) => Some(id),
@@ -89,6 +129,18 @@ impl Workspace {
     /// meanwhile go out together when the running edit finishes.
     pub fn schedule_color_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.notify();
+        match self.color_target() {
+            Some(Target::Layer(id)) => {
+                let adjustments = self.adjust.clone();
+                return self.canvas_commands(
+                    vec![prism_core::Command::SetLayerAdjustments { id, adjustments }],
+                    window,
+                    cx,
+                );
+            }
+            Some(Target::Shared(asset)) => return self.edit_shared(asset, window, cx),
+            _ => {}
+        }
         if self.color_busy {
             self.color_dirty = true;
             return;
@@ -107,6 +159,43 @@ impl Workspace {
         self.finish_render(id, edit, window, cx);
     }
 
+    /// Edits the image behind a layer; every canvas using it picks up the change.
+    fn edit_shared(&mut self, asset: AssetId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.color_busy {
+            self.color_dirty = true;
+            return;
+        }
+        let Ok(store) = &self.store else {
+            return;
+        };
+        let (root, adjustments) = (store.root.clone(), self.adjust.clone());
+        self.color_busy = true;
+        self.color_dirty = false;
+        let edit = cx
+            .background_executor()
+            .spawn(async move { Service::open(&root)?.set_adjustments(asset, adjustments) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = edit.await;
+            this.update_in(cx, |this, window, cx| {
+                this.color_busy = false;
+                if let Err(error) = result {
+                    this.notify_error(error, window, cx);
+                }
+                if let Ok(store) = &mut this.store {
+                    store.thumbs.remove(&asset);
+                    store.large.remove(&asset);
+                }
+                // Re-render the canvas, which resolves the image's new look.
+                this.canvas_commands(Vec::new(), window, cx);
+                if this.color_dirty {
+                    this.schedule_color_edit(window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Steps the open image's history back or forward, then reloads it.
     pub fn step_color_history(
         &mut self,
@@ -114,6 +203,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(self.open, Open::Canvas(_)) {
+            let command = if forward {
+                prism_core::Command::Redo
+            } else {
+                prism_core::Command::Undo
+            };
+            return self.canvas_commands(vec![command], window, cx);
+        }
         let (Some(id), Ok(store)) = (self.open_image(), &self.store) else {
             return;
         };
@@ -273,7 +370,71 @@ impl Workspace {
         }
     }
 
+    /// Above the sections on a canvas: which layer, and for image layers
+    /// whether edits stay in this canvas or change the image everywhere.
+    fn layer_scope(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let Open::Canvas(_) = self.open else {
+            return None;
+        };
+        let layer = self.selected_layer()?;
+        let global = self.canvas.as_ref().is_some_and(|c| c.global);
+        let view = cx.entity();
+        let scope = layer.image_asset.map(|asset| {
+            let usage = self
+                .store
+                .as_ref()
+                .ok()
+                .and_then(|s| s.service.usage(asset).ok())
+                .map_or(0, |u| u.dependents.len());
+            let caption = if global {
+                format!(
+                    "Changes the image in every canvas that uses it ({usage}) and in the library."
+                )
+            } else {
+                "Changes apply only to this canvas.".to_string()
+            };
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(segmented(
+                    "scope",
+                    [(None, "Edit locally"), (None, "Edit globally")],
+                    global as usize,
+                    move |index, window, cx| {
+                        view.update(cx, |this, cx| {
+                            if let Some(canvas) = &mut this.canvas {
+                                canvas.global = index == 1;
+                            }
+                            this.load_layer_color(window, cx);
+                        })
+                    },
+                ))
+                .child(div().text_xs().text_color(rgb(MUTED)).child(caption))
+        });
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(MUTED))
+                        .child(format!("Editing {}", layer.name)),
+                )
+                .children(scope),
+        )
+    }
+
     pub fn color_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if matches!(self.open, Open::Canvas(_)) && self.selected_layer().is_none() {
+            return div()
+                .text_sm()
+                .text_color(rgb(FAINT))
+                .child("Select a layer to adjust its color.");
+        }
+        let scope = self.layer_scope(cx);
         let histogram = self
             .open_image()
             .and_then(|id| self.store.as_ref().ok()?.histograms.get(&id).cloned());
@@ -296,11 +457,14 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_5()
-            .child(histogram::view(
-                histogram,
-                crate::workspace::SIDEBAR_WIDTH - 32.,
-                72.,
-            ))
+            .children(scope)
+            .when(matches!(self.open, Open::Image(_)), |el| {
+                el.child(histogram::view(
+                    histogram,
+                    crate::workspace::SIDEBAR_WIDTH - 32.,
+                    72.,
+                ))
+            })
             .child(div().flex().flex_wrap().gap_1p5().children(chips))
             .child(body)
     }

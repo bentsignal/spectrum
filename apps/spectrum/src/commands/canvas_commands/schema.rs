@@ -230,6 +230,7 @@ fn command_examples() -> Vec<Value> {
         json!({"command": "move_guide", "id": 1, "position": 800.0}),
         json!({"command": "set_mask", "id": 1, "mask": {"enabled": true, "x": 0.1, "y": 0.1, "width": 0.8, "height": 0.8, "invert": false}}),
         json!({"command": "adjust_layer", "id": 1, "patch": {"exposure": 0.5, "contrast": 12.0}}),
+        json!({"command": "set_layer_adjustments", "id": 1, "adjustments": {"exposure": 0.5, "curves": {"master": {"points": [{"x": 0.0, "y": 0.0}, {"x": 0.5, "y": 0.6}, {"x": 1.0, "y": 1.0}]}}}}),
     ]
 }
 

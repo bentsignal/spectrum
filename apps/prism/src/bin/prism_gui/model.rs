@@ -174,6 +174,7 @@ pub(super) fn canvas_invalidation(command: &Command) -> CanvasInvalidation {
         | Command::SetLayerStyle { id, .. }
         | Command::RasterizeShape { id, .. }
         | Command::AdjustLayer { id, .. }
+        | Command::SetLayerAdjustments { id, .. }
         | Command::ResetLayerAdjustments { id }
         | Command::AddBrushStroke { id, .. }
         | Command::DeleteSelectedPixels { id } => CanvasInvalidation::Layer(*id),

@@ -3,8 +3,7 @@
 The GPUI application that will become Spectrum. The current editors remain in
 `apps/spectrum`. Home and projects read and change the real Spectrum library through
 the same engine as the `spectrum` CLI. Set `SPECTRUM_LIBRARY` to use a separate
-library. The canvas editor is still a sample. Browser support is not a
-requirement.
+library. Browser support is not a requirement.
 
 ```sh
 nix develop -c cargo run --release -p spectrum-demo --locked
@@ -14,8 +13,8 @@ The app opens to Home, with Projects (covers and New project) and Assets (the
 whole library with Import assets, All assets, Unassigned, and Trash) tabs.
 Click selects projects and assets; double-click opens them. Opening a project
 scopes everything to it. Its overview shows the project's
-assets; opening an image or the sample canvas shows editing modes, one at a
-time: Color for images, Layers and Color for the canvas. The back button at the
+assets; opening an image or a canvas shows its editing modes, one at a time:
+Color and Crop for images; Layers, Style, and Color for canvases. The back button at the
 top of the sidebar goes up one level, from an item to the project, then Home.
 
 | Shortcut | Action |
@@ -24,7 +23,7 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Command+K | Go to a project, place, or asset |
 | Command+A, Esc | Select all assets, clear the selection |
 | Command+= and Command+- | Grid zoom, also the − and + buttons above grids |
-| Command+Z, Command+Shift+Z | Undo and redo edits to the open image |
+| Command+Z, Command+Shift+Z | Undo and redo edits to the open image or canvas |
 
 Control replaces Command on Linux and Windows. Command+S is deliberately unbound.
 
@@ -39,9 +38,12 @@ an image in a project shows Color: a histogram above one section at a time
 (Light, Color, Curves, Mixer, Grading, Detail). Each change sends the image's
 whole adjustment model to the engine; Command+Z and Command+Shift+Z step its
 edit history. Crop mode shows the whole frame with a draggable crop box and
-aspect presets; its sidebar rotates, flips, and straightens. The
-sample canvas shows Color acting on a selected layer. Canvases from the library
-cannot be opened here yet.
+aspect presets; its sidebar rotates, flips, and straightens. Double-click a canvas, or use New canvas in a project, to open it. Canvases
+offer three modes: Layers (add text, boxes, circles, and project images;
+reorder, duplicate, delete, show and hide), Style (blending, opacity, text,
+fills, or the canvas background), and Color (the selected layer's adjustments;
+image layers choose Edit locally or Edit globally). Click a layer on the canvas
+to select it and drag to move it. Command+Z steps canvas history too.
 
 GPUI 0.2.2 and GPUI Component 0.5.1 are pinned. Spectrum owns its grayscale theme
 in `src/theme.rs`. Component supplies text editing and common control behavior;

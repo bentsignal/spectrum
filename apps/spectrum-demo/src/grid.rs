@@ -134,15 +134,10 @@ impl Workspace {
             return;
         };
         match (self.place, entry.asset.kind.as_str()) {
-            (Place::Project(_), "image") if entry.purge_after.is_none() => {
-                self.open_item(Open::Image(id), window, cx)
-            }
-            (Place::Project(_), _) => self.notify_error(
-                "Canvases open here once the canvas editor moves to this app.",
-                window,
-                cx,
-            ),
-            (Place::Home, _) => {}
+            (_, _) if entry.purge_after.is_some() => {}
+            (Place::Project(_), "image") => self.open_item(Open::Image(id), window, cx),
+            (Place::Project(_), "canvas") => self.open_item(Open::Canvas(id), window, cx),
+            _ => {}
         }
     }
 

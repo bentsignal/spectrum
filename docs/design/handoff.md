@@ -38,10 +38,20 @@ selection, bulk actions, and rename (`lumen_core::Command::RenamePhoto`,
 workspace element; app-level action handlers cannot update the window that is
 dispatching the key.
 
-Next, gather feedback on this structure, then move the canvas editor to real
-canvases and placeholder replacement on these engine commands, then migrate the editors
-incrementally. A full color selector is future work with
-undecided timing. Do not restart framework research or start a browser build.
+Overnight work on 2026-09-28 (user asked for parity while they slept):
+- Grid zoom uses − and + buttons; thumbnails are pre-cropped to 4:3 so GPUI's
+  rounding applies to what is visible.
+- Color mode: histogram, and Light, Color, Curves, Mixer, Grading, and Detail
+  sections, one at a time. It sends the whole `Adjustments` model through
+  `Service::set_adjustments`. Command+Z steps history (`Service::step_history`).
+- Crop mode for images: uncropped frame, draggable box, aspect presets, rotate,
+  flip, straighten.
+- Real canvases replace the sample: Layers, Style, and Color modes, drag to
+  move, placing project images, and Edit locally or globally for image layers.
+  Prism gained `Command::SetLayerAdjustments` so local edits cover curves too.
+
+Next: the user's review of this work; then canvas resizing and rotation
+handles, text typography, placeholder replacement (`LinkImage`), and export
 
 ## Build to review
 
@@ -156,5 +166,5 @@ priority. Retain the working signing credentials and notarization flow.
 
 Commit completed changes on main, push, and verify the remote revision. Run the
 full required validation loop after code, packaging, or CI changes. Do not ask the
-user to perform checks that can be done on this machine. The next step is feedback on the
-Home and project structure.
+user to perform checks that can be done on this machine. The next step is the user's review
+of the overnight parity work.

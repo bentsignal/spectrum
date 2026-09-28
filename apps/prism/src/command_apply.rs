@@ -844,6 +844,16 @@ fn apply_command_inner(
             layer.adjustments = adjustments;
             Ok(output("adjust_layer", "adjusted layer", vec![id]))
         }
+        Command::SetLayerAdjustments { id, adjustments } => {
+            let adjustments = adjustments.sanitized();
+            validate_adjustments(&adjustments)?;
+            document.layer_mut(id)?.adjustments = adjustments;
+            Ok(output(
+                "set_layer_adjustments",
+                "set layer adjustments",
+                vec![id],
+            ))
+        }
         Command::ResetLayerAdjustments { id } => {
             let layer = document.layer_mut(id)?;
             layer.adjustments = Adjustments::default();

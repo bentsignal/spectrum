@@ -1,9 +1,6 @@
 use crate::{
     ClearSelection, Mode1, Mode2, Mode3, Mode4, Mode5, OpenPalette, Redo, SelectAll, Undo, ZoomIn,
-    ZoomOut,
-    samples::{self, Asset, Look},
-    store::Store,
-    theme::*,
+    ZoomOut, store::Store, theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -32,8 +29,7 @@ pub enum Place {
 pub enum Open {
     Overview,
     Image(AssetId),
-    /// The sample canvas, until canvases are editable in this app.
-    Sample,
+    Canvas(AssetId),
 }
 
 /// Sidebar modes are capabilities; only those that apply are offered.
@@ -44,6 +40,7 @@ pub enum Mode {
     Color,
     Crop,
     Layers,
+    Style,
 }
 
 impl Mode {
@@ -53,6 +50,7 @@ impl Mode {
             Mode::Assets => "Assets",
             Mode::Color => "Color",
             Mode::Crop => "Crop",
+            Mode::Style => "Style",
             Mode::Layers => "Layers",
         }
     }
@@ -63,6 +61,7 @@ impl Mode {
             Mode::Assets => IconName::LayoutDashboard,
             Mode::Color => IconName::Sun,
             Mode::Crop => IconName::Maximize,
+            Mode::Style => IconName::Palette,
             Mode::Layers => IconName::GalleryVerticalEnd,
         }
     }
@@ -75,14 +74,6 @@ pub enum LibraryView {
     Unassigned,
     Trash,
     Project(ProjectId),
-}
-
-pub struct Layer {
-    pub name: &'static str,
-    pub icon: IconName,
-    pub visible: bool,
-    pub opacity: f32,
-    pub blend: usize,
 }
 
 pub struct Workspace {
@@ -113,6 +104,8 @@ pub struct Workspace {
     pub picker_query: Entity<InputState>,
     pub picker_selected: Vec<AssetId>,
     pub picker_anchor: Option<AssetId>,
+    /// The picker places images on the open canvas instead of adding assets.
+    pub picker_place: bool,
     pub picker_assets: Vec<spectrum_library::Asset>,
     /// Assets to add to the next project created.
     pub pending_add: Vec<AssetId>,
@@ -146,16 +139,13 @@ pub struct Workspace {
     /// A color edit is running; `color_dirty` asks for another when it ends.
     pub color_busy: bool,
     pub color_dirty: bool,
-    /// Sample content for the sample canvas.
-    pub assets: Vec<Asset>,
-    pub exposure: Entity<SliderState>,
-    pub contrast: Entity<SliderState>,
-    pub temperature: Entity<SliderState>,
-    pub saturation: Entity<SliderState>,
-    pub layers: Vec<Layer>,
-    pub layer: usize,
+    /// The open canvas, when one fills the main area.
+    pub canvas: Option<crate::canvas_state::CanvasState>,
+    /// Style controls for the selected layer.
     pub opacity: Entity<SliderState>,
-    pub global: bool,
+    pub text_input: Entity<InputState>,
+    pub text_size: Entity<SliderState>,
+    pub corner: Entity<SliderState>,
     /// Keeps keyboard shortcuts working when no field has focus.
     pub focus_handle: FocusHandle,
     /// The title strip a window drag started in, if any.
@@ -194,11 +184,10 @@ impl Workspace {
         let new_project_name = input("Project name", cx);
         let picker_query = input("Search your library", cx);
         let rename_input = input("Name", cx);
-        let exposure = slider(cx, -2., 2., 0.05, 0.);
-        let contrast = slider(cx, -100., 100., 1., 0.);
-        let temperature = slider(cx, -100., 100., 1., 0.);
-        let saturation = slider(cx, -100., 100., 1., 0.);
+        let text_input = input("Text", cx);
         let opacity = slider(cx, 0., 100., 1., 100.);
+        let text_size = slider(cx, 8., 400., 1., 48.);
+        let corner = slider(cx, 0., 200., 1., 0.);
         let straighten = slider(cx, -45., 45., 0.1, 0.);
         let color: Vec<_> = crate::color_fields::FIELDS
             .iter()
@@ -211,21 +200,35 @@ impl Workspace {
             cx.subscribe_in(&palette_query, window, |this, _, event, window, cx| {
                 this.palette_input(event, window, cx)
             }),
-            cx.subscribe(&opacity, |this, state, _: &SliderEvent, cx| {
-                let layer = this.layer;
-                this.layers[layer].opacity = state.read(cx).value().start();
-                cx.notify();
+            cx.subscribe_in(
+                &opacity,
+                window,
+                |this, state, _: &SliderEvent, window, cx| {
+                    let opacity = state.read(cx).value().start() / 100.;
+                    this.on_selected(window, cx, |id| prism_core::Command::SetOpacity {
+                        id,
+                        opacity,
+                    });
+                },
+            ),
+            cx.subscribe_in(
+                &text_size,
+                window,
+                |this, _, _: &SliderEvent, window, cx| this.update_text(None, window, cx),
+            ),
+            cx.subscribe_in(&corner, window, |this, _, _: &SliderEvent, window, cx| {
+                this.update_shape(None, window, cx)
             }),
+            cx.subscribe_in(
+                &text_input,
+                window,
+                |this, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        this.update_text(None, window, cx)
+                    }
+                },
+            ),
         ];
-        for state in [&exposure, &contrast, &temperature, &saturation] {
-            subscriptions.push(cx.subscribe(state, |this, _, _: &SliderEvent, cx| {
-                let look = this.sample_look(cx);
-                if let Some(target) = this.sample_target() {
-                    this.assets[target].look = look;
-                }
-                cx.notify();
-            }));
-        }
         subscriptions.push(cx.subscribe_in(
             &straighten,
             window,
@@ -244,13 +247,6 @@ impl Workspace {
                 },
             ));
         }
-        let layer = |name, icon| Layer {
-            name,
-            icon,
-            visible: true,
-            opacity: 100.,
-            blend: 0,
-        };
         let mut workspace = Self {
             place: Place::Home,
             mode: Mode::Projects,
@@ -276,6 +272,7 @@ impl Workspace {
             picker_query,
             picker_selected: Vec::new(),
             picker_anchor: None,
+            picker_place: false,
             picker_assets: Vec::new(),
             importing: 0,
             import_token: 0,
@@ -303,19 +300,11 @@ impl Workspace {
             image_bounds: Default::default(),
             color_busy: false,
             color_dirty: false,
-            assets: samples::library(),
-            exposure,
-            contrast,
-            temperature,
-            saturation,
-            layers: vec![
-                layer("Title", IconName::ALargeSmall),
-                layer("Harbor at dusk", IconName::Frame),
-                layer("Background", IconName::Frame),
-            ],
-            layer: 0,
+            canvas: None,
             opacity,
-            global: false,
+            text_input,
+            text_size,
+            corner,
             focus_handle: cx.focus_handle(),
             dragging: None,
             settle: 1,
@@ -333,7 +322,7 @@ impl Workspace {
             (Place::Home, _) => vec![Mode::Projects, Mode::Assets],
             (_, Open::Overview) => Vec::new(),
             (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop],
-            (_, Open::Sample) => vec![Mode::Layers, Mode::Color],
+            (_, Open::Canvas(_)) => vec![Mode::Layers, Mode::Style, Mode::Color],
         }
     }
 
@@ -342,6 +331,9 @@ impl Workspace {
             return;
         }
         self.mode = mode;
+        if mode == Mode::Color && matches!(self.open, Open::Canvas(_)) {
+            self.load_layer_color(window, cx);
+        }
         self.settle = 1;
         if mode == Mode::Assets && self.place == Place::Home {
             let view = match self.view {
@@ -395,46 +387,11 @@ impl Workspace {
                 self.load_color(id, window, cx);
                 Mode::Color
             }
-            Open::Sample => Mode::Layers,
-        };
-        cx.notify();
-    }
-
-    /// The sample asset whose look the sample Color mode edits.
-    pub fn sample_target(&self) -> Option<usize> {
-        match self.layer {
-            1 => Some(0),
-            2 => Some(1),
-            _ => None,
-        }
-    }
-
-    fn sample_look(&self, cx: &App) -> Look {
-        let value = |state: &Entity<SliderState>| state.read(cx).value().start();
-        Look {
-            exposure: value(&self.exposure),
-            contrast: value(&self.contrast),
-            temperature: value(&self.temperature),
-            saturation: value(&self.saturation),
-        }
-    }
-
-    pub fn select_layer(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.layer = index;
-        let opacity = self.layers[index].opacity;
-        self.opacity
-            .update(cx, |state, cx| state.set_value(opacity, window, cx));
-        if let Some(target) = self.sample_target() {
-            let look = self.assets[target].look;
-            for (state, value) in [
-                (&self.exposure, look.exposure),
-                (&self.contrast, look.contrast),
-                (&self.temperature, look.temperature),
-                (&self.saturation, look.saturation),
-            ] {
-                state.update(cx, |state, cx| state.set_value(value, window, cx));
+            Open::Canvas(id) => {
+                self.load_canvas(id, window, cx);
+                Mode::Layers
             }
-        }
+        };
         cx.notify();
     }
 
@@ -584,17 +541,16 @@ impl Workspace {
             })
     }
 
-    fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn sidebar(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match (self.place, self.mode) {
             (Place::Home, Mode::Projects) => self.projects_sidebar(cx).into_any_element(),
             (Place::Home, _) => self.library_sidebar(cx).into_any_element(),
             (_, _) if self.open == Open::Overview => self.project_sidebar(cx).into_any_element(),
-            (_, Mode::Color) if self.open == Open::Sample => {
-                self.sample_color_sidebar(cx).into_any_element()
-            }
+
             (_, Mode::Color) => self.color_sidebar(cx).into_any_element(),
             (_, Mode::Crop) => self.crop_sidebar(cx).into_any_element(),
-            _ => self.canvas_sidebar(window, cx).into_any_element(),
+            (_, Mode::Style) => self.style_sidebar(cx).into_any_element(),
+            _ => self.layers_sidebar(cx).into_any_element(),
         };
         div()
             .w(px(SIDEBAR_WIDTH))
@@ -668,7 +624,18 @@ impl Workspace {
                 (Place::Home, _) => (self.view_name(), count(entries, "asset"), true),
                 (_, Open::Overview) => (self.view_name(), count(entries, "asset"), true),
                 (_, Open::Image(id)) => (self.asset_name(id), "Image".into(), false),
-                (_, Open::Sample) => ("Spring poster".into(), "Sample canvas".into(), false),
+                (_, Open::Canvas(_)) => {
+                    let (name, detail) = self.canvas.as_ref().map_or_else(
+                        || (SharedString::default(), SharedString::default()),
+                        |c| {
+                            (
+                                c.doc.name.clone().into(),
+                                format!("Canvas · {} × {}", c.doc.width, c.doc.height).into(),
+                            )
+                        },
+                    );
+                    (name, detail, false)
+                }
             };
         // Only the title area moves the window, so controls here drag normally.
         div()
@@ -719,7 +686,7 @@ impl Render for Workspace {
                 self.crop_view(cx).into_any_element()
             }
             (_, Open::Image(id)) => self.image_view(id, cx).into_any_element(),
-            (_, Open::Sample) => self.canvas(area, cx).into_any_element(),
+            (_, Open::Canvas(_)) => self.canvas_main(cx).into_any_element(),
         };
         let main = div()
             .flex_1()

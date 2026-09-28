@@ -12,5 +12,6 @@ anyhow.workspace = true
 image.workspace = true
 serde_json.workspace = true
 lumen-photo = { path = "../lumen" }
+prism = { path = "../prism" }
 spectrum = { path = "../spectrum" }
 spectrum-library = { path = "../../crates/spectrum-library" }

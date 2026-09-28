@@ -33,6 +33,26 @@ impl Workspace {
             Ok(assets) => self.picker_assets = assets,
             Err(error) => return self.notify_error(error, window, cx),
         }
+        self.picker_place = false;
+        self.show_picker(window, cx);
+    }
+
+    /// Opens the picker to place the project's images on the open canvas.
+    pub fn open_place_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(store) = &self.store else {
+            return;
+        };
+        self.picker_assets = store
+            .entries
+            .iter()
+            .filter(|e| e.asset.kind == "image" && e.purge_after.is_none())
+            .map(|e| e.asset.clone())
+            .collect();
+        self.picker_place = true;
+        self.show_picker(window, cx);
+    }
+
+    fn show_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.picker_selected.clear();
         self.picker_anchor = None;
         self.picker_open = true;
@@ -55,6 +75,9 @@ impl Workspace {
         };
         let ids = std::mem::take(&mut self.picker_selected);
         self.close_picker(window, cx);
+        if self.picker_place {
+            return self.place_images(ids, window, cx);
+        }
         self.change(window, cx, |store| {
             store.service.library.add_to_project(project, &ids)
         });
@@ -230,9 +253,11 @@ impl Workspace {
                                             .justify_center()
                                             .text_sm()
                                             .text_color(rgb(FAINT))
-                                            .child(
-                                                "Every library asset is already in this project.",
-                                            )
+                                            .child(if self.picker_place {
+                                                "This project has no images yet."
+                                            } else {
+                                                "Every library asset is already in this project."
+                                            })
                                     })
                                     .when(!empty, |el| {
                                         el.child(div().flex().flex_wrap().gap_3().children(tiles))
@@ -263,9 +288,22 @@ impl Workspace {
                                         Button::new("picker-add")
                                             .primary()
                                             .label(if count == 1 {
-                                                "Add 1 asset".to_string()
+                                                if self.picker_place {
+                                                    "Place 1 image"
+                                                } else {
+                                                    "Add 1 asset"
+                                                }
+                                                .to_string()
                                             } else {
-                                                format!("Add {count} assets")
+                                                format!(
+                                                    "{} {count} {}",
+                                                    if self.picker_place { "Place" } else { "Add" },
+                                                    if self.picker_place {
+                                                        "images"
+                                                    } else {
+                                                        "assets"
+                                                    }
+                                                )
                                             })
                                             .disabled(count == 0)
                                             .on_click(cx.listener(|this, _, window, cx| {

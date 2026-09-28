@@ -1,5 +1,6 @@
-mod adjust;
-mod canvas;
+mod canvas_layers;
+mod canvas_state;
+mod canvas_view;
 mod color;
 mod color_fields;
 mod controls;
@@ -13,7 +14,6 @@ mod marquee;
 mod palette;
 mod picker;
 mod project;
-mod samples;
 mod store;
 mod theme;
 mod trash;

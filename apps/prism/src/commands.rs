@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use spectrum_imaging::AdjustmentPatch;
+use spectrum_imaging::{AdjustmentPatch, Adjustments};
 
 use crate::{
     Alignment, AlignmentReference, BlendMode, BrushStroke, GuideOrientation, LassoPath, LayerMask,
@@ -256,6 +256,12 @@ pub enum Command {
     AdjustLayer {
         id: u64,
         patch: AdjustmentPatch,
+    },
+    /// Replace a layer's whole adjustment set, including curves and the color
+    /// mixer, which `AdjustLayer` patches do not cover.
+    SetLayerAdjustments {
+        id: u64,
+        adjustments: Adjustments,
     },
     ResetLayerAdjustments {
         id: u64,

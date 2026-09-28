@@ -19,7 +19,8 @@ See Git for implementation and validation history.
 
 - Projects, unassigned assets, import batches, and the 30-day trash exist in the
   index and CLI, with asset rename. The GPUI preview uses them from Home and
-  project workspaces, and edits real images in Color. Next: real canvases. See [workflow design](../docs/design/workflow.md).
+  project workspaces, edits real images (Color, Crop), and edits real canvases.
+  Next: canvas handles, typography, placeholder replacement, and export. See [workflow design](../docs/design/workflow.md).
 - Finish library removal/restore and relocation semantics and retire catalog/file
   management affordances as their replacement workflows are established.
 - Stable typed animation property addressing remains future work; retain all

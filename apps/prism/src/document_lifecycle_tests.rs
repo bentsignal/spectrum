@@ -70,3 +70,52 @@ fn durable_rename_persists_one_revision_without_changing_the_project_path() {
     assert!(!directory.join("Renamed metadata.prism").exists());
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn whole_layer_adjustments_replace_and_undo() {
+    let mut workspace = Workspace::new(Document::new("Adjust", 64, 64), None);
+    let id = workspace
+        .execute(Command::AddRectangle {
+            name: None,
+            width: 10,
+            height: 10,
+            color: [200, 120, 80, 255],
+            corner_radius: 0.0,
+            x: 0.0,
+            y: 0.0,
+        })
+        .unwrap()
+        .layer_ids[0];
+    let mut adjustments = spectrum_imaging::Adjustments {
+        exposure: 0.5,
+        ..Default::default()
+    };
+    adjustments.curves.master.points = vec![
+        spectrum_imaging::CurvePoint { x: 0.0, y: 0.0 },
+        spectrum_imaging::CurvePoint { x: 0.5, y: 0.7 },
+        spectrum_imaging::CurvePoint { x: 1.0, y: 1.0 },
+    ];
+    adjustments.hsl.red.saturation = 30.0;
+    workspace
+        .execute(Command::SetLayerAdjustments {
+            id,
+            adjustments: adjustments.clone(),
+        })
+        .unwrap();
+    let stored = &workspace.document.layer(id).unwrap().adjustments;
+    assert_eq!(stored.curves.master.points.len(), 3);
+    assert_eq!(stored.hsl.red.saturation, 30.0);
+    workspace.execute(Command::Undo).unwrap();
+    assert_eq!(
+        workspace.document.layer(id).unwrap().adjustments,
+        spectrum_imaging::Adjustments::default()
+    );
+    assert!(
+        workspace
+            .execute(Command::SetLayerAdjustments {
+                id: 999,
+                adjustments,
+            })
+            .is_err()
+    );
+}

@@ -1,7 +1,7 @@
 //! The project overview's sidebar: import into the project, search, filters.
 use crate::{
     theme::*,
-    workspace::{Open, Workspace},
+    workspace::{Open, Place, Workspace},
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -53,28 +53,37 @@ impl Workspace {
             )
             .child(chips)
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_xs().text_color(rgb(MUTED)).child("Sample"))
-                    .child(
-                        div()
-                            .id("sample")
-                            .h(px(36.))
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .gap_2p5()
-                            .rounded_md()
-                            .text_sm()
-                            .hover(|el| el.bg(rgb(HOVER)))
-                            .child(Icon::new(IconName::Frame).small().text_color(rgb(MUTED)))
-                            .child("Spring poster canvas")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_item(Open::Sample, window, cx)
-                            })),
-                    ),
+                Button::new("new-canvas")
+                    .icon(IconName::Plus)
+                    .label("New canvas")
+                    .w_full()
+                    .on_click(cx.listener(|this, _, window, cx| this.new_canvas(window, cx))),
             )
+    }
+
+    /// Creates a canvas in the open project and opens it.
+    fn new_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Place::Project(project), Ok(store)) = (self.place, &mut self.store) else {
+            return;
+        };
+        let created = store
+            .service
+            .create_canvas("Untitled canvas".into(), 1920, 1080)
+            .and_then(|canvas| {
+                store
+                    .service
+                    .library
+                    .add_to_project(project, &[canvas.id])?;
+                Ok(canvas.id)
+            });
+        match created {
+            Ok(id) => {
+                if let Err(error) = self.reload() {
+                    self.notify_error(error, window, cx);
+                }
+                self.open_item(Open::Canvas(id), window, cx);
+            }
+            Err(error) => self.notify_error(error, window, cx),
+        }
     }
 }
