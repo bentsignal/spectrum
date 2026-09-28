@@ -53,7 +53,7 @@ fn kind_icon(kind: &LayerKind) -> IconName {
     }
 }
 
-fn swatch_row(
+pub fn swatch_row(
     id: &'static str,
     current: Option<[u8; 4]>,
     cx: &mut Context<Workspace>,
@@ -97,6 +97,19 @@ impl Workspace {
             .update(cx, |s, cx| s.set_value(size.max(8.), window, cx));
         self.corner
             .update(cx, |s, cx| s.set_value(radius, window, cx));
+        let rotation = layer.transform.rotation;
+        let rotation = if rotation > 180. {
+            rotation - 360.
+        } else {
+            rotation
+        };
+        let shadow = layer.style.drop_shadow.unwrap_or_default();
+        self.rotation
+            .update(cx, |s, cx| s.set_value(rotation, window, cx));
+        self.shadow_blur
+            .update(cx, |s, cx| s.set_value(shadow.blur_radius, window, cx));
+        self.shadow_distance
+            .update(cx, |s, cx| s.set_value(shadow.offset_y, window, cx));
         if let Some(text) = text {
             self.text_input
                 .update(cx, |s, cx| s.set_value(text, window, cx));
@@ -331,7 +344,8 @@ impl Workspace {
             )
     }
 
-    pub fn style_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Style's Look section, or the canvas background when nothing is selected.
+    pub fn look_section(&self, cx: &mut Context<Self>) -> Div {
         let Some(layer) = self.selected_layer() else {
             let background = self.canvas.as_ref().map(|c| c.doc.background);
             return div()

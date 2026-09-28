@@ -1,5 +1,6 @@
 mod canvas_layers;
 mod canvas_state;
+mod canvas_style;
 mod canvas_view;
 mod color;
 mod color_fields;

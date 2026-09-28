@@ -40,8 +40,9 @@ whole adjustment model to the engine; Command+Z and Command+Shift+Z step its
 edit history. Crop mode shows the whole frame with a draggable crop box and
 aspect presets; its sidebar rotates, flips, and straightens. Double-click a canvas, or use New canvas in a project, to open it. Canvases
 offer three modes: Layers (add text, boxes, circles, and project images;
-reorder, duplicate, delete, show and hide), Style (blending, opacity, text,
-fills, or the canvas background), and Color (the selected layer's adjustments;
+reorder, duplicate, delete, show and hide), Style (one section at a time:
+Look for blending, opacity, text, and fills; Arrange for alignment and
+rotation; Shadow for a drop shadow; or the canvas's size and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
 to select it, drag to move it, or drag a corner handle to resize it. Image
 layers can swap their image, which also replaces a missing-image placeholder.

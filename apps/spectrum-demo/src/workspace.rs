@@ -148,6 +148,10 @@ pub struct Workspace {
     pub text_input: Entity<InputState>,
     pub text_size: Entity<SliderState>,
     pub corner: Entity<SliderState>,
+    pub rotation: Entity<SliderState>,
+    pub shadow_blur: Entity<SliderState>,
+    pub shadow_distance: Entity<SliderState>,
+    pub style_section: usize,
     /// Keeps keyboard shortcuts working when no field has focus.
     pub focus_handle: FocusHandle,
     /// The title strip a window drag started in, if any.
@@ -190,6 +194,9 @@ impl Workspace {
         let opacity = slider(cx, 0., 100., 1., 100.);
         let text_size = slider(cx, 8., 400., 1., 48.);
         let corner = slider(cx, 0., 200., 1., 0.);
+        let rotation = slider(cx, -180., 180., 1., 0.);
+        let shadow_blur = slider(cx, 0., prism_core::MAX_DROP_SHADOW_BLUR, 1., 10.);
+        let shadow_distance = slider(cx, 0., 60., 1., 12.);
         let straighten = slider(cx, -45., 45., 0.1, 0.);
         let color: Vec<_> = crate::color_fields::FIELDS
             .iter()
@@ -221,6 +228,27 @@ impl Workspace {
             cx.subscribe_in(&corner, window, |this, _, _: &SliderEvent, window, cx| {
                 this.update_shape(None, window, cx)
             }),
+            cx.subscribe_in(
+                &rotation,
+                window,
+                |this, state, _: &SliderEvent, window, cx| {
+                    let degrees = state.read(cx).value().start();
+                    this.on_selected(window, cx, |id| prism_core::Command::SetRotation {
+                        id,
+                        degrees,
+                    });
+                },
+            ),
+            cx.subscribe_in(
+                &shadow_blur,
+                window,
+                |this, _, _: &SliderEvent, window, cx| this.set_shadow(true, window, cx),
+            ),
+            cx.subscribe_in(
+                &shadow_distance,
+                window,
+                |this, _, _: &SliderEvent, window, cx| this.set_shadow(true, window, cx),
+            ),
             cx.subscribe_in(
                 &text_input,
                 window,
@@ -308,6 +336,10 @@ impl Workspace {
             text_input,
             text_size,
             corner,
+            rotation,
+            shadow_blur,
+            shadow_distance,
+            style_section: 0,
             focus_handle: cx.focus_handle(),
             dragging: None,
             settle: 1,
