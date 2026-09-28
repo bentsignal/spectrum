@@ -38,20 +38,30 @@ selection, bulk actions, and rename (`lumen_core::Command::RenamePhoto`,
 workspace element; app-level action handlers cannot update the window that is
 dispatching the key.
 
-Overnight work on 2026-09-28 (user asked for parity while they slept):
+Overnight work on 2026-09-28 (the user asked for parity work while asleep):
 - Grid zoom uses − and + buttons; thumbnails are pre-cropped to 4:3 so GPUI's
   rounding applies to what is visible.
-- Color mode: histogram, and Light, Color, Curves, Mixer, Grading, and Detail
-  sections, one at a time. It sends the whole `Adjustments` model through
-  `Service::set_adjustments`. Command+Z steps history (`Service::step_history`).
-- Crop mode for images: uncropped frame, draggable box, aspect presets, rotate,
-  flip, straighten.
-- Real canvases replace the sample: Layers, Style, and Color modes, drag to
-  move, placing project images, and Edit locally or globally for image layers.
-  Prism gained `Command::SetLayerAdjustments` so local edits cover curves too.
+- Images: Color (histogram plus Light, Color, Curves, Mixer, Grading, Detail
+  sections), Crop (box, aspect presets, rotate, flip, straighten), and Info
+  (capture details, projects, canvases). Compare shows the original beside the
+  edit. Every change sends the whole `Adjustments` model through
+  `Service::set_adjustments`; Command+Z steps history.
+- Canvases: real documents replace the sample. Layers, Style (Look, Arrange,
+  Shadow), and Color modes; click to select, drag to move, corner handles to
+  resize, arrows to nudge; place and replace images; Edit locally or globally.
+  Prism gained `Command::SetLayerAdjustments`.
+- Export… saves full-size files (`Service::export`); Delete and Backspace
+  remove selections; project grids sort by when assets joined.
 
-Next: the user's review of this work; then canvas resizing and rotation
-handles, text typography, placeholder replacement (`LinkImage`), and export
+Design calls made without the user, to confirm in review:
+- Color and Style use a row of section chips inside one mode, rather than
+  more sidebar modes. The histogram sits above Color's sections.
+- Compare and Export are small buttons at the right of the title row.
+- New text layers are white; the canvas default background is dark.
+- Pressing Enter in the palette with no matches creates a project with that name.
+
+Next: the user's review; then text typography, canvas performance (every change
+re-renders the whole document), spot removal, and presets.
 
 ## Build to review
 
