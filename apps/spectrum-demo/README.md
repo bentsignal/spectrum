@@ -23,6 +23,8 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Command+K | Go to a project, place, or asset; at Home, search the whole library |
 | Command+A, Esc | Select all assets, clear the selection |
 | Option+1 to 6 | Switch to the nth section of Color or Style |
+| Command+P | On a canvas, choose a tool (Move, Text, Box, Circle, Image) |
+| Command+E | Edit the selected text layer on the canvas |
 | Command+Z, Command+Shift+Z | Undo and redo edits to the open image or canvas |
 | Command+Shift+C, Command+Shift+V | Copy the open or selected image's edits; paste them onto the open or selected images |
 | Arrow keys, Shift+arrows | Nudge the selected canvas layer 1 or 10 pixels |
@@ -44,16 +46,19 @@ edit history. Crop mode shows the whole frame with a draggable crop box and
 aspect presets; its sidebar rotates, flips, and straightens. Compare in the title bar shows the unedited original beside the edit. Info
 shows capture details, the image's projects, and the canvases that use it. Inside a project,
 "Recently added" sorts by when assets joined it. Double-click a canvas, or use New canvas in a project, to open it. Canvases
-offer three modes: Layers (add text, boxes, circles, and project images;
-reorder, duplicate, delete, show and hide), Style (one section at a time:
+offer three modes: Layers (the current tool, foreground and background colors,
+and the layer list: drag a row to reorder; duplicate, delete, show and hide), Style (one section at a time:
 Look for blending, opacity, text with alignment, line height, and tracking, and fills; Arrange for alignment and
 rotation; Shadow for a drop shadow; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
 with proportions kept or not, or a preset) and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
-to select it, drag to move it, or drag a corner handle to resize it. Edits apply
+to select it, drag to move it, or drag a corner handle to resize it (that corner
+stays put and the layer scales from the opposite side). Text places text where
+you click; Box and Circle draw by dragging; Move returns after. Double-click text,
+or press Command+E, to edit it in a field under it on the canvas. Edits apply
 to a local copy of the document at once and save in order behind it; a dragged
-layer is drawn from separate renders of it and the rest of the canvas, so it
-follows the pointer. Image
+layer, or one whose style changes, is drawn from separate renders of the layers
+below it, the layer itself, and the layers above, so it updates at once. Image
 layers can swap their image, which also replaces a missing-image placeholder.
 Export… in the title bar or the right-click menu picks a format (JPEG, PNG,
 TIFF, or WebP for images; JPEG or PNG for canvases), JPEG quality, and full size
@@ -75,5 +80,5 @@ folder from the existing application while reviewing.
 
 Colors open a full picker (a saturation and brightness field, a hue strip, hex
 entry, and common colors). Beside Add in Layers, the foreground and background
-colors set new layers' colors: text takes the foreground, boxes and circles the
-background.
+colors sit beside the current tool; new layers take the foreground. The color
+text switches between hex, RGB, HSL, and OKLCH.

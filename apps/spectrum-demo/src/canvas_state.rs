@@ -9,7 +9,7 @@ use spectrum_library::AssetId;
 use std::{collections::HashMap, sync::Arc};
 
 /// Long edge of canvas renders.
-const RENDER: u32 = 2048;
+pub const RENDER: u32 = 2048;
 
 pub type Bounds2 = HashMap<u64, ([f32; 2], [f32; 2])>;
 
@@ -25,9 +25,14 @@ pub struct CanvasState {
     /// A drag or nudge landed; draw `split` until the render catches up.
     pub settling: bool,
     /// The canvas rendered around one layer, so dragging it redraws at once.
-    pub split: Option<Split>,
+    pub split: Option<crate::canvas_split::Split>,
     /// Image layers: edit the shared image rather than this placement.
     pub global: bool,
+    /// A text layer being edited on the canvas.
+    pub editing: Option<u64>,
+    pub tool: crate::tools::Tool,
+    /// A layer being drawn with the current tool, from and to in canvas space.
+    pub creating: Option<((f32, f32), (f32, f32))>,
     /// Counts local edits; renders record the edit they show.
     edits: u64,
     rendered: u64,
@@ -48,25 +53,9 @@ pub struct LayerDrag {
     pub corner: Option<(bool, bool)>,
 }
 
-/// Renders of everything but one layer, and of that layer alone. They stay
-/// valid while only that layer's transform changes.
-pub struct Split {
-    pub layer: u64,
-    /// The layer's bounds when rendered; drawing maps them to its bounds now.
-    pub base: ([f32; 2], [f32; 2]),
-    pub rest: Option<Arc<RenderImage>>,
-    pub alone: Option<Arc<RenderImage>>,
-}
-
-impl Split {
-    pub fn ready(&self) -> Option<(Arc<RenderImage>, Arc<RenderImage>)> {
-        Some((self.rest.clone()?, self.alone.clone()?))
-    }
-}
-
-struct Rendered {
-    image: Arc<RenderImage>,
-    bounds: Bounds2,
+pub struct Rendered {
+    pub image: Arc<RenderImage>,
+    pub bounds: Bounds2,
 }
 
 fn queue_key(command: &Command) -> Option<(String, u64)> {
@@ -83,6 +72,10 @@ fn canvas_path(root: &std::path::Path, id: AssetId) -> anyhow::Result<std::path:
 
 /// Resolves library images and renders the document with its layer bounds.
 fn render(root: &std::path::Path, doc: &Document) -> anyhow::Result<Rendered> {
+    render_at(root, doc, RENDER)
+}
+
+pub fn render_at(root: &std::path::Path, doc: &Document, limit: u32) -> anyhow::Result<Rendered> {
     let mut resolved = doc.clone();
     Service::open(root)?.resolve(&mut resolved)?;
     let bounds = resolved
@@ -97,26 +90,9 @@ fn render(root: &std::path::Path, doc: &Document) -> anyhow::Result<Rendered> {
         &resolved,
         &prism_core::default_raster_backing_cache_root()?,
     )?;
-    let image = prism_core::render_document_with_sources(&resolved, Some(RENDER), &sources)?;
-    Ok(Rendered {
-        image: to_render_image(image).0,
-        bounds,
-    })
-}
-
-/// The document with only `layer` shown (on a clear background), or with
-/// everything but it.
-fn split_doc(doc: &Document, layer: u64, alone: bool) -> Document {
-    let mut doc = doc.clone();
-    if alone {
-        doc.background = [0, 0, 0, 0];
-    }
-    for each in &mut doc.layers {
-        if (each.id == layer) != alone {
-            each.visible = false;
-        }
-    }
-    doc
+    let image = prism_core::render_document_with_sources(&resolved, Some(limit), &sources)?;
+    let image = to_render_image(image).0;
+    Ok(Rendered { image, bounds })
 }
 
 impl Workspace {
@@ -133,6 +109,9 @@ impl Workspace {
             settling: false,
             split: None,
             global: false,
+            editing: None,
+            tool: Default::default(),
+            creating: None,
             edits: 0,
             rendered: 0,
             rendering: false,
@@ -149,7 +128,7 @@ impl Workspace {
             let split = old
                 .split
                 .into_iter()
-                .flat_map(|s| s.rest.into_iter().chain(s.alone));
+                .flat_map(crate::canvas_split::Split::images);
             for image in old.image.into_iter().chain(split) {
                 window.drop_image(image).ok();
             }
@@ -205,7 +184,7 @@ impl Workspace {
         if let Some(canvas) = &mut self.canvas {
             canvas.edits += 1;
         }
-        self.keep_split(&[Command::Undo], window);
+        self.split_edit(&[Command::Undo], window);
         self.render_canvas(window, cx);
     }
 
@@ -260,88 +239,6 @@ impl Workspace {
         .detach();
     }
 
-    /// Renders the canvas around `layer` so a drag can redraw it every frame.
-    pub fn prepare_split(&mut self, layer: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
-            return;
-        };
-        if canvas.split.as_ref().is_some_and(|s| s.layer == layer) {
-            return;
-        }
-        let Some(base) = canvas.bounds.get(&layer).copied() else {
-            return;
-        };
-        if let Some(old) = canvas.split.take() {
-            for image in old.rest.into_iter().chain(old.alone) {
-                window.drop_image(image).ok();
-            }
-        }
-        canvas.split = Some(Split {
-            layer,
-            base,
-            rest: None,
-            alone: None,
-        });
-        let id = canvas.id;
-        for alone in [false, true] {
-            let (root, doc) = (store.root.clone(), split_doc(&canvas.doc, layer, alone));
-            let task = cx
-                .background_executor()
-                .spawn(async move { render(&root, &doc) });
-            cx.spawn_in(window, async move |this, cx| {
-                let result = task.await;
-                this.update_in(cx, |this, window, cx| {
-                    let Ok(done) = result else {
-                        return;
-                    };
-                    let split = this
-                        .canvas
-                        .as_mut()
-                        .filter(|c| c.id == id)
-                        .and_then(|c| c.split.as_mut())
-                        .filter(|s| s.layer == layer);
-                    let Some(split) = split else {
-                        window.drop_image(done.image).ok();
-                        return;
-                    };
-                    let slot = if alone {
-                        &mut split.alone
-                    } else {
-                        &mut split.rest
-                    };
-                    if let Some(old) = slot.replace(done.image) {
-                        window.drop_image(old).ok();
-                    }
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
-        }
-    }
-
-    /// Forgets split renders unless `commands` only move or resize their layer.
-    fn keep_split(&mut self, commands: &[Command], window: &mut Window) {
-        let Some(canvas) = &mut self.canvas else {
-            return;
-        };
-        let Some(layer) = canvas.split.as_ref().map(|s| s.layer) else {
-            return;
-        };
-        let moves_only = commands
-            .iter()
-            .all(|c| matches!(c, Command::SetTransform { id, .. } if *id == layer));
-        if moves_only {
-            return;
-        }
-        if let Some(split) = canvas.split.take() {
-            for image in split.rest.into_iter().chain(split.alone) {
-                window.drop_image(image).ok();
-            }
-        }
-        canvas.settling = false;
-    }
-
     /// Applies engine commands to the open canvas now, then saves them.
     pub fn canvas_commands(
         &mut self,
@@ -349,7 +246,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.keep_split(&commands, window);
+        let edit = self.split_edit(&commands, window);
         let Some(canvas) = &mut self.canvas else {
             return;
         };
@@ -393,6 +290,7 @@ impl Workspace {
             }
             canvas.queue.push(command);
         }
+        self.follow_split(edit, window, cx);
         self.render_canvas(window, cx);
         self.save_canvas(window, cx);
         self.sync_layer_controls(window, cx);

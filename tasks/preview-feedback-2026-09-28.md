@@ -3,16 +3,16 @@ status: in_progress
 priority: high
 ---
 
-# Address the 2026-09-28 preview review
+# Address the 2026-09-28 preview reviews
 
-The user reviewed build `77f2dbe`. They approved always-rounded previews,
-Color's six sections, and Command+number for modes. Done since (see Git):
-instant in-memory image edits, live canvas drags, grabbable curve endpoints,
-no grid zoom, an export dialog, a color picker with foreground and background
-colors (text takes the foreground, shapes the background; confirm with the
-user), a canvas size dialog, Option+1 to 6 for sections, Command+K arrows and scrolling, and a macOS
-title-bar fix. Design rules are in [workflow preferences](../docs/design/workflow.md).
+Review of `aee56f0` ([rules](../docs/design/workflow.md)); instant edits, export, and the picker are approved.
+
+Done since (see Git): instant image undo, no slider flash, split-render drags
+and restyles, corner-anchored resizing, drag-to-reorder layers, tools with
+Command+P, text editing with a double-click or Command+E, the swap arrow,
+foreground-colored shapes, and hex, RGB, HSL, and OKLCH color text.
 
 Remaining:
-1. Mac check: instant edits, live drags, no zoom on quick title-row clicks.
+1. Mac check of the above.
 2. Edit globally saves each change before the canvas re-renders.
+3. Later: a built-in color tool like Adobe Color; maybe Command for app actions, Option for layers.

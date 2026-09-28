@@ -1,8 +1,8 @@
 use crate::{
-    ClearSelection, CopyEdits, DeleteSelection, Mode1, Mode2, Mode3, Mode4, Mode5, NudgeDown,
-    NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp, NudgeUpFar,
-    OpenPalette, PasteEdits, Redo, Section1, Section2, Section3, Section4, Section5, Section6,
-    SelectAll, Undo, store::Store, theme::*,
+    ClearSelection, CopyEdits, DeleteSelection, EditText, Mode1, Mode2, Mode3, Mode4, Mode5,
+    NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp,
+    NudgeUpFar, OpenPalette, OpenTools, PasteEdits, Redo, Section1, Section2, Section3, Section4,
+    Section5, Section6, SelectAll, Undo, store::Store, theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -104,6 +104,8 @@ pub struct Workspace {
     pub palette_query: Entity<InputState>,
     pub palette_index: usize,
     pub palette_scroll: ScrollHandle,
+    /// The palette lists canvas tools instead of places.
+    pub palette_tools: bool,
     /// Assets the palette is adding to a project; empty when it navigates.
     pub palette_adding: Vec<AssetId>,
     /// Edits copied from an image, ready to paste onto others.
@@ -142,12 +144,8 @@ pub struct Workspace {
     pub straighten: Entity<SliderState>,
     /// The open image, rendered in memory as it is edited.
     pub preview: Option<crate::preview::Preview>,
-    /// Adjustments waiting to be saved once edits pause.
-    pub pending_save: Option<(AssetId, lumen_core::Adjustments)>,
-    pub save_generation: u64,
-    pub saving: bool,
-    /// Keeps background and immediate saves in order.
-    pub save_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    /// The open image's saves and history.
+    pub edits: crate::preview::ImageEdits,
     pub export: Entity<crate::export::ExportSettings>,
     pub canvas_size: Entity<crate::canvas_size::CanvasSize>,
     pub colors: crate::colors::Colors,
@@ -292,6 +290,9 @@ impl Workspace {
                     {
                         this.update_text(None, window, cx)
                     }
+                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        this.stop_editing_text(window, cx);
+                    }
                 },
             ),
         ];
@@ -333,6 +334,7 @@ impl Workspace {
             palette_query,
             palette_index: 0,
             palette_scroll: ScrollHandle::new(),
+            palette_tools: false,
             palette_adding: Vec::new(),
             copied_edits: None,
             pending_add: Vec::new(),
@@ -363,10 +365,7 @@ impl Workspace {
             curve_bounds: Default::default(),
             straighten,
             preview: None,
-            pending_save: None,
-            save_generation: 0,
-            saving: false,
-            save_lock: Default::default(),
+            edits: Default::default(),
             export: crate::export::ExportSettings::new(window, cx),
             canvas_size: crate::canvas_size::CanvasSize::new(window, cx),
             colors: crate::colors::Colors::new(window, cx),
@@ -826,7 +825,7 @@ impl Render for Workspace {
             }
             (_, Open::Image(_)) if self.mode == Mode::Crop => self.crop_view(cx).into_any_element(),
             (_, Open::Image(_)) => self.image_view(cx).into_any_element(),
-            (_, Open::Canvas(_)) => self.canvas_main(cx).into_any_element(),
+            (_, Open::Canvas(_)) => self.canvas_main(window, cx).into_any_element(),
         };
         let main = div()
             .flex_1()
@@ -856,6 +855,8 @@ impl Render for Workspace {
                 }),
             )
             .on_action(cx.listener(|this, _: &Mode1, window, cx| this.nth_mode(0, window, cx)))
+            .on_action(cx.listener(|this, _: &EditText, window, cx| this.edit_text(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenTools, window, cx| this.open_tools(window, cx)))
             .on_action(cx.listener(|this, _: &Section1, _, cx| this.nth_section(0, cx)))
             .on_action(cx.listener(|this, _: &Section2, _, cx| this.nth_section(1, cx)))
             .on_action(cx.listener(|this, _: &Section3, _, cx| this.nth_section(2, cx)))
@@ -919,5 +920,12 @@ impl Render for Workspace {
             .when(self.picker_open, |el| el.child(self.picker(cx)))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
+            .map(|el| {
+                // New sliders were drawn clear; draw again now that they have a width.
+                if crate::controls::take_slider_frame() {
+                    window.request_animation_frame();
+                }
+                el
+            })
     }
 }

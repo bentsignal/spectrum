@@ -1,5 +1,5 @@
-//! Canvas colors: foreground and background defaults for new layers (text
-//! takes the foreground, boxes and circles the background), and the pickers
+//! Canvas colors: foreground and background colors (new layers take the
+//! foreground), and the pickers
 //! for text, fills, and the canvas background.
 use crate::{
     color_picker::{ColorPicker, Picked, color_well},
@@ -7,10 +7,6 @@ use crate::{
     workspace::Workspace,
 };
 use gpui::{prelude::*, *};
-use gpui_component::{
-    IconName, Sizable,
-    button::{Button, ButtonVariants},
-};
 use prism_core::{Command, LayerKind};
 
 const FORE: [u8; 4] = [255, 255, 255, 255];
@@ -64,6 +60,29 @@ impl Colors {
             _subscriptions,
         }
     }
+}
+
+/// A small arrow pointing both ways, drawn in the current text color.
+fn swap_arrow() -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        |bounds, _, window, _| {
+            let c = bounds.center();
+            let color = window.text_style().color;
+            let mut path = PathBuilder::stroke(px(1.25));
+            path.move_to(c + point(px(-6.), px(0.)));
+            path.line_to(c + point(px(6.), px(0.)));
+            for side in [-1., 1.] {
+                path.move_to(c + point(px(side * 3.), px(-3.)));
+                path.line_to(c + point(px(side * 6.), px(0.)));
+                path.line_to(c + point(px(side * 3.), px(3.)));
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, color);
+            }
+        },
+    )
+    .size(px(14.))
 }
 
 /// A label with a color well at the right.
@@ -132,17 +151,21 @@ impl Workspace {
                 self.colors.fore,
                 &self.colors.fore_picker,
             ))
-            .child(color_well(
-                "back",
-                self.colors.back,
-                &self.colors.back_picker,
-            ))
             .child(
-                Button::new("swap-colors")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Replace)
-                    .tooltip("Swap foreground and background")
+                div()
+                    .id("swap-colors")
+                    .w(px(18.))
+                    .h(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .text_color(rgb(MUTED))
+                    .hover(|el| el.text_color(rgb(TEXT)))
+                    .child(swap_arrow())
+                    .tooltip(|window, cx| {
+                        gpui_component::tooltip::Tooltip::new("Swap colors").build(window, cx)
+                    })
                     .on_click(cx.listener(|this, _, window, cx| {
                         let colors = &mut this.colors;
                         (colors.fore, colors.back) = (colors.back, colors.fore);
@@ -156,6 +179,11 @@ impl Workspace {
                         cx.notify();
                     })),
             )
+            .child(color_well(
+                "back",
+                self.colors.back,
+                &self.colors.back_picker,
+            ))
     }
 
     pub fn text_color_row(&self, color: [u8; 4]) -> Div {

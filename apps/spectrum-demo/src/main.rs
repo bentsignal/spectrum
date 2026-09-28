@@ -1,11 +1,13 @@
 mod canvas_layers;
 mod canvas_size;
+mod canvas_split;
 mod canvas_state;
 mod canvas_style;
 mod canvas_view;
 mod color;
 mod color_fields;
 mod color_picker;
+mod color_text;
 mod colors;
 mod compare;
 mod controls;
@@ -26,6 +28,7 @@ mod project;
 mod store;
 mod theme;
 mod titlebar;
+mod tools;
 mod trash;
 mod workspace;
 
@@ -67,7 +70,9 @@ gpui::actions!(
         Section3,
         Section4,
         Section5,
-        Section6
+        Section6,
+        EditText,
+        OpenTools
     ]
 );
 
@@ -98,6 +103,8 @@ fn main() {
             KeyBinding::new("secondary-z", Undo, None),
             KeyBinding::new("secondary-shift-z", Redo, None),
             KeyBinding::new("secondary-shift-c", CopyEdits, None),
+            KeyBinding::new("secondary-e", EditText, None),
+            KeyBinding::new("secondary-p", OpenTools, None),
             KeyBinding::new("secondary-shift-v", PasteEdits, None),
             // Text fields bind these in their own context, which wins while typing.
             KeyBinding::new("backspace", DeleteSelection, None),

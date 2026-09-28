@@ -37,6 +37,22 @@ fn kind_icon(kind: &LayerKind) -> IconName {
     }
 }
 
+/// A layer row being dragged, and the ghost that follows the pointer.
+struct LayerRow(u64, String);
+
+impl Render for LayerRow {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_1p5()
+            .rounded_md()
+            .bg(rgb(SELECTED))
+            .shadow_lg()
+            .text_sm()
+            .child(self.1.clone())
+    }
+}
+
 impl Workspace {
     /// Moves Style controls to the selected layer's values.
     pub fn sync_layer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -89,152 +105,94 @@ impl Workspace {
         }
     }
 
-    /// Where new layers go: the middle of the canvas.
-    fn canvas_center(&self) -> (f32, f32) {
-        self.canvas.as_ref().map_or((0., 0.), |c| {
-            (c.doc.width as f32 / 2., c.doc.height as f32 / 2.)
-        })
-    }
-
-    fn add_layer(&mut self, kind: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let (cx_, cy) = self.canvas_center();
-        let short = self
-            .canvas
-            .as_ref()
-            .map_or(1000., |c| c.doc.width.min(c.doc.height) as f32);
-        let side = (short * 0.4).round().max(8.);
-        let command = match kind {
-            "text" => Command::AddText {
-                text: "Text".into(),
-                name: None,
-                font_size: (short * 0.12).round().max(12.),
-                color: self.colors.fore,
-                x: cx_ - short * 0.15,
-                y: cy - short * 0.06,
-                shaping: Default::default(),
-            },
-            "ellipse" => Command::AddEllipse {
-                name: None,
-                width: side as u32,
-                height: side as u32,
-                color: self.colors.back,
-                x: cx_ - side / 2.,
-                y: cy - side / 2.,
-            },
-            _ => Command::AddRectangle {
-                name: None,
-                width: (side * 1.4) as u32,
-                height: side as u32,
-                color: self.colors.back,
-                corner_radius: 0.,
-                x: cx_ - side * 0.7,
-                y: cy - side / 2.,
-            },
-        };
-        self.canvas_commands(vec![command], window, cx);
-    }
-
-    fn move_selected(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(canvas) = &self.canvas else {
-            return;
-        };
-        let Some(id) = canvas.selected else {
-            return;
-        };
-        let Some(index) = canvas.doc.layers.iter().position(|l| l.id == id) else {
-            return;
-        };
-        let target = (index as isize + step).clamp(0, canvas.doc.layers.len() as isize - 1);
-        self.canvas_commands(
-            vec![Command::MoveLayer {
-                id,
-                index: target as usize,
-            }],
-            window,
-            cx,
-        );
-    }
-
     pub fn layers_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(canvas) = &self.canvas else {
             return div();
         };
         let defaults = self.default_colors(cx).into_any_element();
-        let add = |id: &'static str, label: &'static str| {
-            Button::new(id)
-                .small()
-                .label(label)
-                .flex_1()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if id == "image" {
-                        this.open_place_picker(window, cx)
-                    } else {
-                        this.add_layer(id, window, cx)
-                    }
-                }))
-        };
-        let rows = canvas.doc.layers.iter().rev().map(|layer| {
-            let id = layer.id;
-            let selected = canvas.selected == Some(id);
-            let visible = layer.visible;
-            let name = layer.name.clone();
-            div()
-                .id(("layer-row", id))
-                .h(px(36.))
-                .pl_2p5()
-                .pr_1()
-                .flex()
-                .items_center()
-                .gap_2p5()
-                .rounded_md()
-                .when(selected, |el| el.bg(rgb(SELECTED)))
-                .when(!selected, |el| el.hover(|el| el.bg(rgb(HOVER))))
-                .child(
-                    Icon::new(kind_icon(&layer.kind))
-                        .small()
-                        .text_color(rgb(MUTED)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .truncate()
-                        .text_color(rgb(if visible { TEXT } else { FAINT }))
-                        .child(name.clone()),
-                )
-                .child(
-                    Button::new(("visible", id))
-                        .ghost()
-                        .xsmall()
-                        .icon(if visible {
-                            IconName::Eye
-                        } else {
-                            IconName::EyeOff
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
+        let tool = self.tool_button(cx).into_any_element();
+        let rows = canvas
+            .doc
+            .layers
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(index, layer)| {
+                let id = layer.id;
+                let selected = canvas.selected == Some(id);
+                let visible = layer.visible;
+                let name = layer.name.clone();
+                div()
+                    .id(("layer-row", id))
+                    .h(px(36.))
+                    .pl_2p5()
+                    .pr_1()
+                    .flex()
+                    .items_center()
+                    .gap_2p5()
+                    .rounded_md()
+                    .when(selected, |el| el.bg(rgb(SELECTED)))
+                    .when(!selected, |el| el.hover(|el| el.bg(rgb(HOVER))))
+                    // Drag a row onto another to move the layer to that place.
+                    .on_drag(LayerRow(id, name.clone()), |row, _, _, cx| {
+                        cx.new(|_| LayerRow(row.0, row.1.clone()))
+                    })
+                    .drag_over::<LayerRow>(|style, _, _, _| style.bg(rgb(HOVER)))
+                    .on_drop(cx.listener(move |this, row: &LayerRow, window, cx| {
+                        if row.0 != id {
                             this.canvas_commands(
-                                vec![Command::SetVisibility {
-                                    id,
-                                    visible: !visible,
-                                }],
+                                vec![Command::MoveLayer { id: row.0, index }],
                                 window,
                                 cx,
                             );
-                        })),
-                )
-                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                    if let Some(canvas) = &mut this.canvas {
-                        canvas.selected = Some(id);
-                    }
-                    this.sync_layer_controls(window, cx);
-                    if event.click_count() == 2 {
-                        this.open_rename_layer(id, name.clone(), window, cx);
-                    }
-                    cx.notify();
-                }))
-        });
+                        }
+                    }))
+                    .child(
+                        Icon::new(kind_icon(&layer.kind))
+                            .small()
+                            .text_color(rgb(MUTED)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .truncate()
+                            .text_color(rgb(if visible { TEXT } else { FAINT }))
+                            .child(name.clone()),
+                    )
+                    .child(
+                        Button::new(("visible", id))
+                            .ghost()
+                            .xsmall()
+                            .icon(if visible {
+                                IconName::Eye
+                            } else {
+                                IconName::EyeOff
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.canvas_commands(
+                                    vec![Command::SetVisibility {
+                                        id,
+                                        visible: !visible,
+                                    }],
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if let Some(canvas) = &mut this.canvas {
+                            canvas.selected = Some(id);
+                        }
+                        this.sync_layer_controls(window, cx);
+                        if event.click_count() == 2 {
+                            this.open_rename_layer(id, name.clone(), window, cx);
+                        }
+                        cx.notify();
+                    }))
+            });
         let has_selection = canvas.selected.is_some();
         let replaceable = self
             .selected_layer()
@@ -246,35 +204,13 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_5()
-            .child(
-                group("Add", Some(defaults)).child(
-                    div()
-                        .flex()
-                        .gap_1p5()
-                        .child(add("text", "Text"))
-                        .child(add("rectangle", "Box"))
-                        .child(add("ellipse", "Circle"))
-                        .child(add("image", "Image")),
-                ),
-            )
+            .child(group("Tool", Some(defaults)).child(tool))
             .child(
                 group(
                     "Layers",
                     has_selection.then(|| {
                         div()
                             .flex()
-                            .child(action("layer-up", IconName::ArrowUp, "Move up").on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.move_selected(1, window, cx)
-                                }),
-                            ))
-                            .child(
-                                action("layer-down", IconName::ArrowDown, "Move down").on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.move_selected(-1, window, cx)
-                                    }),
-                                ),
-                            )
                             .when(replaceable, |el| {
                                 el.child(
                                     action("layer-replace", IconName::Replace, "Replace image")

@@ -10,7 +10,7 @@ use image::DynamicImage;
 use lumen_core::Adjustments;
 use spectrum::library::Service;
 use spectrum_library::AssetId;
-use std::{sync::Arc, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 /// Long edge of the decoded source, enough to fill a Retina display.
 const SOURCE: u32 = 2560;
@@ -174,21 +174,22 @@ impl Workspace {
         let Some(id) = self.open_image() else {
             return;
         };
-        if self
-            .pending_save
+        let edits = &mut self.edits;
+        if edits
+            .pending
             .as_ref()
             .is_some_and(|(other, _)| *other != id)
         {
-            self.save_now(window, cx);
+            edits.checkpoint();
         }
-        self.pending_save = Some((id, self.adjust.clone()));
-        self.save_generation += 1;
-        let generation = self.save_generation;
+        edits.pending = Some((id, self.adjust.clone()));
+        edits.generation += 1;
+        let generation = edits.generation;
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SAVE_AFTER).await;
             this.update_in(cx, |this, window, cx| {
-                if this.save_generation == generation {
-                    this.save_in_background(window, cx);
+                if this.edits.generation == generation {
+                    this.save_now(window, cx);
                 }
             })
             .ok();
@@ -196,34 +197,54 @@ impl Workspace {
         .detach();
     }
 
-    /// Saves queued adjustments off the main thread, one save at a time.
-    fn save_in_background(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.saving {
-            return;
-        }
-        let (Some((id, adjustments)), Ok(store)) = (self.pending_save.take(), &self.store) else {
+    /// Queues any waiting adjustments now, before navigation or history steps.
+    pub fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.edits.checkpoint();
+        self.run_durable(window, cx);
+    }
+
+    /// Runs queued saves and history steps in order, one at a time, off the
+    /// main thread. The view never waits for them.
+    fn run_durable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Ok(store), false) = (&self.store, self.edits.busy) else {
             return;
         };
-        self.saving = true;
-        let (root, lock) = (store.root.clone(), self.save_lock.clone());
-        let task = cx.background_executor().spawn(async move {
-            let _order = lock.lock();
-            Service::open(&root)?.set_adjustments(id, adjustments)
+        let Some(op) = self.edits.queue.pop_front() else {
+            return;
+        };
+        self.edits.busy = true;
+        let root = store.root.clone();
+        let task = cx.background_executor().spawn({
+            let op = op.clone();
+            async move {
+                let service = Service::open(&root)?;
+                match op {
+                    Durable::Save(id, adjustments) => service.set_adjustments(id, *adjustments),
+                    Durable::Step(id, forward, _) => service.step_history(id, forward),
+                }
+            }
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
-                this.saving = false;
+                this.edits.busy = false;
+                let id = match op {
+                    Durable::Save(id, _) | Durable::Step(id, _, _) => id,
+                };
                 if let Ok(store) = &mut this.store {
                     store.thumbs.remove(&id);
                 }
-                if let Err(error) = result {
-                    this.notify_error(error, window, cx);
+                match result {
+                    // A step past this session's edits: show what the library holds.
+                    Ok(()) if matches!(op, Durable::Step(_, _, true)) => {
+                        if this.open_image() == Some(id) {
+                            this.refresh_open_image(id, window, cx);
+                        }
+                    }
+                    Ok(()) => {}
+                    Err(error) => this.notify_error(error, window, cx),
                 }
-                // Edits that arrived meanwhile and have already gone quiet.
-                if this.pending_save.is_some() {
-                    this.save_in_background(window, cx);
-                }
+                this.run_durable(window, cx);
                 cx.notify();
             })
             .ok();
@@ -231,21 +252,85 @@ impl Workspace {
         .detach();
     }
 
-    /// Saves queued adjustments now, after any save already running, so
-    /// history steps and other readers see them.
-    pub fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some((id, adjustments)), Ok(store)) = (self.pending_save.take(), &mut self.store)
-        else {
+    /// Command+Z and Command+Shift+Z on the open image: this session's edits
+    /// step back and forth at once; the library catches up behind.
+    pub fn step_image_history(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.open_image() else {
             return;
         };
-        let lock = self.save_lock.clone();
-        let result = {
-            let _order = lock.lock();
-            store.service.set_adjustments(id, adjustments)
+        let edits = &mut self.edits;
+        edits.checkpoint();
+        let shown = if forward {
+            edits
+                .future
+                .pop()
+                .inspect(|next| edits.history.push(next.clone()))
+        } else if edits.history.len() > 1 {
+            let current = edits.history.pop();
+            edits.future.extend(current);
+            edits.history.last().cloned()
+        } else {
+            None
         };
-        store.thumbs.remove(&id);
-        if let Err(error) = result {
-            self.notify_error(error, window, cx);
+        // Redo does not survive between engine sessions, so a redone state is
+        // saved again; stepping back works across sessions.
+        edits.queue.push_back(match &shown {
+            Some(next) if forward => Durable::Save(id, Box::new(next.clone())),
+            _ => Durable::Step(id, forward, shown.is_none()),
+        });
+        if let Some(adjustments) = shown {
+            self.adjust = adjustments;
+            self.sync_color_sliders(window, cx);
+            self.render_preview(window, cx);
         }
+        self.run_durable(window, cx);
+    }
+}
+
+/// Saving and history for the open image, kept in step with the library.
+#[derive(Default)]
+pub struct ImageEdits {
+    /// Adjustments waiting for edits to pause.
+    pending: Option<(AssetId, Adjustments)>,
+    generation: u64,
+    queue: VecDeque<Durable>,
+    busy: bool,
+    /// Adjustments after each save this session, oldest first; each entry
+    /// matches one step of the library's history.
+    history: Vec<Adjustments>,
+    future: Vec<Adjustments>,
+}
+
+#[derive(Clone)]
+enum Durable {
+    Save(AssetId, Box<Adjustments>),
+    /// Step back or forward; the flag reloads the image afterward.
+    Step(AssetId, bool, bool),
+}
+
+impl ImageEdits {
+    /// Starts history at the adjustments just loaded for an image.
+    pub fn reset(&mut self, adjustments: Adjustments) {
+        self.history = vec![adjustments];
+        self.future.clear();
+    }
+
+    /// Turns waiting adjustments into a queued save and a history entry.
+    fn checkpoint(&mut self) {
+        let Some((id, adjustments)) = self.pending.take() else {
+            return;
+        };
+        if self.history.last() == Some(&adjustments) {
+            return;
+        }
+        self.history.push(adjustments.clone());
+        self.future.clear();
+        self.queue
+            .push_back(Durable::Save(id, Box::new(adjustments)));
     }
 }

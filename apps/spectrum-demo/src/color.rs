@@ -82,6 +82,7 @@ impl Workspace {
             Ok(photo) => {
                 self.adjust = photo.adjustments.clone();
                 if self.open == Open::Image(id) {
+                    self.edits.reset(photo.adjustments.clone());
                     self.photo_info = Some(photo);
                 }
             }
@@ -187,17 +188,7 @@ impl Workspace {
             };
             return self.canvas_commands(vec![command], window, cx);
         }
-        let Some(id) = self.open_image() else {
-            return;
-        };
-        self.save_now(window, cx);
-        let Ok(store) = &self.store else {
-            return;
-        };
-        if let Err(error) = store.service.step_history(id, forward) {
-            return self.notify_error(error, window, cx);
-        }
-        self.refresh_open_image(id, window, cx);
+        self.step_image_history(forward, window, cx);
     }
 
     /// Reloads the open image's controls and render after an outside change.

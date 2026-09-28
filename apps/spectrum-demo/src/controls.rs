@@ -5,7 +5,11 @@ use gpui_component::{
     menu::{DropdownMenu, PopupMenu, PopupMenuItem},
     slider::{Slider, SliderState},
 };
-use std::rc::Rc;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashSet,
+    rc::Rc,
+};
 
 /// A titled group of sidebar controls, with an optional action on the right.
 pub fn group(title: &'static str, action: Option<AnyElement>) -> Div {
@@ -23,7 +27,28 @@ pub fn group(title: &'static str, action: Option<AnyElement>) -> Div {
     )
 }
 
+thread_local! {
+    static LAID_OUT: RefCell<HashSet<EntityId>> = RefCell::default();
+    static NEEDS_FRAME: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Sliders place their thumb from the previous frame's width, which a new
+/// slider does not have yet, so its first frame is drawn clear.
+fn first_frame(state: &Entity<SliderState>) -> bool {
+    let first = LAID_OUT.with(|seen| seen.borrow_mut().insert(state.entity_id()));
+    if first {
+        NEEDS_FRAME.with(|needs| needs.set(true));
+    }
+    first
+}
+
+/// Whether a slider was drawn clear this frame and needs another frame.
+pub fn take_slider_frame() -> bool {
+    NEEDS_FRAME.with(|needs| needs.replace(false))
+}
+
 pub fn slider_row(label: &'static str, value: String, state: &Entity<SliderState>) -> Div {
+    let first = first_frame(state);
     div()
         .flex()
         .flex_col()
@@ -36,7 +61,11 @@ pub fn slider_row(label: &'static str, value: String, state: &Entity<SliderState
                 .child(label)
                 .child(div().text_color(rgb(MUTED)).child(value)),
         )
-        .child(Slider::new(state))
+        .child(
+            div()
+                .when(first, |el| el.opacity(0.))
+                .child(Slider::new(state)),
+        )
 }
 
 /// Equal-width segments with one selected, such as sidebar modes or edit scope.

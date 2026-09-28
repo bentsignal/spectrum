@@ -2,6 +2,7 @@
 //! content area so it never covers the sidebar.
 use crate::{
     theme::*,
+    tools::{TOOLS, Tool, tool_glyph},
     workspace::{LibraryView, Mode, Open, Place, SIDEBAR_WIDTH, Workspace},
 };
 use gpui::{prelude::*, *};
@@ -24,9 +25,12 @@ enum Choice {
     Reveal(AssetId),
     NewProject,
     Create(String),
+    Tool(Tool),
 }
 
 struct Item {
+    /// Drawn instead of `icon` for tools.
+    tool: Option<Tool>,
     icon: IconName,
     label: SharedString,
     detail: Option<SharedString>,
@@ -36,6 +40,17 @@ struct Item {
 impl Workspace {
     pub fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_adding.clear();
+        self.palette_tools = false;
+        self.show_palette(window, cx);
+    }
+
+    /// Command+P or the tool button: the palette lists canvas tools.
+    pub fn open_tools(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.canvas.is_none() {
+            return;
+        }
+        self.palette_adding.clear();
+        self.palette_tools = true;
         self.show_palette(window, cx);
     }
 
@@ -121,7 +136,13 @@ impl Workspace {
     fn show_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = true;
         self.palette_index = 0;
+        let placeholder = if self.palette_tools {
+            "Choose a tool"
+        } else {
+            "Go to a project, asset, or place"
+        };
         self.palette_query.update(cx, |state, cx| {
+            state.set_placeholder(placeholder, window, cx);
             state.set_value("", window, cx);
             state.focus(window, cx);
         });
@@ -155,6 +176,19 @@ impl Workspace {
             return Vec::new();
         };
         let mut items = Vec::new();
+        if self.palette_tools {
+            return TOOLS
+                .iter()
+                .filter(|(_, name, ..)| matches(name))
+                .map(|(tool, name, detail)| Item {
+                    tool: Some(*tool),
+                    icon: IconName::Menu,
+                    label: (*name).into(),
+                    detail: Some((*detail).into()),
+                    choice: Choice::Tool(*tool),
+                })
+                .collect();
+        }
         if !self.palette_adding.is_empty() {
             items.extend(
                 store
@@ -162,6 +196,7 @@ impl Workspace {
                     .iter()
                     .filter(|p| self.place != Place::Project(p.id) && matches(&p.name))
                     .map(|p| Item {
+                        tool: None,
                         icon: IconName::FolderClosed,
                         label: p.name.clone().into(),
                         detail: Some(
@@ -174,6 +209,7 @@ impl Workspace {
         } else if let Place::Project(_) = self.place {
             if matches("Overview") {
                 items.push(Item {
+                    tool: None,
                     icon: IconName::LayoutDashboard,
                     label: "Overview".into(),
                     detail: Some(self.view_name()),
@@ -188,6 +224,7 @@ impl Workspace {
                     .map(|e| {
                         let canvas = e.asset.kind == "canvas";
                         Item {
+                            tool: None,
                             icon: if canvas {
                                 IconName::LayoutDashboard
                             } else {
@@ -215,6 +252,7 @@ impl Workspace {
                     .map(|a| {
                         let canvas = a.kind == "canvas";
                         Item {
+                            tool: None,
                             icon: if canvas {
                                 IconName::LayoutDashboard
                             } else {
@@ -246,6 +284,7 @@ impl Workspace {
                 .into_iter()
                 .filter(|(_, label, _)| matches(label))
                 .map(|(icon, label, choice)| Item {
+                    tool: None,
                     icon,
                     label: label.into(),
                     detail: Some("Home".into()),
@@ -258,6 +297,7 @@ impl Workspace {
                     .iter()
                     .filter(|p| matches(&p.name))
                     .map(|p| Item {
+                        tool: None,
                         icon: IconName::FolderClosed,
                         label: p.name.clone().into(),
                         detail: Some(
@@ -274,6 +314,7 @@ impl Workspace {
             .any(|p| p.name.to_lowercase() == lower);
         items.push(if query.is_empty() || exact {
             Item {
+                tool: None,
                 icon: IconName::Plus,
                 label: "New project…".into(),
                 detail: None,
@@ -281,6 +322,7 @@ impl Workspace {
             }
         } else {
             Item {
+                tool: None,
                 icon: IconName::Plus,
                 label: format!("Create project \"{query}\"").into(),
                 detail: None,
@@ -302,6 +344,7 @@ impl Workspace {
             Choice::Enter(id) => self.enter_project(id, window, cx),
             Choice::Open(open) => self.open_item(open, window, cx),
             Choice::Reveal(id) => self.reveal(id, window, cx),
+            Choice::Tool(tool) => self.set_tool(tool, window, cx),
             Choice::AddTo(project, name) => {
                 let ids = std::mem::take(&mut self.palette_adding);
                 self.change(window, cx, |store| {
@@ -340,7 +383,13 @@ impl Workspace {
                 .text_sm()
                 .when(index == selected, |el| el.bg(rgb(SELECTED)))
                 .when(index != selected, |el| el.hover(|el| el.bg(rgb(HOVER))))
-                .child(Icon::new(item.icon).small().text_color(rgb(MUTED)))
+                .child(match item.tool {
+                    Some(tool) => tool_glyph(tool).into_any_element(),
+                    None => Icon::new(item.icon)
+                        .small()
+                        .text_color(rgb(MUTED))
+                        .into_any_element(),
+                })
                 .child(div().flex_1().truncate().child(item.label))
                 .children(
                     item.detail

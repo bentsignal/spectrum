@@ -1,6 +1,9 @@
-//! A full color picker: a saturation and brightness field, a hue strip, hex
-//! entry, and common colors. Color wells open it in a popover.
-use crate::theme::*;
+//! A full color picker: a saturation and brightness field, a hue strip, the
+//! color as text (hex, RGB, HSL, or OKLCH), and common colors. Color wells open it in a popover.
+use crate::{
+    color_text::{self, FORMATS, Format},
+    theme::*,
+};
 use gpui::{prelude::*, *};
 use gpui_component::{
     Selectable,
@@ -41,10 +44,11 @@ pub struct ColorPicker {
     hsv: (f32, f32, f32),
     alpha: u8,
     hex: Entity<InputState>,
+    format: Format,
     field: Rc<RefCell<Bounds<Pixels>>>,
     strip: Rc<RefCell<Bounds<Pixels>>>,
     drag: Option<Part>,
-    /// Hex field changes we made ourselves, which must not re-pick.
+    /// Text field changes we made ourselves, which must not re-pick.
     echoes: u8,
     _subscription: Subscription,
 }
@@ -68,36 +72,28 @@ pub fn to_hsv([r, g, b, _]: [u8; 4]) -> (f32, f32, f32) {
     (hue, saturation, max)
 }
 
-pub fn to_rgb((h, s, v): (f32, f32, f32)) -> [u8; 3] {
-    let c = v * s;
+/// The pure-hue part of an RGB color with chroma `c`, before lightness.
+pub fn hue_rgb(h: f32, c: f32) -> (f32, f32, f32) {
     let x = c * (1. - ((h / 60.).rem_euclid(2.) - 1.).abs());
-    let (r, g, b) = match (h.rem_euclid(360.) / 60.) as u32 {
+    match (h.rem_euclid(360.) / 60.) as u32 {
         0 => (c, x, 0.),
         1 => (x, c, 0.),
         2 => (0., c, x),
         3 => (0., x, c),
         4 => (x, 0., c),
         _ => (c, 0., x),
-    };
+    }
+}
+
+pub fn to_rgb((h, s, v): (f32, f32, f32)) -> [u8; 3] {
+    let c = v * s;
+    let (r, g, b) = hue_rgb(h, c);
     let m = v - c;
     [r, g, b].map(|channel| ((channel + m) * 255.).round() as u8)
 }
 
 pub fn to_hsla([r, g, b, a]: [u8; 4]) -> Hsla {
     rgba(u32::from_be_bytes([r, g, b, a])).into()
-}
-
-fn parse_hex(text: &str) -> Option<[u8; 4]> {
-    let text = text.trim().trim_start_matches('#');
-    let value = u32::from_str_radix(text, 16).ok()?;
-    match text.len() {
-        6 => {
-            let [_, r, g, b] = value.to_be_bytes();
-            Some([r, g, b, 255])
-        }
-        8 => Some(value.to_be_bytes()),
-        _ => None,
-    }
 }
 
 impl ColorPicker {
@@ -116,7 +112,7 @@ impl ColorPicker {
                         return;
                     }
                     let text = this.hex.read(cx).value().to_string();
-                    if let Some(color) = parse_hex(&text) {
+                    if let Some(color) = color_text::parse(&text, this.format) {
                         this.set_rgba(color);
                         this.pick(window, cx, false);
                     }
@@ -126,6 +122,7 @@ impl ColorPicker {
                 hsv: to_hsv(color),
                 alpha: color[3],
                 hex,
+                format: Format::Hex,
                 field: Default::default(),
                 strip: Default::default(),
                 drag: None,
@@ -161,12 +158,7 @@ impl ColorPicker {
     }
 
     fn show_hex(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let [r, g, b, a] = self.rgba();
-        let text = if a == 255 {
-            format!("{r:02X}{g:02X}{b:02X}")
-        } else {
-            format!("{r:02X}{g:02X}{b:02X}{a:02X}")
-        };
+        let text = color_text::format(self.rgba(), self.format);
         self.echoes += 1;
         self.hex
             .update(cx, |state, cx| state.set_value(text, window, cx));
@@ -234,6 +226,10 @@ impl Render for ColorPicker {
         let (hue, saturation, value) = self.hsv;
         let pure = hsla(hue / 360., 1., 0.5, 1.);
         let current = to_hsla(self.rgba());
+        let format_name = FORMATS
+            .iter()
+            .find(|(f, _)| *f == self.format)
+            .map_or("Hex", |(_, name)| *name);
         // While dragging, follow the pointer anywhere in the window.
         if let Some(part) = self.drag {
             let view = cx.entity();
@@ -372,8 +368,21 @@ impl Render for ColorPicker {
                             .bg(current),
                     )
                     .child(
-                        Input::new(&self.hex)
-                            .prefix(div().text_sm().text_color(rgb(FAINT)).child("#")),
+                        Input::new(&self.hex).prefix(
+                            div()
+                                .id("color-format")
+                                .text_xs()
+                                .text_color(rgb(FAINT))
+                                .hover(|el| el.text_color(rgb(TEXT)))
+                                .child(format_name)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let index = FORMATS.iter().position(|(f, _)| *f == this.format);
+                                    this.format =
+                                        FORMATS[(index.unwrap_or(0) + 1) % FORMATS.len()].0;
+                                    this.show_hex(window, cx);
+                                    cx.notify();
+                                })),
+                        ),
                     ),
             )
             .child(div().flex().justify_between().children(swatches))
