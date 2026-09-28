@@ -38,7 +38,8 @@ the selection. Dragging a selection box near the top or bottom edge scrolls. Ope
 an image in a project shows Color: a histogram above one section at a time
 (Light, Color, Curves, Mixer, Grading, Detail). Each change sends the image's
 whole adjustment model to the engine; Command+Z and Command+Shift+Z step its
-edit history. The
+edit history. Crop mode shows the whole frame with a draggable crop box and
+aspect presets; its sidebar rotates, flips, and straightens. The
 sample canvas shows Color acting on a selected layer. Canvases from the library
 cannot be opened here yet.
 

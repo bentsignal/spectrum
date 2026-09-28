@@ -66,6 +66,9 @@ impl Workspace {
             let value = fields::get(&self.adjust, field.key, self.mix_band, self.grade_range);
             state.update(cx, |state, cx| state.set_value(value, window, cx));
         }
+        let straighten = self.adjust.straighten;
+        self.straighten
+            .update(cx, |state, cx| state.set_value(straighten, window, cx));
         cx.notify();
     }
 

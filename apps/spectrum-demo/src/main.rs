@@ -3,6 +3,7 @@ mod canvas;
 mod color;
 mod color_fields;
 mod controls;
+mod crop;
 mod curves;
 mod grid;
 mod histogram;

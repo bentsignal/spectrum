@@ -42,6 +42,7 @@ pub enum Mode {
     Projects,
     Assets,
     Color,
+    Crop,
     Layers,
 }
 
@@ -51,6 +52,7 @@ impl Mode {
             Mode::Projects => "Projects",
             Mode::Assets => "Assets",
             Mode::Color => "Color",
+            Mode::Crop => "Crop",
             Mode::Layers => "Layers",
         }
     }
@@ -60,6 +62,7 @@ impl Mode {
             Mode::Projects => IconName::FolderClosed,
             Mode::Assets => IconName::LayoutDashboard,
             Mode::Color => IconName::Sun,
+            Mode::Crop => IconName::Maximize,
             Mode::Layers => IconName::GalleryVerticalEnd,
         }
     }
@@ -135,6 +138,11 @@ pub struct Workspace {
     pub curve_channel: usize,
     pub curve_drag: Option<usize>,
     pub curve_bounds: Rc<RefCell<Bounds<Pixels>>>,
+    pub straighten: Entity<SliderState>,
+    pub frame: Option<crate::crop::Frame>,
+    pub crop_drag: Option<crate::crop::CropDrag>,
+    pub crop_aspect: usize,
+    pub image_bounds: Rc<RefCell<Bounds<Pixels>>>,
     /// A color edit is running; `color_dirty` asks for another when it ends.
     pub color_busy: bool,
     pub color_dirty: bool,
@@ -191,6 +199,7 @@ impl Workspace {
         let temperature = slider(cx, -100., 100., 1., 0.);
         let saturation = slider(cx, -100., 100., 1., 0.);
         let opacity = slider(cx, 0., 100., 1., 100.);
+        let straighten = slider(cx, -45., 45., 0.1, 0.);
         let color: Vec<_> = crate::color_fields::FIELDS
             .iter()
             .map(|field| slider(cx, field.min, field.max, field.step, 0.))
@@ -217,6 +226,15 @@ impl Workspace {
                 cx.notify();
             }));
         }
+        subscriptions.push(cx.subscribe_in(
+            &straighten,
+            window,
+            |this, state, _: &SliderEvent, window, cx| {
+                this.adjust.straighten = state.read(cx).value().start();
+                this.adjust.crop = None;
+                this.schedule_color_edit(window, cx);
+            },
+        ));
         for (index, state) in color.iter().enumerate() {
             subscriptions.push(cx.subscribe_in(
                 state,
@@ -278,6 +296,11 @@ impl Workspace {
             curve_channel: 0,
             curve_drag: None,
             curve_bounds: Default::default(),
+            straighten,
+            frame: None,
+            crop_drag: None,
+            crop_aspect: 0,
+            image_bounds: Default::default(),
             color_busy: false,
             color_dirty: false,
             assets: samples::library(),
@@ -309,7 +332,7 @@ impl Workspace {
         match (self.place, self.open) {
             (Place::Home, _) => vec![Mode::Projects, Mode::Assets],
             (_, Open::Overview) => Vec::new(),
-            (_, Open::Image(_)) => vec![Mode::Color],
+            (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop],
             (_, Open::Sample) => vec![Mode::Layers, Mode::Color],
         }
     }
@@ -570,6 +593,7 @@ impl Workspace {
                 self.sample_color_sidebar(cx).into_any_element()
             }
             (_, Mode::Color) => self.color_sidebar(cx).into_any_element(),
+            (_, Mode::Crop) => self.crop_sidebar(cx).into_any_element(),
             _ => self.canvas_sidebar(window, cx).into_any_element(),
         };
         div()
@@ -689,6 +713,10 @@ impl Render for Workspace {
             }
             (Place::Home, _) | (_, Open::Overview) => {
                 self.asset_grid(area.width, cx).into_any_element()
+            }
+            (_, Open::Image(_)) if self.mode == Mode::Crop => {
+                self.request_frame(cx);
+                self.crop_view(cx).into_any_element()
             }
             (_, Open::Image(id)) => self.image_view(id, cx).into_any_element(),
             (_, Open::Sample) => self.canvas(area, cx).into_any_element(),
