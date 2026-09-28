@@ -24,6 +24,7 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Command+K | Go to a project, place, or asset |
 | Command+A, Esc | Select all assets, clear the selection |
 | Command+= and Command+- | Grid zoom, also the − and + buttons above grids |
+| Command+Z, Command+Shift+Z | Undo and redo edits to the open image |
 
 Control replaces Command on Linux and Windows. Command+S is deliberately unbound.
 
@@ -34,7 +35,10 @@ Shift-click, Command-click, and drag-box selection. Right-click acts on the whol
 selection: rename, add to or remove from a project, delete, or restore. "Add to
 project…" opens a searchable project picker that can also create a project for
 the selection. Dragging a selection box near the top or bottom edge scrolls. Opening
-an image in a project shows Color, whose sliders make real engine edits. The
+an image in a project shows Color: a histogram above one section at a time
+(Light, Color, Curves, Mixer, Grading, Detail). Each change sends the image's
+whole adjustment model to the engine; Command+Z and Command+Shift+Z step its
+edit history. The
 sample canvas shows Color acting on a selected layer. Canvases from the library
 cannot be opened here yet.
 

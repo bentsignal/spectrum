@@ -187,6 +187,36 @@ impl Service {
         )?;
         Ok(())
     }
+    /// Replaces an image's whole adjustment set, including curves, HSL, and
+    /// color grading, which patches do not cover.
+    pub fn set_adjustments(&self, id: AssetId, adjustments: lumen_core::Adjustments) -> Result<()> {
+        let asset = self.library.get(id)?;
+        if asset.kind != "image" {
+            bail!("expected image asset");
+        }
+        let item = asset.item.context("image missing item")?;
+        live::image(
+            &self.library.path(&asset)?,
+            item,
+            lumen_core::Command::SetAdjustments {
+                id: item,
+                adjustments,
+            },
+        )?;
+        Ok(())
+    }
+    /// Steps an image's edit history back or forward.
+    pub fn step_history(&self, id: AssetId, forward: bool) -> Result<()> {
+        let asset = self.library.get(id)?;
+        let item = asset.item.context("image missing item")?;
+        let command = if forward {
+            lumen_core::Command::Redo
+        } else {
+            lumen_core::Command::Undo
+        };
+        live::image(&self.library.path(&asset)?, item, command)?;
+        Ok(())
+    }
     pub fn create_canvas(&self, name: String, width: u32, height: u32) -> Result<Asset> {
         let path = self
             .library

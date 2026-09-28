@@ -1,8 +1,11 @@
 mod adjust;
 mod canvas;
 mod color;
+mod color_fields;
 mod controls;
+mod curves;
 mod grid;
+mod histogram;
 mod home;
 mod library;
 mod marquee;
@@ -36,7 +39,9 @@ gpui::actions!(
         SelectAll,
         ClearSelection,
         ZoomIn,
-        ZoomOut
+        ZoomOut,
+        Undo,
+        Redo
     ]
 );
 
@@ -60,6 +65,8 @@ fn main() {
             KeyBinding::new("escape", ClearSelection, None),
             KeyBinding::new("secondary-=", ZoomIn, None),
             KeyBinding::new("secondary--", ZoomOut, None),
+            KeyBinding::new("secondary-z", Undo, None),
+            KeyBinding::new("secondary-shift-z", Redo, None),
         ]);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {

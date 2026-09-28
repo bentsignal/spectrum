@@ -37,6 +37,8 @@ pub struct Store {
     pub thumbs: HashMap<AssetId, Thumb>,
     /// Large renders for the open image, keyed by asset.
     pub large: HashMap<AssetId, Thumb>,
+    /// Histograms of the large renders.
+    pub histograms: HashMap<AssetId, std::sync::Arc<crate::histogram::Histogram>>,
     /// Each project's most recently added asset, used as its cover.
     pub covers: HashMap<ProjectId, AssetId>,
 }
@@ -78,6 +80,7 @@ impl Store {
             entries: Vec::new(),
             thumbs: HashMap::new(),
             large: HashMap::new(),
+            histograms: HashMap::new(),
             covers: HashMap::new(),
         })
     }

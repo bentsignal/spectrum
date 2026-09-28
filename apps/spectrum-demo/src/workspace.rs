@@ -1,6 +1,6 @@
 use crate::{
-    ClearSelection, Mode1, Mode2, Mode3, Mode4, Mode5, OpenPalette, SelectAll, ZoomIn, ZoomOut,
-    color,
+    ClearSelection, Mode1, Mode2, Mode3, Mode4, Mode5, OpenPalette, Redo, SelectAll, Undo, ZoomIn,
+    ZoomOut,
     samples::{self, Asset, Look},
     store::Store,
     theme::*,
@@ -125,8 +125,16 @@ pub struct Workspace {
     pub sort: usize,
     /// Index into `grid::ZOOM`, the asset card width.
     pub zoom: usize,
-    /// Real color correction sliders, in `color::FIELDS` order.
+    /// Real color correction sliders, in `color_fields::FIELDS` order.
     pub color: Vec<Entity<SliderState>>,
+    /// The open image's adjustments, sent whole to the engine on each change.
+    pub adjust: lumen_core::Adjustments,
+    pub color_section: usize,
+    pub mix_band: usize,
+    pub grade_range: usize,
+    pub curve_channel: usize,
+    pub curve_drag: Option<usize>,
+    pub curve_bounds: Rc<RefCell<Bounds<Pixels>>>,
     /// A color edit is running; `color_dirty` asks for another when it ends.
     pub color_busy: bool,
     pub color_dirty: bool,
@@ -183,7 +191,7 @@ impl Workspace {
         let temperature = slider(cx, -100., 100., 1., 0.);
         let saturation = slider(cx, -100., 100., 1., 0.);
         let opacity = slider(cx, 0., 100., 1., 100.);
-        let color: Vec<_> = color::FIELDS
+        let color: Vec<_> = crate::color_fields::FIELDS
             .iter()
             .map(|field| slider(cx, field.min, field.max, field.step, 0.))
             .collect();
@@ -209,11 +217,13 @@ impl Workspace {
                 cx.notify();
             }));
         }
-        for state in &color {
+        for (index, state) in color.iter().enumerate() {
             subscriptions.push(cx.subscribe_in(
                 state,
                 window,
-                |this, _, _: &SliderEvent, window, cx| this.schedule_color_edit(window, cx),
+                move |this, _, _: &SliderEvent, window, cx| {
+                    this.color_slider_changed(index, window, cx)
+                },
             ));
         }
         let layer = |name, icon| Layer {
@@ -261,6 +271,13 @@ impl Workspace {
             sort: 0,
             zoom: crate::grid::DEFAULT_ZOOM,
             color,
+            adjust: Default::default(),
+            color_section: 0,
+            mix_band: 0,
+            grade_range: 0,
+            curve_channel: 0,
+            curve_drag: None,
+            curve_bounds: Default::default(),
             color_busy: false,
             color_dirty: false,
             assets: samples::library(),
@@ -311,6 +328,11 @@ impl Workspace {
             self.show(view, window, cx);
         }
         cx.notify();
+    }
+
+    /// Re-render once more so sliders shown for the first time lay out.
+    pub fn settle_next_frame(&mut self) {
+        self.settle = 1;
     }
 
     /// Command+1 to 9: the nth mode offered.
@@ -712,6 +734,14 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom_by(1, cx)))
+            .on_action(
+                cx.listener(|this, _: &Undo, window, cx| {
+                    this.step_color_history(false, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &Redo, window, cx| this.step_color_history(true, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom_by(-1, cx)))
             .on_action(cx.listener(|this, _: &ClearSelection, window, cx| {
                 if this.picker_open {
