@@ -24,6 +24,7 @@ spectrum canvas new "Composition" --width 1920 --height 1080
 spectrum canvas list
 spectrum canvas place <canvas-uuid> <image-uuid>
 spectrum images adjust <image-uuid> '{"exposure":0.4,"vibrance":12}'
+spectrum images apply-edits <from-image-uuid> <image-uuid>...  # all edits, crop included
 spectrum canvas export <canvas-uuid> /path/to/output.png
 spectrum images export <image-uuid> /path/to/output.jpg --quality 90 --max-size 3200
 spectrum copy <asset-uuid>

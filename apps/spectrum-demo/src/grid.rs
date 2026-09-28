@@ -311,7 +311,7 @@ impl Workspace {
         let view = cx.entity();
         move |menu, _, cx| {
             let menu = menu.min_w(px(280.));
-            let (ids, current, place, name) = {
+            let (ids, current, place, name, images, copied) = {
                 let this = view.read(cx);
                 let Ok(store) = &this.store else {
                     return menu;
@@ -328,7 +328,13 @@ impl Workspace {
                     .find(|e| e.asset.id == id)
                     .map(|e| e.asset.name.clone())
                     .unwrap_or_default();
-                (ids, this.view, place, name)
+                let images: Vec<AssetId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| store.is_image(*id))
+                    .collect();
+                let copied = this.copied_edits.is_some();
+                (ids, this.view, place, name, images, copied)
             };
             let count = ids.len();
             let noun = |n: usize| {
@@ -393,6 +399,45 @@ impl Workspace {
                         view.update(cx, |this, cx| this.open_add_to_project(ids, window, cx))
                     }),
                 )
+            };
+            let menu = if images.is_empty() {
+                menu
+            } else {
+                let copy = view.clone();
+                let paste = view.clone();
+                let single = (count == 1).then_some(id);
+                menu.separator()
+                    .when_some(single, |menu, id| {
+                        menu.item(PopupMenuItem::new("Copy edits").on_click(
+                            move |_, window, cx| {
+                                copy.update(cx, |this, cx| this.copy_edits(Some(id), window, cx))
+                            },
+                        ))
+                    })
+                    .when(copied, |menu| {
+                        let label = match images.len() {
+                            1 => "Paste edits".to_string(),
+                            n => format!("Paste edits onto {n} images"),
+                        };
+                        menu.item(
+                            PopupMenuItem::element(move |_, _| {
+                                described(
+                                    label.clone(),
+                                    "Replaces their edits, crop included.",
+                                    TEXT,
+                                )
+                            })
+                            .on_click({
+                                let images = images.clone();
+                                move |_, window, cx| {
+                                    let images = images.clone();
+                                    paste.update(cx, |this, cx| {
+                                        this.paste_edits(Some(images), window, cx)
+                                    })
+                                }
+                            }),
+                        )
+                    })
             };
             let menu = match place {
                 Place::Project(project) => {

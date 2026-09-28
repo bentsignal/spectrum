@@ -78,6 +78,12 @@ enum Images {
         asset: AssetId,
         patch: String,
     },
+    /// Give images every edit from another image, crop included.
+    ApplyEdits {
+        from: AssetId,
+        #[arg(required = true)]
+        to: Vec<AssetId>,
+    },
     /// Execute any image engine command as JSON. Photo IDs are local to the asset's document.
     Command {
         asset: AssetId,
@@ -209,6 +215,12 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
                 quality,
             )?;
             serde_json::json!({"exported":path})
+        }
+        Domain::Images {
+            command: Images::ApplyEdits { from, to },
+        } => {
+            service.apply_edits(from, &to)?;
+            serde_json::json!({"from": from, "to": to})
         }
         Domain::Images { command } => {
             let (id, raw, patch) = match command {

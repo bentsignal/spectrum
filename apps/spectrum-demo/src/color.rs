@@ -81,7 +81,7 @@ impl Workspace {
         }
     }
 
-    fn open_image(&self) -> Option<AssetId> {
+    pub fn open_image(&self) -> Option<AssetId> {
         match self.open {
             Open::Image(id) => Some(id),
             _ => None,
@@ -225,6 +225,11 @@ impl Workspace {
         if let Err(error) = store.service.step_history(id, forward) {
             return self.notify_error(error, window, cx);
         }
+        self.refresh_open_image(id, window, cx);
+    }
+
+    /// Reloads the open image's controls and render after an outside change.
+    pub fn refresh_open_image(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
         self.load_color(id, window, cx);
         let root = store_root(self);
         self.color_busy = true;

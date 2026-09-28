@@ -1,7 +1,7 @@
 use crate::{
-    ClearSelection, DeleteSelection, Mode1, Mode2, Mode3, Mode4, Mode5, NudgeDown, NudgeDownFar,
-    NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp, NudgeUpFar, OpenPalette, Redo,
-    SelectAll, Undo, ZoomIn, ZoomOut, store::Store, theme::*,
+    ClearSelection, CopyEdits, DeleteSelection, Mode1, Mode2, Mode3, Mode4, Mode5, NudgeDown,
+    NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp, NudgeUpFar,
+    OpenPalette, PasteEdits, Redo, SelectAll, Undo, ZoomIn, ZoomOut, store::Store, theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -104,6 +104,8 @@ pub struct Workspace {
     pub palette_index: usize,
     /// Assets the palette is adding to a project; empty when it navigates.
     pub palette_adding: Vec<AssetId>,
+    /// Edits copied from an image, ready to paste onto others.
+    pub copied_edits: Option<lumen_core::Adjustments>,
     pub picker_open: bool,
     pub picker_query: Entity<InputState>,
     pub picker_selected: Vec<AssetId>,
@@ -321,6 +323,7 @@ impl Workspace {
             palette_query,
             palette_index: 0,
             palette_adding: Vec::new(),
+            copied_edits: None,
             pending_add: Vec::new(),
             picker_open: false,
             picker_query,
@@ -857,6 +860,12 @@ impl Render for Workspace {
             )
             .on_action(
                 cx.listener(|this, _: &Redo, window, cx| this.step_color_history(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &CopyEdits, window, cx| this.copy_edits(None, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &PasteEdits, window, cx| this.paste_edits(None, window, cx)),
             )
             .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom_by(-1, cx)))
             .on_action(cx.listener(|this, _: &ClearSelection, window, cx| {

@@ -8,6 +8,7 @@ mod compare;
 mod controls;
 mod crop;
 mod curves;
+mod edits;
 mod grid;
 mod histogram;
 mod home;
@@ -54,7 +55,9 @@ gpui::actions!(
         NudgeLeftFar,
         NudgeRightFar,
         NudgeUpFar,
-        NudgeDownFar
+        NudgeDownFar,
+        CopyEdits,
+        PasteEdits
     ]
 );
 
@@ -80,6 +83,8 @@ fn main() {
             KeyBinding::new("secondary--", ZoomOut, None),
             KeyBinding::new("secondary-z", Undo, None),
             KeyBinding::new("secondary-shift-z", Redo, None),
+            KeyBinding::new("secondary-shift-c", CopyEdits, None),
+            KeyBinding::new("secondary-shift-v", PasteEdits, None),
             // Text fields bind these in their own context, which wins while typing.
             KeyBinding::new("backspace", DeleteSelection, None),
             KeyBinding::new("delete", DeleteSelection, None),

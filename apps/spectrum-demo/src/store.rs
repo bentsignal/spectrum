@@ -69,6 +69,12 @@ pub fn importable(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 impl Store {
+    pub fn is_image(&self, id: AssetId) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.asset.id == id && entry.asset.kind == "image")
+    }
+
     pub fn open() -> Result<Self> {
         let root = default_root()?;
         let mut service = Service::open(&root)?;

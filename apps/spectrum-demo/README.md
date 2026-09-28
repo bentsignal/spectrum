@@ -24,6 +24,7 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Command+A, Esc | Select all assets, clear the selection |
 | Command+= and Command+- | Grid zoom, also the − and + buttons above grids |
 | Command+Z, Command+Shift+Z | Undo and redo edits to the open image or canvas |
+| Command+Shift+C, Command+Shift+V | Copy the open or selected image's edits; paste them onto the open or selected images |
 | Arrow keys, Shift+arrows | Nudge the selected canvas layer 1 or 10 pixels |
 | Delete, Backspace | Remove the selected layer, or delete the selected assets |
 
@@ -33,7 +34,7 @@ Import assets accepts images and folders from a file picker or by dropping them
 on the main area. Inside a project, Import assets also offers "From your
 library…", a picker for assets already in Spectrum; imports join the project. Asset grids support click,
 Shift-click, Command-click, and drag-box selection. Right-click acts on the whole
-selection: rename, add to or remove from a project, delete, or restore. "Add to
+selection: rename, add to or remove from a project, copy or paste edits, delete, or restore. "Add to
 project…" opens a searchable project picker that can also create a project for
 the selection. Dragging a selection box near the top or bottom edge scrolls. Opening
 an image in a project shows Color: a histogram above one section at a time

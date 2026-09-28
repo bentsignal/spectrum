@@ -57,6 +57,9 @@ Overnight work on 2026-09-28 (the user asked for parity work while asleep):
 - Fixed: syncing the text field emitted a change that re-sent the text, looping
   once per render and overwriting later edits. GPUI Component emits
   `InputEvent::Change` even from `set_value`, so handlers must compare values.
+- Copy edits and Paste edits (right-click, or Command+Shift+C and V) give images
+  another image's whole adjustment set, crop included; the CLI is
+  `spectrum images apply-edits <from> <to>...`.
 - Unpublished canvas and image edits now report an error instead of passing
   silently (`live::canvas`, `live::image`).
 

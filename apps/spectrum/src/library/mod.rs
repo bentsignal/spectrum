@@ -205,6 +205,14 @@ impl Service {
         )?;
         Ok(())
     }
+    /// Gives each target image all of the source image's edits, crop included.
+    pub fn apply_edits(&self, from: AssetId, to: &[AssetId]) -> Result<()> {
+        let adjustments = self.image(from)?.adjustments;
+        for id in to.iter().filter(|id| **id != from) {
+            self.set_adjustments(*id, adjustments.clone())?;
+        }
+        Ok(())
+    }
     /// Steps an image's edit history back or forward.
     pub fn step_history(&self, id: AssetId, forward: bool) -> Result<()> {
         let asset = self.library.get(id)?;

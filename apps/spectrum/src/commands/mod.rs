@@ -75,7 +75,15 @@ fn dispatch(matches: clap::ArgMatches) -> Result<serde_json::Value> {
             });
         }
         let managed = if domain == "images" {
-            ["list", "import", "adjust", "command", "export"].contains(&operation)
+            [
+                "list",
+                "import",
+                "adjust",
+                "apply-edits",
+                "command",
+                "export",
+            ]
+            .contains(&operation)
         } else {
             ["list", "new", "place", "command", "export"].contains(&operation)
         };
