@@ -7,6 +7,7 @@ use crate::{
 use gpui::{prelude::*, *};
 use gpui_component::{
     Icon, IconName, Sizable, WindowExt,
+    button::{Button, ButtonVariants},
     input::{Input, InputEvent},
     notification::Notification,
 };
@@ -47,16 +48,34 @@ impl Workspace {
         self.show_palette(window, cx);
     }
 
+    /// Confirms assets went to another project, with a way to open it. Adding
+    /// to the project on screen needs no confirmation.
     pub fn added_notice(
         &mut self,
         count: usize,
+        id: ProjectId,
         project: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.place == Place::Project(id) {
+            return;
+        }
         let noun = if count == 1 { "asset" } else { "assets" };
+        let (open, button) = (cx.entity(), cx.entity());
         window.push_notification(
-            Notification::success(format!("Added {count} {noun} to {project}.")),
+            Notification::success(format!("Added {count} {noun} to {project}."))
+                .on_click(move |_, window, cx| {
+                    open.update(cx, |this, cx| this.enter_project(id, window, cx))
+                })
+                .action(move |_, _, _| {
+                    let view = button.clone();
+                    Button::new("open-project").ghost().label("Open").on_click(
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.enter_project(id, window, cx))
+                        },
+                    )
+                }),
             cx,
         );
     }
@@ -214,7 +233,7 @@ impl Workspace {
                 self.change(window, cx, |store| {
                     store.service.library.add_to_project(project, &ids)
                 });
-                self.added_notice(ids.len(), &name, window, cx);
+                self.added_notice(ids.len(), project, &name, window, cx);
             }
             Choice::NewProject => {
                 let ids = std::mem::take(&mut self.palette_adding);

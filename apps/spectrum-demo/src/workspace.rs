@@ -90,6 +90,8 @@ pub struct Workspace {
     pub store: Result<Store, SharedString>,
     pub view: LibraryView,
     pub selection: Vec<AssetId>,
+    pub project_selection: Vec<ProjectId>,
+    pub project_anchor: Option<ProjectId>,
     pub anchor: Option<AssetId>,
     /// Drag-box selection, in window coordinates: start and current point.
     pub marquee: Option<crate::marquee::Marquee>,
@@ -106,10 +108,13 @@ pub struct Workspace {
     pub picker_open: bool,
     pub picker_query: Entity<InputState>,
     pub picker_selected: Vec<AssetId>,
+    pub picker_anchor: Option<AssetId>,
     pub picker_assets: Vec<spectrum_library::Asset>,
     /// Assets to add to the next project created.
     pub pending_add: Vec<AssetId>,
     pub importing: usize,
+    pub import_token: u64,
+    pub pending_imports: Vec<crate::library::PendingImport>,
     pub search: Entity<InputState>,
     pub project_search: Entity<InputState>,
     pub new_project_name: Entity<InputState>,
@@ -135,7 +140,8 @@ pub struct Workspace {
     pub global: bool,
     /// Keeps keyboard shortcuts working when no field has focus.
     pub focus_handle: FocusHandle,
-    dragging: bool,
+    /// The title strip a window drag started in, if any.
+    dragging: Option<&'static str>,
     /// Frames left to re-render after a layout change. GPUI Component sliders
     /// position their thumbs from the previous frame's bounds.
     settle: u8,
@@ -225,6 +231,8 @@ impl Workspace {
             store: Store::open().map_err(|e| format!("{e:#}").into()),
             view: LibraryView::All,
             selection: Vec::new(),
+            project_selection: Vec::new(),
+            project_anchor: None,
             anchor: None,
             marquee: None,
             autoscrolling: false,
@@ -239,8 +247,11 @@ impl Workspace {
             picker_open: false,
             picker_query,
             picker_selected: Vec::new(),
+            picker_anchor: None,
             picker_assets: Vec::new(),
             importing: 0,
+            import_token: 0,
+            pending_imports: Vec::new(),
             search,
             project_search,
             new_project_name,
@@ -266,7 +277,7 @@ impl Workspace {
             opacity,
             global: false,
             focus_handle: cx.focus_handle(),
-            dragging: false,
+            dragging: None,
             settle: 1,
             _subscriptions: subscriptions,
         };
@@ -403,7 +414,7 @@ impl Workspace {
                 true
             }
             Ok(project) => {
-                self.added_notice(adding.len(), &project.name, window, cx);
+                self.added_notice(adding.len(), project.id, &project.name, window, cx);
                 self.change(window, cx, |_| Ok(()));
                 true
             }
@@ -431,15 +442,34 @@ impl Workspace {
             })
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.dragging = true),
+                cx.listener(move |this, _, _, _| this.dragging = Some(id)),
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.dragging = false),
+                cx.listener(|this, _, _, _| this.dragging = None),
             )
-            .on_mouse_move(cx.listener(|this, _, window, _| {
-                if this.dragging {
-                    this.dragging = false;
+            // A release or press elsewhere (after a double-click zoom or a
+            // system window move) must not leave a stale drag that a later
+            // slider drag across this strip would pick up.
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, _| {
+                    if this.dragging == Some(id) {
+                        this.dragging = None;
+                    }
+                }),
+            )
+            .on_mouse_down_out(cx.listener(move |this, _, _, _| {
+                if this.dragging == Some(id) {
+                    this.dragging = None;
+                }
+            }))
+            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, window, _| {
+                if this.dragging != Some(id) {
+                    return;
+                }
+                this.dragging = None;
+                if event.pressed_button == Some(MouseButton::Left) {
                     window.start_window_move();
                 }
             }))

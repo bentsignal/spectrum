@@ -34,6 +34,7 @@ impl Workspace {
             Err(error) => return self.notify_error(error, window, cx),
         }
         self.picker_selected.clear();
+        self.picker_anchor = None;
         self.picker_open = true;
         self.picker_query.update(cx, |state, cx| {
             state.set_value("", window, cx);
@@ -53,21 +54,54 @@ impl Workspace {
             return;
         };
         let ids = std::mem::take(&mut self.picker_selected);
-        let name = self.view_name();
         self.close_picker(window, cx);
         self.change(window, cx, |store| {
             store.service.library.add_to_project(project, &ids)
         });
-        self.added_notice(ids.len(), &name, window, cx);
+    }
+
+    /// Library assets matching the picker's search, in display order.
+    fn picker_matches(&self, cx: &App) -> Vec<&Asset> {
+        let query = self.picker_query.read(cx).value().to_lowercase();
+        self.picker_assets
+            .iter()
+            .filter(|a| a.name.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    /// Click toggles one asset; Shift-click adds the range from the last click.
+    fn pick(&mut self, id: spectrum_library::AssetId, shift: bool, cx: &mut Context<Self>) {
+        let order: Vec<_> = self.picker_matches(cx).iter().map(|a| a.id).collect();
+        let range = self.picker_anchor.filter(|_| shift).and_then(|anchor| {
+            let a = order.iter().position(|x| *x == anchor)?;
+            let b = order.iter().position(|x| *x == id)?;
+            Some(order[a.min(b)..=a.max(b)].to_vec())
+        });
+        match range {
+            Some(range) => {
+                for id in range {
+                    if !self.picker_selected.contains(&id) {
+                        self.picker_selected.push(id);
+                    }
+                }
+            }
+            None => {
+                if let Some(index) = self.picker_selected.iter().position(|x| *x == id) {
+                    self.picker_selected.remove(index);
+                } else {
+                    self.picker_selected.push(id);
+                }
+            }
+        }
+        self.picker_anchor = Some(id);
+        cx.notify();
     }
 
     pub fn picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self.picker_query.read(cx).value().to_lowercase();
         let thumbs = self.store.as_ref().ok().map(|s| &s.thumbs);
         let tiles: Vec<AnyElement> = self
-            .picker_assets
-            .iter()
-            .filter(|a| a.name.to_lowercase().contains(&query))
+            .picker_matches(cx)
+            .into_iter()
             .map(|asset| {
                 let id = asset.id;
                 let selected = self.picker_selected.contains(&id);
@@ -113,13 +147,8 @@ impl Workspace {
                             }),
                     )
                     .child(div().px_1().text_xs().truncate().child(asset.name.clone()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(index) = this.picker_selected.iter().position(|x| *x == id) {
-                            this.picker_selected.remove(index);
-                        } else {
-                            this.picker_selected.push(id);
-                        }
-                        cx.notify();
+                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                        this.pick(id, event.modifiers().shift, cx)
                     }))
                     .into_any_element()
             })
@@ -175,11 +204,6 @@ impl Workspace {
                                     }
                                 },
                             ))
-                            .child(
-                                div().px_4().pt_3().text_xs().text_color(rgb(MUTED)).child(
-                                    format!("Add from your library to {}", self.view_name()),
-                                ),
-                            )
                             .child(
                                 div()
                                     .px_2()

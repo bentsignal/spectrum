@@ -88,6 +88,17 @@ new project. Inside a project, Import assets also brings in assets already in
 the library. The back row matches the mode tabs' height so the divider does not
 shift. Drag-box selection scrolls when the pointer nears the grid's edge.
 
+Fourth review, general rules the user set:
+- Responsiveness: changes must show instantly. Deletes remove cards at once;
+  imports show named placeholder cards, and thumbnails fade in only when they
+  have just rendered, avoiding loading flicker.
+- Toasts are for information the user cannot see, with a way to act on it. Adding
+  assets to another project shows a toast that opens that project; adding to
+  the project on screen shows none.
+- Click selects, double-click opens, everywhere: assets and projects alike.
+  Projects support Shift and Command selection and bulk deletion.
+- Round every asset preview, so hover and selection rings follow its corners.
+
 Asset grids center their block, support click, Shift-click ranges, Command-click
 toggles, drag-box selection, and Command+A, and apply right-click actions to the
 whole selection. Assets can be renamed.

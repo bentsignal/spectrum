@@ -129,8 +129,10 @@ impl Workspace {
                 .on_ok(move |_, window, cx| {
                     let root = root.clone();
                     let ids = ids.clone();
-                    view.update(cx, |_, cx| {
-                        // Deleting renders each image once to size its placeholder.
+                    view.update(cx, |this, cx| {
+                        // Hide them now; deleting renders each image once to
+                        // size its placeholder, which can take a few seconds.
+                        this.hide_assets(&ids, cx);
                         let delete = cx.background_executor().spawn(async move {
                             let mut service = Service::open(&root)?;
                             ids.iter().try_for_each(|id| service.delete(*id).map(|_| ()))
@@ -138,7 +140,6 @@ impl Workspace {
                         cx.spawn_in(window, async move |this, cx| {
                             let result = delete.await;
                             this.update_in(cx, |this, window, cx| {
-                                this.selection.clear();
                                 if let Err(error) = result.and_then(|_| this.reload()) {
                                     this.notify_error(error, window, cx);
                                 }

@@ -17,6 +17,7 @@ use spectrum_library::AssetId;
 /// Long edge of library thumbnails, enough for the largest grid size on Retina.
 const THUMBNAIL: u32 = 640;
 const GAP: f32 = 16.;
+const FADE: std::time::Duration = std::time::Duration::from_millis(180);
 const PADDING: f32 = 24.;
 
 /// Width of a centered block of `item`-wide columns that fits in `available`.
@@ -57,13 +58,31 @@ impl Workspace {
     }
 
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
-        self.selection = self.visible_ids(cx);
+        if self.place == Place::Home && self.mode == crate::workspace::Mode::Projects {
+            self.project_selection = self
+                .store
+                .as_ref()
+                .map_or(Vec::new(), |s| s.projects.iter().map(|p| p.id).collect());
+        } else {
+            self.selection = self.visible_ids(cx);
+        }
         cx.notify();
     }
 
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.selection.clear();
         self.anchor = None;
+        self.project_selection.clear();
+        self.project_anchor = None;
+        cx.notify();
+    }
+
+    /// Removes assets from the grid at once, before the engine finishes.
+    pub fn hide_assets(&mut self, ids: &[AssetId], cx: &mut Context<Self>) {
+        if let Ok(store) = &mut self.store {
+            store.entries.retain(|e| !ids.contains(&e.asset.id));
+        }
+        self.selection.retain(|id| !ids.contains(id));
         cx.notify();
     }
 
@@ -132,7 +151,8 @@ impl Workspace {
                     .into_any_element();
             }
         };
-        if store.entries.is_empty() {
+        let pending = self.pending_cards(width_of(&self.thumbnail, cx));
+        if store.entries.is_empty() && pending.is_empty() {
             let detail = match self.view {
                 LibraryView::Unassigned => "Every asset belongs to a project.",
                 LibraryView::Trash => "Deleted assets stay here for 30 days.",
@@ -156,14 +176,14 @@ impl Workspace {
                 .into_any_element();
         }
         let items = self.visible(cx);
-        if items.is_empty() {
+        if items.is_empty() && pending.is_empty() {
             return empty("No matches", "Try another search or filter.".into()).into_any_element();
         }
         let width = self.thumbnail.read(cx).value().start();
         self.card_bounds.borrow_mut().clear();
-        let cards: Vec<AnyElement> = items
+        let cards: Vec<AnyElement> = pending
             .into_iter()
-            .map(|entry| {
+            .chain(items.into_iter().map(|entry| {
                 let id = entry.asset.id;
                 let menu = self.asset_menu(id, cx);
                 let selected = self.selection.contains(&id);
@@ -174,7 +194,7 @@ impl Workspace {
                             .context_menu(menu),
                     )
                     .into_any_element()
-            })
+            }))
             .collect();
         let block = block_width(available - PADDING * 2., width + 8.);
         let grid_bounds = self.grid_bounds.clone();
@@ -268,7 +288,7 @@ impl Workspace {
                 .spawn(async move { Service::open(&root)?.thumbnail(id, THUMBNAIL) });
             cx.spawn(async move |this, cx| {
                 let thumb = match render.await {
-                    Ok(path) => Thumb::Ready(path),
+                    Ok(path) => Thumb::ready(path),
                     Err(_) => Thumb::Failed,
                 };
                 this.update(cx, |this, cx| {
@@ -479,6 +499,50 @@ impl Workspace {
     }
 }
 
+fn width_of(slider: &Entity<gpui_component::slider::SliderState>, cx: &App) -> f32 {
+    slider.read(cx).value().start()
+}
+
+impl Workspace {
+    /// Placeholder cards for files still importing into the current view.
+    fn pending_cards(&self, width: f32) -> Vec<AnyElement> {
+        let shown = |project: Option<spectrum_library::ProjectId>| match (self.view, project) {
+            (LibraryView::All, _) => true,
+            (LibraryView::Unassigned, None) => true,
+            (LibraryView::Project(view), Some(project)) => view == project,
+            _ => false,
+        };
+        self.pending_imports
+            .iter()
+            .filter(|p| shown(p.project))
+            .flat_map(|p| {
+                p.names
+                    .iter()
+                    .enumerate()
+                    .map(move |(i, name)| (p.token, i, name))
+            })
+            .map(|(token, index, name)| {
+                div()
+                    .id(SharedString::from(format!("pending-{token}-{index}")))
+                    .w(px(width + 8.))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().p(px(4.)).child(frame(None, width, width * 0.75)))
+                    .child(
+                        div()
+                            .px_1()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_sm().truncate().child(name.clone()))
+                            .child(div().text_xs().text_color(rgb(FAINT)).child("Importing…")),
+                    )
+                    .into_any_element()
+            })
+            .collect()
+    }
+}
+
 /// A thumbnail frame of the given size, cropped to fill.
 pub fn frame(thumb: Option<&Thumb>, width: f32, height: f32) -> Div {
     let frame = div()
@@ -488,8 +552,23 @@ pub fn frame(thumb: Option<&Thumb>, width: f32, height: f32) -> Div {
         .overflow_hidden()
         .bg(rgb(SURFACE));
     match thumb {
-        Some(Thumb::Ready(path)) => {
-            frame.child(img(path.clone()).size_full().object_fit(ObjectFit::Cover))
+        Some(Thumb::Ready(path, ready)) => {
+            // GPUI clips to rectangles, so the image carries the rounding itself.
+            let image = img(path.clone())
+                .size_full()
+                .rounded(px(7.))
+                .object_fit(ObjectFit::Cover);
+            // Fade in only renders that just finished, so revisiting a view
+            // shows thumbnails immediately instead of flickering.
+            if ready.elapsed() < FADE {
+                frame.child(image.with_animation(
+                    SharedString::from(path.to_string_lossy().to_string()),
+                    Animation::new(FADE).with_easing(ease_in_out),
+                    |image, delta| image.opacity(delta),
+                ))
+            } else {
+                frame.child(image)
+            }
         }
         Some(Thumb::Failed) => frame
             .flex()

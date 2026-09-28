@@ -96,6 +96,44 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Click selects, Shift extends from the last click, Command toggles, and
+    /// a double-click opens the project, matching asset grids.
+    fn click_project(
+        &mut self,
+        id: ProjectId,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let modifiers = event.modifiers();
+        if event.click_count() == 2 && !modifiers.shift && !modifiers.secondary() {
+            return self.enter_project(id, window, cx);
+        }
+        let order: Vec<ProjectId> = self.matching_projects(cx).iter().map(|p| p.id).collect();
+        let range = self
+            .project_anchor
+            .filter(|_| modifiers.shift)
+            .and_then(|anchor| {
+                let a = order.iter().position(|x| *x == anchor)?;
+                let b = order.iter().position(|x| *x == id)?;
+                Some(order[a.min(b)..=a.max(b)].to_vec())
+            });
+        if let Some(range) = range {
+            self.project_selection = range;
+        } else if modifiers.secondary() {
+            if let Some(index) = self.project_selection.iter().position(|x| *x == id) {
+                self.project_selection.remove(index);
+            } else {
+                self.project_selection.push(id);
+            }
+            self.project_anchor = Some(id);
+        } else {
+            self.project_selection = vec![id];
+            self.project_anchor = Some(id);
+        }
+        cx.notify();
+    }
+
     fn project_card(
         &self,
         project: &Project,
@@ -105,6 +143,7 @@ impl Workspace {
         let id = project.id;
         let name = project.name.clone();
         let count = project.assets;
+        let selected = self.project_selection.contains(&id);
         let view = cx.entity();
         div()
             .id(SharedString::from(format!("project-{id}")))
@@ -117,8 +156,14 @@ impl Workspace {
                     .p(px(2.))
                     .rounded(px(11.))
                     .border_2()
-                    .border_color(transparent_black())
-                    .hover(|el| el.border_color(rgb(0x2e2e2e)))
+                    .border_color(if selected {
+                        rgb(0xd6d6d6).into()
+                    } else {
+                        transparent_black()
+                    })
+                    .when(!selected, |el| {
+                        el.hover(|el| el.border_color(rgb(0x2e2e2e)))
+                    })
                     .child(
                         frame(cover, COVER, COVER * 0.75).when(cover.is_none(), |el| {
                             el.flex().items_center().justify_center().child(
@@ -140,14 +185,39 @@ impl Workspace {
                         if count == 1 { "" } else { "s" }
                     ))),
             )
-            .on_click(cx.listener(move |this, _, window, cx| this.enter_project(id, window, cx)))
-            .context_menu(move |menu, _, _| {
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                this.click_project(id, event, window, cx)
+            }))
+            .context_menu(move |menu, _, cx| {
+                // Act on the selection when this project is part of it.
+                let targets: Vec<(ProjectId, String, usize)> = {
+                    let this = view.read(cx);
+                    let ids = if this.project_selection.contains(&id) {
+                        this.project_selection.clone()
+                    } else {
+                        vec![id]
+                    };
+                    this.store
+                        .as_ref()
+                        .map(|s| {
+                            s.projects
+                                .iter()
+                                .filter(|p| ids.contains(&p.id))
+                                .map(|p| (p.id, p.name.clone(), p.assets))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
                 let rename = view.clone();
                 let delete = view.clone();
-                let name = name.clone();
                 let current = name.clone();
-                menu.min_w(px(240.))
-                    .item(
+                let label = match targets.len() {
+                    1 => "Delete project".to_string(),
+                    n => format!("Delete {n} projects"),
+                };
+                let menu = menu.min_w(px(240.));
+                let menu = if targets.len() == 1 {
+                    menu.item(
                         PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
                             let current = current.clone();
                             rename.update(cx, |this, cx| {
@@ -164,47 +234,57 @@ impl Workspace {
                         }),
                     )
                     .separator()
-                    .item(
-                        PopupMenuItem::element(|_, _| {
-                            described("Delete project", "Its assets stay in your library.", DANGER)
+                } else {
+                    menu
+                };
+                menu.item(
+                    PopupMenuItem::element(move |_, _| {
+                        described(label.clone(), "Their assets stay in your library.", DANGER)
+                    })
+                    .on_click(move |_, window, cx| {
+                        let targets = targets.clone();
+                        delete.update(cx, |this, cx| {
+                            this.confirm_delete_projects(targets, window, cx)
                         })
-                        .on_click(move |_, window, cx| {
-                            let name = name.clone();
-                            delete.update(cx, |this, cx| {
-                                this.confirm_delete_project(id, name, count, window, cx)
-                            })
-                        }),
-                    )
+                    }),
+                )
             })
     }
 
-    fn confirm_delete_project(
+    fn confirm_delete_projects(
         &mut self,
-        id: ProjectId,
-        name: String,
-        count: usize,
+        targets: Vec<(ProjectId, String, usize)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let view = cx.entity();
+        let title = match targets.as_slice() {
+            [(_, name, _)] => format!("Delete project \"{name}\"?"),
+            many => format!("Delete {} projects?", many.len()),
+        };
         window.open_dialog(cx, move |dialog, _, _| {
             let view = view.clone();
+            let targets = targets.clone();
             dialog
-                .title(format!("Delete project \"{name}\"?"))
+                .title(title.clone())
                 .w(px(420.))
-                .child(div().text_sm().text_color(rgb(MUTED)).child(format!(
-                    "Its {count} asset{} stay in your library. Assets in no other project become unassigned.",
-                    if count == 1 { "" } else { "s" }
-                )))
+                .child(div().text_sm().text_color(rgb(MUTED)).child(
+                    "Assets stay in your library. Assets in no other project become unassigned.",
+                ))
                 .confirm()
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Delete project")
+                        .ok_text("Delete")
                         .ok_variant(ButtonVariant::Danger),
                 )
                 .on_ok(move |_, window, cx| {
+                    let ids: Vec<ProjectId> = targets.iter().map(|t| t.0).collect();
                     view.update(cx, |this, cx| {
-                        this.change(window, cx, |store| store.service.library.delete_project(id));
+                        this.project_selection.clear();
+                        this.change(window, cx, |store| {
+                            ids.iter()
+                                .try_for_each(|id| store.service.library.delete_project(*id))
+                        });
                         this.go_home(Mode::Projects, window, cx);
                     });
                     true

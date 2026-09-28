@@ -12,7 +12,8 @@ nix develop -c cargo run --release -p spectrum-demo --locked
 
 The app opens to Home, with Projects (covers and New project) and Assets (the
 whole library with Import assets, All assets, Unassigned, and Trash) tabs.
-Opening a project scopes everything to it. Its overview shows the project's
+Click selects projects and assets; double-click opens them. Opening a project
+scopes everything to it. Its overview shows the project's
 assets; opening an image or the sample canvas shows editing modes, one at a
 time: Color for images, Layers and Color for the canvas. The back button at the
 top of the sidebar goes up one level, from an item to the project, then Home.

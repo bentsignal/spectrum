@@ -20,6 +20,13 @@ use std::path::PathBuf;
 
 pub const SORTS: [&str; 3] = ["Recently added", "Name", "Kind"];
 
+/// Files being imported, shown as placeholder cards until the batch lands.
+pub struct PendingImport {
+    pub token: u64,
+    pub project: Option<spectrum_library::ProjectId>,
+    pub names: Vec<SharedString>,
+}
+
 impl Workspace {
     pub fn view_name(&self) -> SharedString {
         match self.view {
@@ -274,6 +281,24 @@ impl Workspace {
         let root = store.root.clone();
         let count = files.len();
         self.importing += count;
+        // Show the incoming files at once; real cards replace them when the
+        // engine finishes, and their thumbnails fade in as they render.
+        self.import_token += 1;
+        let token = self.import_token;
+        let names = files
+            .iter()
+            .map(|f| {
+                f.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+                    .into()
+            })
+            .collect();
+        self.pending_imports.push(PendingImport {
+            token,
+            project,
+            names,
+        });
         cx.notify();
         let import = cx
             .background_executor()
@@ -282,6 +307,7 @@ impl Workspace {
             let result = import.await;
             this.update_in(cx, |this, window, cx| {
                 this.importing -= count;
+                this.pending_imports.retain(|p| p.token != token);
                 if this.view == LibraryView::Trash && result.is_ok() {
                     this.view = LibraryView::Unassigned;
                 }

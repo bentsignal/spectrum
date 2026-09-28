@@ -18,8 +18,15 @@ pub struct Entry {
 
 pub enum Thumb {
     Loading,
-    Ready(PathBuf),
+    /// A rendered file and when it became ready, so only fresh ones fade in.
+    Ready(PathBuf, std::time::Instant),
     Failed,
+}
+
+impl Thumb {
+    pub fn ready(path: PathBuf) -> Self {
+        Thumb::Ready(path, std::time::Instant::now())
+    }
 }
 
 pub struct Store {

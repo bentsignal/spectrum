@@ -122,7 +122,7 @@ impl Workspace {
                 match result {
                     Ok(path) => {
                         if let Ok(store) = &mut this.store {
-                            store.large.insert(id, Thumb::Ready(path));
+                            store.large.insert(id, Thumb::ready(path));
                             store.thumbs.remove(&id);
                         }
                     }
@@ -180,7 +180,7 @@ impl Workspace {
     pub fn image_view(&self, id: AssetId, cx: &mut Context<Self>) -> impl IntoElement {
         let large = self.store.as_ref().ok().and_then(|s| s.large.get(&id));
         let content = match large {
-            Some(Thumb::Ready(path)) => img(path.clone())
+            Some(Thumb::Ready(path, _)) => img(path.clone())
                 .size_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element(),
@@ -221,7 +221,7 @@ impl Workspace {
             .spawn(async move { Service::open(&root)?.thumbnail(id, LARGE) });
         cx.spawn(async move |this, cx| {
             let thumb = match render.await {
-                Ok(path) => Thumb::Ready(path),
+                Ok(path) => Thumb::ready(path),
                 Err(_) => Thumb::Failed,
             };
             this.update(cx, |this, cx| {
