@@ -5,7 +5,7 @@ use crate::{
     workspace::Workspace,
 };
 use gpui::{prelude::*, *};
-use gpui_component::switch::Switch;
+use gpui_component::{Sizable, button::Button, switch::Switch};
 use prism_core::{Alignment, AlignmentReference, Command, DropShadow, LayerStyle};
 
 pub const SECTIONS: [&str; 3] = ["Look", "Arrange", "Shadow"];
@@ -16,13 +16,6 @@ const ALIGN: [(&str, Alignment); 6] = [
     ("Top", Alignment::Top),
     ("Middle", Alignment::VerticalCenter),
     ("Bottom", Alignment::Bottom),
-];
-const SIZES: [(&str, u32, u32); 5] = [
-    ("1920 × 1080", 1920, 1080),
-    ("1080 × 1080", 1080, 1080),
-    ("1080 × 1350", 1080, 1350),
-    ("1080 × 1920", 1080, 1920),
-    ("3840 × 2160", 3840, 2160),
 ];
 
 impl Workspace {
@@ -43,37 +36,30 @@ impl Workspace {
 
     fn canvas_settings(&self, cx: &mut Context<Self>) -> Div {
         let look = self.look_section(cx);
-        let current = self.canvas.as_ref().map(|c| (c.doc.width, c.doc.height));
-        let sizes: Vec<_> = SIZES
-            .iter()
-            .map(|(label, w, h)| {
-                let (w, h) = (*w, *h);
-                chip(label, label, current == Some((w, h)))
-                    .flex_none()
-                    .px_2p5()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(canvas) = &this.canvas {
-                            let background = canvas.doc.background;
-                            this.canvas_commands(
-                                vec![Command::SetCanvas {
-                                    width: w,
-                                    height: h,
-                                    background,
-                                }],
-                                window,
-                                cx,
-                            );
-                        }
-                    }))
-            })
-            .collect();
+        let (w, h) = self
+            .canvas
+            .as_ref()
+            .map_or((0, 0), |c| (c.doc.width, c.doc.height));
         div()
             .flex()
             .flex_col()
             .gap_6()
             .child(
-                group("Canvas size", None)
-                    .child(div().flex().flex_wrap().gap_1p5().children(sizes)),
+                group("Canvas size", None).child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(div().text_sm().child(format!("{w} × {h} px")))
+                        .child(
+                            Button::new("resize-canvas")
+                                .small()
+                                .label("Resize…")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_canvas_size(window, cx)
+                                })),
+                        ),
+                ),
             )
             .child(look)
     }

@@ -47,7 +47,8 @@ shows capture details, the image's projects, and the canvases that use it. Insid
 offer three modes: Layers (add text, boxes, circles, and project images;
 reorder, duplicate, delete, show and hide), Style (one section at a time:
 Look for blending, opacity, text with alignment, line height, and tracking, and fills; Arrange for alignment and
-rotation; Shadow for a drop shadow; or the canvas's size and background), and Color (the selected layer's adjustments;
+rotation; Shadow for a drop shadow; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
+with proportions kept or not, or a preset) and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
 to select it, drag to move it, or drag a corner handle to resize it. Edits apply
 to a local copy of the document at once and save in order behind it; a dragged
@@ -71,3 +72,8 @@ local package. On Mac it retains the existing signing/notarization flow, uses a
 separate `com.bentsignal.spectrum.preview` bundle identity, and ships no old GUI
 or CLI binaries. The outer bundle remains `Spectrum.app`; keep it in a separate
 folder from the existing application while reviewing.
+
+Colors open a full picker (a saturation and brightness field, a hue strip, hex
+entry, and common colors). Beside Add in Layers, the foreground and background
+colors set new layers' colors: text takes the foreground, boxes and circles the
+background.

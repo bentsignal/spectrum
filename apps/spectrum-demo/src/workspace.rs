@@ -103,6 +103,7 @@ pub struct Workspace {
     pub palette_open: bool,
     pub palette_query: Entity<InputState>,
     pub palette_index: usize,
+    pub palette_scroll: ScrollHandle,
     /// Assets the palette is adding to a project; empty when it navigates.
     pub palette_adding: Vec<AssetId>,
     /// Edits copied from an image, ready to paste onto others.
@@ -148,6 +149,8 @@ pub struct Workspace {
     /// Keeps background and immediate saves in order.
     pub save_lock: std::sync::Arc<std::sync::Mutex<()>>,
     pub export: Entity<crate::export::ExportSettings>,
+    pub canvas_size: Entity<crate::canvas_size::CanvasSize>,
+    pub colors: crate::colors::Colors,
     pub crop_drag: Option<crate::crop::CropDrag>,
     pub crop_aspect: usize,
     pub image_bounds: Rc<RefCell<Bounds<Pixels>>>,
@@ -329,6 +332,7 @@ impl Workspace {
             palette_open: false,
             palette_query,
             palette_index: 0,
+            palette_scroll: ScrollHandle::new(),
             palette_adding: Vec::new(),
             copied_edits: None,
             pending_add: Vec::new(),
@@ -364,6 +368,8 @@ impl Workspace {
             saving: false,
             save_lock: Default::default(),
             export: crate::export::ExportSettings::new(window, cx),
+            canvas_size: crate::canvas_size::CanvasSize::new(window, cx),
+            colors: crate::colors::Colors::new(window, cx),
             crop_drag: None,
             crop_aspect: 0,
             image_bounds: Default::default(),

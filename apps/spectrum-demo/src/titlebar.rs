@@ -33,6 +33,8 @@ pub fn press(event: &MouseDownEvent, window: &mut Window) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+// objc's macros test a `cargo-clippy` feature this crate does not declare.
+#[allow(unexpected_cfgs)]
 mod mac {
     use gpui::Window;
     use objc::{
@@ -47,7 +49,7 @@ mod mac {
     }
 
     pub fn install(window: &Window) {
-        let Ok(handle) = window.window_handle() else {
+        let Ok(handle) = HasWindowHandle::window_handle(window) else {
             return;
         };
         let RawWindowHandle::AppKit(handle) = handle.as_raw() else {

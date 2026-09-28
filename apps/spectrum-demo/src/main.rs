@@ -1,9 +1,12 @@
 mod canvas_layers;
+mod canvas_size;
 mod canvas_state;
 mod canvas_style;
 mod canvas_view;
 mod color;
 mod color_fields;
+mod color_picker;
+mod colors;
 mod compare;
 mod controls;
 mod crop;

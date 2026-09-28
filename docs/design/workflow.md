@@ -204,6 +204,23 @@ the egui app. Their requested changes:
 - The stock color picker will not work. Spectrum needs a full color selector;
   the user is unsure whether to build it now.
 
+## Second preview review
+
+On 2026-09-28 the user reviewed the overnight parity build. Lasting rules:
+
+- Edits must feel instant. Sliders, curves, and canvas drags update the view on
+  every frame, without flicker or late jumps. Persist in the background; never
+  make the view wait on saving or on files.
+- Shortcuts must be ergonomic and intuitive, and must not reuse a combination
+  people expect to mean something else (Command+S means save). Command+number
+  switches modes; Option+number switches sections.
+- Buttons in the title row are welcome, but quick clicks on them must never
+  zoom or move the window.
+- Exports choose format, quality, size, and destination.
+- Colors use a full picker. Foreground and background colors are the defaults
+  for new layers.
+- Canvas size is set in exact pixels.
+
 ## Browser deployment research
 
 The user subsequently requested a performance comparison before the GPUI work

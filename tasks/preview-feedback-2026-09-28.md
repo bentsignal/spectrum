@@ -8,11 +8,11 @@ priority: high
 The user reviewed build `77f2dbe`. They approved always-rounded previews,
 Color's six sections, and Command+number for modes. Done since (see Git):
 instant in-memory image edits, live canvas drags, grabbable curve endpoints,
-no grid zoom, an export dialog (format, quality, size), Option+1 to 6 for sections, Command+K arrows, and a macOS
+no grid zoom, an export dialog, a color picker with foreground and background
+colors (text takes the foreground, shapes the background; confirm with the
+user), a canvas size dialog, Option+1 to 6 for sections, Command+K arrows and scrolling, and a macOS
 title-bar fix. Design rules are in [workflow preferences](../docs/design/workflow.md).
 
 Remaining:
-1. Foreground and background colors for new layers, with a real color picker.
-2. Canvas size by exact pixels, likely in its own popover.
-3. Mac check: instant edits, live drags, no zoom on quick title-row clicks.
-4. Edit globally saves before re-rendering; Command+K does not scroll to its row.
+1. Mac check: instant edits, live drags, no zoom on quick title-row clicks.
+2. Edit globally saves each change before the canvas re-renders.

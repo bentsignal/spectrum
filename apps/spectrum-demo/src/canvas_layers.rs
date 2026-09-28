@@ -14,22 +14,6 @@ use gpui_component::{
 };
 use prism_core::{BlendMode, Command, LayerKind, TextAlignment};
 
-/// Fill and text colors offered as swatches.
-const SWATCHES: [[u8; 4]; 12] = [
-    [255, 255, 255, 255],
-    [214, 214, 214, 255],
-    [128, 128, 128, 255],
-    [52, 52, 52, 255],
-    [16, 16, 16, 255],
-    [229, 72, 77, 255],
-    [240, 136, 62, 255],
-    [229, 195, 75, 255],
-    [76, 181, 113, 255],
-    [63, 184, 176, 255],
-    [74, 127, 224, 255],
-    [142, 90, 214, 255],
-];
-
 /// "ColorBurn" becomes "Color burn".
 fn blend_name(mode: BlendMode) -> SharedString {
     let raw = format!("{mode:?}");
@@ -51,30 +35,6 @@ fn kind_icon(kind: &LayerKind) -> IconName {
         LayerKind::Raster { .. } => IconName::Frame,
         _ => IconName::LayoutDashboard,
     }
-}
-
-pub fn swatch_row(
-    id: &'static str,
-    current: Option<[u8; 4]>,
-    cx: &mut Context<Workspace>,
-    pick: fn(&mut Workspace, [u8; 4], &mut Window, &mut Context<Workspace>),
-) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_wrap()
-        .gap_1p5()
-        .children(SWATCHES.iter().enumerate().map(|(index, color)| {
-            let selected = current == Some(*color);
-            let color = *color;
-            div()
-                .id((id, index))
-                .size(px(22.))
-                .rounded_md()
-                .border_2()
-                .border_color(rgb(if selected { 0xececec } else { 0x2e2e2e }))
-                .bg(rgba(u32::from_be_bytes(color)))
-                .on_click(cx.listener(move |this, _, window, cx| pick(this, color, window, cx)))
-        }))
 }
 
 impl Workspace {
@@ -123,6 +83,7 @@ impl Workspace {
             self.text_input
                 .update(cx, |s, cx| s.set_value(text, window, cx));
         }
+        self.sync_color_pickers(window, cx);
         if self.mode == crate::workspace::Mode::Color {
             self.load_layer_color(window, cx);
         }
@@ -147,7 +108,7 @@ impl Workspace {
                 text: "Text".into(),
                 name: None,
                 font_size: (short * 0.12).round().max(12.),
-                color: [255, 255, 255, 255],
+                color: self.colors.fore,
                 x: cx_ - short * 0.15,
                 y: cy - short * 0.06,
                 shaping: Default::default(),
@@ -156,7 +117,7 @@ impl Workspace {
                 name: None,
                 width: side as u32,
                 height: side as u32,
-                color: [214, 214, 214, 255],
+                color: self.colors.back,
                 x: cx_ - side / 2.,
                 y: cy - side / 2.,
             },
@@ -164,7 +125,7 @@ impl Workspace {
                 name: None,
                 width: (side * 1.4) as u32,
                 height: side as u32,
-                color: [214, 214, 214, 255],
+                color: self.colors.back,
                 corner_radius: 0.,
                 x: cx_ - side * 0.7,
                 y: cy - side / 2.,
@@ -198,6 +159,7 @@ impl Workspace {
         let Some(canvas) = &self.canvas else {
             return div();
         };
+        let defaults = self.default_colors(cx).into_any_element();
         let add = |id: &'static str, label: &'static str| {
             Button::new(id)
                 .small()
@@ -285,7 +247,7 @@ impl Workspace {
             .flex_col()
             .gap_5()
             .child(
-                group("Add", None).child(
+                group("Add", Some(defaults)).child(
                     div()
                         .flex()
                         .gap_1p5()
@@ -357,29 +319,10 @@ impl Workspace {
     pub fn look_section(&self, cx: &mut Context<Self>) -> Div {
         let Some(layer) = self.selected_layer() else {
             let background = self.canvas.as_ref().map(|c| c.doc.background);
-            return div()
-                .flex()
-                .flex_col()
-                .gap_6()
-                .child(group("Canvas background", None).child(swatch_row(
-                    "background",
-                    background,
-                    cx,
-                    |this, color, window, cx| {
-                        if let Some(canvas) = &this.canvas {
-                            let (width, height) = (canvas.doc.width, canvas.doc.height);
-                            this.canvas_commands(
-                                vec![Command::SetCanvas {
-                                    width,
-                                    height,
-                                    background: color,
-                                }],
-                                window,
-                                cx,
-                            );
-                        }
-                    },
-                )));
+            return div().flex().flex_col().gap_6().child(
+                group("Canvas", None)
+                    .child(self.background_color_row(background.unwrap_or([0, 0, 0, 255]))),
+            );
         };
         let view = cx.entity();
         let blend = Field::new("blend", blend_name(layer.blend_mode)).options(
@@ -457,12 +400,7 @@ impl Workspace {
                             format!("{tracking:.0}"),
                             &self.tracking,
                         ))
-                        .child(swatch_row(
-                            "text-color",
-                            Some(*color),
-                            cx,
-                            |this, color, window, cx| this.update_text(Some(color), window, cx),
-                        )),
+                        .child(self.text_color_row(*color)),
                 );
             }
             LayerKind::Rectangle { color, .. } | LayerKind::Ellipse { color, .. } => {
@@ -471,12 +409,7 @@ impl Workspace {
                 body = body.child(
                     group("Fill", None)
                         .gap_4()
-                        .child(swatch_row(
-                            "fill",
-                            Some(*color),
-                            cx,
-                            |this, color, window, cx| this.update_shape(Some(color), window, cx),
-                        ))
+                        .child(self.fill_color_row(*color))
                         .when(rectangle, |el| {
                             el.child(slider_row(
                                 "Corner radius",

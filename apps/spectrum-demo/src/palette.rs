@@ -141,6 +141,7 @@ impl Workspace {
     pub fn palette_input(&mut self, event: &InputEvent, _: &mut Window, cx: &mut Context<Self>) {
         if let InputEvent::Change = event {
             self.palette_index = 0;
+            self.palette_scroll.scroll_to_item(0);
             cx.notify();
         }
     }
@@ -394,10 +395,12 @@ impl Workspace {
                             // selection, and the palette keeps them from the canvas.
                             .on_action(cx.listener(move |this, _: &crate::NudgeDown, _, cx| {
                                 this.palette_index = (selected + 1).min(count.saturating_sub(1));
+                                this.palette_scroll.scroll_to_item(this.palette_index);
                                 cx.notify();
                             }))
                             .on_action(cx.listener(move |this, _: &crate::NudgeUp, _, cx| {
                                 this.palette_index = selected.saturating_sub(1);
+                                this.palette_scroll.scroll_to_item(this.palette_index);
                                 cx.notify();
                             }))
                             .capture_key_down(cx.listener(
@@ -454,6 +457,7 @@ impl Workspace {
                                     .id("palette-list")
                                     .max_h(px(380.))
                                     .overflow_y_scroll()
+                                    .track_scroll(&self.palette_scroll)
                                     .p_1p5()
                                     .flex()
                                     .flex_col()
