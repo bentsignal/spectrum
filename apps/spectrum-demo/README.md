@@ -23,6 +23,7 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Command+1 to 5 | Switch to the nth sidebar mode |
 | Command+K | Go to a project, place, or asset |
 | Command+A, Esc | Select all assets, clear the selection |
+| Command+= and Command+- | Grid zoom, also the − and + buttons above grids |
 
 Control replaces Command on Linux and Windows. Command+S is deliberately unbound.
 

@@ -14,8 +14,11 @@ use gpui_component::{
 use spectrum::library::Service;
 use spectrum_library::AssetId;
 
-/// Long edge of library thumbnails, enough for the largest grid size on Retina.
-const THUMBNAIL: u32 = 640;
+/// Long edge of library thumbnails, enough for the largest card on Retina.
+const THUMBNAIL: u32 = 720;
+/// Card widths for grid zoom; `DEFAULT_ZOOM` is 100%.
+pub const ZOOM: [f32; 7] = [112., 140., 168., 196., 236., 280., 336.];
+pub const DEFAULT_ZOOM: usize = 3;
 const GAP: f32 = 16.;
 const FADE: std::time::Duration = std::time::Duration::from_millis(180);
 const PADDING: f32 = 24.;
@@ -151,7 +154,7 @@ impl Workspace {
                     .into_any_element();
             }
         };
-        let pending = self.pending_cards(width_of(&self.thumbnail, cx));
+        let pending = self.pending_cards(self.card_width());
         if store.entries.is_empty() && pending.is_empty() {
             let detail = match self.view {
                 LibraryView::Unassigned => "Every asset belongs to a project.",
@@ -179,7 +182,7 @@ impl Workspace {
         if items.is_empty() && pending.is_empty() {
             return empty("No matches", "Try another search or filter.".into()).into_any_element();
         }
-        let width = self.thumbnail.read(cx).value().start();
+        let width = self.card_width();
         self.card_bounds.borrow_mut().clear();
         let cards: Vec<AnyElement> = pending
             .into_iter()
@@ -285,7 +288,7 @@ impl Workspace {
             let root = store.root.clone();
             let render = cx
                 .background_executor()
-                .spawn(async move { Service::open(&root)?.thumbnail(id, THUMBNAIL) });
+                .spawn(async move { card_crop(&Service::open(&root)?.thumbnail(id, THUMBNAIL)?) });
             cx.spawn(async move |this, cx| {
                 let thumb = match render.await {
                     Ok(path) => Thumb::ready(path),
@@ -499,11 +502,39 @@ impl Workspace {
     }
 }
 
-fn width_of(slider: &Entity<gpui_component::slider::SliderState>, cx: &App) -> f32 {
-    slider.read(cx).value().start()
+/// Crops a rendered thumbnail to the 4:3 card shape. GPUI rounds the image
+/// it paints, so a cover-fitted image larger than its card keeps square
+/// corners; a pre-cropped image fills the card exactly and rounds with it.
+fn card_crop(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let out = path.with_file_name(format!("{stem}-card.png"));
+    if out.exists() {
+        return Ok(out);
+    }
+    let image = image::open(path)?;
+    let (w, h) = (image.width(), image.height());
+    let (cw, ch) = if w * 3 > h * 4 {
+        (h * 4 / 3, h)
+    } else {
+        (w, w * 3 / 4)
+    };
+    let cropped = image.crop_imm((w - cw) / 2, (h - ch) / 2, cw.max(1), ch.max(1));
+    let temporary = out.with_file_name(format!("{}.png", AssetId::new_v4()));
+    cropped.save(&temporary)?;
+    std::fs::rename(&temporary, &out)?;
+    Ok(out)
 }
 
 impl Workspace {
+    pub fn card_width(&self) -> f32 {
+        ZOOM[self.zoom.min(ZOOM.len() - 1)]
+    }
+
+    pub fn zoom_by(&mut self, step: isize, cx: &mut Context<Self>) {
+        self.zoom = (self.zoom as isize + step).clamp(0, ZOOM.len() as isize - 1) as usize;
+        cx.notify();
+    }
+
     /// Placeholder cards for files still importing into the current view.
     fn pending_cards(&self, width: f32) -> Vec<AnyElement> {
         let shown = |project: Option<spectrum_library::ProjectId>| match (self.view, project) {
@@ -557,7 +588,7 @@ pub fn frame(thumb: Option<&Thumb>, width: f32, height: f32) -> Div {
             let image = img(path.clone())
                 .size_full()
                 .rounded(px(7.))
-                .object_fit(ObjectFit::Cover);
+                .object_fit(ObjectFit::Fill);
             // Fade in only renders that just finished, so revisiting a view
             // shows thumbnails immediately instead of flickering.
             if ready.elapsed() < FADE {

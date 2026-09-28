@@ -6,13 +6,12 @@ use crate::{
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Icon, IconName, Sizable, WindowExt,
+    Disableable, Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     dialog::DialogButtonProps,
     input::Input,
     menu::DropdownMenu,
     notification::Notification,
-    slider::Slider,
 };
 use spectrum::library::Service;
 use spectrum_library::AssetId;
@@ -227,18 +226,46 @@ impl Workspace {
                     )
                 })
             });
+        let percent = (self.card_width() / crate::grid::ZOOM[crate::grid::DEFAULT_ZOOM] * 100.)
+            .round() as i32;
         div().flex().items_center().gap_3().child(sort).child(
             div()
-                .w(px(120.))
                 .flex()
                 .items_center()
-                .gap_2()
+                .gap_0p5()
                 .child(
-                    Icon::new(IconName::LayoutDashboard)
+                    Button::new("zoom-out")
+                        .ghost()
                         .xsmall()
-                        .text_color(rgb(FAINT)),
+                        .icon(IconName::Minus)
+                        .tooltip("Smaller thumbnails")
+                        .disabled(self.zoom == 0)
+                        .on_click(cx.listener(|this, _, _, cx| this.zoom_by(-1, cx))),
                 )
-                .child(div().flex_1().child(Slider::new(&self.thumbnail))),
+                .child(
+                    div()
+                        .id("zoom-reset")
+                        .w(px(44.))
+                        .flex()
+                        .justify_center()
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .hover(|el| el.text_color(rgb(TEXT)))
+                        .child(format!("{percent}%"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.zoom = crate::grid::DEFAULT_ZOOM;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("zoom-in")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .tooltip("Larger thumbnails")
+                        .disabled(self.zoom + 1 >= crate::grid::ZOOM.len())
+                        .on_click(cx.listener(|this, _, _, cx| this.zoom_by(1, cx))),
+                ),
         )
     }
 

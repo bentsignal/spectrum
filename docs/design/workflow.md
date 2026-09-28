@@ -98,6 +98,8 @@ Fourth review, general rules the user set:
 - Click selects, double-click opens, everywhere: assets and projects alike.
   Projects support Shift and Command selection and bulk deletion.
 - Round every asset preview, so hover and selection rings follow its corners.
+- Grid thumbnail size uses − and + buttons around a percentage, not a slider:
+  a slider in the title row fought the window's title-bar drag on macOS.
 
 Asset grids center their block, support click, Shift-click ranges, Command-click
 toggles, drag-box selection, and Command+A, and apply right-click actions to the

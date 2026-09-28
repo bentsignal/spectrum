@@ -34,7 +34,9 @@ gpui::actions!(
         Mode5,
         OpenPalette,
         SelectAll,
-        ClearSelection
+        ClearSelection,
+        ZoomIn,
+        ZoomOut
     ]
 );
 
@@ -56,6 +58,8 @@ fn main() {
             KeyBinding::new("secondary-k", OpenPalette, None),
             KeyBinding::new("secondary-a", SelectAll, None),
             KeyBinding::new("escape", ClearSelection, None),
+            KeyBinding::new("secondary-=", ZoomIn, None),
+            KeyBinding::new("secondary--", ZoomOut, None),
         ]);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {

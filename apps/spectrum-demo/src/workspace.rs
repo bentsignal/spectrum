@@ -1,5 +1,6 @@
 use crate::{
-    ClearSelection, Mode1, Mode2, Mode3, Mode4, Mode5, OpenPalette, SelectAll, color,
+    ClearSelection, Mode1, Mode2, Mode3, Mode4, Mode5, OpenPalette, SelectAll, ZoomIn, ZoomOut,
+    color,
     samples::{self, Asset, Look},
     store::Store,
     theme::*,
@@ -122,7 +123,8 @@ pub struct Workspace {
     pub show_images: bool,
     pub show_canvases: bool,
     pub sort: usize,
-    pub thumbnail: Entity<SliderState>,
+    /// Index into `grid::ZOOM`, the asset card width.
+    pub zoom: usize,
     /// Real color correction sliders, in `color::FIELDS` order.
     pub color: Vec<Entity<SliderState>>,
     /// A color edit is running; `color_dirty` asks for another when it ends.
@@ -176,7 +178,6 @@ impl Workspace {
         let new_project_name = input("Project name", cx);
         let picker_query = input("Search your library", cx);
         let rename_input = input("Name", cx);
-        let thumbnail = slider(cx, 140., 280., 1., 196.);
         let exposure = slider(cx, -2., 2., 0.05, 0.);
         let contrast = slider(cx, -100., 100., 1., 0.);
         let temperature = slider(cx, -100., 100., 1., 0.);
@@ -190,7 +191,6 @@ impl Workspace {
             cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()),
             cx.subscribe(&project_search, |_, _, _: &InputEvent, cx| cx.notify()),
             cx.subscribe(&picker_query, |_, _, _: &InputEvent, cx| cx.notify()),
-            cx.subscribe(&thumbnail, |_, _, _: &SliderEvent, cx| cx.notify()),
             cx.subscribe_in(&palette_query, window, |this, _, event, window, cx| {
                 this.palette_input(event, window, cx)
             }),
@@ -259,7 +259,7 @@ impl Workspace {
             show_images: true,
             show_canvases: true,
             sort: 0,
-            thumbnail,
+            zoom: crate::grid::DEFAULT_ZOOM,
             color,
             color_busy: false,
             color_dirty: false,
@@ -711,6 +711,8 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom_by(1, cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom_by(-1, cx)))
             .on_action(cx.listener(|this, _: &ClearSelection, window, cx| {
                 if this.picker_open {
                     this.close_picker(window, cx)
