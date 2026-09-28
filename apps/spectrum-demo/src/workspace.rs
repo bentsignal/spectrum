@@ -1,11 +1,12 @@
 use crate::{
     ClearSelection, CopyEdits, DeleteSelection, Mode1, Mode2, Mode3, Mode4, Mode5, NudgeDown,
     NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp, NudgeUpFar,
-    OpenPalette, PasteEdits, Redo, SelectAll, Undo, ZoomIn, ZoomOut, store::Store, theme::*,
+    OpenPalette, PasteEdits, Redo, Section1, Section2, Section3, Section4, Section5, Section6,
+    SelectAll, Undo, store::Store, theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Icon, IconName, InteractiveElementExt, Root, Selectable, Sizable,
+    Icon, IconName, Root, Selectable, Sizable,
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
@@ -127,8 +128,6 @@ pub struct Workspace {
     pub show_images: bool,
     pub show_canvases: bool,
     pub sort: usize,
-    /// Index into `grid::ZOOM`, the asset card width.
-    pub zoom: usize,
     /// Real color correction sliders, in `color_fields::FIELDS` order.
     pub color: Vec<Entity<SliderState>>,
     /// The open image's adjustments, sent whole to the engine on each change.
@@ -140,7 +139,15 @@ pub struct Workspace {
     pub curve_drag: Option<usize>,
     pub curve_bounds: Rc<RefCell<Bounds<Pixels>>>,
     pub straighten: Entity<SliderState>,
-    pub frame: Option<crate::crop::Frame>,
+    /// The open image, rendered in memory as it is edited.
+    pub preview: Option<crate::preview::Preview>,
+    /// Adjustments waiting to be saved once edits pause.
+    pub pending_save: Option<(AssetId, lumen_core::Adjustments)>,
+    pub save_generation: u64,
+    pub saving: bool,
+    /// Keeps background and immediate saves in order.
+    pub save_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    pub export: Entity<crate::export::ExportSettings>,
     pub crop_drag: Option<crate::crop::CropDrag>,
     pub crop_aspect: usize,
     pub image_bounds: Rc<RefCell<Bounds<Pixels>>>,
@@ -342,7 +349,6 @@ impl Workspace {
             show_images: true,
             show_canvases: true,
             sort: 0,
-            zoom: crate::grid::DEFAULT_ZOOM,
             color,
             adjust: Default::default(),
             color_section: 0,
@@ -352,7 +358,12 @@ impl Workspace {
             curve_drag: None,
             curve_bounds: Default::default(),
             straighten,
-            frame: None,
+            preview: None,
+            pending_save: None,
+            save_generation: 0,
+            saving: false,
+            save_lock: Default::default(),
+            export: crate::export::ExportSettings::new(window, cx),
             crop_drag: None,
             crop_aspect: 0,
             image_bounds: Default::default(),
@@ -397,6 +408,8 @@ impl Workspace {
             return;
         }
         self.mode = mode;
+        // Crop shows the whole frame; other modes show the crop.
+        self.render_preview(window, cx);
         if mode == Mode::Color && matches!(self.open, Open::Canvas(_)) {
             self.load_layer_color(window, cx);
         }
@@ -441,7 +454,22 @@ impl Workspace {
         }
     }
 
+    /// Option+1 to 6: the nth section of a mode split into sections.
+    pub fn nth_section(&mut self, index: usize, cx: &mut Context<Self>) {
+        let (slot, count) = match self.mode {
+            Mode::Color => (&mut self.color_section, crate::color_fields::SECTIONS.len()),
+            Mode::Style => (&mut self.style_section, crate::canvas_style::SECTIONS.len()),
+            _ => return,
+        };
+        if index < count {
+            *slot = index;
+            self.settle = 1;
+            cx.notify();
+        }
+    }
+
     pub fn go_home(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_now(window, cx);
         self.place = Place::Home;
         self.open = Open::Overview;
         self.mode = mode;
@@ -454,6 +482,7 @@ impl Workspace {
     }
 
     pub fn enter_project(&mut self, id: ProjectId, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_now(window, cx);
         self.place = Place::Project(id);
         self.open = Open::Overview;
         self.mode = Mode::Assets;
@@ -463,6 +492,7 @@ impl Workspace {
 
     /// Shows an item in the main area and picks the mode that fits it.
     pub fn open_item(&mut self, open: Open, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_now(window, cx);
         self.open = open;
         self.settle = 1;
         self.mode = match open {
@@ -519,16 +549,13 @@ impl Workspace {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .on_double_click(|_, window, _| {
-                if cfg!(target_os = "macos") {
-                    window.titlebar_double_click();
-                } else {
-                    window.zoom_window();
-                }
-            })
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, _| this.dragging = Some(id)),
+                cx.listener(move |this, event, window, _| {
+                    if !crate::titlebar::press(event, window) {
+                        this.dragging = Some(id);
+                    }
+                }),
             )
             .on_mouse_up(
                 MouseButton::Left,
@@ -783,10 +810,7 @@ impl Render for Workspace {
             f32::from(viewport.height) - HEADER_HEIGHT,
         );
         self.request_thumbnails(cx);
-        self.request_large(cx);
-        if let (true, Open::Image(id)) = (self.compare, self.open) {
-            self.request_original(id, cx);
-        }
+        self.ensure_preview(window, cx);
         let content = match (self.place, self.open) {
             (Place::Home, _) if self.mode == Mode::Projects => {
                 self.projects_grid(area.width, cx).into_any_element()
@@ -794,11 +818,8 @@ impl Render for Workspace {
             (Place::Home, _) | (_, Open::Overview) => {
                 self.asset_grid(area.width, cx).into_any_element()
             }
-            (_, Open::Image(_)) if self.mode == Mode::Crop => {
-                self.request_frame(cx);
-                self.crop_view(cx).into_any_element()
-            }
-            (_, Open::Image(id)) => self.image_view(id, cx).into_any_element(),
+            (_, Open::Image(_)) if self.mode == Mode::Crop => self.crop_view(cx).into_any_element(),
+            (_, Open::Image(_)) => self.image_view(cx).into_any_element(),
             (_, Open::Canvas(_)) => self.canvas_main(cx).into_any_element(),
         };
         let main = div()
@@ -829,6 +850,12 @@ impl Render for Workspace {
                 }),
             )
             .on_action(cx.listener(|this, _: &Mode1, window, cx| this.nth_mode(0, window, cx)))
+            .on_action(cx.listener(|this, _: &Section1, _, cx| this.nth_section(0, cx)))
+            .on_action(cx.listener(|this, _: &Section2, _, cx| this.nth_section(1, cx)))
+            .on_action(cx.listener(|this, _: &Section3, _, cx| this.nth_section(2, cx)))
+            .on_action(cx.listener(|this, _: &Section4, _, cx| this.nth_section(3, cx)))
+            .on_action(cx.listener(|this, _: &Section5, _, cx| this.nth_section(4, cx)))
+            .on_action(cx.listener(|this, _: &Section6, _, cx| this.nth_section(5, cx)))
             .on_action(cx.listener(|this, _: &Mode2, window, cx| this.nth_mode(1, window, cx)))
             .on_action(cx.listener(|this, _: &Mode3, window, cx| this.nth_mode(2, window, cx)))
             .on_action(cx.listener(|this, _: &Mode4, window, cx| this.nth_mode(3, window, cx)))
@@ -841,7 +868,6 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
-            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom_by(1, cx)))
             .on_action(cx.listener(|this, _: &NudgeLeft, w, cx| this.nudge(-1., 0., w, cx)))
             .on_action(cx.listener(|this, _: &NudgeRight, w, cx| this.nudge(1., 0., w, cx)))
             .on_action(cx.listener(|this, _: &NudgeUp, w, cx| this.nudge(0., -1., w, cx)))
@@ -867,7 +893,6 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|this, _: &PasteEdits, window, cx| this.paste_edits(None, window, cx)),
             )
-            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom_by(-1, cx)))
             .on_action(cx.listener(|this, _: &ClearSelection, window, cx| {
                 if this.picker_open {
                     this.close_picker(window, cx)

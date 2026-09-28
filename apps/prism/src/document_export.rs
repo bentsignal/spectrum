@@ -14,9 +14,19 @@ use crate::{Document, LayerKind, RasterSourceResolver, render_document_with_sour
 static EXPORT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<()> {
+    export_document_sized(document, path, quality, None)
+}
+
+/// Exports with the long edge limited to `max_size` pixels, if given.
+pub fn export_document_sized(
+    document: &Document,
+    path: &Path,
+    quality: u8,
+    max_size: Option<u32>,
+) -> Result<()> {
     let cache_root = crate::default_raster_backing_cache_root()?;
     let sources = crate::prepare_export_raster_sources(document, &cache_root)?;
-    export_document_with_sources(document, path, quality, &sources)
+    export_document_with_sources_impl(document, path, quality, max_size, &sources, |_, _| Ok(()))
 }
 
 pub fn export_document_with_sources(
@@ -25,13 +35,14 @@ pub fn export_document_with_sources(
     quality: u8,
     raster_sources: &dyn RasterSourceResolver,
 ) -> Result<()> {
-    export_document_with_sources_impl(document, path, quality, raster_sources, |_, _| Ok(()))
+    export_document_with_sources_impl(document, path, quality, None, raster_sources, |_, _| Ok(()))
 }
 
 fn export_document_with_sources_impl(
     document: &Document,
     path: &Path,
     quality: u8,
+    max_size: Option<u32>,
     raster_sources: &dyn RasterSourceResolver,
     before_replace: impl FnOnce(&Path, &Path) -> Result<()>,
 ) -> Result<()> {
@@ -53,7 +64,7 @@ fn export_document_with_sources_impl(
         canonical_parent.join(path.file_name().context("export path needs a file name")?);
     refuse_source_alias(document, &destination)?;
 
-    let image = render_document_with_sources(document, None, raster_sources)?;
+    let image = render_document_with_sources(document, max_size, raster_sources)?;
     let temporary = export_temporary_path(&canonical_parent, &destination)?;
     let result = (|| {
         let file = OpenOptions::new()
@@ -305,6 +316,7 @@ mod tests {
             &document,
             &destination,
             92,
+            None,
             &providers,
             |_, destination| {
                 fs::remove_file(destination)?;

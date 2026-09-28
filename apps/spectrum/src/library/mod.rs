@@ -228,18 +228,29 @@ impl Service {
     /// Exports an image or canvas at full size to a path outside the library.
     /// The extension picks the format: .jpg, .jpeg, or .png.
     pub fn export(&self, id: AssetId, destination: &Path) -> Result<()> {
+        self.export_with(id, destination, ExportOptions::default())
+    }
+    /// Exports at a size and quality; the file type follows the destination's extension.
+    pub fn export_with(
+        &self,
+        id: AssetId,
+        destination: &Path,
+        options: ExportOptions,
+    ) -> Result<()> {
         self.check_export(destination)?;
         let asset = self.library.get(id)?;
         match asset.kind.as_str() {
             "image" => lumen_core::engine::export_photo(
                 &self.image(id)?,
                 destination,
-                spectrum_imaging::RenderOptions { max_size: None },
-                92,
+                spectrum_imaging::RenderOptions {
+                    max_size: options.max_size,
+                },
+                options.quality,
             ),
             "canvas" => {
                 let doc = prism_core::Workspace::load_read_only(&self.library.path(&asset)?)?;
-                self.export_canvas(&doc, destination)
+                self.export_canvas_with(&doc, destination, options)
             }
             kind => bail!("exporting is not implemented for {kind}"),
         }
@@ -412,16 +423,39 @@ fn file_stamp(path: &Path) -> Result<(std::time::SystemTime, u64)> {
     Ok((m.modified()?, m.len()))
 }
 
+/// Export quality and size. Quality applies to JPEG.
+#[derive(Clone, Copy, Debug)]
+pub struct ExportOptions {
+    pub quality: u8,
+    /// Longest edge in pixels; `None` exports at full size.
+    pub max_size: Option<u32>,
+}
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            quality: 92,
+            max_size: None,
+        }
+    }
+}
 pub fn export_canvas(document: &Document, path: &Path) -> Result<()> {
     let service = Service::open(&default_root()?)?;
     service.export_canvas(document, path)
 }
 impl Service {
     pub fn export_canvas(&self, document: &Document, path: &Path) -> Result<()> {
+        self.export_canvas_with(document, path, ExportOptions::default())
+    }
+    pub fn export_canvas_with(
+        &self,
+        document: &Document,
+        path: &Path,
+        options: ExportOptions,
+    ) -> Result<()> {
         self.check_export(path)?;
         let mut document = document.clone();
         self.resolve(&mut document)?;
-        prism_core::export_document(&document, path, 92)
+        prism_core::export_document_sized(&document, path, options.quality, options.max_size)
     }
     pub fn check_export(&self, path: &Path) -> Result<()> {
         let parent = path

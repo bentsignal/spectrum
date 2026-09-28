@@ -115,7 +115,7 @@ mod raster_requirements;
 mod sampled_source;
 mod sampled_source_portable;
 mod sampled_stroke;
-pub use document_export::{export_document, export_document_with_sources};
+pub use document_export::{export_document, export_document_sized, export_document_with_sources};
 pub use export_sources::{
     PreparedRasterSources, default_raster_backing_cache_root, prepare_export_raster_sources,
     raster_backing_cache_root,

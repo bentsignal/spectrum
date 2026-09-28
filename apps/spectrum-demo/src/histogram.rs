@@ -1,22 +1,21 @@
 //! A compact RGB histogram of the open image's latest render.
 use crate::theme::*;
 use gpui::{prelude::*, *};
-use std::path::Path;
 
 pub struct Histogram {
     pub channels: [[u32; 256]; 3],
 }
 
 impl Histogram {
-    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let image = image::open(path)?.to_rgb8();
+    /// Counts every other pixel, which is plenty for a sidebar graph.
+    pub fn from_rgba(image: &image::RgbaImage) -> Self {
         let mut channels = [[0u32; 256]; 3];
-        for pixel in image.pixels() {
-            for (channel, value) in pixel.0.iter().enumerate() {
+        for pixel in image.pixels().step_by(2) {
+            for (channel, value) in pixel.0[..3].iter().enumerate() {
                 channels[channel][*value as usize] += 1;
             }
         }
-        Ok(Self { channels })
+        Self { channels }
     }
 
     /// Bin heights from 0 to 1. The clipped end bins are left out of the

@@ -22,7 +22,7 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Command+1 to 5 | Switch to the nth sidebar mode |
 | Command+K | Go to a project, place, or asset; at Home, search the whole library |
 | Command+A, Esc | Select all assets, clear the selection |
-| Command+= and Command+- | Grid zoom, also the − and + buttons above grids |
+| Option+1 to 6 | Switch to the nth section of Color or Style |
 | Command+Z, Command+Shift+Z | Undo and redo edits to the open image or canvas |
 | Command+Shift+C, Command+Shift+V | Copy the open or selected image's edits; paste them onto the open or selected images |
 | Arrow keys, Shift+arrows | Nudge the selected canvas layer 1 or 10 pixels |
@@ -38,8 +38,8 @@ selection: rename, add to or remove from a project, copy or paste edits, delete,
 project…" opens a searchable project picker that can also create a project for
 the selection. Dragging a selection box near the top or bottom edge scrolls. Opening
 an image in a project shows Color: a histogram above one section at a time
-(Light, Color, Curves, Mixer, Grading, Detail). Each change sends the image's
-whole adjustment model to the engine; Command+Z and Command+Shift+Z step its
+(Light, Color, Curves, Mixer, Grading, Detail). Edits render in memory from a decoded copy of the image on every frame of a
+drag and save once edits pause; Command+Z and Command+Shift+Z step its
 edit history. Crop mode shows the whole frame with a draggable crop box and
 aspect presets; its sidebar rotates, flips, and straightens. Compare in the title bar shows the unedited original beside the edit. Info
 shows capture details, the image's projects, and the canvases that use it. Inside a project,
@@ -49,10 +49,14 @@ reorder, duplicate, delete, show and hide), Style (one section at a time:
 Look for blending, opacity, text with alignment, line height, and tracking, and fills; Arrange for alignment and
 rotation; Shadow for a drop shadow; or the canvas's size and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
-to select it, drag to move it, or drag a corner handle to resize it. Image
+to select it, drag to move it, or drag a corner handle to resize it. Edits apply
+to a local copy of the document at once and save in order behind it; a dragged
+layer is drawn from separate renders of it and the rest of the canvas, so it
+follows the pointer. Image
 layers can swap their image, which also replaces a missing-image placeholder.
-Export… in the title bar or the right-click menu saves a full-size JPEG or
-PNG. Delete or Backspace removes the selected layer or asks to delete the
+Export… in the title bar or the right-click menu picks a format (JPEG, PNG,
+TIFF, or WebP for images; JPEG or PNG for canvases), JPEG quality, and full size
+or a long edge, then asks where to save; choices and the folder carry over. Delete or Backspace removes the selected layer or asks to delete the
 selected assets. Command+Z steps canvas history too.
 
 GPUI 0.2.2 and GPUI Component 0.5.1 are pinned. Spectrum owns its grayscale theme

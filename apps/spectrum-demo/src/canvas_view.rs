@@ -87,6 +87,9 @@ impl Workspace {
         let point = self.to_canvas(event.position);
         let corner = self.corner_at(event.position);
         let hit = corner.map(|(id, _)| id).or_else(|| self.layer_at(point));
+        if let Some(id) = hit {
+            self.prepare_split(id, window, cx);
+        }
         if let Some(canvas) = &mut self.canvas {
             canvas.selected = hit;
             canvas.drag = hit.map(|id| LayerDrag {
@@ -132,9 +135,11 @@ impl Workspace {
             return;
         };
         let t = layer.transform;
-        if let (Some(corner), Some((min, max))) =
-            (drag.corner, canvas.bounds.get(&drag.id).copied())
-        {
+        let corner_bounds = drag.corner.zip(canvas.bounds.get(&drag.id).copied());
+        if let Some(canvas) = &mut self.canvas {
+            canvas.settling = true;
+        }
+        if let Some((corner, (min, max))) = corner_bounds {
             let (new_min, new_max, factor) = Self::resized(min, max, corner, drag.now);
             // The layer's top-left sits `min - x` from its origin; scale that too.
             let transform = Transform {
@@ -146,6 +151,9 @@ impl Workspace {
             };
             if let Some(canvas) = &mut self.canvas {
                 canvas.bounds.insert(drag.id, (new_min, new_max));
+                if let Some(layer) = canvas.doc.layers.iter_mut().find(|l| l.id == drag.id) {
+                    layer.transform = transform;
+                }
             }
             return self.canvas_commands(
                 vec![Command::SetTransform {
@@ -156,7 +164,6 @@ impl Workspace {
                 cx,
             );
         }
-        let _ = t;
         self.move_layer_by(drag.id, dx, dy, window, cx);
     }
 
@@ -189,6 +196,10 @@ impl Workspace {
     /// Arrow keys: nudge the selected layer by one pixel, or ten with Shift.
     pub fn nudge(&mut self, dx: f32, dy: f32, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.canvas.as_ref().and_then(|c| c.selected) {
+            self.prepare_split(id, window, cx);
+            if let Some(canvas) = &mut self.canvas {
+                canvas.settling = true;
+            }
             self.move_layer_by(id, dx, dy, window, cx);
         }
     }
@@ -198,10 +209,9 @@ impl Workspace {
         let area = *self.image_bounds.borrow();
         let (rect, scale) = self.canvas_rect();
         let offset = rect.origin - area.origin;
-        let render = self.canvas.as_ref().and_then(|c| c.render.clone());
-        let previous = self.canvas.as_ref().and_then(|c| c.previous.clone());
-        let outline = self.canvas.as_ref().and_then(|canvas| {
-            let id = canvas.selected?;
+        let image = self.canvas.as_ref().and_then(|c| c.image.clone());
+        // Where a layer sits now in canvas space, following any drag.
+        let current = |canvas: &crate::canvas_state::CanvasState, id: u64| {
             let (mut min, mut max) = *canvas.bounds.get(&id)?;
             match canvas.drag.filter(|d| d.id == id) {
                 Some(LayerDrag {
@@ -218,12 +228,38 @@ impl Workspace {
                 }
                 None => {}
             }
+            Some((min, max))
+        };
+        let outline = self.canvas.as_ref().and_then(|canvas| {
+            let (min, max) = current(canvas, canvas.selected?)?;
             Some(Bounds::from_corners(
                 offset + point(px(min[0] * scale), px(min[1] * scale)),
                 offset + point(px(max[0] * scale), px(max[1] * scale)),
             ))
         });
-        let loading = render.is_none();
+        // While a layer moves, draw the rest of the canvas and that layer
+        // separately, mapping the layer's rendered bounds onto where it is now.
+        let composite = self.canvas.as_ref().and_then(|canvas| {
+            let split = canvas.split.as_ref()?;
+            let moving = canvas.drag.is_some_and(|d| d.id == split.layer) || canvas.settling;
+            let (rest, alone) = split.ready().filter(|_| moving)?;
+            let (min, max) = current(canvas, split.layer)?;
+            let (base_min, base_max) = split.base;
+            let factor = (max[0] - min[0]) / (base_max[0] - base_min[0]).max(0.001);
+            let origin = offset
+                + point(
+                    px((min[0] - base_min[0] * factor) * scale),
+                    px((min[1] - base_min[1] * factor) * scale),
+                );
+            Some((
+                rest,
+                alone,
+                origin,
+                size(rect.size.width * factor, rect.size.height * factor),
+            ))
+        });
+        let image = if composite.is_some() { None } else { image };
+        let loading = image.is_none() && composite.is_none();
         div().size_full().p_8().pb(px(40.)).child(
             div()
                 .id("canvas-area")
@@ -246,14 +282,37 @@ impl Workspace {
                         .text_color(rgb(FAINT))
                         .child("Rendering…")
                 })
-                .children(previous.into_iter().chain(render).map(|path| {
-                    img(path)
+                .children(image.map(|image| {
+                    img(image)
                         .absolute()
                         .left(offset.x)
                         .top(offset.y)
                         .w(rect.size.width)
                         .h(rect.size.height)
                         .object_fit(ObjectFit::Fill)
+                }))
+                .children(composite.map(|(rest, alone, origin, size)| {
+                    div()
+                        .absolute()
+                        .size_full()
+                        .child(
+                            img(rest)
+                                .absolute()
+                                .left(offset.x)
+                                .top(offset.y)
+                                .w(rect.size.width)
+                                .h(rect.size.height)
+                                .object_fit(ObjectFit::Fill),
+                        )
+                        .child(
+                            img(alone)
+                                .absolute()
+                                .left(origin.x)
+                                .top(origin.y)
+                                .w(size.width)
+                                .h(size.height)
+                                .object_fit(ObjectFit::Fill),
+                        )
                 }))
                 .children(outline.map(|b| {
                     div()

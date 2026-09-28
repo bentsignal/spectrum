@@ -5,7 +5,9 @@ use gpui::{prelude::*, *};
 use lumen_core::{CurvePoint, ToneCurve};
 
 pub const CHANNELS: [&str; 4] = ["RGB", "Red", "Green", "Blue"];
-const HIT: f32 = 10.;
+const HIT: f32 = 12.;
+/// Space around the plot, so points at the edges are easy to grab.
+const PAD: f32 = 10.;
 
 fn curve_color(channel: usize) -> Hsla {
     match channel {
@@ -37,9 +39,21 @@ impl Workspace {
         }
     }
 
+    /// The plot area inside the editor's padding.
+    fn curve_plot(&self) -> Bounds<Pixels> {
+        let bounds = *self.curve_bounds.borrow();
+        Bounds::new(
+            bounds.origin + point(px(PAD), px(PAD)),
+            size(
+                bounds.size.width - px(PAD * 2.),
+                bounds.size.height - px(PAD * 2.),
+            ),
+        )
+    }
+
     /// Converts a window position to curve space, 0 to 1 with y up.
     fn curve_point(&self, position: Point<Pixels>) -> (f32, f32) {
-        let bounds = *self.curve_bounds.borrow();
+        let bounds = self.curve_plot();
         let size = f32::from(bounds.size.width).max(1.);
         let x = f32::from(position.x - bounds.origin.x) / size;
         let y = 1. - f32::from(position.y - bounds.origin.y) / size;
@@ -48,13 +62,22 @@ impl Workspace {
 
     /// The point under `position`, if any, within a few pixels.
     fn curve_hit(&self, position: Point<Pixels>) -> Option<usize> {
-        let bounds = *self.curve_bounds.borrow();
+        let bounds = self.curve_plot();
         let size = f32::from(bounds.size.width);
-        self.curve().points.iter().position(|p| {
+        let distance = |p: &CurvePoint| {
             let px_ = f32::from(bounds.origin.x) + p.x * size;
             let py = f32::from(bounds.origin.y) + (1. - p.y) * size;
-            (px_ - f32::from(position.x)).hypot(py - f32::from(position.y)) <= HIT
-        })
+            (px_ - f32::from(position.x)).hypot(py - f32::from(position.y))
+        };
+        // The nearest point within reach, so close neighbors stay pickable.
+        self.curve()
+            .points
+            .iter()
+            .enumerate()
+            .map(|(index, p)| (index, distance(p)))
+            .filter(|(_, d)| *d <= HIT)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(index, _)| index)
     }
 
     fn curve_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -71,6 +94,7 @@ impl Workspace {
         }
         if let Some(index) = hit {
             self.curve_drag = Some(index);
+            cx.notify();
             return;
         }
         let (x, y) = self.curve_point(event.position);
@@ -109,6 +133,7 @@ impl Workspace {
         let color = curve_color(self.curve_channel);
         let bounds_slot = self.curve_bounds.clone();
         let dragging = self.curve_drag;
+        let view = cx.entity();
         div()
             .id("curve-editor")
             .size(px(edge))
@@ -118,8 +143,30 @@ impl Workspace {
                 canvas(
                     move |bounds, _, _| *bounds_slot.borrow_mut() = bounds,
                     move |bounds, _, window, _| {
-                        let o = bounds.origin;
-                        let s = f32::from(bounds.size.width);
+                        // Follow a drag anywhere in the window, not just over the editor.
+                        if dragging.is_some() {
+                            let moving = view.clone();
+                            window.on_mouse_event(
+                                move |event: &MouseMoveEvent, phase, window, cx| {
+                                    if phase == DispatchPhase::Bubble {
+                                        moving.update(cx, |this, cx| {
+                                            this.curve_move(event, window, cx)
+                                        });
+                                    }
+                                },
+                            );
+                            let released = view.clone();
+                            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Bubble {
+                                    released.update(cx, |this, cx| {
+                                        this.curve_drag = None;
+                                        cx.notify();
+                                    });
+                                }
+                            });
+                        }
+                        let o = bounds.origin + point(px(PAD), px(PAD));
+                        let s = f32::from(bounds.size.width) - PAD * 2.;
                         let at = |x: f32, y: f32| o + point(px(x * s), px((1. - y) * s));
                         let faint = hsla(0., 0., 1., 0.07);
                         for i in 1..4 {
@@ -175,23 +222,6 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event, window, cx| this.curve_down(event, window, cx)),
-            )
-            .on_mouse_move(
-                cx.listener(|this, event, window, cx| this.curve_move(event, window, cx)),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.curve_drag = None;
-                    cx.notify();
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.curve_drag = None;
-                    cx.notify();
-                }),
             )
     }
 }

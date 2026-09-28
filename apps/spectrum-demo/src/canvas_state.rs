@@ -1,31 +1,42 @@
-//! A real canvas open in the main area: its engine document, latest render,
-//! and layer geometry. Commands go to the engine one batch at a time.
-use crate::workspace::Workspace;
+//! A real canvas open in the main area. Edits apply to a local copy of the
+//! engine document at once and render in memory, newest first; the same
+//! commands then save to the library in order.
+use crate::{preview::to_render_image, workspace::Workspace};
 use gpui::*;
 use prism_core::{Command, Document};
 use spectrum::library::{Service, live};
 use spectrum_library::AssetId;
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, sync::Arc};
 
 /// Long edge of canvas renders.
 const RENDER: u32 = 2048;
 
+pub type Bounds2 = HashMap<u64, ([f32; 2], [f32; 2])>;
+
 pub struct CanvasState {
     pub id: AssetId,
+    /// The document with every edit applied, ahead of what is saved.
     pub doc: Document,
-    pub render: Option<PathBuf>,
-    /// The render before `render`, drawn beneath it so the canvas never
-    /// blanks while the new image decodes.
-    pub previous: Option<PathBuf>,
+    pub image: Option<Arc<RenderImage>>,
     /// Canvas-space bounds of each layer, from the engine's geometry.
-    pub bounds: HashMap<u64, ([f32; 2], [f32; 2])>,
+    pub bounds: Bounds2,
     pub selected: Option<u64>,
-    /// Commands waiting while a batch runs.
-    pub queue: Vec<Command>,
-    pub busy: bool,
     pub drag: Option<LayerDrag>,
+    /// A drag or nudge landed; draw `split` until the render catches up.
+    pub settling: bool,
+    /// The canvas rendered around one layer, so dragging it redraws at once.
+    pub split: Option<Split>,
     /// Image layers: edit the shared image rather than this placement.
     pub global: bool,
+    /// Counts local edits; renders record the edit they show.
+    edits: u64,
+    rendered: u64,
+    rendering: bool,
+    /// Commands applied locally and waiting to be saved.
+    queue: Vec<Command>,
+    saving: bool,
+    /// Reload from the library once saving finishes (after undo or redo).
+    reload: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -37,10 +48,25 @@ pub struct LayerDrag {
     pub corner: Option<(bool, bool)>,
 }
 
-pub struct Rendered {
-    doc: Document,
-    render: PathBuf,
-    bounds: HashMap<u64, ([f32; 2], [f32; 2])>,
+/// Renders of everything but one layer, and of that layer alone. They stay
+/// valid while only that layer's transform changes.
+pub struct Split {
+    pub layer: u64,
+    /// The layer's bounds when rendered; drawing maps them to its bounds now.
+    pub base: ([f32; 2], [f32; 2]),
+    pub rest: Option<Arc<RenderImage>>,
+    pub alone: Option<Arc<RenderImage>>,
+}
+
+impl Split {
+    pub fn ready(&self) -> Option<(Arc<RenderImage>, Arc<RenderImage>)> {
+        Some((self.rest.clone()?, self.alone.clone()?))
+    }
+}
+
+struct Rendered {
+    image: Arc<RenderImage>,
+    bounds: Bounds2,
 }
 
 fn queue_key(command: &Command) -> Option<(String, u64)> {
@@ -49,17 +75,16 @@ fn queue_key(command: &Command) -> Option<(String, u64)> {
     Some((value.get("command")?.as_str()?.to_string(), id))
 }
 
-/// Applies `commands`, then loads and renders the result.
-fn run(root: &std::path::Path, id: AssetId, commands: Vec<Command>) -> anyhow::Result<Rendered> {
+fn canvas_path(root: &std::path::Path, id: AssetId) -> anyhow::Result<std::path::PathBuf> {
     let service = Service::open(root)?;
     let asset = service.library.get(id)?;
-    let path = service.library.path(&asset)?;
-    if !commands.is_empty() {
-        live::canvas(&path, commands)?;
-    }
-    let doc = prism_core::Workspace::load_read_only(&path)?;
+    service.library.path(&asset)
+}
+
+/// Resolves library images and renders the document with its layer bounds.
+fn render(root: &std::path::Path, doc: &Document) -> anyhow::Result<Rendered> {
     let mut resolved = doc.clone();
-    service.resolve(&mut resolved)?;
+    Service::open(root)?.resolve(&mut resolved)?;
     let bounds = resolved
         .layers
         .iter()
@@ -73,56 +98,294 @@ fn run(root: &std::path::Path, id: AssetId, commands: Vec<Command>) -> anyhow::R
         &prism_core::default_raster_backing_cache_root()?,
     )?;
     let image = prism_core::render_document_with_sources(&resolved, Some(RENDER), &sources)?;
-    let render = std::env::temp_dir().join(format!("spectrum-canvas-{}.png", AssetId::new_v4()));
-    // Fast compression: this file is read once, right away.
-    let file = std::io::BufWriter::new(std::fs::File::create(&render)?);
-    image.write_with_encoder(image::codecs::png::PngEncoder::new_with_quality(
-        file,
-        image::codecs::png::CompressionType::Fast,
-        image::codecs::png::FilterType::Sub,
-    ))?;
     Ok(Rendered {
-        doc,
-        render,
+        image: to_render_image(image).0,
         bounds,
     })
+}
+
+/// The document with only `layer` shown (on a clear background), or with
+/// everything but it.
+fn split_doc(doc: &Document, layer: u64, alone: bool) -> Document {
+    let mut doc = doc.clone();
+    if alone {
+        doc.background = [0, 0, 0, 0];
+    }
+    for each in &mut doc.layers {
+        if (each.id == layer) != alone {
+            each.visible = false;
+        }
+    }
+    doc
 }
 
 impl Workspace {
     /// Opens a canvas asset: loads and renders it in the background.
     pub fn load_canvas(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(old) = self.canvas.take() {
-            for path in old.render.into_iter().chain(old.previous) {
-                std::fs::remove_file(path).ok();
-            }
-        }
+        self.close_canvas(window);
         self.canvas = Some(CanvasState {
             id,
             doc: Document::new("", 1, 1),
-            render: None,
-            previous: None,
+            image: None,
             bounds: HashMap::new(),
             selected: None,
-            queue: Vec::new(),
-            busy: false,
             drag: None,
+            settling: false,
+            split: None,
             global: false,
+            edits: 0,
+            rendered: 0,
+            rendering: false,
+            queue: Vec::new(),
+            saving: false,
+            reload: true,
         });
-        self.canvas_commands(Vec::new(), window, cx);
+        self.reload_canvas(window, cx);
     }
 
-    /// Queues engine commands for the open canvas and runs them in order.
+    /// Frees the open canvas's images.
+    pub fn close_canvas(&mut self, window: &mut Window) {
+        if let Some(old) = self.canvas.take() {
+            let split = old
+                .split
+                .into_iter()
+                .flat_map(|s| s.rest.into_iter().chain(s.alone));
+            for image in old.image.into_iter().chain(split) {
+                window.drop_image(image).ok();
+            }
+        }
+    }
+
+    /// Replaces the local document with the saved one when nothing is waiting to save.
+    fn reload_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
+            return;
+        };
+        if canvas.saving || !canvas.queue.is_empty() {
+            canvas.reload = true;
+            return;
+        }
+        canvas.reload = false;
+        let (root, id, edits) = (store.root.clone(), canvas.id, canvas.edits);
+        let task = cx
+            .background_executor()
+            .spawn(async move { prism_core::Workspace::load_read_only(&canvas_path(&root, id)?) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
+                    return;
+                };
+                match result {
+                    // Newer local edits win; they are on their way to disk.
+                    Ok(doc) if canvas.edits == edits => {
+                        if canvas
+                            .selected
+                            .is_some_and(|s| !doc.layers.iter().any(|l| l.id == s))
+                        {
+                            canvas.selected = None;
+                        }
+                        canvas.doc = doc;
+                        canvas.edits += 1;
+                        this.render_canvas(window, cx);
+                        this.sync_layer_controls(window, cx);
+                    }
+                    Ok(_) => {}
+                    Err(error) => this.notify_error(error, window, cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Renders again after something outside the document changed, such as
+    /// a shared image's edits.
+    pub fn rerender_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(canvas) = &mut self.canvas {
+            canvas.edits += 1;
+        }
+        self.keep_split(&[Command::Undo], window);
+        self.render_canvas(window, cx);
+    }
+
+    /// Renders the local document unless a render is running; the running
+    /// one starts another when it finishes if edits arrived meanwhile.
+    pub fn render_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
+            return;
+        };
+        if canvas.rendering || canvas.rendered == canvas.edits {
+            return;
+        }
+        canvas.rendering = true;
+        let (root, id, edits, doc) = (
+            store.root.clone(),
+            canvas.id,
+            canvas.edits,
+            canvas.doc.clone(),
+        );
+        let task = cx
+            .background_executor()
+            .spawn(async move { render(&root, &doc) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
+                    if let Ok(done) = result {
+                        window.drop_image(done.image).ok();
+                    }
+                    return;
+                };
+                canvas.rendering = false;
+                canvas.rendered = edits;
+                match result {
+                    Ok(done) => {
+                        if let Some(old) = canvas.image.replace(done.image) {
+                            window.drop_image(old).ok();
+                        }
+                        // Older renders keep the bounds later edits moved.
+                        if canvas.rendered == canvas.edits && canvas.drag.is_none() {
+                            canvas.bounds = done.bounds;
+                            canvas.settling = false;
+                        }
+                    }
+                    Err(error) => this.notify_error(error, window, cx),
+                }
+                this.render_canvas(window, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Renders the canvas around `layer` so a drag can redraw it every frame.
+    pub fn prepare_split(&mut self, layer: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
+            return;
+        };
+        if canvas.split.as_ref().is_some_and(|s| s.layer == layer) {
+            return;
+        }
+        let Some(base) = canvas.bounds.get(&layer).copied() else {
+            return;
+        };
+        if let Some(old) = canvas.split.take() {
+            for image in old.rest.into_iter().chain(old.alone) {
+                window.drop_image(image).ok();
+            }
+        }
+        canvas.split = Some(Split {
+            layer,
+            base,
+            rest: None,
+            alone: None,
+        });
+        let id = canvas.id;
+        for alone in [false, true] {
+            let (root, doc) = (store.root.clone(), split_doc(&canvas.doc, layer, alone));
+            let task = cx
+                .background_executor()
+                .spawn(async move { render(&root, &doc) });
+            cx.spawn_in(window, async move |this, cx| {
+                let result = task.await;
+                this.update_in(cx, |this, window, cx| {
+                    let Ok(done) = result else {
+                        return;
+                    };
+                    let split = this
+                        .canvas
+                        .as_mut()
+                        .filter(|c| c.id == id)
+                        .and_then(|c| c.split.as_mut())
+                        .filter(|s| s.layer == layer);
+                    let Some(split) = split else {
+                        window.drop_image(done.image).ok();
+                        return;
+                    };
+                    let slot = if alone {
+                        &mut split.alone
+                    } else {
+                        &mut split.rest
+                    };
+                    if let Some(old) = slot.replace(done.image) {
+                        window.drop_image(old).ok();
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// Forgets split renders unless `commands` only move or resize their layer.
+    fn keep_split(&mut self, commands: &[Command], window: &mut Window) {
+        let Some(canvas) = &mut self.canvas else {
+            return;
+        };
+        let Some(layer) = canvas.split.as_ref().map(|s| s.layer) else {
+            return;
+        };
+        let moves_only = commands
+            .iter()
+            .all(|c| matches!(c, Command::SetTransform { id, .. } if *id == layer));
+        if moves_only {
+            return;
+        }
+        if let Some(split) = canvas.split.take() {
+            for image in split.rest.into_iter().chain(split.alone) {
+                window.drop_image(image).ok();
+            }
+        }
+        canvas.settling = false;
+    }
+
+    /// Applies engine commands to the open canvas now, then saves them.
     pub fn canvas_commands(
         &mut self,
         commands: Vec<Command>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
+        self.keep_split(&commands, window);
+        let Some(canvas) = &mut self.canvas else {
             return;
         };
+        let history = commands
+            .iter()
+            .any(|c| matches!(c, Command::Undo | Command::Redo));
+        if !history && !commands.is_empty() {
+            let mut local = prism_core::Workspace::new(canvas.doc.clone(), None);
+            if let Err(error) = local.execute_batch(commands.clone()) {
+                return self.notify_error(error, window, cx);
+            }
+            let doc = local.document;
+            // Select what was just added, so it is ready to style.
+            let added = doc
+                .layers
+                .iter()
+                .filter(|l| !canvas.doc.layers.iter().any(|o| o.id == l.id))
+                .map(|l| l.id)
+                .max();
+            if added.is_some() {
+                canvas.selected = added;
+            }
+            if canvas
+                .selected
+                .is_some_and(|s| !doc.layers.iter().any(|l| l.id == s))
+            {
+                canvas.selected = None;
+            }
+            canvas.doc = doc;
+            canvas.edits += 1;
+        }
+        if history {
+            canvas.reload = true;
+        }
         // A newer command for the same layer and property replaces a queued one,
-        // so slider drags send only their latest value.
+        // so slider drags save only their latest value.
         for command in commands {
             let key = queue_key(&command);
             if key.is_some() {
@@ -130,63 +393,47 @@ impl Workspace {
             }
             canvas.queue.push(command);
         }
-        if canvas.busy {
+        self.render_canvas(window, cx);
+        self.save_canvas(window, cx);
+        self.sync_layer_controls(window, cx);
+        cx.notify();
+    }
+
+    /// Saves queued commands one batch at a time.
+    fn save_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
+            return;
+        };
+        if canvas.saving || canvas.queue.is_empty() {
             return;
         }
-        canvas.busy = true;
+        canvas.saving = true;
         let batch = std::mem::take(&mut canvas.queue);
         let (root, id) = (store.root.clone(), canvas.id);
         let task = cx
             .background_executor()
-            .spawn(async move { run(&root, id, batch) });
+            .spawn(async move { live::canvas(&canvas_path(&root, id)?, batch) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
-                let Some(canvas) = &mut this.canvas else {
+                let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
                     return;
                 };
-                if canvas.id != id {
-                    return;
+                canvas.saving = false;
+                if let Err(error) = result {
+                    // Show what the library really holds.
+                    canvas.reload = true;
+                    canvas.queue.clear();
+                    this.notify_error(error, window, cx);
                 }
-                canvas.busy = false;
-                match result {
-                    Ok(done) => {
-                        let old = canvas.render.replace(done.render);
-                        if let Some(older) = std::mem::replace(&mut canvas.previous, old) {
-                            std::fs::remove_file(older).ok();
-                        }
-                        if canvas
-                            .selected
-                            .is_some_and(|s| !done.doc.layers.iter().any(|l| l.id == s))
-                        {
-                            canvas.selected = None;
-                        }
-                        // Select what was just added, so it is ready to style.
-                        let known = !canvas.doc.layers.is_empty();
-                        let added = done
-                            .doc
-                            .layers
-                            .iter()
-                            .filter(|l| !canvas.doc.layers.iter().any(|o| o.id == l.id))
-                            .map(|l| l.id)
-                            .max();
-                        if known && added.is_some() {
-                            canvas.selected = added;
-                        }
-                        canvas.doc = done.doc;
-                        canvas.bounds = done.bounds;
-                        if let Ok(store) = &mut this.store {
-                            store.thumbs.remove(&id);
-                        }
-                    }
-                    Err(error) => this.notify_error(error, window, cx),
+                if let Ok(store) = &mut this.store {
+                    store.thumbs.remove(&id);
                 }
-                let pending = this.canvas.as_ref().is_some_and(|c| !c.queue.is_empty());
-                if pending {
-                    this.canvas_commands(Vec::new(), window, cx);
+                let reload = this.canvas.as_ref().is_some_and(|c| c.reload);
+                this.save_canvas(window, cx);
+                if reload {
+                    this.reload_canvas(window, cx);
                 }
-                this.sync_layer_controls(window, cx);
-                cx.notify();
             })
             .ok();
         })

@@ -5,8 +5,7 @@ use crate::{
     color_fields::{self as fields, BAND_COLORS, BANDS, CURVES, FIELDS, GRADING, MIXER, RANGES},
     controls::{chip, group, segmented, slider_row},
     curves::CHANNELS,
-    histogram::{self, Histogram},
-    store::Thumb,
+    histogram,
     theme::*,
     workspace::{Open, Workspace},
 };
@@ -17,10 +16,6 @@ use gpui_component::{
 };
 use spectrum::library::Service;
 use spectrum_library::AssetId;
-use std::sync::Arc;
-
-/// Long edge of the open image's render.
-pub const LARGE: u32 = 2048;
 
 /// Signed slider readout that shows zero without a sign.
 pub fn signed(value: f32, decimals: usize) -> String {
@@ -28,16 +23,6 @@ pub fn signed(value: f32, decimals: usize) -> String {
         return "0".into();
     }
     format!("{:+.*}", decimals, value).replacen('-', "−", 1)
-}
-
-/// Renders the open image and measures its histogram, off the main thread.
-fn render_large(
-    root: &std::path::Path,
-    id: AssetId,
-) -> anyhow::Result<(std::path::PathBuf, Histogram)> {
-    let path = Service::open(root)?.thumbnail(id, LARGE)?;
-    let histogram = Histogram::from_file(&path)?;
-    Ok((path, histogram))
 }
 
 /// What Color mode edits.
@@ -130,8 +115,8 @@ impl Workspace {
         self.schedule_color_edit(window, cx);
     }
 
-    /// Applies the model to the engine, one edit at a time; changes made
-    /// meanwhile go out together when the running edit finishes.
+    /// Shows and saves the model. Canvas layers go to the engine one edit at a
+    /// time; changes made meanwhile go out together when the running one ends.
     pub fn schedule_color_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.notify();
         match self.color_target() {
@@ -146,22 +131,9 @@ impl Workspace {
             Some(Target::Shared(asset)) => return self.edit_shared(asset, window, cx),
             _ => {}
         }
-        if self.color_busy {
-            self.color_dirty = true;
-            return;
-        }
-        let (Some(id), Ok(store)) = (self.open_image(), &self.store) else {
-            return;
-        };
-        let root = store.root.clone();
-        let adjustments = self.adjust.clone();
-        self.color_busy = true;
-        self.color_dirty = false;
-        let edit = cx.background_executor().spawn(async move {
-            Service::open(&root)?.set_adjustments(id, adjustments)?;
-            render_large(&root, id)
-        });
-        self.finish_render(id, edit, window, cx);
+        // The open image redraws from memory now and saves once edits pause.
+        self.render_preview(window, cx);
+        self.schedule_save(window, cx);
     }
 
     /// Edits the image behind a layer; every canvas using it picks up the change.
@@ -188,10 +160,9 @@ impl Workspace {
                 }
                 if let Ok(store) = &mut this.store {
                     store.thumbs.remove(&asset);
-                    store.large.remove(&asset);
                 }
                 // Re-render the canvas, which resolves the image's new look.
-                this.canvas_commands(Vec::new(), window, cx);
+                this.rerender_canvas(window, cx);
                 if this.color_dirty {
                     this.schedule_color_edit(window, cx);
                 }
@@ -216,12 +187,13 @@ impl Workspace {
             };
             return self.canvas_commands(vec![command], window, cx);
         }
-        let (Some(id), Ok(store)) = (self.open_image(), &self.store) else {
+        let Some(id) = self.open_image() else {
             return;
         };
-        if self.color_busy {
+        self.save_now(window, cx);
+        let Ok(store) = &self.store else {
             return;
-        }
+        };
         if let Err(error) = store.service.step_history(id, forward) {
             return self.notify_error(error, window, cx);
         }
@@ -231,43 +203,10 @@ impl Workspace {
     /// Reloads the open image's controls and render after an outside change.
     pub fn refresh_open_image(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
         self.load_color(id, window, cx);
-        let root = store_root(self);
-        self.color_busy = true;
-        let render = cx
-            .background_executor()
-            .spawn(async move { render_large(&root, id) });
-        self.finish_render(id, render, window, cx);
-    }
-
-    fn finish_render(
-        &mut self,
-        id: AssetId,
-        task: Task<anyhow::Result<(std::path::PathBuf, Histogram)>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            this.update_in(cx, |this, window, cx| {
-                this.color_busy = false;
-                match result {
-                    Ok((path, histogram)) => {
-                        if let Ok(store) = &mut this.store {
-                            store.large.insert(id, Thumb::ready(path));
-                            store.histograms.insert(id, Arc::new(histogram));
-                            store.thumbs.remove(&id);
-                        }
-                    }
-                    Err(error) => this.notify_error(error, window, cx),
-                }
-                if this.color_dirty {
-                    this.schedule_color_edit(window, cx);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        if let Ok(store) = &mut self.store {
+            store.thumbs.remove(&id);
+        }
+        self.render_preview(window, cx);
     }
 
     fn reset_button(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -445,9 +384,7 @@ impl Workspace {
                 .child("Select a layer to adjust its color.");
         }
         let scope = self.layer_scope(cx);
-        let histogram = self
-            .open_image()
-            .and_then(|id| self.store.as_ref().ok()?.histograms.get(&id).cloned());
+        let histogram = self.preview.as_ref().and_then(|p| p.histogram.clone());
         let body = self.section_body(cx);
         let chips: Vec<_> = fields::SECTIONS
             .iter()
@@ -480,34 +417,33 @@ impl Workspace {
     }
 
     /// The open image, fitted to the main area.
-    pub fn image_view(&self, id: AssetId, _: &mut Context<Self>) -> impl IntoElement {
-        let large = self.store.as_ref().ok().and_then(|s| s.large.get(&id));
+    pub fn image_view(&self, _: &mut Context<Self>) -> impl IntoElement {
+        let preview = self.preview.as_ref();
+        let image = preview.and_then(|p| p.image.clone());
         if self.compare {
-            let original = self.store.as_ref().ok().and_then(|s| s.originals.get(&id));
             return div()
                 .size_full()
                 .p_8()
                 .pb(px(24.))
                 .flex()
                 .gap_6()
-                .child(Self::compare_half(original, "Original"))
-                .child(Self::compare_half(large, "Edited"));
+                .child(Self::compare_half(
+                    preview.and_then(|p| p.original.clone()),
+                    "Original",
+                ))
+                .child(Self::compare_half(image, "Edited"));
         }
-        let content = match large {
-            Some(Thumb::Ready(path, _)) => img(path.clone())
+        let content = match image {
+            Some(image) => img(image)
                 .size_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element(),
-            Some(Thumb::Failed) => div()
+            None if preview.is_some_and(|p| p.failed) => div()
                 .text_sm()
                 .text_color(rgb(FAINT))
                 .child("This image could not be rendered.")
                 .into_any_element(),
-            _ => div()
-                .text_sm()
-                .text_color(rgb(FAINT))
-                .child("Rendering…")
-                .into_any_element(),
+            None => div().into_any_element(),
         };
         div()
             .size_full()
@@ -518,46 +454,4 @@ impl Workspace {
             .justify_center()
             .child(content)
     }
-
-    /// Starts the large render for the open image if it has none.
-    pub fn request_large(&mut self, cx: &mut Context<Self>) {
-        let (Some(id), Ok(store)) = (self.open_image(), &mut self.store) else {
-            return;
-        };
-        if store.large.contains_key(&id) {
-            return;
-        }
-        store.large.insert(id, Thumb::Loading);
-        let root = store.root.clone();
-        let render = cx
-            .background_executor()
-            .spawn(async move { render_large(&root, id) });
-        cx.spawn(async move |this, cx| {
-            let result = render.await;
-            this.update(cx, |this, cx| {
-                if let Ok(store) = &mut this.store {
-                    match result {
-                        Ok((path, histogram)) => {
-                            store.large.insert(id, Thumb::ready(path));
-                            store.histograms.insert(id, Arc::new(histogram));
-                        }
-                        Err(_) => {
-                            store.large.insert(id, Thumb::Failed);
-                        }
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-}
-
-fn store_root(workspace: &Workspace) -> std::path::PathBuf {
-    workspace
-        .store
-        .as_ref()
-        .map(|s| s.root.clone())
-        .unwrap_or_default()
 }

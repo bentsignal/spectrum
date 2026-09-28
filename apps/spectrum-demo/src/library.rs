@@ -6,7 +6,7 @@ use crate::{
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Disableable, Icon, IconName, Sizable, WindowExt,
+    Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     dialog::DialogButtonProps,
     input::Input,
@@ -202,10 +202,10 @@ impl Workspace {
             .child(kind("canvases", "Canvases", self.show_canvases))
     }
 
-    /// Sort and thumbnail size, at the right of the title row above a grid.
+    /// Sort order, at the right of the title row above a grid.
     pub fn grid_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let sort = Button::new("sort")
+        Button::new("sort")
             .ghost()
             .small()
             .label(SORTS[self.sort])
@@ -225,48 +225,7 @@ impl Workspace {
                             }),
                     )
                 })
-            });
-        let percent = (self.card_width() / crate::grid::ZOOM[crate::grid::DEFAULT_ZOOM] * 100.)
-            .round() as i32;
-        div().flex().items_center().gap_3().child(sort).child(
-            div()
-                .flex()
-                .items_center()
-                .gap_0p5()
-                .child(
-                    Button::new("zoom-out")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Minus)
-                        .tooltip("Smaller thumbnails")
-                        .disabled(self.zoom == 0)
-                        .on_click(cx.listener(|this, _, _, cx| this.zoom_by(-1, cx))),
-                )
-                .child(
-                    div()
-                        .id("zoom-reset")
-                        .w(px(44.))
-                        .flex()
-                        .justify_center()
-                        .text_xs()
-                        .text_color(rgb(MUTED))
-                        .hover(|el| el.text_color(rgb(TEXT)))
-                        .child(format!("{percent}%"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.zoom = crate::grid::DEFAULT_ZOOM;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("zoom-in")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Plus)
-                        .tooltip("Larger thumbnails")
-                        .disabled(self.zoom + 1 >= crate::grid::ZOOM.len())
-                        .on_click(cx.listener(|this, _, _, cx| this.zoom_by(1, cx))),
-                ),
-        )
+            })
     }
 
     pub fn choose_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -342,60 +301,6 @@ impl Workspace {
                     this.notify_error(error, window, cx);
                 }
                 cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Asks where to save, then exports at full size off the main thread.
-    pub fn export_asset(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
-        let Ok(store) = &self.store else {
-            return;
-        };
-        let Ok(asset) = store.service.library.get(id) else {
-            return;
-        };
-        let root = store.root.clone();
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let pictures = home.join("Pictures");
-        let directory = if pictures.is_dir() { pictures } else { home };
-        let stem = std::path::Path::new(&asset.name)
-            .file_stem()
-            .map_or(asset.name.clone(), |s| s.to_string_lossy().to_string());
-        let extension = if asset.kind == "canvas" { "png" } else { "jpg" };
-        let destination = cx.prompt_for_new_path(&directory, Some(&format!("{stem}.{extension}")));
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(path))) = destination.await else {
-                return;
-            };
-            let target = path.clone();
-            let export = cx
-                .background_executor()
-                .spawn(async move { Service::open(&root)?.export(id, &target) });
-            let result = export.await;
-            this.update_in(cx, |this, window, cx| match result {
-                Ok(()) => {
-                    let file = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    window.push_notification(
-                        Notification::success(format!("Exported {file}.")).action(
-                            move |_, _, _| {
-                                let path = path.clone();
-                                Button::new("reveal-export")
-                                    .ghost()
-                                    .label("Show")
-                                    .on_click(move |_, _, cx| cx.reveal_path(&path))
-                            },
-                        ),
-                        cx,
-                    );
-                }
-                Err(error) => this.notify_error(error, window, cx),
             })
             .ok();
         })

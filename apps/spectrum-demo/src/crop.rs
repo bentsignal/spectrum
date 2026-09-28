@@ -3,7 +3,7 @@
 use crate::{
     controls::{chip, group, slider_row},
     theme::*,
-    workspace::{Open, Workspace},
+    workspace::Workspace,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -11,9 +11,6 @@ use gpui_component::{
     button::{Button, ButtonVariants},
 };
 use lumen_core::{Adjustments, CropRect};
-use spectrum::library::Service;
-use spectrum_library::AssetId;
-use std::path::PathBuf;
 
 pub const ASPECTS: [(&str, Option<f32>); 5] = [
     ("Free", None),
@@ -24,15 +21,6 @@ pub const ASPECTS: [(&str, Option<f32>); 5] = [
 ];
 /// Handle size, in pixels, for grabbing a corner of the crop box.
 const HANDLE: f32 = 14.;
-
-/// The uncropped frame shown while cropping.
-pub struct Frame {
-    pub id: AssetId,
-    pub key: String,
-    pub path: Option<PathBuf>,
-    /// Pixel size of the render, to map the box onto it.
-    pub size: (u32, u32),
-}
 
 #[derive(Clone, Copy)]
 pub enum Grip {
@@ -47,90 +35,22 @@ pub struct CropDrag {
     pub rect: CropRect,
 }
 
-/// The adjustments shown while cropping: everything but the crop.
-fn uncropped(adjust: &Adjustments) -> Adjustments {
-    Adjustments {
-        crop: None,
-        ..adjust.clone()
-    }
-}
-
-fn frame_key(adjust: &Adjustments) -> String {
-    serde_json::to_string(&uncropped(adjust)).unwrap_or_default()
-}
-
-fn render_frame(
-    root: &std::path::Path,
-    id: AssetId,
-    adjust: Adjustments,
-) -> anyhow::Result<(PathBuf, (u32, u32))> {
-    let service = Service::open(root)?;
-    let photo = service.image(id)?;
-    let image = lumen_core::engine::render_photo_with_adjustments(
-        &photo,
-        uncropped(&adjust),
-        lumen_core::engine::RenderOptions {
-            max_size: Some(crate::color::LARGE),
-        },
-    )?;
-    let path = std::env::temp_dir().join(format!("spectrum-crop-{}.png", AssetId::new_v4()));
-    image.save(&path)?;
-    Ok((path, (image.width(), image.height())))
-}
-
 impl Workspace {
-    /// Renders the uncropped frame when the geometry or colors change.
-    pub fn request_frame(&mut self, cx: &mut Context<Self>) {
-        let (Open::Image(id), Ok(store)) = (self.open, &self.store) else {
-            return;
-        };
-        let key = frame_key(&self.adjust);
-        if self
-            .frame
+    /// Pixel size of the uncropped frame the preview shows while cropping.
+    fn frame_size(&self) -> (u32, u32) {
+        self.preview
             .as_ref()
-            .is_some_and(|f| f.id == id && f.key == key)
-        {
-            return;
-        }
-        let previous = self.frame.take().and_then(|f| f.path.map(|p| (p, f.size)));
-        let (path, size) = previous.map_or((None, (1, 1)), |(p, s)| (Some(p), s));
-        self.frame = Some(Frame {
-            id,
-            key: key.clone(),
-            path,
-            size,
-        });
-        let root = store.root.clone();
-        let adjust = self.adjust.clone();
-        let render = cx
-            .background_executor()
-            .spawn(async move { render_frame(&root, id, adjust) });
-        cx.spawn(async move |this, cx| {
-            let result = render.await;
-            this.update(cx, |this, cx| {
-                match (result, &mut this.frame) {
-                    (Ok((path, size)), Some(frame)) if frame.id == id && frame.key == key => {
-                        if let Some(old) = frame.path.replace(path) {
-                            std::fs::remove_file(old).ok();
-                        }
-                        frame.size = size;
-                    }
-                    (Ok((path, _)), _) => {
-                        std::fs::remove_file(path).ok();
-                    }
-                    _ => {}
-                }
-                cx.notify();
+            .and_then(|p| p.image.as_ref())
+            .map_or((1, 1), |image| {
+                let size = image.size(0);
+                (size.width.0.max(1) as u32, size.height.0.max(1) as u32)
             })
-            .ok();
-        })
-        .detach();
     }
 
     /// Where the frame is drawn: fitted and centered in the main area.
     fn frame_rect(&self) -> Bounds<Pixels> {
         let area = *self.image_bounds.borrow();
-        let (w, h) = self.frame.as_ref().map_or((1, 1), |f| f.size);
+        let (w, h) = self.frame_size();
         let scale =
             (f32::from(area.size.width) / w as f32).min(f32::from(area.size.height) / h as f32);
         let size = size(px(w as f32 * scale), px(h as f32 * scale));
@@ -157,7 +77,7 @@ impl Workspace {
 
     /// Height over width of the frame in pixels, to hold aspect ratios.
     fn frame_ratio(&self) -> f32 {
-        let (w, h) = self.frame.as_ref().map_or((1, 1), |f| f.size);
+        let (w, h) = self.frame_size();
         h as f32 / w.max(1) as f32
     }
 
@@ -366,7 +286,7 @@ impl Workspace {
     /// The whole frame with the crop box over it.
     pub fn crop_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let bounds_slot = self.image_bounds.clone();
-        let path = self.frame.as_ref().and_then(|f| f.path.clone());
+        let image = self.preview.as_ref().and_then(|p| p.image.clone());
         let frame = self.frame_rect();
         let area = *self.image_bounds.borrow();
         let r = self.crop_rect();
@@ -411,8 +331,8 @@ impl Workspace {
                     .absolute()
                     .size_full(),
                 )
-                .children(path.map(|path| {
-                    img(path)
+                .children(image.map(|image| {
+                    img(image)
                         .absolute()
                         .left(fx)
                         .top(fy)

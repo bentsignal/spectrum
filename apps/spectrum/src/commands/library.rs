@@ -125,6 +125,9 @@ enum Canvas {
         path: PathBuf,
         #[arg(long, default_value_t = 92, value_parser = clap::value_parser!(u8).range(1..=100))]
         quality: u8,
+        /// Longest edge in pixels; the full canvas size when omitted.
+        #[arg(long)]
+        max_size: Option<u32>,
     },
 }
 pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
@@ -291,6 +294,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
                     asset,
                     path,
                     quality,
+                    max_size,
                 },
         } => {
             let asset = service.library.get(asset)?;
@@ -300,7 +304,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
             let mut doc = prism_core::Workspace::load_read_only(&service.library.path(&asset)?)?;
             service.check_export(&path)?;
             service.resolve(&mut doc)?;
-            prism_core::export_document(&doc, &path, quality)?;
+            prism_core::export_document_sized(&doc, &path, quality, max_size)?;
             serde_json::json!({"exported":path})
         }
         Domain::Canvas {

@@ -390,6 +390,16 @@ impl Workspace {
                             .shadow_lg()
                             .overflow_hidden()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            // Arrow keys are bound to canvas nudges; here they move the
+                            // selection, and the palette keeps them from the canvas.
+                            .on_action(cx.listener(move |this, _: &crate::NudgeDown, _, cx| {
+                                this.palette_index = (selected + 1).min(count.saturating_sub(1));
+                                cx.notify();
+                            }))
+                            .on_action(cx.listener(move |this, _: &crate::NudgeUp, _, cx| {
+                                this.palette_index = selected.saturating_sub(1);
+                                cx.notify();
+                            }))
                             .capture_key_down(cx.listener(
                                 move |this, event: &KeyDownEvent, window, cx| {
                                     match event.keystroke.key.as_str() {

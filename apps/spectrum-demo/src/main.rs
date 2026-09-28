@@ -9,6 +9,7 @@ mod controls;
 mod crop;
 mod curves;
 mod edits;
+mod export;
 mod grid;
 mod histogram;
 mod home;
@@ -17,9 +18,11 @@ mod library;
 mod marquee;
 mod palette;
 mod picker;
+mod preview;
 mod project;
 mod store;
 mod theme;
+mod titlebar;
 mod trash;
 mod workspace;
 
@@ -43,8 +46,6 @@ gpui::actions!(
         OpenPalette,
         SelectAll,
         ClearSelection,
-        ZoomIn,
-        ZoomOut,
         Undo,
         Redo,
         DeleteSelection,
@@ -57,7 +58,13 @@ gpui::actions!(
         NudgeUpFar,
         NudgeDownFar,
         CopyEdits,
-        PasteEdits
+        PasteEdits,
+        Section1,
+        Section2,
+        Section3,
+        Section4,
+        Section5,
+        Section6
     ]
 );
 
@@ -72,6 +79,12 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("secondary-q", Quit, None),
             KeyBinding::new("secondary-1", Mode1, None),
+            KeyBinding::new("alt-1", Section1, None),
+            KeyBinding::new("alt-2", Section2, None),
+            KeyBinding::new("alt-3", Section3, None),
+            KeyBinding::new("alt-4", Section4, None),
+            KeyBinding::new("alt-5", Section5, None),
+            KeyBinding::new("alt-6", Section6, None),
             KeyBinding::new("secondary-2", Mode2, None),
             KeyBinding::new("secondary-3", Mode3, None),
             KeyBinding::new("secondary-4", Mode4, None),
@@ -79,8 +92,6 @@ fn main() {
             KeyBinding::new("secondary-k", OpenPalette, None),
             KeyBinding::new("secondary-a", SelectAll, None),
             KeyBinding::new("escape", ClearSelection, None),
-            KeyBinding::new("secondary-=", ZoomIn, None),
-            KeyBinding::new("secondary--", ZoomOut, None),
             KeyBinding::new("secondary-z", Undo, None),
             KeyBinding::new("secondary-shift-z", Redo, None),
             KeyBinding::new("secondary-shift-c", CopyEdits, None),
@@ -118,6 +129,7 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
+                titlebar::install(window);
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
                 workspace.read(cx).focus_handle.focus(window);
                 cx.new(|cx| Root::new(workspace, window, cx))

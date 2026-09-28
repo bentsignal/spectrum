@@ -16,9 +16,8 @@ use spectrum_library::AssetId;
 
 /// Long edge of library thumbnails, enough for the largest card on Retina.
 const THUMBNAIL: u32 = 720;
-/// Card widths for grid zoom; `DEFAULT_ZOOM` is 100%.
-pub const ZOOM: [f32; 7] = [112., 140., 168., 196., 236., 280., 336.];
-pub const DEFAULT_ZOOM: usize = 3;
+/// Width of an asset card.
+pub const CARD_WIDTH: f32 = 196.;
 const GAP: f32 = 16.;
 const FADE: std::time::Duration = std::time::Duration::from_millis(180);
 const PADDING: f32 = 24.;
@@ -573,12 +572,7 @@ fn card_crop(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
 
 impl Workspace {
     pub fn card_width(&self) -> f32 {
-        ZOOM[self.zoom.min(ZOOM.len() - 1)]
-    }
-
-    pub fn zoom_by(&mut self, step: isize, cx: &mut Context<Self>) {
-        self.zoom = (self.zoom as isize + step).clamp(0, ZOOM.len() as isize - 1) as usize;
-        cx.notify();
+        CARD_WIDTH
     }
 
     /// Placeholder cards for files still importing into the current view.
