@@ -30,6 +30,8 @@ pub struct LayerDrag {
     pub id: u64,
     pub start: (f32, f32),
     pub now: (f32, f32),
+    /// Resizing from this corner (right, bottom) instead of moving.
+    pub corner: Option<(bool, bool)>,
 }
 
 pub struct Rendered {

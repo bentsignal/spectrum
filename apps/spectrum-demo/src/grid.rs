@@ -361,7 +361,13 @@ impl Workspace {
             }
             let menu = if count == 1 {
                 let view = view.clone();
+                let export = view.clone();
                 menu.item(
+                    PopupMenuItem::new("Export…").on_click(move |_, window, cx| {
+                        export.update(cx, |this, cx| this.export_asset(id, window, cx))
+                    }),
+                )
+                .item(
                     PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
                         let name = name.clone();
                         view.update(cx, |this, cx| {

@@ -109,3 +109,30 @@ fn cli_adapter_undo_targets_the_requested_image_and_canvas() {
         "Canvas"
     );
 }
+
+#[test]
+fn export_writes_images_and_canvases_outside_the_library() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.png");
+    image::RgbaImage::from_pixel(12, 8, image::Rgba([10, 200, 30, 255]))
+        .save(&source)
+        .unwrap();
+    let mut service = Service::open(&tmp.path().join("library")).unwrap();
+    let image = service.import(vec![source]).unwrap().pop().unwrap();
+    let canvas = service.create_canvas("Poster".into(), 16, 16).unwrap();
+    service.place(canvas.id, image.id).unwrap();
+    let out = tmp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    service.export(image.id, &out.join("image.jpg")).unwrap();
+    service.export(canvas.id, &out.join("canvas.png")).unwrap();
+    assert_eq!(
+        image::image_dimensions(out.join("image.jpg")).unwrap(),
+        (12, 8)
+    );
+    assert_eq!(
+        image::image_dimensions(out.join("canvas.png")).unwrap(),
+        (16, 16)
+    );
+    let inside = service.library.root().join("sneaky.png");
+    assert!(service.export(image.id, &inside).is_err());
+}

@@ -42,7 +42,8 @@ gpui::actions!(
         ZoomIn,
         ZoomOut,
         Undo,
-        Redo
+        Redo,
+        DeleteSelection
     ]
 );
 
@@ -68,6 +69,9 @@ fn main() {
             KeyBinding::new("secondary--", ZoomOut, None),
             KeyBinding::new("secondary-z", Undo, None),
             KeyBinding::new("secondary-shift-z", Redo, None),
+            // Text fields bind these in their own context, which wins while typing.
+            KeyBinding::new("backspace", DeleteSelection, None),
+            KeyBinding::new("delete", DeleteSelection, None),
         ]);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {

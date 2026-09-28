@@ -252,6 +252,9 @@ impl Workspace {
                 }))
         });
         let has_selection = canvas.selected.is_some();
+        let replaceable = self
+            .selected_layer()
+            .is_some_and(|l| matches!(l.kind, LayerKind::Raster { .. }));
         let action = |id: &'static str, icon: IconName, tip: &'static str| {
             Button::new(id).ghost().small().icon(icon).tooltip(tip)
         };
@@ -288,6 +291,18 @@ impl Workspace {
                                     }),
                                 ),
                             )
+                            .when(replaceable, |el| {
+                                el.child(
+                                    action("layer-replace", IconName::Replace, "Replace image")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            if let Some(id) =
+                                                this.canvas.as_ref().and_then(|c| c.selected)
+                                            {
+                                                this.open_replace_picker(id, window, cx)
+                                            }
+                                        })),
+                                )
+                            })
                             .child(action("layer-copy", IconName::Copy, "Duplicate").on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.on_selected(window, cx, |id| Command::DuplicateLayer {

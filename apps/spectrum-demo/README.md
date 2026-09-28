@@ -43,7 +43,11 @@ offer three modes: Layers (add text, boxes, circles, and project images;
 reorder, duplicate, delete, show and hide), Style (blending, opacity, text,
 fills, or the canvas background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
-to select it and drag to move it. Command+Z steps canvas history too.
+to select it, drag to move it, or drag a corner handle to resize it. Image
+layers can swap their image, which also replaces a missing-image placeholder.
+Export… in the title bar or the right-click menu saves a full-size JPEG or
+PNG. Delete or Backspace removes the selected layer or asks to delete the
+selected assets. Command+Z steps canvas history too.
 
 GPUI 0.2.2 and GPUI Component 0.5.1 are pinned. Spectrum owns its grayscale theme
 in `src/theme.rs`. Component supplies text editing and common control behavior;

@@ -34,6 +34,7 @@ impl Workspace {
             Err(error) => return self.notify_error(error, window, cx),
         }
         self.picker_place = false;
+        self.picker_replace = None;
         self.show_picker(window, cx);
     }
 
@@ -49,7 +50,15 @@ impl Workspace {
             .map(|e| e.asset.clone())
             .collect();
         self.picker_place = true;
+        self.picker_replace = None;
         self.show_picker(window, cx);
+    }
+
+    /// Opens the picker to swap the image behind a canvas layer, which also
+    /// fixes a missing-image placeholder.
+    pub fn open_replace_picker(&mut self, layer: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_place_picker(window, cx);
+        self.picker_replace = Some(layer);
     }
 
     fn show_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -75,6 +84,13 @@ impl Workspace {
         };
         let ids = std::mem::take(&mut self.picker_selected);
         self.close_picker(window, cx);
+        if let (Some(layer), Some(asset)) = (self.picker_replace.take(), ids.first()) {
+            let command = prism_core::Command::LinkImage {
+                id: layer,
+                asset: *asset,
+            };
+            return self.canvas_commands(vec![command], window, cx);
+        }
         if self.picker_place {
             return self.place_images(ids, window, cx);
         }
@@ -94,6 +110,11 @@ impl Workspace {
 
     /// Click toggles one asset; Shift-click adds the range from the last click.
     fn pick(&mut self, id: spectrum_library::AssetId, shift: bool, cx: &mut Context<Self>) {
+        if self.picker_replace.is_some() {
+            self.picker_selected = vec![id];
+            cx.notify();
+            return;
+        }
         let order: Vec<_> = self.picker_matches(cx).iter().map(|a| a.id).collect();
         let range = self.picker_anchor.filter(|_| shift).and_then(|anchor| {
             let a = order.iter().position(|x| *x == anchor)?;
@@ -287,7 +308,9 @@ impl Workspace {
                                     .child(
                                         Button::new("picker-add")
                                             .primary()
-                                            .label(if count == 1 {
+                                            .label(if self.picker_replace.is_some() {
+                                                "Replace image".to_string()
+                                            } else if count == 1 {
                                                 if self.picker_place {
                                                     "Place 1 image"
                                                 } else {

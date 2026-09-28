@@ -1,6 +1,6 @@
 use crate::{
-    ClearSelection, Mode1, Mode2, Mode3, Mode4, Mode5, OpenPalette, Redo, SelectAll, Undo, ZoomIn,
-    ZoomOut, store::Store, theme::*,
+    ClearSelection, DeleteSelection, Mode1, Mode2, Mode3, Mode4, Mode5, OpenPalette, Redo,
+    SelectAll, Undo, ZoomIn, ZoomOut, store::Store, theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -106,6 +106,8 @@ pub struct Workspace {
     pub picker_anchor: Option<AssetId>,
     /// The picker places images on the open canvas instead of adding assets.
     pub picker_place: bool,
+    /// The canvas layer whose image the picker replaces.
+    pub picker_replace: Option<u64>,
     pub picker_assets: Vec<spectrum_library::Asset>,
     /// Assets to add to the next project created.
     pub pending_add: Vec<AssetId>,
@@ -273,6 +275,7 @@ impl Workspace {
             picker_selected: Vec::new(),
             picker_anchor: None,
             picker_place: false,
+            picker_replace: None,
             picker_assets: Vec::new(),
             importing: 0,
             import_token: 0,
@@ -343,6 +346,24 @@ impl Workspace {
             self.show(view, window, cx);
         }
         cx.notify();
+    }
+
+    /// Delete or Backspace: removes the selected canvas layer, or asks to
+    /// delete the selected assets.
+    fn delete_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette_open || self.picker_open {
+            return;
+        }
+        match self.open {
+            Open::Canvas(_) => {
+                self.on_selected(window, cx, |id| prism_core::Command::RemoveLayer { id })
+            }
+            Open::Overview if !self.selection.is_empty() && self.view != LibraryView::Trash => {
+                let ids = self.selection.clone();
+                self.confirm_delete(ids, window, cx);
+            }
+            _ => {}
+        }
     }
 
     /// Re-render once more so sliders shown for the first time lay out.
@@ -658,6 +679,18 @@ impl Workspace {
                     .child(div().text_sm().text_color(rgb(FAINT)).child(detail)),
             )
             .when(grid, |el| el.child(self.grid_controls(cx)))
+            .children(match self.open {
+                Open::Image(id) | Open::Canvas(id) if self.place != Place::Home => Some(
+                    Button::new("export")
+                        .ghost()
+                        .small()
+                        .label("Export…")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.export_asset(id, window, cx)
+                        })),
+                ),
+                _ => None,
+            })
     }
 }
 
@@ -729,6 +762,9 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom_by(1, cx)))
+            .on_action(cx.listener(|this, _: &DeleteSelection, window, cx| {
+                this.delete_selection(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &Undo, window, cx| {
                     this.step_color_history(false, window, cx)

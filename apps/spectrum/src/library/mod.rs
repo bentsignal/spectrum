@@ -217,6 +217,25 @@ impl Service {
         live::image(&self.library.path(&asset)?, item, command)?;
         Ok(())
     }
+    /// Exports an image or canvas at full size to a path outside the library.
+    /// The extension picks the format: .jpg, .jpeg, or .png.
+    pub fn export(&self, id: AssetId, destination: &Path) -> Result<()> {
+        self.check_export(destination)?;
+        let asset = self.library.get(id)?;
+        match asset.kind.as_str() {
+            "image" => lumen_core::engine::export_photo(
+                &self.image(id)?,
+                destination,
+                spectrum_imaging::RenderOptions { max_size: None },
+                92,
+            ),
+            "canvas" => {
+                let doc = prism_core::Workspace::load_read_only(&self.library.path(&asset)?)?;
+                self.export_canvas(&doc, destination)
+            }
+            kind => bail!("exporting is not implemented for {kind}"),
+        }
+    }
     pub fn create_canvas(&self, name: String, width: u32, height: u32) -> Result<Asset> {
         let path = self
             .library

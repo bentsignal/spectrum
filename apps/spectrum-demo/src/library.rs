@@ -348,6 +348,60 @@ impl Workspace {
         .detach();
     }
 
+    /// Asks where to save, then exports at full size off the main thread.
+    pub fn export_asset(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(store) = &self.store else {
+            return;
+        };
+        let Ok(asset) = store.service.library.get(id) else {
+            return;
+        };
+        let root = store.root.clone();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let pictures = home.join("Pictures");
+        let directory = if pictures.is_dir() { pictures } else { home };
+        let stem = std::path::Path::new(&asset.name)
+            .file_stem()
+            .map_or(asset.name.clone(), |s| s.to_string_lossy().to_string());
+        let extension = if asset.kind == "canvas" { "png" } else { "jpg" };
+        let destination = cx.prompt_for_new_path(&directory, Some(&format!("{stem}.{extension}")));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = destination.await else {
+                return;
+            };
+            let target = path.clone();
+            let export = cx
+                .background_executor()
+                .spawn(async move { Service::open(&root)?.export(id, &target) });
+            let result = export.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(()) => {
+                    let file = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    window.push_notification(
+                        Notification::success(format!("Exported {file}.")).action(
+                            move |_, _, _| {
+                                let path = path.clone();
+                                Button::new("reveal-export")
+                                    .ghost()
+                                    .label("Show")
+                                    .on_click(move |_, _, cx| cx.reveal_path(&path))
+                            },
+                        ),
+                        cx,
+                    );
+                }
+                Err(error) => this.notify_error(error, window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     pub fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_add.clear();
         let input = self.new_project_name.clone();
