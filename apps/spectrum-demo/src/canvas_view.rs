@@ -199,6 +199,7 @@ impl Workspace {
         let (rect, scale) = self.canvas_rect();
         let offset = rect.origin - area.origin;
         let render = self.canvas.as_ref().and_then(|c| c.render.clone());
+        let previous = self.canvas.as_ref().and_then(|c| c.previous.clone());
         let outline = self.canvas.as_ref().and_then(|canvas| {
             let id = canvas.selected?;
             let (mut min, mut max) = *canvas.bounds.get(&id)?;
@@ -245,7 +246,7 @@ impl Workspace {
                         .text_color(rgb(FAINT))
                         .child("Rendering…")
                 })
-                .children(render.map(|path| {
+                .children(previous.into_iter().chain(render).map(|path| {
                     img(path)
                         .absolute()
                         .left(offset.x)

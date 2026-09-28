@@ -52,6 +52,13 @@ Overnight work on 2026-09-28 (the user asked for parity work while asleep):
   Prism gained `Command::SetLayerAdjustments`.
 - Export… saves full-size files (`Service::export`); Delete and Backspace
   remove selections; project grids sort by when assets joined.
+- Text layers: alignment, line height, and tracking; text commits as you type.
+  The Home palette searches library assets and opens them in their first project.
+- Fixed: syncing the text field emitted a change that re-sent the text, looping
+  once per render and overwriting later edits. GPUI Component emits
+  `InputEvent::Change` even from `set_value`, so handlers must compare values.
+- Unpublished canvas and image edits now report an error instead of passing
+  silently (`live::canvas`, `live::image`).
 
 Design calls made without the user, to confirm in review:
 - Color and Style use a row of section chips inside one mode, rather than
@@ -59,9 +66,10 @@ Design calls made without the user, to confirm in review:
 - Compare and Export are small buttons at the right of the title row.
 - New text layers are white; the canvas default background is dark.
 - Pressing Enter in the palette with no matches creates a project with that name.
+  At Home, matching assets are listed first, so this happens only when nothing matches.
 
-Next: the user's review; then text typography, canvas performance (every change
-re-renders the whole document), spot removal, and presets.
+Next: the user's review; then canvas performance (every change re-renders the
+whole document, a few seconds with a large image layer), spot removal, and presets.
 
 ## Build to review
 

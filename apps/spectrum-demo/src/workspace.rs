@@ -153,6 +153,8 @@ pub struct Workspace {
     pub text_size: Entity<SliderState>,
     pub corner: Entity<SliderState>,
     pub rotation: Entity<SliderState>,
+    pub line_height: Entity<SliderState>,
+    pub tracking: Entity<SliderState>,
     pub shadow_blur: Entity<SliderState>,
     pub shadow_distance: Entity<SliderState>,
     pub style_section: usize,
@@ -203,6 +205,8 @@ impl Workspace {
         let text_size = slider(cx, 8., 400., 1., 48.);
         let corner = slider(cx, 0., 200., 1., 0.);
         let rotation = slider(cx, -180., 180., 1., 0.);
+        let line_height = slider(cx, 0.8, 3., 0.05, 1.25);
+        let tracking = slider(cx, -20., 100., 1., 0.);
         let shadow_blur = slider(cx, 0., prism_core::MAX_DROP_SHADOW_BLUR, 1., 10.);
         let shadow_distance = slider(cx, 0., 60., 1., 12.);
         let straighten = slider(cx, -45., 45., 0.1, 0.);
@@ -248,6 +252,14 @@ impl Workspace {
                 },
             ),
             cx.subscribe_in(
+                &line_height,
+                window,
+                |this, _, _: &SliderEvent, window, cx| this.update_typography(None, window, cx),
+            ),
+            cx.subscribe_in(&tracking, window, |this, _, _: &SliderEvent, window, cx| {
+                this.update_typography(None, window, cx)
+            }),
+            cx.subscribe_in(
                 &shadow_blur,
                 window,
                 |this, _, _: &SliderEvent, window, cx| this.set_shadow(true, window, cx),
@@ -261,7 +273,11 @@ impl Workspace {
                 &text_input,
                 window,
                 |this, _, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    // Every edit commits; the queue keeps only the latest. Syncing the
+                    // field also emits Change, so skip text the layer already has.
+                    if matches!(event, InputEvent::Change | InputEvent::PressEnter { .. })
+                        && this.text_edited(cx)
+                    {
                         this.update_text(None, window, cx)
                     }
                 },
@@ -345,6 +361,8 @@ impl Workspace {
             text_size,
             corner,
             rotation,
+            line_height,
+            tracking,
             shadow_blur,
             shadow_distance,
             style_section: 0,

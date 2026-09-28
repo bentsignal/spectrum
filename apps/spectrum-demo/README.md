@@ -20,7 +20,7 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Shortcut | Action |
 | --- | --- |
 | Command+1 to 5 | Switch to the nth sidebar mode |
-| Command+K | Go to a project, place, or asset |
+| Command+K | Go to a project, place, or asset; at Home, search the whole library |
 | Command+A, Esc | Select all assets, clear the selection |
 | Command+= and Command+- | Grid zoom, also the − and + buttons above grids |
 | Command+Z, Command+Shift+Z | Undo and redo edits to the open image or canvas |
@@ -45,7 +45,7 @@ shows capture details, the image's projects, and the canvases that use it. Insid
 "Recently added" sorts by when assets joined it. Double-click a canvas, or use New canvas in a project, to open it. Canvases
 offer three modes: Layers (add text, boxes, circles, and project images;
 reorder, duplicate, delete, show and hide), Style (one section at a time:
-Look for blending, opacity, text, and fills; Arrange for alignment and
+Look for blending, opacity, text with alignment, line height, and tracking, and fills; Arrange for alignment and
 rotation; Shadow for a drop shadow; or the canvas's size and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
 to select it, drag to move it, or drag a corner handle to resize it. Image

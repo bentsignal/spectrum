@@ -70,7 +70,11 @@ pub fn image(path: &Path, id: u64, command: lumen_core::Command) -> Result<serde
     let Some((directory, record)) = discover(path, lumen_core::LUMEN_LIVE_APPLICATION)? else {
         let mut workspace = lumen_core::Workspace::open_as(path, actor(), SessionId::new())?;
         workspace.execute(lumen_core::Command::Select { id })?;
-        return Ok(serde_json::to_value(workspace.execute(command)?)?);
+        let output = workspace.execute(command)?;
+        if let Some(error) = workspace.pending_publish_error() {
+            bail!("the edit was saved but not published: {error}");
+        }
+        return Ok(serde_json::to_value(output)?);
     };
     let collaboration = lumen_core::Workspace::start_collaboration(
         path,
@@ -120,6 +124,9 @@ pub fn canvas(path: &Path, commands: Vec<prism_core::Command>) -> Result<serde_j
         } else {
             workspace.execute_batch(commands)?
         };
+        if let Some(error) = workspace.pending_publish_error() {
+            bail!("the edit was saved but not published: {error}");
+        }
         return Ok(serde_json::to_value(output)?);
     };
     let collaboration = prism_core::Workspace::start_collaboration(

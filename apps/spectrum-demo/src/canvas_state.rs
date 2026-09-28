@@ -14,6 +14,9 @@ pub struct CanvasState {
     pub id: AssetId,
     pub doc: Document,
     pub render: Option<PathBuf>,
+    /// The render before `render`, drawn beneath it so the canvas never
+    /// blanks while the new image decodes.
+    pub previous: Option<PathBuf>,
     /// Canvas-space bounds of each layer, from the engine's geometry.
     pub bounds: HashMap<u64, ([f32; 2], [f32; 2])>,
     pub selected: Option<u64>,
@@ -71,7 +74,13 @@ fn run(root: &std::path::Path, id: AssetId, commands: Vec<Command>) -> anyhow::R
     )?;
     let image = prism_core::render_document_with_sources(&resolved, Some(RENDER), &sources)?;
     let render = std::env::temp_dir().join(format!("spectrum-canvas-{}.png", AssetId::new_v4()));
-    image.save(&render)?;
+    // Fast compression: this file is read once, right away.
+    let file = std::io::BufWriter::new(std::fs::File::create(&render)?);
+    image.write_with_encoder(image::codecs::png::PngEncoder::new_with_quality(
+        file,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::Sub,
+    ))?;
     Ok(Rendered {
         doc,
         render,
@@ -82,13 +91,16 @@ fn run(root: &std::path::Path, id: AssetId, commands: Vec<Command>) -> anyhow::R
 impl Workspace {
     /// Opens a canvas asset: loads and renders it in the background.
     pub fn load_canvas(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(old) = self.canvas.take().and_then(|c| c.render) {
-            std::fs::remove_file(old).ok();
+        if let Some(old) = self.canvas.take() {
+            for path in old.render.into_iter().chain(old.previous) {
+                std::fs::remove_file(path).ok();
+            }
         }
         self.canvas = Some(CanvasState {
             id,
             doc: Document::new("", 1, 1),
             render: None,
+            previous: None,
             bounds: HashMap::new(),
             selected: None,
             queue: Vec::new(),
@@ -139,8 +151,9 @@ impl Workspace {
                 canvas.busy = false;
                 match result {
                     Ok(done) => {
-                        if let Some(old) = canvas.render.replace(done.render) {
-                            std::fs::remove_file(old).ok();
+                        let old = canvas.render.replace(done.render);
+                        if let Some(older) = std::mem::replace(&mut canvas.previous, old) {
+                            std::fs::remove_file(older).ok();
                         }
                         if canvas
                             .selected

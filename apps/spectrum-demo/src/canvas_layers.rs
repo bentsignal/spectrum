@@ -12,7 +12,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     input::Input,
 };
-use prism_core::{BlendMode, Command, LayerKind};
+use prism_core::{BlendMode, Command, LayerKind, TextAlignment};
 
 /// Fill and text colors offered as swatches.
 const SWATCHES: [[u8; 4]; 12] = [
@@ -93,6 +93,13 @@ impl Workspace {
         };
         self.opacity
             .update(cx, |s, cx| s.set_value(opacity, window, cx));
+        if let LayerKind::Text { typography, .. } = &layer.kind {
+            let (line, tracking) = (typography.line_height, typography.tracking);
+            self.line_height
+                .update(cx, |s, cx| s.set_value(line, window, cx));
+            self.tracking
+                .update(cx, |s, cx| s.set_value(tracking, window, cx));
+        }
         self.text_size
             .update(cx, |s, cx| s.set_value(size.max(8.), window, cx));
         self.corner
@@ -110,7 +117,9 @@ impl Workspace {
             .update(cx, |s, cx| s.set_value(shadow.blur_radius, window, cx));
         self.shadow_distance
             .update(cx, |s, cx| s.set_value(shadow.offset_y, window, cx));
-        if let Some(text) = text {
+        // Leave the field alone while it is being typed in.
+        let typing = self.text_input.focus_handle(cx).is_focused(window);
+        if let Some(text) = text.filter(|_| !typing) {
             self.text_input
                 .update(cx, |s, cx| s.set_value(text, window, cx));
         }
@@ -406,13 +415,48 @@ impl Workspace {
                 )),
         );
         match &layer.kind {
-            LayerKind::Text { color, .. } => {
+            LayerKind::Text {
+                color, typography, ..
+            } => {
                 let size = self.text_size.read(cx).value().start();
+                let line = self.line_height.read(cx).value().start();
+                let tracking = self.tracking.read(cx).value().start();
+                let align = match typography.alignment {
+                    TextAlignment::Left => 0,
+                    TextAlignment::Center => 1,
+                    TextAlignment::Right => 2,
+                };
+                let view = cx.entity();
                 body = body.child(
                     group("Text", None)
                         .gap_4()
                         .child(Input::new(&self.text_input))
+                        .child(crate::controls::segmented(
+                            "text-align",
+                            [(None, "Left"), (None, "Center"), (None, "Right")],
+                            align,
+                            move |index, window, cx| {
+                                let alignment = [
+                                    TextAlignment::Left,
+                                    TextAlignment::Center,
+                                    TextAlignment::Right,
+                                ][index];
+                                view.update(cx, |this, cx| {
+                                    this.update_typography(Some(alignment), window, cx)
+                                })
+                            },
+                        ))
                         .child(slider_row("Size", format!("{size:.0}"), &self.text_size))
+                        .child(slider_row(
+                            "Line height",
+                            format!("{line:.2}"),
+                            &self.line_height,
+                        ))
+                        .child(slider_row(
+                            "Tracking",
+                            format!("{tracking:.0}"),
+                            &self.tracking,
+                        ))
                         .child(swatch_row(
                             "text-color",
                             Some(*color),
@@ -490,6 +534,14 @@ impl Workspace {
         });
     }
 
+    /// Whether the text field differs from the selected text layer.
+    pub fn text_edited(&self, cx: &App) -> bool {
+        let value = self.text_input.read(cx).value();
+        self.selected_layer().is_some_and(
+            |layer| matches!(&layer.kind, LayerKind::Text { text, .. } if *text != value.as_ref()),
+        )
+    }
+
     /// Sends the text field, size slider, and an optional new color.
     pub fn update_text(
         &mut self,
@@ -516,6 +568,33 @@ impl Workspace {
                 font_size,
                 color,
             }],
+            window,
+            cx,
+        );
+    }
+
+    /// Sends alignment, line height, and tracking for the selected text layer.
+    pub fn update_typography(
+        &mut self,
+        alignment: Option<TextAlignment>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(layer) = self.selected_layer() else {
+            return;
+        };
+        let LayerKind::Text { typography, .. } = &layer.kind else {
+            return;
+        };
+        let typography = prism_core::TextTypography {
+            alignment: alignment.unwrap_or(typography.alignment),
+            line_height: self.line_height.read(cx).value().start(),
+            tracking: self.tracking.read(cx).value().start(),
+            ..typography.clone()
+        };
+        let id = layer.id;
+        self.canvas_commands(
+            vec![Command::SetTextTypography { id, typography }],
             window,
             cx,
         );

@@ -20,6 +20,8 @@ enum Choice {
     Place(LibraryView),
     Enter(ProjectId),
     Open(Open),
+    /// An asset found from Home: open it in a project that has it.
+    Reveal(AssetId),
     NewProject,
     Create(String),
 }
@@ -78,6 +80,42 @@ impl Workspace {
                 }),
             cx,
         );
+    }
+
+    /// Opens an asset inside the first project that has it, or selects it in
+    /// Home's Assets when it belongs to none.
+    fn reveal(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(store) = &self.store else {
+            return;
+        };
+        let canvas = store
+            .service
+            .library
+            .get(id)
+            .is_ok_and(|a| a.kind == "canvas");
+        match store
+            .service
+            .library
+            .asset_projects(id)
+            .ok()
+            .and_then(|p| p.into_iter().next())
+        {
+            Some(project) => {
+                self.enter_project(project.id, window, cx);
+                let open = if canvas {
+                    Open::Canvas(id)
+                } else {
+                    Open::Image(id)
+                };
+                self.open_item(open, window, cx);
+            }
+            None => {
+                self.go_home(Mode::Assets, window, cx);
+                self.show(LibraryView::All, window, cx);
+                self.selection = vec![id];
+                self.anchor = Some(id);
+            }
+        }
     }
 
     fn show_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -164,6 +202,29 @@ impl Workspace {
                         }
                     }),
             );
+        } else if !query.is_empty() {
+            // From Home, search the whole library so typing a name finds the
+            // asset instead of offering only to create a project.
+            let library = store.service.library.list().unwrap_or_default();
+            items.extend(
+                library
+                    .into_iter()
+                    .filter(|a| matches!(a.kind.as_str(), "image" | "canvas") && matches(&a.name))
+                    .take(40)
+                    .map(|a| {
+                        let canvas = a.kind == "canvas";
+                        Item {
+                            icon: if canvas {
+                                IconName::LayoutDashboard
+                            } else {
+                                IconName::Frame
+                            },
+                            label: a.name.into(),
+                            detail: Some(if canvas { "Canvas" } else { "Image" }.into()),
+                            choice: Choice::Reveal(a.id),
+                        }
+                    }),
+            );
         }
         if self.palette_adding.is_empty() {
             items.extend(
@@ -239,6 +300,7 @@ impl Workspace {
             }
             Choice::Enter(id) => self.enter_project(id, window, cx),
             Choice::Open(open) => self.open_item(open, window, cx),
+            Choice::Reveal(id) => self.reveal(id, window, cx),
             Choice::AddTo(project, name) => {
                 let ids = std::mem::take(&mut self.palette_adding);
                 self.change(window, cx, |store| {
