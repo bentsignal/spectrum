@@ -477,6 +477,17 @@ impl Workspace {
     /// The open image, fitted to the main area.
     pub fn image_view(&self, id: AssetId, _: &mut Context<Self>) -> impl IntoElement {
         let large = self.store.as_ref().ok().and_then(|s| s.large.get(&id));
+        if self.compare {
+            let original = self.store.as_ref().ok().and_then(|s| s.originals.get(&id));
+            return div()
+                .size_full()
+                .p_8()
+                .pb(px(24.))
+                .flex()
+                .gap_6()
+                .child(Self::compare_half(original, "Original"))
+                .child(Self::compare_half(large, "Edited"));
+        }
         let content = match large {
             Some(Thumb::Ready(path, _)) => img(path.clone())
                 .size_full()

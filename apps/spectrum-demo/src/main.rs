@@ -4,6 +4,7 @@ mod canvas_style;
 mod canvas_view;
 mod color;
 mod color_fields;
+mod compare;
 mod controls;
 mod crop;
 mod curves;
@@ -45,7 +46,15 @@ gpui::actions!(
         ZoomOut,
         Undo,
         Redo,
-        DeleteSelection
+        DeleteSelection,
+        NudgeLeft,
+        NudgeRight,
+        NudgeUp,
+        NudgeDown,
+        NudgeLeftFar,
+        NudgeRightFar,
+        NudgeUpFar,
+        NudgeDownFar
     ]
 );
 
@@ -74,6 +83,14 @@ fn main() {
             // Text fields bind these in their own context, which wins while typing.
             KeyBinding::new("backspace", DeleteSelection, None),
             KeyBinding::new("delete", DeleteSelection, None),
+            KeyBinding::new("left", NudgeLeft, None),
+            KeyBinding::new("right", NudgeRight, None),
+            KeyBinding::new("up", NudgeUp, None),
+            KeyBinding::new("down", NudgeDown, None),
+            KeyBinding::new("shift-left", NudgeLeftFar, None),
+            KeyBinding::new("shift-right", NudgeRightFar, None),
+            KeyBinding::new("shift-up", NudgeUpFar, None),
+            KeyBinding::new("shift-down", NudgeDownFar, None),
         ]);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {

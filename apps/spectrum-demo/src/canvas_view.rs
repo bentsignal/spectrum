@@ -156,26 +156,41 @@ impl Workspace {
                 cx,
             );
         }
-        let transform = Transform {
-            x: t.x + dx,
-            y: t.y + dy,
-            ..t
+        let _ = t;
+        self.move_layer_by(drag.id, dx, dy, window, cx);
+    }
+
+    /// Moves a layer now in the local copy, so repeated moves build on each
+    /// other, and queues the engine command; the render catches up after.
+    pub fn move_layer_by(
+        &mut self,
+        id: u64,
+        dx: f32,
+        dy: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(canvas) = &mut self.canvas else {
+            return;
         };
-        // Move the outline now; the render catches up when the engine finishes.
-        if let Some(canvas) = &mut self.canvas
-            && let Some((min, max)) = canvas.bounds.get_mut(&drag.id)
-        {
+        let Some(layer) = canvas.doc.layers.iter_mut().find(|l| l.id == id) else {
+            return;
+        };
+        layer.transform.x += dx;
+        layer.transform.y += dy;
+        let transform = layer.transform;
+        if let Some((min, max)) = canvas.bounds.get_mut(&id) {
             *min = [min[0] + dx, min[1] + dy];
             *max = [max[0] + dx, max[1] + dy];
         }
-        self.canvas_commands(
-            vec![Command::SetTransform {
-                id: drag.id,
-                transform,
-            }],
-            window,
-            cx,
-        );
+        self.canvas_commands(vec![Command::SetTransform { id, transform }], window, cx);
+    }
+
+    /// Arrow keys: nudge the selected layer by one pixel, or ten with Shift.
+    pub fn nudge(&mut self, dx: f32, dy: f32, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.canvas.as_ref().and_then(|c| c.selected) {
+            self.move_layer_by(id, dx, dy, window, cx);
+        }
     }
 
     pub fn canvas_main(&self, cx: &mut Context<Self>) -> impl IntoElement {

@@ -1,10 +1,11 @@
 use crate::{
-    ClearSelection, DeleteSelection, Mode1, Mode2, Mode3, Mode4, Mode5, OpenPalette, Redo,
+    ClearSelection, DeleteSelection, Mode1, Mode2, Mode3, Mode4, Mode5, NudgeDown, NudgeDownFar,
+    NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp, NudgeUpFar, OpenPalette, Redo,
     SelectAll, Undo, ZoomIn, ZoomOut, store::Store, theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Icon, IconName, InteractiveElementExt, Root, Sizable,
+    Icon, IconName, InteractiveElementExt, Root, Selectable, Sizable,
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
@@ -157,6 +158,8 @@ pub struct Workspace {
     pub style_section: usize,
     /// The open image's record, for Info mode.
     pub photo_info: Option<lumen_core::Photo>,
+    /// Shows the unedited image beside the edited one.
+    pub compare: bool,
     /// Keeps keyboard shortcuts working when no field has focus.
     pub focus_handle: FocusHandle,
     /// The title strip a window drag started in, if any.
@@ -346,6 +349,7 @@ impl Workspace {
             shadow_distance,
             style_section: 0,
             photo_info: None,
+            compare: false,
             focus_handle: cx.focus_handle(),
             dragging: None,
             settle: 1,
@@ -718,6 +722,19 @@ impl Workspace {
                     .child(div().text_sm().text_color(rgb(FAINT)).child(detail)),
             )
             .when(grid, |el| el.child(self.grid_controls(cx)))
+            .when(matches!(self.open, Open::Image(_)), |el| {
+                el.child(
+                    Button::new("compare")
+                        .ghost()
+                        .small()
+                        .label("Compare")
+                        .selected(self.compare)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.compare = !this.compare;
+                            cx.notify();
+                        })),
+                )
+            })
             .children(match self.open {
                 Open::Image(id) | Open::Canvas(id) if self.place != Place::Home => Some(
                     Button::new("export")
@@ -746,6 +763,9 @@ impl Render for Workspace {
         );
         self.request_thumbnails(cx);
         self.request_large(cx);
+        if let (true, Open::Image(id)) = (self.compare, self.open) {
+            self.request_original(id, cx);
+        }
         let content = match (self.place, self.open) {
             (Place::Home, _) if self.mode == Mode::Projects => {
                 self.projects_grid(area.width, cx).into_any_element()
@@ -801,6 +821,14 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom_by(1, cx)))
+            .on_action(cx.listener(|this, _: &NudgeLeft, w, cx| this.nudge(-1., 0., w, cx)))
+            .on_action(cx.listener(|this, _: &NudgeRight, w, cx| this.nudge(1., 0., w, cx)))
+            .on_action(cx.listener(|this, _: &NudgeUp, w, cx| this.nudge(0., -1., w, cx)))
+            .on_action(cx.listener(|this, _: &NudgeDown, w, cx| this.nudge(0., 1., w, cx)))
+            .on_action(cx.listener(|this, _: &NudgeLeftFar, w, cx| this.nudge(-10., 0., w, cx)))
+            .on_action(cx.listener(|this, _: &NudgeRightFar, w, cx| this.nudge(10., 0., w, cx)))
+            .on_action(cx.listener(|this, _: &NudgeUpFar, w, cx| this.nudge(0., -10., w, cx)))
+            .on_action(cx.listener(|this, _: &NudgeDownFar, w, cx| this.nudge(0., 10., w, cx)))
             .on_action(cx.listener(|this, _: &DeleteSelection, window, cx| {
                 this.delete_selection(window, cx)
             }))

@@ -24,6 +24,8 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Command+A, Esc | Select all assets, clear the selection |
 | Command+= and Command+- | Grid zoom, also the − and + buttons above grids |
 | Command+Z, Command+Shift+Z | Undo and redo edits to the open image or canvas |
+| Arrow keys, Shift+arrows | Nudge the selected canvas layer 1 or 10 pixels |
+| Delete, Backspace | Remove the selected layer, or delete the selected assets |
 
 Control replaces Command on Linux and Windows. Command+S is deliberately unbound.
 
@@ -38,8 +40,8 @@ an image in a project shows Color: a histogram above one section at a time
 (Light, Color, Curves, Mixer, Grading, Detail). Each change sends the image's
 whole adjustment model to the engine; Command+Z and Command+Shift+Z step its
 edit history. Crop mode shows the whole frame with a draggable crop box and
-aspect presets; its sidebar rotates, flips, and straightens. Info shows capture
-details, the image's projects, and the canvases that use it. Inside a project,
+aspect presets; its sidebar rotates, flips, and straightens. Compare in the title bar shows the unedited original beside the edit. Info
+shows capture details, the image's projects, and the canvases that use it. Inside a project,
 "Recently added" sorts by when assets joined it. Double-click a canvas, or use New canvas in a project, to open it. Canvases
 offer three modes: Layers (add text, boxes, circles, and project images;
 reorder, duplicate, delete, show and hide), Style (one section at a time:
