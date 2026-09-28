@@ -94,7 +94,12 @@ impl Workspace {
             return;
         };
         match store.service.image(id) {
-            Ok(photo) => self.adjust = photo.adjustments,
+            Ok(photo) => {
+                self.adjust = photo.adjustments.clone();
+                if self.open == Open::Image(id) {
+                    self.photo_info = Some(photo);
+                }
+            }
             Err(error) => return self.notify_error(error, window, cx),
         }
         self.sync_color_sliders(window, cx);

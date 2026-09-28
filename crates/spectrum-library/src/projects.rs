@@ -177,6 +177,21 @@ impl Library {
         )
     }
 
+    /// When each asset joined a project, in Unix seconds.
+    pub fn project_added(&self, project: ProjectId) -> Result<Vec<(AssetId, i64)>> {
+        let mut statement = self
+            .db
+            .prepare("SELECT asset, added FROM project_assets WHERE project=?1")?;
+        let rows = statement
+            .query_map([project.to_string()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(id, added)| Ok((id.parse()?, added)))
+            .collect()
+    }
+
     /// Assets that belong to no project.
     pub fn unassigned(&self) -> Result<Vec<Asset>> {
         self.assets_where(
@@ -293,6 +308,7 @@ mod tests {
         lib.add_to_project(trip.id, &[a.id]).unwrap();
         assert_eq!(lib.project(trip.id).unwrap().assets, 2);
         assert_eq!(lib.asset_projects(a.id).unwrap().len(), 2);
+        assert_eq!(lib.project_added(trip.id).unwrap().len(), 2);
         assert!(lib.unassigned().unwrap().is_empty());
 
         lib.remove_from_project(trip.id, &[b.id]).unwrap();

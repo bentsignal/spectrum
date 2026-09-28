@@ -14,7 +14,7 @@ whole library with Import assets, All assets, Unassigned, and Trash) tabs.
 Click selects projects and assets; double-click opens them. Opening a project
 scopes everything to it. Its overview shows the project's
 assets; opening an image or a canvas shows its editing modes, one at a time:
-Color and Crop for images; Layers, Style, and Color for canvases. The back button at the
+Color, Crop, and Info for images; Layers, Style, and Color for canvases. The back button at the
 top of the sidebar goes up one level, from an item to the project, then Home.
 
 | Shortcut | Action |
@@ -38,7 +38,9 @@ an image in a project shows Color: a histogram above one section at a time
 (Light, Color, Curves, Mixer, Grading, Detail). Each change sends the image's
 whole adjustment model to the engine; Command+Z and Command+Shift+Z step its
 edit history. Crop mode shows the whole frame with a draggable crop box and
-aspect presets; its sidebar rotates, flips, and straightens. Double-click a canvas, or use New canvas in a project, to open it. Canvases
+aspect presets; its sidebar rotates, flips, and straightens. Info shows capture
+details, the image's projects, and the canvases that use it. Inside a project,
+"Recently added" sorts by when assets joined it. Double-click a canvas, or use New canvas in a project, to open it. Canvases
 offer three modes: Layers (add text, boxes, circles, and project images;
 reorder, duplicate, delete, show and hide), Style (one section at a time:
 Look for blending, opacity, text, and fills; Arrange for alignment and

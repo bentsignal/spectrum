@@ -131,11 +131,20 @@ impl Store {
                 .into_iter()
                 .map(|t| entry(t.asset, Some(t.purge_after)))
                 .collect(),
-            LibraryView::Project(id) => library
-                .project_assets(id)?
-                .into_iter()
-                .map(|a| entry(a, None))
-                .collect(),
+            LibraryView::Project(id) => {
+                // In a project, "recently added" means added to the project.
+                let joined: HashMap<AssetId, i64> =
+                    library.project_added(id)?.into_iter().collect();
+                library
+                    .project_assets(id)?
+                    .into_iter()
+                    .map(|a| {
+                        let mut e = entry(a, None);
+                        e.added = joined.get(&e.asset.id).copied().unwrap_or(e.added);
+                        e
+                    })
+                    .collect()
+            }
         };
         self.entries = entries
             .into_iter()

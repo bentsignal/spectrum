@@ -10,6 +10,7 @@ mod curves;
 mod grid;
 mod histogram;
 mod home;
+mod info;
 mod library;
 mod marquee;
 mod palette;

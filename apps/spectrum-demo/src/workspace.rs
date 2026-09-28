@@ -41,6 +41,7 @@ pub enum Mode {
     Crop,
     Layers,
     Style,
+    Info,
 }
 
 impl Mode {
@@ -51,6 +52,7 @@ impl Mode {
             Mode::Color => "Color",
             Mode::Crop => "Crop",
             Mode::Style => "Style",
+            Mode::Info => "Info",
             Mode::Layers => "Layers",
         }
     }
@@ -62,6 +64,7 @@ impl Mode {
             Mode::Color => IconName::Sun,
             Mode::Crop => IconName::Maximize,
             Mode::Style => IconName::Palette,
+            Mode::Info => IconName::Info,
             Mode::Layers => IconName::GalleryVerticalEnd,
         }
     }
@@ -152,6 +155,8 @@ pub struct Workspace {
     pub shadow_blur: Entity<SliderState>,
     pub shadow_distance: Entity<SliderState>,
     pub style_section: usize,
+    /// The open image's record, for Info mode.
+    pub photo_info: Option<lumen_core::Photo>,
     /// Keeps keyboard shortcuts working when no field has focus.
     pub focus_handle: FocusHandle,
     /// The title strip a window drag started in, if any.
@@ -340,6 +345,7 @@ impl Workspace {
             shadow_blur,
             shadow_distance,
             style_section: 0,
+            photo_info: None,
             focus_handle: cx.focus_handle(),
             dragging: None,
             settle: 1,
@@ -356,7 +362,7 @@ impl Workspace {
         match (self.place, self.open) {
             (Place::Home, _) => vec![Mode::Projects, Mode::Assets],
             (_, Open::Overview) => Vec::new(),
-            (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop],
+            (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop, Mode::Info],
             (_, Open::Canvas(_)) => vec![Mode::Layers, Mode::Style, Mode::Color],
         }
     }
@@ -603,6 +609,7 @@ impl Workspace {
             (_, Mode::Color) => self.color_sidebar(cx).into_any_element(),
             (_, Mode::Crop) => self.crop_sidebar(cx).into_any_element(),
             (_, Mode::Style) => self.style_sidebar(cx).into_any_element(),
+            (_, Mode::Info) => self.info_sidebar(cx).into_any_element(),
             _ => self.layers_sidebar(cx).into_any_element(),
         };
         div()
