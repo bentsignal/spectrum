@@ -16,10 +16,12 @@ pub struct Split {
     /// The layer's bounds when its part was rendered; drawing maps them to
     /// where the layer is now.
     pub base: LayerBounds,
-    /// The canvas area the layer's render covers: its top-left point and
-    /// size, in canvas units. Drawing uses these, never the pixel count.
-    pub origin: [f32; 2],
+    /// The layer render's top-left pixel on the canvas render's grid, and
+    /// its size in canvas units for scaling while resizing.
+    pub pixel: [f32; 2],
     pub extent: [f32; 2],
+    /// The scale the parts were rendered at.
+    pub density: f32,
     pub parts: [Option<Arc<RenderImage>>; 3],
     /// A render of the layer alone is running; `stale` asks for another.
     busy: bool,
@@ -91,53 +93,54 @@ fn around(doc: &Document, layer: u64, above: bool) -> Document {
 }
 
 /// Renders `layer` alone on a clear document around its bounds, so none of
-/// it is lost outside the canvas, at the canvas render's pixel density.
-/// Returns the render, the layer's bounds, and the canvas point at its
-/// top-left pixel.
+/// it is lost outside the canvas. It renders at the canvas's scale and starts
+/// on a whole pixel of the canvas's own render, so its pixels line up exactly
+/// with the full render's. Returns the render, the layer's bounds, its
+/// top-left pixel on the canvas render's grid, and its size in canvas units.
 fn render_alone(
     root: &std::path::Path,
     doc: &Document,
     layer: u64,
-    limit: u32,
+    density: f32,
 ) -> anyhow::Result<(Arc<RenderImage>, LayerBounds, [[f32; 2]; 2])> {
     let mut alone = doc.clone();
     alone.background = [0, 0, 0, 0];
     alone.layers.retain(|l| l.id == layer);
     let mut resolved = alone.clone();
     Service::open(root)?.resolve(&mut resolved)?;
-    let geometry = prism_core::layer_geometry(
-        resolved
-            .layers
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("layer {layer} is gone"))?,
-    )?;
-    let (min, max) = (geometry.min, geometry.max);
-    // Room for effects that reach past the layer, such as a drop shadow.
-    let reach = resolved
+    let first = resolved
         .layers
         .first()
-        .and_then(|l| l.style.drop_shadow)
-        .map_or(0., |s| {
-            s.offset_x.abs().max(s.offset_y.abs()) + s.blur_radius * 3. + 2.
-        });
-    // Whole canvas units, so the render's scale is exactly the canvas's.
-    let origin = [(min[0] - reach).floor(), (min[1] - reach).floor()];
+        .ok_or_else(|| anyhow::anyhow!("layer {layer} is gone"))?;
+    let geometry = prism_core::layer_geometry(first)?;
+    let (min, max) = (geometry.min, geometry.max);
+    // Room for effects that reach past the layer, such as a drop shadow.
+    let reach = first.style.drop_shadow.map_or(0., |s| {
+        s.offset_x.abs().max(s.offset_y.abs()) + s.blur_radius * 3. + 2.
+    });
+    let pixel = [
+        ((min[0] - reach) * density).floor(),
+        ((min[1] - reach) * density).floor(),
+    ];
+    let end = [
+        ((max[0] + reach) * density).ceil(),
+        ((max[1] + reach) * density).ceil(),
+    ];
+    let origin = [pixel[0] / density, pixel[1] / density];
     let (width, height) = (
-        ((max[0] + reach).ceil() - origin[0]).max(1.),
-        ((max[1] + reach).ceil() - origin[1]).max(1.),
+        ((end[0] - pixel[0]) / density).ceil().max(1.),
+        ((end[1] - pixel[1]) / density).ceil().max(1.),
     );
-    let density = limit as f32 / doc.width.max(doc.height).max(1) as f32;
     alone.width = width as u32;
     alone.height = height as u32;
     for each in &mut alone.layers {
         each.transform.x -= origin[0];
         each.transform.y -= origin[1];
     }
-    let limit = (width.max(height) * density).round().clamp(1., 8192.) as u32;
     Ok((
-        render_at(root, &alone, limit)?.image,
+        render_at(root, &alone, density)?.image,
         (min, max),
-        [origin, [width, height]],
+        [pixel, [width, height]],
     ))
 }
 
@@ -161,19 +164,20 @@ impl Workspace {
         canvas.split = Some(Split {
             layer,
             base,
-            origin: base.0,
+            pixel: [base.0[0] * canvas.density, base.0[1] * canvas.density],
             extent: [base.1[0] - base.0[0], base.1[1] - base.0[1]],
+            density: canvas.density,
             parts: [None, None, None],
             busy: false,
             stale: false,
         });
         let id = canvas.id;
         for above in [false, true] {
-            let (doc, limit) = (around(&canvas.doc, layer, above), canvas.limit);
+            let (doc, density) = (around(&canvas.doc, layer, above), canvas.density);
             let root = store.root.clone();
             let task = cx
                 .background_executor()
-                .spawn(async move { render_at(&root, &doc, limit) });
+                .spawn(async move { render_at(&root, &doc, density) });
             cx.spawn_in(window, async move |this, cx| {
                 let result = task.await;
                 this.update_in(cx, |this, window, cx| {
@@ -207,7 +211,7 @@ impl Workspace {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;
         };
-        let (id, doc, limit) = (canvas.id, canvas.doc.clone(), canvas.limit);
+        let (id, doc, density) = (canvas.id, canvas.doc.clone(), canvas.density);
         let Some(split) = &mut canvas.split else {
             return;
         };
@@ -220,7 +224,7 @@ impl Workspace {
         let (root, layer) = (store.root.clone(), split.layer);
         let task = cx
             .background_executor()
-            .spawn(async move { render_alone(&root, &doc, layer, limit) });
+            .spawn(async move { render_alone(&root, &doc, layer, density) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -236,13 +240,14 @@ impl Workspace {
                 };
                 split.busy = false;
                 let stale = split.stale;
-                if let Ok((image, bounds, [origin, extent])) = result {
+                if let Ok((image, bounds, [pixel, extent])) = result {
                     if let Some(old) = split.parts[1].replace(image) {
                         window.drop_image(old).ok();
                     }
                     split.base = bounds;
-                    split.origin = origin;
+                    split.pixel = pixel;
                     split.extent = extent;
+                    split.density = density;
                     if !dragging {
                         canvas.bounds.insert(layer, bounds);
                     }

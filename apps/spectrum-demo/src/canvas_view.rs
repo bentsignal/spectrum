@@ -5,6 +5,12 @@ use gpui_component::input::{self, Input};
 use prism_core::{Command, LayerKind, Transform};
 use std::sync::Arc;
 
+/// A move in canvas units, rounded to whole pixels of the canvas render, so
+/// the moved layer's pixels match its render exactly when dropped.
+fn whole_pixels(delta: f32, density: f32) -> f32 {
+    (delta * density).round() / density.max(f32::EPSILON)
+}
+
 impl Workspace {
     /// Where the canvas is drawn: fitted and centered, and its scale.
     pub fn canvas_rect(&self) -> (Bounds<Pixels>, f32) {
@@ -153,14 +159,17 @@ impl Workspace {
         let Some(drag) = self.canvas.as_mut().and_then(|c| c.drag.take()) else {
             return;
         };
-        let (dx, dy) = (drag.now.0 - drag.start.0, drag.now.1 - drag.start.1);
-        if dx.abs() < 0.5 && dy.abs() < 0.5 {
-            cx.notify();
-            return;
-        }
         let Some(canvas) = &self.canvas else {
             return;
         };
+        let (dx, dy) = (
+            whole_pixels(drag.now.0 - drag.start.0, canvas.density),
+            whole_pixels(drag.now.1 - drag.start.1, canvas.density),
+        );
+        if dx == 0. && dy == 0. && drag.corner.is_none() {
+            cx.notify();
+            return;
+        }
         let Some(layer) = canvas.doc.layers.iter().find(|l| l.id == drag.id) else {
             return;
         };
@@ -278,6 +287,21 @@ impl Workspace {
         let (rect, scale) = self.canvas_rect();
         let offset = rect.origin - area.origin;
         let offset = point(snap(f32::from(offset.x)), snap(f32::from(offset.y)));
+        // A whole-canvas render at its own pixel size, so it shows pixel for
+        // pixel; stretched to the canvas only until a render for a new size
+        // arrives.
+        let fit = move |image: &Arc<RenderImage>| {
+            let pixels = image.size(0);
+            let own = size(
+                px(pixels.width.0 as f32 / pixel),
+                px(pixels.height.0 as f32 / pixel),
+            );
+            if (own.width - rect.size.width).abs() <= px(2. / pixel) {
+                own
+            } else {
+                rect.size
+            }
+        };
         let image = self.canvas.as_ref().and_then(|c| c.image.clone());
         // Where a layer sits now in canvas space, following any drag.
         let current = |canvas: &crate::canvas_state::CanvasState, id: u64| {
@@ -292,7 +316,10 @@ impl Workspace {
                     (min, max, _) = Self::resized(min, max, corner, start, now);
                 }
                 Some(d) => {
-                    let (dx, dy) = (d.now.0 - d.start.0, d.now.1 - d.start.1);
+                    let (dx, dy) = (
+                        whole_pixels(d.now.0 - d.start.0, canvas.density),
+                        whole_pixels(d.now.1 - d.start.1, canvas.density),
+                    );
                     min = [min[0] + dx, min[1] + dy];
                     max = [max[0] + dx, max[1] + dy];
                 }
@@ -318,15 +345,39 @@ impl Workspace {
             // layer is now: moved whole, or scaled while resizing.
             let (base_min, base_max) = split.base;
             let factor = (max[0] - min[0]) / (base_max[0] - base_min[0]).max(0.001);
-            let at = [
-                min[0] + (split.origin[0] - base_min[0]) * factor,
-                min[1] + (split.origin[1] - base_min[1]) * factor,
-            ];
-            let origin = point(snap(at[0] * scale), snap(at[1] * scale));
-            let layer_size = size(
-                px(split.extent[0] * factor * scale),
-                px(split.extent[1] * factor * scale),
-            );
+            let d = split.density;
+            let (origin, layer_size) = if (factor - 1.).abs() < 0.0005 {
+                // Moving: shift the render by whole pixels and show it pixel
+                // for pixel, exactly as the full render will place it.
+                let shift = [
+                    ((min[0] - base_min[0]) * d).round(),
+                    ((min[1] - base_min[1]) * d).round(),
+                ];
+                let pixels = alone.size(0);
+                (
+                    point(
+                        px((split.pixel[0] + shift[0]) / pixel),
+                        px((split.pixel[1] + shift[1]) / pixel),
+                    ),
+                    size(
+                        px(pixels.width.0 as f32 / pixel),
+                        px(pixels.height.0 as f32 / pixel),
+                    ),
+                )
+            } else {
+                // Resizing: scale the render about the layer's bounds.
+                let at = [
+                    min[0] + (split.pixel[0] / d - base_min[0]) * factor,
+                    min[1] + (split.pixel[1] / d - base_min[1]) * factor,
+                ];
+                (
+                    point(snap(at[0] * scale), snap(at[1] * scale)),
+                    size(
+                        px(split.extent[0] * factor * scale),
+                        px(split.extent[1] * factor * scale),
+                    ),
+                )
+            };
             Some(([below, alone, above], origin, layer_size))
         });
         let image = if composite.is_some() { None } else { image };
@@ -385,22 +436,24 @@ impl Workspace {
                         .child("Rendering…")
                 })
                 .children(image.map(|image| {
+                    let shown = fit(&image);
                     img(image)
                         .absolute()
                         .left(offset.x)
                         .top(offset.y)
-                        .w(rect.size.width)
-                        .h(rect.size.height)
+                        .w(shown.width)
+                        .h(shown.height)
                         .object_fit(ObjectFit::Fill)
                 }))
                 .children(composite.map(|([below, alone, above], origin, size)| {
                     let whole = |image: Arc<RenderImage>| {
+                        let shown = fit(&image);
                         img(image)
                             .absolute()
                             .left(offset.x)
                             .top(offset.y)
-                            .w(rect.size.width)
-                            .h(rect.size.height)
+                            .w(shown.width)
+                            .h(shown.height)
                             .object_fit(ObjectFit::Fill)
                     };
                     div()

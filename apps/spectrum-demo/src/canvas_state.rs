@@ -8,9 +8,6 @@ use spectrum::library::{Service, live};
 use spectrum_library::AssetId;
 use std::{collections::HashMap, sync::Arc};
 
-/// Long edge of canvas renders until the canvas has been laid out.
-const RENDER: u32 = 2048;
-
 pub type Bounds2 = HashMap<u64, ([f32; 2], [f32; 2])>;
 
 pub struct CanvasState {
@@ -18,9 +15,10 @@ pub struct CanvasState {
     /// The document with every edit applied, ahead of what is saved.
     pub doc: Document,
     pub image: Option<Arc<RenderImage>>,
-    /// Long edge of renders, in pixels: the canvas's size on screen, so a
-    /// render shows pixel for pixel.
-    pub limit: u32,
+    /// Render scale in device pixels per canvas unit: the canvas's scale on
+    /// screen, so renders show pixel for pixel. Every part of the canvas
+    /// renders at this one scale, on one pixel grid.
+    pub density: f32,
     /// Canvas-space bounds of each layer, from the engine's geometry.
     pub bounds: Bounds2,
     pub selected: Option<u64>,
@@ -80,7 +78,7 @@ fn canvas_path(root: &std::path::Path, id: AssetId) -> anyhow::Result<std::path:
 }
 
 /// Resolves library images and renders the document with its layer bounds.
-pub fn render_at(root: &std::path::Path, doc: &Document, limit: u32) -> anyhow::Result<Rendered> {
+pub fn render_at(root: &std::path::Path, doc: &Document, density: f32) -> anyhow::Result<Rendered> {
     let mut resolved = doc.clone();
     Service::open(root)?.resolve(&mut resolved)?;
     let bounds = resolved
@@ -95,7 +93,7 @@ pub fn render_at(root: &std::path::Path, doc: &Document, limit: u32) -> anyhow::
         &resolved,
         &prism_core::default_raster_backing_cache_root()?,
     )?;
-    let image = prism_core::render_document_with_sources(&resolved, Some(limit), &sources)?;
+    let image = prism_core::render_document_scaled_with_sources(&resolved, density, &sources)?;
     let image = to_render_image(image).0;
     Ok(Rendered { image, bounds })
 }
@@ -108,7 +106,7 @@ impl Workspace {
             id,
             doc: Document::new("", 1, 1),
             image: None,
-            limit: RENDER,
+            density: 1.,
             bounds: HashMap::new(),
             selected: None,
             drag: None,
@@ -212,14 +210,12 @@ impl Workspace {
         {
             return;
         }
-        let long = canvas.doc.width.max(canvas.doc.height) as f32;
-        let wanted = (long * scale * window.scale_factor())
-            .round()
-            .clamp(256., 8192.) as u32;
-        if wanted.abs_diff(canvas.limit) <= canvas.limit / 100 {
+        let long = canvas.doc.width.max(canvas.doc.height).max(1) as f32;
+        let wanted = (scale * window.scale_factor()).clamp(0.05, 8192. / long);
+        if (wanted - canvas.density).abs() <= canvas.density * 0.002 {
             return;
         }
-        canvas.limit = wanted;
+        canvas.density = wanted;
         self.rerender_canvas(window, cx);
     }
 
@@ -233,16 +229,16 @@ impl Workspace {
             return;
         }
         canvas.rendering = true;
-        let (root, id, version, doc, limit) = (
+        let (root, id, version, doc, density) = (
             store.root.clone(),
             canvas.id,
             canvas.version,
             canvas.doc.clone(),
-            canvas.limit,
+            canvas.density,
         );
         let task = cx
             .background_executor()
-            .spawn(async move { render_at(&root, &doc, limit) });
+            .spawn(async move { render_at(&root, &doc, density) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
