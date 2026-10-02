@@ -2,10 +2,7 @@
 //! the layer alone, and the layers above. Dragging the layer redraws from
 //! these parts every frame, and editing only that layer re-renders just the
 //! layer, so both feel instant while the full render catches up.
-use crate::{
-    canvas_state::{RENDER, render_at},
-    workspace::Workspace,
-};
+use crate::{canvas_state::render_at, workspace::Workspace};
 use gpui::*;
 use prism_core::{Command, Document};
 use spectrum::library::Service;
@@ -19,6 +16,8 @@ pub struct Split {
     /// The layer's bounds when its part was rendered; drawing maps them to
     /// where the layer is now.
     pub base: LayerBounds,
+    /// The canvas point at the top-left pixel of the layer's render.
+    pub origin: [f32; 2],
     pub parts: [Option<Arc<RenderImage>>; 3],
     /// A render of the layer alone is running; `stale` asks for another.
     busy: bool,
@@ -74,8 +73,8 @@ fn only_changes(command: &Command, layer: u64) -> bool {
 }
 
 /// The layers below `layer` on the canvas background, or those above it on
-/// a clear one, with a render limit that fits `RENDER`.
-fn around(doc: &Document, layer: u64, above: bool) -> (Document, u32) {
+/// a clear one.
+fn around(doc: &Document, layer: u64, above: bool) -> Document {
     let mut doc = doc.clone();
     let index = doc.layers.iter().position(|l| l.id == layer).unwrap_or(0);
     if above {
@@ -86,16 +85,19 @@ fn around(doc: &Document, layer: u64, above: bool) -> (Document, u32) {
             each.visible = false;
         }
     }
-    (doc, RENDER)
+    doc
 }
 
-/// Renders `layer` alone on a clear document cut to its bounds, so none of it
-/// is lost outside the canvas, at the canvas render's pixel density.
+/// Renders `layer` alone on a clear document around its bounds, so none of
+/// it is lost outside the canvas, at the canvas render's pixel density.
+/// Returns the render, the layer's bounds, and the canvas point at its
+/// top-left pixel.
 fn render_alone(
     root: &std::path::Path,
     doc: &Document,
     layer: u64,
-) -> anyhow::Result<(Arc<RenderImage>, LayerBounds)> {
+    limit: u32,
+) -> anyhow::Result<(Arc<RenderImage>, LayerBounds, [f32; 2])> {
     let mut alone = doc.clone();
     alone.background = [0, 0, 0, 0];
     alone.layers.retain(|l| l.id == layer);
@@ -108,16 +110,21 @@ fn render_alone(
             .ok_or_else(|| anyhow::anyhow!("layer {layer} is gone"))?,
     )?;
     let (min, max) = (geometry.min, geometry.max);
-    let (width, height) = ((max[0] - min[0]).max(1.), (max[1] - min[1]).max(1.));
-    let density = RENDER as f32 / doc.width.max(doc.height).max(1) as f32;
-    alone.width = width.ceil() as u32;
-    alone.height = height.ceil() as u32;
+    // Whole canvas units, so the render's scale is exactly the canvas's.
+    let origin = [min[0].floor(), min[1].floor()];
+    let (width, height) = (
+        (max[0].ceil() - origin[0]).max(1.),
+        (max[1].ceil() - origin[1]).max(1.),
+    );
+    let density = limit as f32 / doc.width.max(doc.height).max(1) as f32;
+    alone.width = width as u32;
+    alone.height = height as u32;
     for each in &mut alone.layers {
-        each.transform.x -= min[0];
-        each.transform.y -= min[1];
+        each.transform.x -= origin[0];
+        each.transform.y -= origin[1];
     }
-    let limit = (width.max(height) * density).ceil().clamp(1., 4096.) as u32;
-    Ok((render_at(root, &alone, limit)?.image, (min, max)))
+    let limit = (width.max(height) * density).round().clamp(1., 8192.) as u32;
+    Ok((render_at(root, &alone, limit)?.image, (min, max), origin))
 }
 
 impl Workspace {
@@ -140,13 +147,14 @@ impl Workspace {
         canvas.split = Some(Split {
             layer,
             base,
+            origin: base.0,
             parts: [None, None, None],
             busy: false,
             stale: false,
         });
         let id = canvas.id;
         for above in [false, true] {
-            let (doc, limit) = around(&canvas.doc, layer, above);
+            let (doc, limit) = (around(&canvas.doc, layer, above), canvas.limit);
             let root = store.root.clone();
             let task = cx
                 .background_executor()
@@ -184,7 +192,7 @@ impl Workspace {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;
         };
-        let (id, doc) = (canvas.id, canvas.doc.clone());
+        let (id, doc, limit) = (canvas.id, canvas.doc.clone(), canvas.limit);
         let Some(split) = &mut canvas.split else {
             return;
         };
@@ -197,7 +205,7 @@ impl Workspace {
         let (root, layer) = (store.root.clone(), split.layer);
         let task = cx
             .background_executor()
-            .spawn(async move { render_alone(&root, &doc, layer) });
+            .spawn(async move { render_alone(&root, &doc, layer, limit) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -206,18 +214,19 @@ impl Workspace {
                 };
                 let dragging = canvas.drag.is_some();
                 let Some(split) = canvas.split.as_mut().filter(|s| s.layer == layer) else {
-                    if let Ok((image, _)) = result {
+                    if let Ok((image, ..)) = result {
                         window.drop_image(image).ok();
                     }
                     return;
                 };
                 split.busy = false;
                 let stale = split.stale;
-                if let Ok((image, bounds)) = result {
+                if let Ok((image, bounds, origin)) = result {
                     if let Some(old) = split.parts[1].replace(image) {
                         window.drop_image(old).ok();
                     }
                     split.base = bounds;
+                    split.origin = origin;
                     if !dragging {
                         canvas.bounds.insert(layer, bounds);
                     }

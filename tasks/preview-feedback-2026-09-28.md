@@ -7,10 +7,8 @@ priority: high
 
 Review of `aee56f0` ([rules](../docs/design/workflow.md)); instant edits, export, and the picker are approved.
 
-Done since (see Git): instant image undo, no slider flash, split-render drags
-and restyles, corner-anchored resizing, drag-to-reorder layers, tools with
-Command+P, text editing with a double-click or Command+E, the swap arrow,
-foreground-colored shapes, and hex, RGB, HSL, and OKLCH color text.
+Done since (see Git): instant undo, slider warm-up, crisp split-render drags,
+corner-anchored resizing, tools, text editing, and shared color text formats.
 
 Remaining:
 1. Mac check of the above.

@@ -8,8 +8,8 @@ use spectrum::library::{Service, live};
 use spectrum_library::AssetId;
 use std::{collections::HashMap, sync::Arc};
 
-/// Long edge of canvas renders.
-pub const RENDER: u32 = 2048;
+/// Long edge of canvas renders until the canvas has been laid out.
+const RENDER: u32 = 2048;
 
 pub type Bounds2 = HashMap<u64, ([f32; 2], [f32; 2])>;
 
@@ -18,6 +18,9 @@ pub struct CanvasState {
     /// The document with every edit applied, ahead of what is saved.
     pub doc: Document,
     pub image: Option<Arc<RenderImage>>,
+    /// Long edge of renders, in pixels: the canvas's size on screen, so a
+    /// render shows pixel for pixel.
+    pub limit: u32,
     /// Canvas-space bounds of each layer, from the engine's geometry.
     pub bounds: Bounds2,
     pub selected: Option<u64>,
@@ -71,10 +74,6 @@ fn canvas_path(root: &std::path::Path, id: AssetId) -> anyhow::Result<std::path:
 }
 
 /// Resolves library images and renders the document with its layer bounds.
-fn render(root: &std::path::Path, doc: &Document) -> anyhow::Result<Rendered> {
-    render_at(root, doc, RENDER)
-}
-
 pub fn render_at(root: &std::path::Path, doc: &Document, limit: u32) -> anyhow::Result<Rendered> {
     let mut resolved = doc.clone();
     Service::open(root)?.resolve(&mut resolved)?;
@@ -103,6 +102,7 @@ impl Workspace {
             id,
             doc: Document::new("", 1, 1),
             image: None,
+            limit: RENDER,
             bounds: HashMap::new(),
             selected: None,
             drag: None,
@@ -188,6 +188,27 @@ impl Workspace {
         self.render_canvas(window, cx);
     }
 
+    /// Matches the render size to the canvas's size on screen, rendering
+    /// again when the window or canvas size changes it.
+    pub fn fit_canvas_resolution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (_, scale) = self.canvas_rect();
+        let Some(canvas) = &mut self.canvas else {
+            return;
+        };
+        if canvas.drag.is_some() || self.image_bounds.borrow().size.width <= px(1.) {
+            return;
+        }
+        let long = canvas.doc.width.max(canvas.doc.height) as f32;
+        let wanted = (long * scale * window.scale_factor())
+            .round()
+            .clamp(256., 8192.) as u32;
+        if wanted.abs_diff(canvas.limit) <= canvas.limit / 100 {
+            return;
+        }
+        canvas.limit = wanted;
+        self.rerender_canvas(window, cx);
+    }
+
     /// Renders the local document unless a render is running; the running
     /// one starts another when it finishes if edits arrived meanwhile.
     pub fn render_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -198,15 +219,16 @@ impl Workspace {
             return;
         }
         canvas.rendering = true;
-        let (root, id, edits, doc) = (
+        let (root, id, edits, doc, limit) = (
             store.root.clone(),
             canvas.id,
             canvas.edits,
             canvas.doc.clone(),
+            canvas.limit,
         );
         let task = cx
             .background_executor()
-            .spawn(async move { render(&root, &doc) });
+            .spawn(async move { render_at(&root, &doc, limit) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {

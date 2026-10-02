@@ -30,6 +30,35 @@ pub fn group(title: &'static str, action: Option<AnyElement>) -> Div {
 thread_local! {
     static LAID_OUT: RefCell<HashSet<EntityId>> = RefCell::default();
     static NEEDS_FRAME: Cell<bool> = const { Cell::new(false) };
+    static SIDEBAR: RefCell<Vec<WeakEntity<SliderState>>> = RefCell::default();
+}
+
+/// Records a slider shown in the sidebar, to be laid out ahead of time.
+pub fn in_sidebar(state: Entity<SliderState>) -> Entity<SliderState> {
+    SIDEBAR.with(|all| all.borrow_mut().push(state.downgrade()));
+    state
+}
+
+/// Sidebar sliders not laid out yet, drawn once off screen at the sidebar's
+/// width so they show their value from their first visible frame.
+pub fn warm_sliders() -> Option<Div> {
+    let cold: Vec<_> = SIDEBAR.with(|all| {
+        all.borrow()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .filter(|state| LAID_OUT.with(|seen| seen.borrow_mut().insert(state.entity_id())))
+            .collect()
+    });
+    (!cold.is_empty()).then(|| {
+        div()
+            .absolute()
+            .top(px(-2000.))
+            .left_0()
+            .w(px(SIDEBAR_WIDTH - 32.))
+            .flex()
+            .flex_col()
+            .children(cold.iter().map(Slider::new))
+    })
 }
 
 /// Sliders place their thumb from the previous frame's width, which a new

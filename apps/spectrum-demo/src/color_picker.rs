@@ -6,7 +6,7 @@ use crate::{
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Selectable,
+    IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     popover::Popover,
@@ -28,7 +28,7 @@ pub const SWATCHES: [[u8; 4]; 12] = [
     [74, 127, 224, 255],
     [142, 90, 214, 255],
 ];
-const WIDTH: f32 = 232.;
+const WIDTH: f32 = 256.;
 
 /// A color was chosen, as RGBA.
 pub struct Picked(pub [u8; 4]);
@@ -45,6 +45,10 @@ pub struct ColorPicker {
     alpha: u8,
     hex: Entity<InputState>,
     format: Format,
+    /// The copy button shows a check briefly after copying.
+    copied: bool,
+    /// The format list is open.
+    choosing: bool,
     field: Rc<RefCell<Bounds<Pixels>>>,
     strip: Rc<RefCell<Bounds<Pixels>>>,
     drag: Option<Part>,
@@ -122,7 +126,9 @@ impl ColorPicker {
                 hsv: to_hsv(color),
                 alpha: color[3],
                 hex,
-                format: Format::Hex,
+                format: color_text::preferred(),
+                copied: false,
+                choosing: false,
                 field: Default::default(),
                 strip: Default::default(),
                 drag: None,
@@ -226,10 +232,98 @@ impl Render for ColorPicker {
         let (hue, saturation, value) = self.hsv;
         let pure = hsla(hue / 360., 1., 0.5, 1.);
         let current = to_hsla(self.rgba());
-        let format_name = FORMATS
-            .iter()
-            .find(|(f, _)| *f == self.format)
-            .map_or("Hex", |(_, name)| *name);
+        // Another picker may have changed the shared format.
+        if self.format != color_text::preferred() {
+            self.format = color_text::preferred();
+            self.show_hex(window, cx);
+        }
+        // A list inside the picker; a menu cannot open from a popover.
+        let format_menu = Button::new("color-format")
+            .ghost()
+            .xsmall()
+            .label(color_text::name(self.format))
+            .dropdown_caret(true)
+            .selected(self.choosing)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.choosing = !this.choosing;
+                cx.notify();
+            }));
+        let format_list = self.choosing.then(|| {
+            div()
+                .absolute()
+                .bottom(px(84.))
+                .left(px(30.))
+                .w(px(120.))
+                .p_1()
+                .flex()
+                .flex_col()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(BORDER))
+                .bg(rgb(0x1c1c1c))
+                .shadow_lg()
+                .children(FORMATS.iter().map(|(format, name)| {
+                    let format = *format;
+                    div()
+                        .id(*name)
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .text_sm()
+                        .flex()
+                        .justify_between()
+                        .hover(|el| el.bg(rgb(HOVER)))
+                        .child(*name)
+                        .when(format == self.format, |el| {
+                            el.child(div().text_color(rgb(MUTED)).child("✓"))
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            color_text::set_preferred(format);
+                            this.choosing = false;
+                            this.format = format;
+                            this.show_hex(window, cx);
+                            cx.notify();
+                        }))
+                }))
+        });
+        let copy = Button::new("copy-color")
+            .ghost()
+            .xsmall()
+            .icon(if self.copied {
+                IconName::Check
+            } else {
+                IconName::Copy
+            })
+            .tooltip("Copy")
+            .on_click(cx.listener(|this, _, window, cx| {
+                let text = color_text::format(this.rgba(), this.format);
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                this.copied = true;
+                cx.notify();
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(1200))
+                        .await;
+                    this.update(cx, |this, cx| {
+                        this.copied = false;
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }));
+        let paste = Button::new("paste-color")
+            .ghost()
+            .xsmall()
+            .child(clipboard_glyph())
+            .tooltip("Paste")
+            .on_click(cx.listener(|this, _, window, cx| {
+                let text = cx.read_from_clipboard().and_then(|item| item.text());
+                if let Some(color) = text.and_then(|t| color_text::parse(&t, this.format)) {
+                    this.set_rgba(color);
+                    this.pick(window, cx, true);
+                }
+            }));
         // While dragging, follow the pointer anywhere in the window.
         if let Some(part) = self.drag {
             let view = cx.entity();
@@ -347,6 +441,7 @@ impl Render for ColorPicker {
                 }))
         });
         div()
+            .relative()
             .w(px(WIDTH))
             .flex()
             .flex_col()
@@ -360,33 +455,44 @@ impl Render for ColorPicker {
                     .gap_2()
                     .child(
                         div()
-                            .size(px(28.))
+                            .size(px(24.))
                             .flex_none()
                             .rounded_md()
                             .border_1()
                             .border_color(rgb(BORDER))
                             .bg(current),
                     )
-                    .child(
-                        Input::new(&self.hex).prefix(
-                            div()
-                                .id("color-format")
-                                .text_xs()
-                                .text_color(rgb(FAINT))
-                                .hover(|el| el.text_color(rgb(TEXT)))
-                                .child(format_name)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    let index = FORMATS.iter().position(|(f, _)| *f == this.format);
-                                    this.format =
-                                        FORMATS[(index.unwrap_or(0) + 1) % FORMATS.len()].0;
-                                    this.show_hex(window, cx);
-                                    cx.notify();
-                                })),
-                        ),
-                    ),
+                    .child(format_menu)
+                    .child(div().flex_1())
+                    .child(copy)
+                    .child(paste),
             )
+            // The value on its own line, so every format fits.
+            .child(Input::new(&self.hex).small())
             .child(div().flex().justify_between().children(swatches))
+            .children(format_list)
     }
+}
+
+/// A clipboard mark for the paste button.
+fn clipboard_glyph() -> impl IntoElement {
+    div()
+        .relative()
+        .w(px(11.))
+        .h(px(13.))
+        .rounded_xs()
+        .border_1()
+        .border_color(rgb(MUTED))
+        .child(
+            div()
+                .absolute()
+                .top(px(-2.))
+                .left(px(2.))
+                .w(px(5.))
+                .h(px(3.))
+                .rounded_xs()
+                .bg(rgb(MUTED)),
+        )
 }
 
 /// A swatch button that opens `picker` in a popover.

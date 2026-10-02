@@ -2,7 +2,7 @@ use crate::{
     ClearSelection, CopyEdits, DeleteSelection, EditText, Mode1, Mode2, Mode3, Mode4, Mode5,
     NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp,
     NudgeUpFar, OpenPalette, OpenTools, PasteEdits, Redo, Section1, Section2, Section3, Section4,
-    Section5, Section6, SelectAll, Undo, store::Store, theme::*,
+    Section5, Section6, SelectAll, Undo, controls::in_sidebar, store::Store, theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -211,18 +211,18 @@ impl Workspace {
         let picker_query = input("Search your library", cx);
         let rename_input = input("Name", cx);
         let text_input = input("Text", cx);
-        let opacity = slider(cx, 0., 100., 1., 100.);
-        let text_size = slider(cx, 8., 400., 1., 48.);
-        let corner = slider(cx, 0., 200., 1., 0.);
-        let rotation = slider(cx, -180., 180., 1., 0.);
-        let line_height = slider(cx, 0.8, 3., 0.05, 1.25);
-        let tracking = slider(cx, -20., 100., 1., 0.);
-        let shadow_blur = slider(cx, 0., prism_core::MAX_DROP_SHADOW_BLUR, 1., 10.);
-        let shadow_distance = slider(cx, 0., 60., 1., 12.);
-        let straighten = slider(cx, -45., 45., 0.1, 0.);
+        let opacity = in_sidebar(slider(cx, 0., 100., 1., 100.));
+        let text_size = in_sidebar(slider(cx, 8., 400., 1., 48.));
+        let corner = in_sidebar(slider(cx, 0., 200., 1., 0.));
+        let rotation = in_sidebar(slider(cx, -180., 180., 1., 0.));
+        let line_height = in_sidebar(slider(cx, 0.8, 3., 0.05, 1.25));
+        let tracking = in_sidebar(slider(cx, -20., 100., 1., 0.));
+        let shadow_blur = in_sidebar(slider(cx, 0., prism_core::MAX_DROP_SHADOW_BLUR, 1., 10.));
+        let shadow_distance = in_sidebar(slider(cx, 0., 60., 1., 12.));
+        let straighten = in_sidebar(slider(cx, -45., 45., 0.1, 0.));
         let color: Vec<_> = crate::color_fields::FIELDS
             .iter()
-            .map(|field| slider(cx, field.min, field.max, field.step, 0.))
+            .map(|field| in_sidebar(slider(cx, field.min, field.max, field.step, 0.)))
             .collect();
         let mut subscriptions = vec![
             cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()),
@@ -816,6 +816,7 @@ impl Render for Workspace {
         );
         self.request_thumbnails(cx);
         self.ensure_preview(window, cx);
+        self.fit_canvas_resolution(window, cx);
         let content = match (self.place, self.open) {
             (Place::Home, _) if self.mode == Mode::Projects => {
                 self.projects_grid(area.width, cx).into_any_element()
@@ -918,6 +919,7 @@ impl Render for Workspace {
             })
             .when(self.palette_open, |el| el.child(self.palette(cx)))
             .when(self.picker_open, |el| el.child(self.picker(cx)))
+            .children(crate::controls::warm_sliders())
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
             .map(|el| {

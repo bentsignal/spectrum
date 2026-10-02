@@ -81,4 +81,6 @@ folder from the existing application while reviewing.
 Colors open a full picker (a saturation and brightness field, a hue strip, hex
 entry, and common colors). Beside Add in Layers, the foreground and background
 colors sit beside the current tool; new layers take the foreground. The color
-text switches between hex, RGB, HSL, and OKLCH.
+text shows hex, RGB, HSL, or OKLCH, chosen from a list in any picker and kept
+for all of them, with copy and paste buttons. Canvas renders match the canvas's
+size on screen, so layers stay sharp while they move.

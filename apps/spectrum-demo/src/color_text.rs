@@ -1,5 +1,6 @@
 //! Color as text: hex, RGB, HSL, or OKLCH. Any of them parses, whichever
 //! format is shown.
+use std::sync::atomic::{AtomicU8, Ordering};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Format {
@@ -7,6 +8,26 @@ pub enum Format {
     Rgb,
     Hsl,
     Oklch,
+}
+
+static PREFERRED: AtomicU8 = AtomicU8::new(0);
+
+/// The format every color field shows; choosing one in any picker sets it
+/// for all of them.
+pub fn preferred() -> Format {
+    FORMATS[PREFERRED.load(Ordering::Relaxed) as usize % FORMATS.len()].0
+}
+
+pub fn set_preferred(format: Format) {
+    let index = FORMATS.iter().position(|(f, _)| *f == format).unwrap_or(0);
+    PREFERRED.store(index as u8, Ordering::Relaxed);
+}
+
+pub fn name(format: Format) -> &'static str {
+    FORMATS
+        .iter()
+        .find(|(f, _)| *f == format)
+        .map_or("Hex", |(_, n)| n)
 }
 
 pub const FORMATS: [(Format, &str); 4] = [
