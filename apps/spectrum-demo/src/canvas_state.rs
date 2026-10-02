@@ -25,6 +25,8 @@ pub struct CanvasState {
     pub drag: Option<LayerDrag>,
     /// A drag or nudge landed; draw `split` until the render catches up.
     pub settling: bool,
+    /// Each layer's own render, for canvases drawn layer by layer.
+    pub cache: crate::layer_cache::LayerCache,
     /// The canvas rendered around one layer, so dragging it redraws at once.
     pub split: Option<crate::canvas_split::Split>,
     /// Image layers: edit the shared image rather than this placement.
@@ -112,6 +114,7 @@ impl Workspace {
             drag: None,
             settling: false,
             split: None,
+            cache: Default::default(),
             global: false,
             editing: None,
             tool: Default::default(),
@@ -130,7 +133,8 @@ impl Workspace {
 
     /// Frees the open canvas's images.
     pub fn close_canvas(&mut self, window: &mut Window) {
-        if let Some(old) = self.canvas.take() {
+        if let Some(mut old) = self.canvas.take() {
+            Self::drop_layers(&mut old.cache, window);
             let split = old
                 .split
                 .into_iter()
@@ -175,6 +179,7 @@ impl Workspace {
                         canvas.version += 1;
                         canvas.loaded = true;
                         this.render_canvas(window, cx);
+                        this.refresh_layers(window, cx);
                         this.sync_layer_controls(window, cx);
                     }
                     Ok(_) => {}
@@ -193,7 +198,9 @@ impl Workspace {
             canvas.version += 1;
         }
         self.split_edit(&[Command::Undo], window);
+        self.invalidate_layers();
         self.render_canvas(window, cx);
+        self.refresh_layers(window, cx);
     }
 
     /// Matches the render size to the canvas's size on screen, rendering
@@ -226,6 +233,12 @@ impl Workspace {
             return;
         };
         if canvas.rendering || canvas.rendered == canvas.version {
+            return;
+        }
+        // Stackable canvases are drawn from layer images; no full render.
+        if canvas.loaded && crate::layer_cache::stackable(&canvas.doc) {
+            canvas.rendered = canvas.version;
+            canvas.settling = false;
             return;
         }
         canvas.rendering = true;
@@ -325,6 +338,7 @@ impl Workspace {
         }
         self.follow_split(edit, window, cx);
         self.render_canvas(window, cx);
+        self.refresh_layers(window, cx);
         self.save_canvas(window, cx);
         self.sync_layer_controls(window, cx);
         cx.notify();

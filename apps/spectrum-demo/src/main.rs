@@ -19,6 +19,7 @@ mod grid;
 mod histogram;
 mod home;
 mod info;
+mod layer_cache;
 mod library;
 mod marquee;
 mod palette;

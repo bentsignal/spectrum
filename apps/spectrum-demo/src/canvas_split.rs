@@ -97,7 +97,7 @@ fn around(doc: &Document, layer: u64, above: bool) -> Document {
 /// on a whole pixel of the canvas's own render, so its pixels line up exactly
 /// with the full render's. Returns the render, the layer's bounds, its
 /// top-left pixel on the canvas render's grid, and its size in canvas units.
-fn render_alone(
+pub fn render_alone(
     root: &std::path::Path,
     doc: &Document,
     layer: u64,
@@ -150,6 +150,10 @@ impl Workspace {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;
         };
+        // Stackable canvases draw every layer from its own image instead.
+        if crate::layer_cache::stackable(&canvas.doc) {
+            return;
+        }
         if canvas.split.as_ref().is_some_and(|s| s.layer == layer) {
             return;
         }

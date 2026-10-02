@@ -380,8 +380,73 @@ impl Workspace {
             };
             Some(([below, alone, above], origin, layer_size))
         });
-        let image = if composite.is_some() { None } else { image };
-        let loading = image.is_none() && composite.is_none();
+        // Stackable canvases: the background, then every layer from its own
+        // image, placed by whole device pixels where the layer is now.
+        let stack = self
+            .canvas
+            .as_ref()
+            .filter(|c| c.loaded)
+            .and_then(|canvas| {
+                if !crate::layer_cache::stackable(&canvas.doc) {
+                    return None;
+                }
+                let device = scale * pixel;
+                let layers = canvas
+                    .doc
+                    .layers
+                    .iter()
+                    .filter(|layer| layer.visible)
+                    .filter_map(|layer| {
+                        let cached = canvas.cache.images.get(&layer.id)?;
+                        let (min, max) = current(canvas, layer.id)?;
+                        let (base_min, base_max) = cached.bounds;
+                        let factor = (max[0] - min[0]) / (base_max[0] - base_min[0]).max(0.001);
+                        let exact = (factor - 1.).abs() < 0.001
+                            && (cached.density - device).abs() <= device * 0.002;
+                        let placed = if exact {
+                            let shift = [
+                                ((min[0] - base_min[0]) * cached.density).round(),
+                                ((min[1] - base_min[1]) * cached.density).round(),
+                            ];
+                            let pixels = cached.image.size(0);
+                            (
+                                point(
+                                    px((cached.pixel[0] + shift[0]) / pixel),
+                                    px((cached.pixel[1] + shift[1]) / pixel),
+                                ),
+                                size(
+                                    px(pixels.width.0 as f32 / pixel),
+                                    px(pixels.height.0 as f32 / pixel),
+                                ),
+                            )
+                        } else {
+                            // Resizing, or rendered for another scale: map the
+                            // render's canvas area onto the layer's bounds now.
+                            let at = [
+                                min[0] + (cached.pixel[0] / cached.density - base_min[0]) * factor,
+                                min[1] + (cached.pixel[1] / cached.density - base_min[1]) * factor,
+                            ];
+                            (
+                                point(px(at[0] * scale), px(at[1] * scale)),
+                                size(
+                                    px(cached.extent[0] * factor * scale),
+                                    px(cached.extent[1] * factor * scale),
+                                ),
+                            )
+                        };
+                        Some((cached.image.clone(), placed.0, placed.1))
+                    })
+                    .collect::<Vec<_>>();
+                let [r, g, b, a] = canvas.doc.background;
+                Some((rgba(u32::from_be_bytes([r, g, b, a])), layers))
+            });
+        let image = if composite.is_some() || stack.is_some() {
+            None
+        } else {
+            image
+        };
+        let composite = if stack.is_some() { None } else { composite };
+        let loading = image.is_none() && composite.is_none() && stack.is_none();
         // The box or circle being drawn.
         let drawing = self.canvas.as_ref().and_then(|c| {
             let ((ax, ay), (bx, by)) = c.creating?;
@@ -435,6 +500,25 @@ impl Workspace {
                         .text_color(rgb(FAINT))
                         .child("Rendering…")
                 })
+                .children(stack.map(|(background, layers)| {
+                    div()
+                        .absolute()
+                        .left(offset.x)
+                        .top(offset.y)
+                        .w(rect.size.width)
+                        .h(rect.size.height)
+                        .overflow_hidden()
+                        .bg(background)
+                        .children(layers.into_iter().map(|(image, at, shown)| {
+                            img(image)
+                                .absolute()
+                                .left(at.x)
+                                .top(at.y)
+                                .w(shown.width)
+                                .h(shown.height)
+                                .object_fit(ObjectFit::Fill)
+                        }))
+                }))
                 .children(image.map(|image| {
                     let shown = fit(&image);
                     img(image)
