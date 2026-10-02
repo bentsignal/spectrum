@@ -262,6 +262,8 @@ impl Render for ColorPicker {
                 .border_color(rgb(BORDER))
                 .bg(rgb(0x1c1c1c))
                 .shadow_lg()
+                // Clicks stop here instead of picking a color underneath.
+                .occlude()
                 .children(FORMATS.iter().map(|(format, name)| {
                     let format = *format;
                     div()
@@ -277,13 +279,17 @@ impl Render for ColorPicker {
                         .when(format == self.format, |el| {
                             el.child(div().text_color(rgb(MUTED)).child("✓"))
                         })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            color_text::set_preferred(format);
-                            this.choosing = false;
-                            this.format = format;
-                            this.show_hex(window, cx);
-                            cx.notify();
-                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                color_text::set_preferred(format);
+                                this.choosing = false;
+                                this.format = format;
+                                this.show_hex(window, cx);
+                                cx.notify();
+                            }),
+                        )
                 }))
         });
         let copy = Button::new("copy-color")

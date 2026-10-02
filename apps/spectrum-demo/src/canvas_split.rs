@@ -16,8 +16,10 @@ pub struct Split {
     /// The layer's bounds when its part was rendered; drawing maps them to
     /// where the layer is now.
     pub base: LayerBounds,
-    /// The canvas point at the top-left pixel of the layer's render.
+    /// The canvas area the layer's render covers: its top-left point and
+    /// size, in canvas units. Drawing uses these, never the pixel count.
     pub origin: [f32; 2],
+    pub extent: [f32; 2],
     pub parts: [Option<Arc<RenderImage>>; 3],
     /// A render of the layer alone is running; `stale` asks for another.
     busy: bool,
@@ -97,7 +99,7 @@ fn render_alone(
     doc: &Document,
     layer: u64,
     limit: u32,
-) -> anyhow::Result<(Arc<RenderImage>, LayerBounds, [f32; 2])> {
+) -> anyhow::Result<(Arc<RenderImage>, LayerBounds, [[f32; 2]; 2])> {
     let mut alone = doc.clone();
     alone.background = [0, 0, 0, 0];
     alone.layers.retain(|l| l.id == layer);
@@ -110,11 +112,19 @@ fn render_alone(
             .ok_or_else(|| anyhow::anyhow!("layer {layer} is gone"))?,
     )?;
     let (min, max) = (geometry.min, geometry.max);
+    // Room for effects that reach past the layer, such as a drop shadow.
+    let reach = resolved
+        .layers
+        .first()
+        .and_then(|l| l.style.drop_shadow)
+        .map_or(0., |s| {
+            s.offset_x.abs().max(s.offset_y.abs()) + s.blur_radius * 3. + 2.
+        });
     // Whole canvas units, so the render's scale is exactly the canvas's.
-    let origin = [min[0].floor(), min[1].floor()];
+    let origin = [(min[0] - reach).floor(), (min[1] - reach).floor()];
     let (width, height) = (
-        (max[0].ceil() - origin[0]).max(1.),
-        (max[1].ceil() - origin[1]).max(1.),
+        ((max[0] + reach).ceil() - origin[0]).max(1.),
+        ((max[1] + reach).ceil() - origin[1]).max(1.),
     );
     let density = limit as f32 / doc.width.max(doc.height).max(1) as f32;
     alone.width = width as u32;
@@ -124,7 +134,11 @@ fn render_alone(
         each.transform.y -= origin[1];
     }
     let limit = (width.max(height) * density).round().clamp(1., 8192.) as u32;
-    Ok((render_at(root, &alone, limit)?.image, (min, max), origin))
+    Ok((
+        render_at(root, &alone, limit)?.image,
+        (min, max),
+        [origin, [width, height]],
+    ))
 }
 
 impl Workspace {
@@ -148,6 +162,7 @@ impl Workspace {
             layer,
             base,
             origin: base.0,
+            extent: [base.1[0] - base.0[0], base.1[1] - base.0[1]],
             parts: [None, None, None],
             busy: false,
             stale: false,
@@ -221,12 +236,13 @@ impl Workspace {
                 };
                 split.busy = false;
                 let stale = split.stale;
-                if let Ok((image, bounds, origin)) = result {
+                if let Ok((image, bounds, [origin, extent])) = result {
                     if let Some(old) = split.parts[1].replace(image) {
                         window.drop_image(old).ok();
                     }
                     split.base = bounds;
                     split.origin = origin;
+                    split.extent = extent;
                     if !dragging {
                         canvas.bounds.insert(layer, bounds);
                     }

@@ -278,24 +278,6 @@ impl Workspace {
         let (rect, scale) = self.canvas_rect();
         let offset = rect.origin - area.origin;
         let offset = point(snap(f32::from(offset.x)), snap(f32::from(offset.y)));
-        // A render's own size on screen: one image pixel per device pixel.
-        let exact = move |image: &Arc<RenderImage>, factor: f32| {
-            let pixels = image.size(0);
-            size(
-                px(pixels.width.0 as f32 * factor / pixel),
-                px(pixels.height.0 as f32 * factor / pixel),
-            )
-        };
-        // A whole-canvas render: pixel for pixel when it was made for this
-        // size, stretched only until the render for a new size arrives.
-        let fit = move |image: &Arc<RenderImage>| {
-            let own = exact(image, 1.);
-            if (own.width - rect.size.width).abs() <= px(2. / pixel) {
-                own
-            } else {
-                rect.size
-            }
-        };
         let image = self.canvas.as_ref().and_then(|c| c.image.clone());
         // Where a layer sits now in canvas space, following any drag.
         let current = |canvas: &crate::canvas_state::CanvasState, id: u64| {
@@ -341,7 +323,10 @@ impl Workspace {
                 min[1] + (split.origin[1] - base_min[1]) * factor,
             ];
             let origin = point(snap(at[0] * scale), snap(at[1] * scale));
-            let layer_size = exact(&alone, factor);
+            let layer_size = size(
+                px(split.extent[0] * factor * scale),
+                px(split.extent[1] * factor * scale),
+            );
             Some(([below, alone, above], origin, layer_size))
         });
         let image = if composite.is_some() { None } else { image };
@@ -400,24 +385,22 @@ impl Workspace {
                         .child("Rendering…")
                 })
                 .children(image.map(|image| {
-                    let shown = fit(&image);
                     img(image)
                         .absolute()
                         .left(offset.x)
                         .top(offset.y)
-                        .w(shown.width)
-                        .h(shown.height)
+                        .w(rect.size.width)
+                        .h(rect.size.height)
                         .object_fit(ObjectFit::Fill)
                 }))
                 .children(composite.map(|([below, alone, above], origin, size)| {
                     let whole = |image: Arc<RenderImage>| {
-                        let shown = fit(&image);
                         img(image)
                             .absolute()
                             .left(offset.x)
                             .top(offset.y)
-                            .w(shown.width)
-                            .h(shown.height)
+                            .w(rect.size.width)
+                            .h(rect.size.height)
                             .object_fit(ObjectFit::Fill)
                     };
                     div()

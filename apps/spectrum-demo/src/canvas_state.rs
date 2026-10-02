@@ -36,9 +36,15 @@ pub struct CanvasState {
     pub tool: crate::tools::Tool,
     /// A layer being drawn with the current tool, from and to in canvas space.
     pub creating: Option<((f32, f32), (f32, f32))>,
-    /// Counts local edits; renders record the edit they show.
+    /// Counts changes to the document; a reload only applies if none
+    /// happened while it loaded.
     edits: u64,
+    /// Counts reasons to render (edits, a new render size, a shared image's
+    /// change); renders record the one they show.
+    version: u64,
     rendered: u64,
+    /// The saved document has arrived; until then `doc` is a placeholder.
+    pub loaded: bool,
     rendering: bool,
     /// Commands applied locally and waiting to be saved.
     queue: Vec<Command>,
@@ -113,7 +119,9 @@ impl Workspace {
             tool: Default::default(),
             creating: None,
             edits: 0,
+            version: 0,
             rendered: 0,
+            loaded: false,
             rendering: false,
             queue: Vec::new(),
             saving: false,
@@ -166,6 +174,8 @@ impl Workspace {
                         }
                         canvas.doc = doc;
                         canvas.edits += 1;
+                        canvas.version += 1;
+                        canvas.loaded = true;
                         this.render_canvas(window, cx);
                         this.sync_layer_controls(window, cx);
                     }
@@ -182,7 +192,7 @@ impl Workspace {
     /// a shared image's edits.
     pub fn rerender_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(canvas) = &mut self.canvas {
-            canvas.edits += 1;
+            canvas.version += 1;
         }
         self.split_edit(&[Command::Undo], window);
         self.render_canvas(window, cx);
@@ -195,7 +205,11 @@ impl Workspace {
         let Some(canvas) = &mut self.canvas else {
             return;
         };
-        if canvas.drag.is_some() || self.image_bounds.borrow().size.width <= px(1.) {
+        // The placeholder before loading has no real size to fit.
+        if !canvas.loaded
+            || canvas.drag.is_some()
+            || self.image_bounds.borrow().size.width <= px(1.)
+        {
             return;
         }
         let long = canvas.doc.width.max(canvas.doc.height) as f32;
@@ -215,14 +229,14 @@ impl Workspace {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;
         };
-        if canvas.rendering || canvas.rendered == canvas.edits {
+        if canvas.rendering || canvas.rendered == canvas.version {
             return;
         }
         canvas.rendering = true;
-        let (root, id, edits, doc, limit) = (
+        let (root, id, version, doc, limit) = (
             store.root.clone(),
             canvas.id,
-            canvas.edits,
+            canvas.version,
             canvas.doc.clone(),
             canvas.limit,
         );
@@ -239,14 +253,14 @@ impl Workspace {
                     return;
                 };
                 canvas.rendering = false;
-                canvas.rendered = edits;
+                canvas.rendered = version;
                 match result {
                     Ok(done) => {
                         if let Some(old) = canvas.image.replace(done.image) {
                             window.drop_image(old).ok();
                         }
                         // Older renders keep the bounds later edits moved.
-                        if canvas.rendered == canvas.edits && canvas.drag.is_none() {
+                        if canvas.rendered == canvas.version && canvas.drag.is_none() {
                             canvas.bounds = done.bounds;
                             canvas.settling = false;
                         }
@@ -299,6 +313,7 @@ impl Workspace {
             }
             canvas.doc = doc;
             canvas.edits += 1;
+            canvas.version += 1;
         }
         if history {
             canvas.reload = true;
