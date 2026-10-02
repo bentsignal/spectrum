@@ -603,13 +603,18 @@ fn normalize_cursors(mut cursors: Vec<ExpectedCursor>) -> BridgeResult<Vec<Expec
 }
 
 fn reserve_atomic(counter: &AtomicUsize, bytes: usize, maximum: usize) -> bool {
-    counter
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            current
-                .checked_add(bytes)
-                .filter(|updated| *updated <= maximum)
-        })
-        .is_ok()
+    // A compare-and-swap loop: `fetch_update` is deprecated on newer Rust
+    // and its replacement is missing on older stable releases.
+    let mut current = counter.load(Ordering::Acquire);
+    loop {
+        let Some(updated) = current.checked_add(bytes).filter(|u| *u <= maximum) else {
+            return false;
+        };
+        match counter.compare_exchange_weak(current, updated, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {

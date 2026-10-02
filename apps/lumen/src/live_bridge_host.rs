@@ -849,11 +849,17 @@ fn send_reply(
 }
 
 fn decrement_pending_ingress(pending: &AtomicUsize) {
-    pending
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-            count.checked_sub(1)
-        })
-        .expect("Lumen live ingress accounting underflow");
+    // A compare-and-swap loop; see `reserve_atomic` in spectrum-live-bridge.
+    let mut count = pending.load(Ordering::Acquire);
+    loop {
+        let updated = count
+            .checked_sub(1)
+            .expect("Lumen live ingress accounting underflow");
+        match pending.compare_exchange_weak(count, updated, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(actual) => count = actual,
+        }
+    }
 }
 
 fn retained_request_bytes(request: &RequestEnvelope, action: &LumenLiveAction) -> usize {
