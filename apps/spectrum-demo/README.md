@@ -50,7 +50,7 @@ shows capture details, the image's projects, and the canvases that use it. Insid
 offer three modes: Layers (the current tool, foreground and background colors,
 and the layer list: drag a row to reorder, with a line showing where it lands
 (above or below the list means top or bottom); duplicate, delete, show and hide), Style (one section at a time:
-Look for blending, opacity, text with alignment, line height, and tracking, and fills; Arrange for alignment and
+Look for blending, opacity, text (font, alignment, line height, tracking), and fills; Arrange for alignment and
 rotation; Shadow for a drop shadow; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
 with proportions kept or not, or a preset) and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
@@ -86,3 +86,8 @@ colors sit beside the current tool; new layers take the foreground. The color
 text shows hex, RGB, HSL, or OKLCH, chosen from a list in any picker and kept
 for all of them, with copy and paste buttons. Canvas renders match the canvas's
 size on screen, so layers stay sharp while they move.
+
+The Font field lists the fonts installed on this computer, each in its own
+typeface. Hovering a font, or moving to it with the arrow keys, shows it on the
+canvas at once; a click or Enter applies it (embedding the font in the canvas)
+and Escape puts the old one back. Fonts that do not allow embedding are marked.

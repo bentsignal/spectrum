@@ -31,6 +31,8 @@ pub struct CanvasState {
     pub split: Option<crate::canvas_split::Split>,
     /// Image layers: edit the shared image rather than this placement.
     pub global: bool,
+    /// A text layer shown in an installed font that is not applied yet.
+    pub font_preview: Option<(u64, std::path::PathBuf)>,
     /// Where a dragged layer row would land in the list, top first.
     pub drop_slot: Option<usize>,
     /// A text layer being edited on the canvas.
@@ -119,6 +121,7 @@ impl Workspace {
             cache: Default::default(),
             global: false,
             drop_slot: None,
+            font_preview: None,
             editing: None,
             tool: Default::default(),
             creating: None,

@@ -15,6 +15,7 @@ mod crop;
 mod curves;
 mod edits;
 mod export;
+mod font_browser;
 mod grid;
 mod histogram;
 mod home;

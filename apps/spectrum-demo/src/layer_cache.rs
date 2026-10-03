@@ -78,7 +78,16 @@ impl Workspace {
             .images
             .retain(|id, _| canvas.doc.layers.iter().any(|l| l.id == *id));
         for layer in &canvas.doc.layers {
-            let wanted = key(layer, density);
+            // A font being previewed on this layer is part of its look.
+            let preview = canvas
+                .font_preview
+                .as_ref()
+                .filter(|(previewed, _)| *previewed == layer.id)
+                .map(|(_, path)| path.clone());
+            let wanted = match &preview {
+                Some(path) => format!("{}|font:{}", key(layer, density), path.display()),
+                None => key(layer, density),
+            };
             let current = cache.images.get(&layer.id).map(|i| i.key.as_str());
             if current == Some(wanted.as_str())
                 || cache.busy.contains_key(&layer.id)
@@ -90,9 +99,14 @@ impl Workspace {
             let (root, doc, id, layer_id) =
                 (store.root.clone(), canvas.doc.clone(), canvas.id, layer.id);
             let at = (layer.transform.x, layer.transform.y);
-            let task = cx
-                .background_executor()
-                .spawn(async move { render_alone(&root, &doc, layer_id, density) });
+            let previewed = preview.clone();
+            let task = cx.background_executor().spawn(async move {
+                let doc = match preview {
+                    Some(path) => crate::font_browser::with_font(&doc, layer_id, &path)?,
+                    None => doc,
+                };
+                render_alone(&root, &doc, layer_id, density)
+            });
             cx.spawn_in(window, async move |this, cx| {
                 let result = task.await;
                 this.update_in(cx, |this, window, cx| {
@@ -107,6 +121,12 @@ impl Workspace {
                         Ok(rendered) => rendered,
                         Err(error) => {
                             canvas.cache.failed.insert(layer_id, wanted);
+                            // A font that cannot be embedded is marked in the
+                            // browser instead of interrupting with an error.
+                            if let Some(path) = previewed {
+                                this.font_blocked.insert(path);
+                                return cx.notify();
+                            }
                             return this.notify_error(error, window, cx);
                         }
                     };

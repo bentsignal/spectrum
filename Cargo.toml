@@ -50,6 +50,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
 ttf-parser = "0.21.1"
+fontdb = "0.23"
 unicode-bidi = "=0.3.18"
 unicode-linebreak = "=0.1.5"
 unicode-script = "=0.5.8"

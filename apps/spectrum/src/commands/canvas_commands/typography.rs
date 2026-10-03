@@ -161,7 +161,7 @@ pub(super) fn updated_typography(
     Ok(updated)
 }
 
-pub(super) fn font_list(document: &Document, query: Option<String>) -> Value {
+pub(super) fn font_list(document: &Document, query: Option<String>, system: bool) -> Value {
     let query = query.unwrap_or_default().to_ascii_lowercase();
     let fonts: Vec<_> = document
         .font_assets
@@ -172,12 +172,28 @@ pub(super) fn font_list(document: &Document, query: Option<String>) -> Value {
                 || font.style.to_ascii_lowercase().contains(&query)
         })
         .collect();
-    json!({
+    let installed: Vec<_> = if system {
+        prism_core::system_fonts()
+            .into_iter()
+            .filter(|font| {
+                query.is_empty()
+                    || font.family.to_ascii_lowercase().contains(&query)
+                    || font.style.to_ascii_lowercase().contains(&query)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut value = json!({
         "ok": true,
         "action": "font_list",
         "bundled": prism_core::bundled_font_provenance(),
         "fonts": fonts,
-    })
+    });
+    if system {
+        value["system"] = json!(installed);
+    }
+    value
 }
 
 pub(super) fn font_usage(document: &Document, font_id: Option<u64>) -> Result<Value> {

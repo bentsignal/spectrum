@@ -290,10 +290,17 @@ impl Workspace {
                     TextAlignment::Right => 2,
                 };
                 let view = cx.entity();
+                let family = self
+                    .canvas
+                    .as_ref()
+                    .map(|c| crate::font_browser::current_family(&c.doc, typography))
+                    .unwrap_or_default();
+                let font = self.font_field(family, cx);
                 body = body.child(
                     group("Text", None)
                         .gap_4()
                         .child(Input::new(&self.text_input))
+                        .child(font)
                         .child(crate::controls::segmented(
                             "text-align",
                             [(None, "Left"), (None, "Center"), (None, "Right")],

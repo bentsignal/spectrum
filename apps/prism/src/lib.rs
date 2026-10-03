@@ -22,6 +22,8 @@ pub use effects::{
 
 mod text;
 
+mod system_fonts;
+pub use system_fonts::{SystemFont, regular_face, system_fonts};
 mod typography;
 pub use typography::{
     FontAsset, FontEmbeddingPermission, FontSlant, TextAlignment, TextEffects, TextShaping,

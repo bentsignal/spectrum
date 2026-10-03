@@ -338,7 +338,7 @@ fn font_list_cli_accepts_an_optional_query() {
         "hack",
     ])
     .unwrap();
-    let CliCommand::FontList { query } = cli.command else {
+    let CliCommand::FontList { query, .. } = cli.command else {
         panic!("font-list subcommand should parse");
     };
     assert_eq!(query.as_deref(), Some("hack"));
@@ -358,7 +358,11 @@ fn bundled_font_output_is_truthful_and_legacy_family_automation_remains_compatib
             shaping: Default::default(),
         })
         .unwrap();
-    let output = typography::font_list(&workspace.document, None);
+    let output = typography::font_list(&workspace.document, None, false);
+    // Installed fonts are listed only when asked for.
+    assert!(output.get("system").is_none());
+    let with_system = typography::font_list(&workspace.document, None, true);
+    assert!(with_system["system"].is_array());
     assert_eq!(output["bundled"]["id"], serde_json::Value::Null);
     assert_eq!(output["bundled"]["family"], "Ubuntu");
     assert_eq!(output["bundled"]["style"], "Light");

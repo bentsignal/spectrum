@@ -26,6 +26,7 @@ spectrum canvas place <canvas-uuid> <image-uuid>
 spectrum images adjust <image-uuid> '{"exposure":0.4,"vibrance":12}'
 spectrum images apply-edits <from-image-uuid> <image-uuid>...  # all edits, crop included
 spectrum canvas export <canvas-uuid> /path/to/output.png --max-size 2048
+spectrum canvas font-list --asset <canvas-uuid> --system   # installed fonts to embed with font-import
 spectrum images export <image-uuid> /path/to/output.jpg --quality 90 --max-size 3200
 spectrum copy <asset-uuid>
 ```

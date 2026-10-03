@@ -132,6 +132,10 @@ enum CliCommand {
     FontList {
         #[arg(long)]
         query: Option<String>,
+        /// Also list fonts installed on this computer, which `font-import`
+        /// can embed by path.
+        #[arg(long)]
+        system: bool,
     },
     /// Analyze current embedded-font character usage and cmap coverage without modifying bytes.
     FontUsage {
@@ -474,9 +478,10 @@ fn run(cli: Cli) -> Result<Value> {
             let document = session_document(&cli.project, cli.session)?;
             Ok(json!({"ok": true, "project": cli.project, "document": document}))
         }
-        CliCommand::FontList { query } => Ok(typography::font_list(
+        CliCommand::FontList { query, system } => Ok(typography::font_list(
             &session_document(&cli.project, cli.session)?,
             query,
+            system,
         )),
         CliCommand::FontUsage { font_id } => {
             typography::font_usage(&session_document(&cli.project, cli.session)?, font_id)

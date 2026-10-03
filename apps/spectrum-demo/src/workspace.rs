@@ -106,6 +106,15 @@ pub struct Workspace {
     pub palette_scroll: ScrollHandle,
     /// The palette lists canvas tools instead of places.
     pub palette_tools: bool,
+    /// Installed font families, loaded when the font browser first opens.
+    pub fonts: Option<std::sync::Arc<Vec<crate::font_browser::Family>>>,
+    pub font_open: bool,
+    /// Font files that Prism will not embed, found while previewing.
+    pub font_blocked: std::collections::HashSet<std::path::PathBuf>,
+    pub font_query: Entity<InputState>,
+    pub font_highlight: usize,
+    pub font_hover: Option<usize>,
+    pub font_scroll: UniformListScrollHandle,
     /// Assets the palette is adding to a project; empty when it navigates.
     pub palette_adding: Vec<AssetId>,
     /// Edits copied from an image, ready to paste onto others.
@@ -211,6 +220,7 @@ impl Workspace {
         let picker_query = input("Search your library", cx);
         let rename_input = input("Name", cx);
         let text_input = input("Text", cx);
+        let font_query = input("Search fonts", cx);
         let opacity = in_sidebar(slider(cx, 0., 100., 1., 100.));
         let text_size = in_sidebar(slider(cx, 8., 400., 1., 48.));
         let corner = in_sidebar(slider(cx, 0., 200., 1., 0.));
@@ -279,6 +289,9 @@ impl Workspace {
                 window,
                 |this, _, _: &SliderEvent, window, cx| this.set_shadow(true, window, cx),
             ),
+            cx.subscribe_in(&font_query, window, |this, _, event, window, cx| {
+                this.font_query_event(event, window, cx)
+            }),
             cx.subscribe_in(
                 &text_input,
                 window,
@@ -335,6 +348,13 @@ impl Workspace {
             palette_index: 0,
             palette_scroll: ScrollHandle::new(),
             palette_tools: false,
+            fonts: None,
+            font_open: false,
+            font_blocked: Default::default(),
+            font_query,
+            font_highlight: 0,
+            font_hover: None,
+            font_scroll: UniformListScrollHandle::new(),
             palette_adding: Vec::new(),
             copied_edits: None,
             pending_add: Vec::new(),
