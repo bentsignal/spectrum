@@ -1,37 +1,71 @@
 //! Style > Effects: Photoshop's classic layer styles. A switch adds or
-//! removes each style; its color, size, and position edit it in place, and
-//! every change is one `SetLayerStyle` command, as `spectrum canvas effect`.
+//! removes each style; its colors, sliders, and choices edit it in place.
+//! Every change is one `SetLayerStyle` command, as `spectrum canvas effect`
+//! and `spectrum canvas shadow`.
 use crate::{
     color_picker::{ColorPicker, Picked, color_well},
-    controls::{chip, in_sidebar, slider_row},
+    controls::{chip, in_sidebar, slider_row, toggle},
+    gradient_editor::GradientTarget,
     theme::*,
     workspace::{Workspace, slider},
 };
 use gpui::{prelude::*, *};
-use gpui_component::{
-    slider::{SliderEvent, SliderState},
-    switch::Switch,
+use gpui_component::slider::{SliderEvent, SliderState};
+use prism_core::{
+    BevelEmboss, BevelStyle, ColorOverlay, DropShadow, Glow, GradientOverlay, GradientStop,
+    LayerStroke, LayerStyle, Satin, ShapeGradient, StrokePosition,
 };
-use prism_core::{ColorOverlay, DropShadow, Glow, LayerStroke, LayerStyle, StrokePosition};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
     Shadow,
     Stroke,
     OuterGlow,
     InnerShadow,
     InnerGlow,
-    Overlay,
+    Satin,
+    ColorOverlay,
+    GradientOverlay,
+    Bevel,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Param {
+    Distance,
+    Size,
+    Spread,
+    Angle,
+    Depth,
+    Altitude,
+}
+
+/// A slider: what it sets, its label, and its range and default.
+type ParamSpec = (Param, &'static str, f32, f32, f32);
+
+/// One change to a style from its controls.
+#[derive(Clone, Copy)]
+pub enum Change {
+    Toggle(bool),
+    Color([u8; 4]),
+    ShadowColor([u8; 4]),
+    Position(StrokePosition),
+    Bevel(BevelStyle),
+    Up(bool),
+    Invert(bool),
+    Sliders,
 }
 
 impl Effect {
-    pub const ALL: [Effect; 6] = [
+    pub const ALL: [Effect; 9] = [
         Effect::Shadow,
         Effect::Stroke,
         Effect::OuterGlow,
         Effect::InnerShadow,
         Effect::InnerGlow,
-        Effect::Overlay,
+        Effect::Bevel,
+        Effect::Satin,
+        Effect::ColorOverlay,
+        Effect::GradientOverlay,
     ];
 
     fn label(self) -> &'static str {
@@ -41,7 +75,10 @@ impl Effect {
             Effect::OuterGlow => "Outer glow",
             Effect::InnerShadow => "Inner shadow",
             Effect::InnerGlow => "Inner glow",
-            Effect::Overlay => "Color overlay",
+            Effect::Satin => "Satin",
+            Effect::ColorOverlay => "Color overlay",
+            Effect::GradientOverlay => "Gradient overlay",
+            Effect::Bevel => "Bevel & emboss",
         }
     }
 
@@ -52,180 +89,362 @@ impl Effect {
             Effect::OuterGlow => "effect-outer-glow",
             Effect::InnerShadow => "effect-inner-shadow",
             Effect::InnerGlow => "effect-inner-glow",
-            Effect::Overlay => "effect-overlay",
+            Effect::Satin => "effect-satin",
+            Effect::ColorOverlay => "effect-overlay",
+            Effect::GradientOverlay => "effect-gradient-overlay",
+            Effect::Bevel => "effect-bevel",
         }
     }
 
-    /// The style's color and size on `style`, or its defaults.
-    fn settings(self, style: &LayerStyle) -> (bool, [u8; 4], f32) {
-        let glow = |g: Option<Glow>| {
-            let on = g.is_some();
-            let g = g.unwrap_or_default();
-            (on, g.color, g.size)
+    fn params(self) -> &'static [ParamSpec] {
+        match self {
+            Effect::Shadow => &[
+                (Param::Distance, "Distance", 0., 100., 17.),
+                (Param::Size, "Blur", 0., 128., 10.),
+                (Param::Angle, "Angle", 0., 360., 135.),
+            ],
+            Effect::Stroke => &[(Param::Size, "Size", 1., 50., 3.)],
+            Effect::OuterGlow | Effect::InnerGlow => &[
+                (Param::Size, "Size", 0., 100., 16.),
+                (Param::Spread, "Spread", 0., 100., 0.),
+            ],
+            Effect::InnerShadow => &[
+                (Param::Distance, "Distance", 0., 60., 17.),
+                (Param::Size, "Blur", 0., 60., 10.),
+                (Param::Angle, "Angle", 0., 360., 135.),
+            ],
+            Effect::Satin => &[
+                (Param::Distance, "Distance", 0., 100., 11.),
+                (Param::Size, "Size", 0., 100., 14.),
+                (Param::Angle, "Angle", 0., 360., 19.),
+            ],
+            Effect::Bevel => &[
+                (Param::Size, "Size", 0., 100., 8.),
+                (Param::Depth, "Depth", 0., 1000., 100.),
+                (Param::Angle, "Angle", 0., 360., 120.),
+                (Param::Altitude, "Altitude", 0., 90., 30.),
+            ],
+            Effect::ColorOverlay | Effect::GradientOverlay => &[],
+        }
+    }
+
+    /// Whether `style` has this effect, its main color, and its slider
+    /// values in `params` order.
+    fn read(self, style: &LayerStyle) -> (bool, [u8; 4], Vec<f32>) {
+        // Offsets as a distance and the angle light comes from.
+        let polar = |x: f32, y: f32| {
+            let angle = y.atan2(-x).to_degrees().rem_euclid(360.);
+            (x.hypot(y), angle)
         };
         match self {
-            Effect::Shadow => {
-                let s = style.drop_shadow;
+            Effect::Shadow | Effect::InnerShadow => {
+                let s = if self == Effect::Shadow {
+                    style.drop_shadow
+                } else {
+                    style.inner_shadow
+                };
                 let d = s.unwrap_or_default();
-                (s.is_some(), d.color, d.blur_radius)
+                let (distance, angle) = polar(d.offset_x, d.offset_y);
+                (s.is_some(), d.color, vec![distance, d.blur_radius, angle])
             }
             Effect::Stroke => {
-                let s = style.stroke;
-                let d = s.unwrap_or_default();
-                (s.is_some(), d.color, d.size)
+                let d = style.stroke.unwrap_or_default();
+                (style.stroke.is_some(), d.color, vec![d.size])
             }
-            Effect::OuterGlow => glow(style.outer_glow),
-            Effect::InnerGlow => glow(style.inner_glow),
-            Effect::InnerShadow => {
-                let s = style.inner_shadow;
-                let d = s.unwrap_or_default();
-                (s.is_some(), d.color, d.blur_radius)
+            Effect::OuterGlow | Effect::InnerGlow => {
+                let g = if self == Effect::OuterGlow {
+                    style.outer_glow
+                } else {
+                    style.inner_glow
+                };
+                let d = g.unwrap_or_default();
+                (g.is_some(), d.color, vec![d.size, d.spread * 100.])
             }
-            Effect::Overlay => {
-                let s = style.color_overlay;
-                (s.is_some(), s.unwrap_or_default().color, 0.)
+            Effect::Satin => {
+                let d = style.satin.unwrap_or_default();
+                (
+                    style.satin.is_some(),
+                    d.color,
+                    vec![d.distance, d.size, d.angle],
+                )
             }
-        }
-    }
-
-    /// The size slider's range, if this style has one.
-    fn range(self) -> Option<(f32, f32, f32)> {
-        match self {
-            Effect::Stroke => Some((1., 40., 3.)),
-            Effect::OuterGlow | Effect::InnerGlow => Some((0., 100., 16.)),
-            Effect::InnerShadow => Some((0., 60., 10.)),
-            Effect::Shadow | Effect::Overlay => None,
+            Effect::Bevel => {
+                let d = style.bevel.unwrap_or_default();
+                let values = vec![d.size, d.depth * 100., d.angle, d.altitude];
+                (style.bevel.is_some(), d.highlight, values)
+            }
+            Effect::ColorOverlay => {
+                let d = style.color_overlay.unwrap_or_default();
+                (style.color_overlay.is_some(), d.color, vec![])
+            }
+            Effect::GradientOverlay => (style.gradient_overlay.is_some(), [0; 4], vec![]),
         }
     }
 }
 
-/// One color picker per style, and size sliders for those that have one.
+/// Color pickers and sliders for every style.
 pub struct StyleControls {
     pickers: Vec<Entity<ColorPicker>>,
-    sizes: Vec<Option<Entity<SliderState>>>,
+    bevel_shadow: Entity<ColorPicker>,
+    sliders: Vec<(Effect, Param, Entity<SliderState>)>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl StyleControls {
     pub fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Self {
         let mut pickers = Vec::new();
-        let mut sizes = Vec::new();
+        let mut sliders = Vec::new();
         let mut _subscriptions = Vec::new();
         for effect in Effect::ALL {
-            let (_, color, _) = effect.settings(&LayerStyle::default());
+            let (_, color, _) = effect.read(&LayerStyle::default());
             let picker = ColorPicker::new(color, window, cx);
             _subscriptions.push(cx.subscribe_in(
                 &picker,
                 window,
                 move |this, _, Picked(color), window, cx| {
-                    this.set_effect(effect, true, Some(*color), None, window, cx)
+                    this.set_effect(effect, Change::Color(*color), window, cx)
                 },
             ));
             pickers.push(picker);
-            let size = effect.range().map(|(min, max, value)| {
+            for &(param, _, min, max, value) in effect.params() {
                 let state = in_sidebar(slider(cx, min, max, 1., value));
                 _subscriptions.push(cx.subscribe_in(
                     &state,
                     window,
                     move |this, _, _: &SliderEvent, window, cx| {
-                        this.set_effect(effect, true, None, None, window, cx)
+                        this.set_effect(effect, Change::Sliders, window, cx)
                     },
                 ));
-                state
-            });
-            sizes.push(size);
+                sliders.push((effect, param, state));
+            }
         }
+        let bevel_shadow = ColorPicker::new(BevelEmboss::default().shadow, window, cx);
+        _subscriptions.push(cx.subscribe_in(
+            &bevel_shadow,
+            window,
+            |this, _, Picked(color), window, cx| {
+                this.set_effect(Effect::Bevel, Change::ShadowColor(*color), window, cx)
+            },
+        ));
         Self {
             pickers,
-            sizes,
+            bevel_shadow,
+            sliders,
             _subscriptions,
         }
+    }
+
+    fn slider(&self, effect: Effect, param: Param) -> Option<&Entity<SliderState>> {
+        self.sliders
+            .iter()
+            .find(|(e, p, _)| *e == effect && *p == param)
+            .map(|(.., state)| state)
+    }
+
+    fn picker(&self, effect: Effect) -> &Entity<ColorPicker> {
+        let index = Effect::ALL.iter().position(|e| *e == effect).unwrap_or(0);
+        &self.pickers[index]
     }
 }
 
 impl Workspace {
     /// Adds, edits, or removes one style on the selected layer, keeping the
-    /// others. Unset parts keep the layer's current values.
+    /// others. Values not in `change` come from the style's sliders and the
+    /// layer's current settings.
     pub fn set_effect(
         &mut self,
         effect: Effect,
-        on: bool,
-        color: Option<[u8; 4]>,
-        position: Option<StrokePosition>,
+        change: Change,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(layer) = self.selected_layer() else {
             return;
         };
-        let mut style = layer.style;
-        let (_, current, _) = effect.settings(&style);
-        let color = color.unwrap_or(current);
-        let size = self.styles.sizes[effect as usize]
-            .as_ref()
-            .map_or(0., |s| s.read(cx).value().start());
-        let distance = self.shadow_distance.read(cx).value().start();
-        let blur = self.shadow_blur.read(cx).value().start();
-        let glow = |g: Option<Glow>| Glow {
-            color,
-            size,
-            ..g.unwrap_or_default()
+        let mut style = layer.style.clone();
+        let (was_on, current, _) = effect.read(&style);
+        let on = match change {
+            Change::Toggle(on) => on,
+            _ => was_on || !matches!(change, Change::Sliders),
+        };
+        if !was_on && !on {
+            return;
+        }
+        if !was_on {
+            // A style turned on starts from its defaults.
+            for &(param, .., default) in effect.params() {
+                if let Some(slider) = self.styles.slider(effect, param).cloned() {
+                    slider.update(cx, |s, cx| s.set_value(default, window, cx));
+                }
+            }
+        }
+        let color = match change {
+            Change::Color(color) => color,
+            _ => current,
+        };
+        let value = |param: Param| {
+            let spec = effect.params().iter().find(|(p, ..)| *p == param);
+            self.styles
+                .slider(effect, param)
+                .map(|s| s.read(cx).value().start())
+                .or(spec.map(|s| s.4))
+                .unwrap_or(0.)
+        };
+        // An offset from a distance and the angle light comes from.
+        let offset = |distance: f32, angle: f32| {
+            let radians = angle.to_radians();
+            (-radians.cos() * distance, radians.sin() * distance)
         };
         match effect {
-            Effect::Shadow => {
-                style.drop_shadow = on.then_some(DropShadow {
+            Effect::Shadow | Effect::InnerShadow => {
+                let (x, y) = offset(value(Param::Distance), value(Param::Angle));
+                let shadow = on.then_some(DropShadow {
                     color,
-                    offset_x: distance,
-                    offset_y: distance,
-                    blur_radius: blur,
-                })
+                    offset_x: x,
+                    offset_y: y,
+                    blur_radius: value(Param::Size),
+                });
+                if effect == Effect::Shadow {
+                    style.drop_shadow = shadow;
+                } else {
+                    style.inner_shadow = shadow;
+                }
             }
             Effect::Stroke => {
                 let stroke = style.stroke.unwrap_or_default();
                 style.stroke = on.then_some(LayerStroke {
-                    size,
+                    size: value(Param::Size),
                     color,
-                    position: position.unwrap_or(stroke.position),
+                    position: match change {
+                        Change::Position(position) => position,
+                        _ => stroke.position,
+                    },
                 });
             }
-            Effect::OuterGlow => style.outer_glow = on.then(|| glow(style.outer_glow)),
-            Effect::InnerGlow => style.inner_glow = on.then(|| glow(style.inner_glow)),
-            Effect::InnerShadow => {
-                style.inner_shadow = on.then_some(DropShadow {
+            Effect::OuterGlow | Effect::InnerGlow => {
+                let glow = on.then_some(Glow {
                     color,
-                    offset_x: size / 2.,
-                    offset_y: size / 2.,
-                    blur_radius: size,
-                })
+                    size: value(Param::Size),
+                    spread: value(Param::Spread) / 100.,
+                });
+                if effect == Effect::OuterGlow {
+                    style.outer_glow = glow;
+                } else {
+                    style.inner_glow = glow;
+                }
             }
-            Effect::Overlay => style.color_overlay = on.then_some(ColorOverlay { color }),
+            Effect::Satin => {
+                let satin = style.satin.unwrap_or_default();
+                style.satin = on.then_some(Satin {
+                    color,
+                    distance: value(Param::Distance),
+                    size: value(Param::Size),
+                    angle: value(Param::Angle),
+                    invert: match change {
+                        Change::Invert(invert) => invert,
+                        _ => satin.invert,
+                    },
+                    ..satin
+                });
+            }
+            Effect::Bevel => {
+                let bevel = style.bevel.unwrap_or_default();
+                style.bevel = on.then_some(BevelEmboss {
+                    style: match change {
+                        Change::Bevel(style) => style,
+                        _ => bevel.style,
+                    },
+                    size: value(Param::Size),
+                    depth: value(Param::Depth) / 100.,
+                    angle: value(Param::Angle),
+                    altitude: value(Param::Altitude),
+                    up: match change {
+                        Change::Up(up) => up,
+                        _ => bevel.up,
+                    },
+                    highlight: color,
+                    shadow: match change {
+                        Change::ShadowColor(shadow) => shadow,
+                        _ => bevel.shadow,
+                    },
+                });
+            }
+            Effect::ColorOverlay => {
+                style.color_overlay = on.then_some(ColorOverlay { color });
+            }
+            Effect::GradientOverlay => {
+                // A new overlay runs from the foreground to the background color.
+                let (fore, back) = (self.colors.fore, self.colors.back);
+                style.gradient_overlay = on.then(|| {
+                    style.gradient_overlay.clone().unwrap_or(GradientOverlay {
+                        gradient: ShapeGradient {
+                            stops: vec![GradientStop::new(0., fore), GradientStop::new(1., back)],
+                            ..ShapeGradient::default()
+                        },
+                        ..GradientOverlay::default()
+                    })
+                });
+            }
         }
         self.on_selected(window, cx, |id| prism_core::Command::SetLayerStyle {
             id,
             style,
         });
+        if matches!(change, Change::Toggle(true)) {
+            self.sync_gradient_editors(window, cx);
+        }
     }
 
     /// Moves the style controls to the selected layer's styles.
     pub fn sync_style_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(style) = self.selected_layer().map(|l| l.style) else {
+        let Some(style) = self.selected_layer().map(|l| l.style.clone()) else {
             return;
         };
         for effect in Effect::ALL {
-            let (on, color, size) = effect.settings(&style);
-            self.styles.pickers[effect as usize]
+            let (on, color, values) = effect.read(&style);
+            self.styles
+                .picker(effect)
+                .clone()
                 .update(cx, |picker, cx| picker.set(color, window, cx));
-            if let Some(slider) = &self.styles.sizes[effect as usize]
-                && on
-            {
-                slider.update(cx, |s, cx| s.set_value(size, window, cx));
+            if !on {
+                continue;
+            }
+            for (&(param, ..), value) in effect.params().iter().zip(values) {
+                if let Some(slider) = self.styles.slider(effect, param).cloned() {
+                    slider.update(cx, |s, cx| s.set_value(value, window, cx));
+                }
             }
         }
+        let shadow = style.bevel.unwrap_or_default().shadow;
+        self.styles
+            .bevel_shadow
+            .clone()
+            .update(cx, |picker, cx| picker.set(shadow, window, cx));
+        self.sync_gradient_editors(window, cx);
+    }
+
+    /// Choice chips that send `change(value)` for `effect`.
+    fn choices<T: Copy + PartialEq + 'static>(
+        &self,
+        effect: Effect,
+        current: T,
+        options: &[(&'static str, &'static str, T)],
+        change: fn(T) -> Change,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+            .flex()
+            .gap_1p5()
+            .children(options.iter().map(|&(id, label, value)| {
+                chip(id, label, value == current).on_click(cx.listener(
+                    move |this, _, window, cx| this.set_effect(effect, change(value), window, cx),
+                ))
+            }))
     }
 
     /// Style > Effects: a switch per style, and its settings while on.
     pub fn effects_section(&self, cx: &mut Context<Self>) -> Div {
-        let Some(style) = self.selected_layer().map(|l| l.style) else {
+        let Some(style) = self.selected_layer().map(|l| l.style.clone()) else {
             return div();
         };
         div()
@@ -233,70 +452,103 @@ impl Workspace {
             .flex_col()
             .gap_5()
             .children(Effect::ALL.map(|effect| {
-                let (on, color, _) = effect.settings(&style);
+                let (on, color, _) = effect.read(&style);
                 let header = div()
                     .flex()
                     .items_center()
                     .justify_between()
                     .child(
-                        Switch::new(effect.id())
-                            .label(effect.label())
-                            .checked(on)
-                            .on_click(cx.listener(move |this, checked: &bool, window, cx| {
-                                this.set_effect(effect, *checked, None, None, window, cx)
-                            })),
+                        toggle(effect.id(), effect.label(), on).on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.set_effect(effect, Change::Toggle(!on), window, cx)
+                            },
+                        )),
                     )
-                    .when(on, |el| {
-                        el.child(color_well(
-                            effect.id(),
-                            color,
-                            &self.styles.pickers[effect as usize],
-                        ))
+                    .when(on && effect != Effect::GradientOverlay, |el| {
+                        el.child(color_well(effect.id(), color, self.styles.picker(effect)))
                     });
                 let mut body = div().flex().flex_col().gap_3().child(header);
                 if !on {
                     return body;
                 }
-                if effect == Effect::Shadow {
-                    let distance = self.shadow_distance.read(cx).value().start();
-                    let blur = self.shadow_blur.read(cx).value().start();
-                    body = body
-                        .child(slider_row(
-                            "Distance",
-                            format!("{distance:.0}"),
-                            &self.shadow_distance,
-                        ))
-                        .child(slider_row("Blur", format!("{blur:.0}"), &self.shadow_blur));
+                for &(param, label, ..) in effect.params() {
+                    if let Some(state) = self.styles.slider(effect, param) {
+                        let value = state.read(cx).value().start();
+                        let text = match param {
+                            Param::Angle | Param::Altitude => format!("{value:.0}°"),
+                            Param::Spread | Param::Depth => format!("{value:.0}%"),
+                            _ => format!("{value:.0}"),
+                        };
+                        body = body.child(slider_row(label, text, state));
+                    }
                 }
-                if let Some(size) = &self.styles.sizes[effect as usize] {
-                    let value = size.read(cx).value().start();
-                    body = body.child(slider_row("Size", format!("{value:.0}"), size));
-                }
-                if effect == Effect::Stroke {
-                    let current = style.stroke.unwrap_or_default().position;
-                    body = body.child(
-                        div().flex().gap_1p5().children(
-                            [
+                match effect {
+                    Effect::Stroke => {
+                        let current = style.stroke.unwrap_or_default().position;
+                        body = body.child(self.choices(
+                            effect,
+                            current,
+                            &[
                                 ("stroke-outside", "Outside", StrokePosition::Outside),
                                 ("stroke-inside", "Inside", StrokePosition::Inside),
                                 ("stroke-center", "Center", StrokePosition::Center),
-                            ]
-                            .map(|(id, label, position)| {
-                                chip(id, label, position == current).on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.set_effect(
-                                            Effect::Stroke,
-                                            true,
-                                            None,
-                                            Some(position),
-                                            window,
-                                            cx,
-                                        )
-                                    },
-                                ))
-                            }),
-                        ),
-                    );
+                            ],
+                            Change::Position,
+                            cx,
+                        ));
+                    }
+                    Effect::Bevel => {
+                        let bevel = style.bevel.unwrap_or_default();
+                        body = body
+                            .child(self.choices(
+                                effect,
+                                bevel.style,
+                                &[
+                                    ("bevel-inner", "Inner", BevelStyle::Inner),
+                                    ("bevel-outer", "Outer", BevelStyle::Outer),
+                                    ("bevel-emboss", "Emboss", BevelStyle::Emboss),
+                                    ("bevel-pillow", "Pillow", BevelStyle::Pillow),
+                                ],
+                                Change::Bevel,
+                                cx,
+                            ))
+                            .child(self.choices(
+                                effect,
+                                bevel.up,
+                                &[("bevel-up", "Up", true), ("bevel-down", "Down", false)],
+                                Change::Up,
+                                cx,
+                            ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(div().text_sm().text_color(rgb(MUTED)).child("Shadow"))
+                                    .child(color_well(
+                                        "bevel-shadow",
+                                        bevel.shadow,
+                                        &self.styles.bevel_shadow,
+                                    )),
+                            );
+                    }
+                    Effect::Satin => {
+                        let invert = style.satin.unwrap_or_default().invert;
+                        body = body.child(self.choices(
+                            effect,
+                            invert,
+                            &[
+                                ("satin-edges", "Edges", true),
+                                ("satin-center", "Center", false),
+                            ],
+                            Change::Invert,
+                            cx,
+                        ));
+                    }
+                    Effect::GradientOverlay => {
+                        body = body.child(self.gradient_editor(GradientTarget::Overlay, cx));
+                    }
+                    _ => {}
                 }
                 body
             }))

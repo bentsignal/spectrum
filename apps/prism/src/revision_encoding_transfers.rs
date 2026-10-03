@@ -5,6 +5,7 @@ pub(super) fn requires_modern_encoding(command: &Command) -> bool {
         Command::SetShapeFill {
             fill: Some(fill), ..
         } => fill.requires_modern_encoding(),
+        Command::SetLayerStyle { style, .. } => style_requires_modern_encoding(style),
         Command::InsertLayer { transfer, .. } => {
             transfer.version >= crate::MODERN_GRADIENT_LAYER_TRANSFER_VERSION
                 || transfer
@@ -12,9 +13,18 @@ pub(super) fn requires_modern_encoding(command: &Command) -> bool {
                     .shape_fill
                     .as_ref()
                     .is_some_and(crate::ShapeFill::requires_modern_encoding)
+                || style_requires_modern_encoding(&transfer.layer.style)
         }
         _ => false,
     }
+}
+
+/// A gradient overlay using more than a two-stop linear gradient.
+fn style_requires_modern_encoding(style: &crate::LayerStyle) -> bool {
+    style
+        .gradient_overlay
+        .as_ref()
+        .is_some_and(|overlay| overlay.gradient.requires_modern_encoding())
 }
 
 pub(super) fn command_uses_clone_stamp(command: &Command) -> bool {
@@ -43,6 +53,7 @@ pub(crate) fn downgrade_compatible_transfers(commands: &mut [Command]) {
                 .shape_fill
                 .as_ref()
                 .is_some_and(crate::ShapeFill::requires_modern_encoding)
+                || style_requires_modern_encoding(&transfer.layer.style)
             {
                 crate::MODERN_GRADIENT_LAYER_TRANSFER_VERSION
             } else if matches!(

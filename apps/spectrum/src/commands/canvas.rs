@@ -32,7 +32,10 @@ use blend::CliBlend;
 mod dispatch;
 #[path = "canvas_commands/effects.rs"]
 mod effects;
-use effects::{EffectArgs, GradientArgs, ShadowArgs};
+use effects::{GradientArgs, ShadowArgs};
+#[path = "canvas_commands/style_effects.rs"]
+mod style_effects;
+use style_effects::EffectArgs;
 #[path = "canvas_commands/from_lumen.rs"]
 mod from_lumen;
 use from_lumen::from_lumen;

@@ -98,6 +98,31 @@ impl Workspace {
         ([left, top], [left + w, top + h], factor)
     }
 
+    /// The transform and bounds of a layer being resized from a corner.
+    pub fn resize_transform(
+        canvas: &crate::canvas_state::CanvasState,
+        drag: LayerDrag,
+    ) -> Option<(Transform, crate::canvas_split::LayerBounds)> {
+        let corner = drag.corner?;
+        let (min, max) = *canvas.bounds.get(&drag.id)?;
+        let t = canvas
+            .doc
+            .layers
+            .iter()
+            .find(|l| l.id == drag.id)?
+            .transform;
+        let (new_min, new_max, factor) = Self::resized(min, max, corner, drag.start, drag.now);
+        // The layer's top-left sits `min - x` from its origin; scale that too.
+        let transform = Transform {
+            x: new_min[0] - (min[0] - t.x) * factor,
+            y: new_min[1] - (min[1] - t.y) * factor,
+            scale_x: t.scale_x * factor,
+            scale_y: t.scale_y * factor,
+            ..t
+        };
+        Some((transform, (new_min, new_max)))
+    }
+
     fn canvas_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let point = self.to_canvas(event.position);
         if let Some(canvas) = self.canvas.as_mut().filter(|c| c.tool != Tool::Move) {
@@ -136,7 +161,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn canvas_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+    fn canvas_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.canvas.as_ref().is_some_and(|c| c.guide_drag.is_some()) {
             return self.move_guide(event.position, cx);
         }
@@ -156,6 +181,11 @@ impl Workspace {
             return;
         }
         drag.now = point;
+        // A resize re-renders the layer at its new size as it goes, so its
+        // effects keep their own size instead of stretching with it.
+        if drag.corner.is_some() {
+            self.refresh_layers(window, cx);
+        }
         cx.notify();
     }
 
@@ -182,24 +212,11 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let Some(layer) = canvas.doc.layers.iter().find(|l| l.id == drag.id) else {
-            return;
-        };
-        let t = layer.transform;
-        let corner_bounds = drag.corner.zip(canvas.bounds.get(&drag.id).copied());
+        let resize = Self::resize_transform(canvas, drag);
         if let Some(canvas) = &mut self.canvas {
             canvas.settling = true;
         }
-        if let Some((corner, (min, max))) = corner_bounds {
-            let (new_min, new_max, factor) = Self::resized(min, max, corner, drag.start, drag.now);
-            // The layer's top-left sits `min - x` from its origin; scale that too.
-            let transform = Transform {
-                x: new_min[0] - (min[0] - t.x) * factor,
-                y: new_min[1] - (min[1] - t.y) * factor,
-                scale_x: t.scale_x * factor,
-                scale_y: t.scale_y * factor,
-                ..t
-            };
+        if let Some((transform, (new_min, new_max))) = resize {
             if let Some(canvas) = &mut self.canvas {
                 canvas.bounds.insert(drag.id, (new_min, new_max));
                 if let Some(layer) = canvas.doc.layers.iter_mut().find(|l| l.id == drag.id) {
@@ -329,7 +346,8 @@ impl Workspace {
                     (min, max, _) = Self::resized(min, max, corner, start, now);
                 }
                 Some(_) => {
-                    let (_, dx, dy) = moved?;
+                    // Pressed but not moved yet: the layer stays where it is.
+                    let (dx, dy) = moved.map_or((0., 0.), |(_, dx, dy)| (dx, dy));
                     min = [min[0] + dx, min[1] + dy];
                     max = [max[0] + dx, max[1] + dy];
                 }
@@ -457,10 +475,18 @@ impl Workspace {
         };
         let composite = if stack.is_some() { None } else { composite };
         let loading = image.is_none() && composite.is_none() && stack.is_none();
+        // The gradient being dragged out, as a line from start to end.
+        let gradient_line = self.canvas.as_ref().and_then(|c| {
+            let ((ax, ay), (bx, by)) = c.creating?;
+            (c.tool == Tool::Gradient).then(|| {
+                let at = |x: f32, y: f32| offset + point(px(x * scale), px(y * scale));
+                (at(ax, ay), at(bx, by))
+            })
+        });
         // The box or circle being drawn.
         let drawing = self.canvas.as_ref().and_then(|c| {
             let ((ax, ay), (bx, by)) = c.creating?;
-            (c.tool != Tool::Text).then(|| {
+            (c.tool != Tool::Text && c.tool != Tool::Gradient).then(|| {
                 let at = |x: f32, y: f32| offset + point(px(x * scale), px(y * scale));
                 (
                     Bounds::from_corners(at(ax.min(bx), ay.min(by)), at(ax.max(bx), ay.max(by))),
@@ -588,6 +614,44 @@ impl Workspace {
                         .when(round, |el| el.rounded_full())
                 }))
                 .child(self.guide_overlay(offset, scale, rect.size))
+                .children(gradient_line.map(|(from, to)| {
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| {
+                            let (from, to) = (bounds.origin + from, bounds.origin + to);
+                            let mut line = PathBuilder::stroke(px(1.5));
+                            line.move_to(from);
+                            line.line_to(to);
+                            if let Ok(path) = line.build() {
+                                window.paint_path(path, hsla(0., 0., 1., 0.9));
+                            }
+                            for end in [from, to] {
+                                let mut dot = PathBuilder::fill();
+                                let r = px(3.5);
+                                dot.move_to(end + point(r, px(0.)));
+                                dot.arc_to(
+                                    point(r, r),
+                                    px(0.),
+                                    false,
+                                    true,
+                                    end - point(r, px(0.)),
+                                );
+                                dot.arc_to(
+                                    point(r, r),
+                                    px(0.),
+                                    false,
+                                    true,
+                                    end + point(r, px(0.)),
+                                );
+                                if let Ok(path) = dot.build() {
+                                    window.paint_path(path, hsla(0., 0., 1., 0.95));
+                                }
+                            }
+                        },
+                    )
+                    .absolute()
+                    .size_full()
+                }))
                 .children(outline.map(|b| {
                     div()
                         .absolute()
@@ -615,7 +679,9 @@ impl Workspace {
                     MouseButton::Left,
                     cx.listener(|this, event, window, cx| this.canvas_down(event, window, cx)),
                 )
-                .on_mouse_move(cx.listener(|this, event, _, cx| this.canvas_move(event, cx)))
+                .on_mouse_move(
+                    cx.listener(|this, event, window, cx| this.canvas_move(event, window, cx)),
+                )
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseUpEvent, window, cx| {

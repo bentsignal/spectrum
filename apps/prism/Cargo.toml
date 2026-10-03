@@ -17,6 +17,7 @@ ghostty-terminal = ["spectrum-terminal/ghostty-terminal"]
 name = "prism_core"
 
 [dependencies]
+rayon.workspace = true
 spectrum-library = { path = "../../crates/spectrum-library" }
 anyhow.workspace = true
 base64.workspace = true

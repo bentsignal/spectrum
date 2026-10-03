@@ -175,9 +175,9 @@ pub struct Workspace {
     pub rotation: Entity<SliderState>,
     pub line_height: Entity<SliderState>,
     pub tracking: Entity<SliderState>,
-    pub shadow_blur: Entity<SliderState>,
-    pub shadow_distance: Entity<SliderState>,
     pub styles: crate::layer_styles::StyleControls,
+    pub fill_gradient: crate::gradient_editor::GradientEditor,
+    pub overlay_gradient: crate::gradient_editor::GradientEditor,
     pub style_section: usize,
     /// The open image's record, for Info mode.
     pub photo_info: Option<lumen_core::Photo>,
@@ -231,8 +231,6 @@ impl Workspace {
         let rotation = in_sidebar(slider(cx, -180., 180., 1., 0.));
         let line_height = in_sidebar(slider(cx, 0.8, 3., 0.05, 1.25));
         let tracking = in_sidebar(slider(cx, -20., 100., 1., 0.));
-        let shadow_blur = in_sidebar(slider(cx, 0., prism_core::MAX_DROP_SHADOW_BLUR, 1., 10.));
-        let shadow_distance = in_sidebar(slider(cx, 0., 60., 1., 12.));
         let straighten = in_sidebar(slider(cx, -45., 45., 0.1, 0.));
         let color: Vec<_> = crate::color_fields::FIELDS
             .iter()
@@ -283,34 +281,6 @@ impl Workspace {
             cx.subscribe_in(&tracking, window, |this, _, _: &SliderEvent, window, cx| {
                 this.update_typography(None, window, cx)
             }),
-            cx.subscribe_in(
-                &shadow_blur,
-                window,
-                |this, _, _: &SliderEvent, window, cx| {
-                    this.set_effect(
-                        crate::layer_styles::Effect::Shadow,
-                        true,
-                        None,
-                        None,
-                        window,
-                        cx,
-                    )
-                },
-            ),
-            cx.subscribe_in(
-                &shadow_distance,
-                window,
-                |this, _, _: &SliderEvent, window, cx| {
-                    this.set_effect(
-                        crate::layer_styles::Effect::Shadow,
-                        true,
-                        None,
-                        None,
-                        window,
-                        cx,
-                    )
-                },
-            ),
             cx.subscribe_in(&font_query, window, |this, _, event, window, cx| {
                 this.font_query_event(event, window, cx)
             }),
@@ -424,9 +394,17 @@ impl Workspace {
             rotation,
             line_height,
             tracking,
-            shadow_blur,
-            shadow_distance,
             styles: crate::layer_styles::StyleControls::new(window, cx),
+            fill_gradient: crate::gradient_editor::GradientEditor::new(
+                crate::gradient_editor::GradientTarget::Fill,
+                window,
+                cx,
+            ),
+            overlay_gradient: crate::gradient_editor::GradientEditor::new(
+                crate::gradient_editor::GradientTarget::Overlay,
+                window,
+                cx,
+            ),
             style_section: 0,
             photo_info: None,
             compare: false,

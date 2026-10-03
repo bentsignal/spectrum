@@ -15,6 +15,7 @@ pub use commands::{Command, CommandOutput, PaintSelection};
 mod effects;
 mod effects_render;
 mod layer_effects;
+mod layer_shading;
 pub use effects::{
     DROP_SHADOW_KERNEL, DROP_SHADOW_KERNEL_TOTAL_WEIGHT, DropShadow, GradientInterpolation,
     GradientKind, GradientSpread, GradientStop, LayerStyle, MAX_DROP_SHADOW_BLUR,
@@ -23,6 +24,7 @@ pub use effects::{
 pub use layer_effects::{
     ColorOverlay, Glow, LayerStroke, MAX_EFFECT_SIZE, StrokePosition, style_reach,
 };
+pub use layer_shading::{BevelEmboss, BevelStyle, GradientOverlay, Satin};
 
 mod text;
 
@@ -164,7 +166,7 @@ pub use blend::{
 mod alignment;
 pub use alignment::{
     Alignment, AlignmentReference, Guide, GuideOrientation, LayerGeometry, align_layer_transform,
-    layer_geometry, layer_geometry_with_bounds, layer_geometry_with_size,
+    document_layer_geometry, layer_geometry, layer_geometry_with_bounds, layer_geometry_with_size,
 };
 
 mod selection;
@@ -637,7 +639,7 @@ impl Document {
             layer.opacity = layer.opacity.clamp(0.0, 1.0);
             layer.transform = layer.transform.sanitized();
             layer.mask = layer.mask.sanitized();
-            layer.style = layer.style.sanitized();
+            layer.style = std::mem::take(&mut layer.style).sanitized();
             layer.shape_fill = layer.shape_fill.clone().map(ShapeFill::sanitized);
             layer.stroke = layer.stroke.sanitized();
             layer.adjustments = layer.adjustments.clone().sanitized();
@@ -721,6 +723,7 @@ mod raster_region;
 mod raster_sources;
 mod render;
 mod render_fallback;
+mod render_pixels;
 mod render_region;
 mod sequential_png_source;
 mod text_preview_cache;

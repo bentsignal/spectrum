@@ -112,7 +112,7 @@ pub fn render_alone(
         .layers
         .first()
         .ok_or_else(|| anyhow::anyhow!("layer {layer} is gone"))?;
-    let geometry = prism_core::layer_geometry(first)?;
+    let geometry = prism_core::document_layer_geometry(&resolved, first)?;
     let (min, max) = (geometry.min, geometry.max);
     // Room for effects that reach past the layer, such as a drop shadow.
     let reach = prism_core::style_reach(&first.style);

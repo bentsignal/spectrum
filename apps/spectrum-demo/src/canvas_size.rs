@@ -8,7 +8,6 @@ use gpui_component::{
     dialog::DialogButtonProps,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
-    switch::Switch,
 };
 use prism_core::Command;
 
@@ -167,12 +166,15 @@ impl Workspace {
                         .items_center()
                         .justify_between()
                         .child(
-                            Switch::new("keep-proportions")
-                                .label("Keep proportions")
-                                .checked(current.keep)
-                                .on_click(move |checked, _, cx| {
-                                    keep.update(cx, |size, cx| size.set_keep(*checked, cx))
-                                }),
+                            crate::controls::toggle(
+                                "keep-proportions",
+                                "Keep proportions",
+                                current.keep,
+                            )
+                            .on_click({
+                                let on = !current.keep;
+                                move |_, _, cx| keep.update(cx, |size, cx| size.set_keep(on, cx))
+                            }),
                         )
                         .child(
                             Button::new("size-presets")

@@ -16,6 +16,7 @@ mod curves;
 mod edits;
 mod export;
 mod font_browser;
+mod gradient_editor;
 mod grid;
 mod guides;
 mod header;

@@ -7,8 +7,9 @@ use anyhow::{Context, Result, bail};
 use image::{DynamicImage, GenericImageView, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
 
+pub(crate) use crate::render_pixels::{blend_pixel, composite_blended_pixel, round_byte};
 use crate::{
-    Document, FontAsset, Layer, LayerKind, RasterSourceResolver, Transform, blend_rgb,
+    Document, FontAsset, Layer, LayerKind, RasterSourceResolver, Transform,
     effects_render::composite_shadow_region,
     render_fallback::{MAX_REGION_FALLBACK_PEAK_BYTES, ensure_region_fallback_is_bounded},
     shapes::render_shape,
@@ -865,6 +866,30 @@ pub(crate) fn composite_pixel(
     document_x: u32,
     document_y: u32,
 ) {
+    let alpha = layer_pixel_alpha(
+        source_pixel,
+        [source_x, source_y, source_width, source_height],
+        layer,
+        clip,
+        [x, y, document_x, document_y],
+    );
+    if alpha <= 0.0 {
+        return;
+    }
+    composite_blended_pixel(canvas, source_pixel, layer.blend_mode, alpha, x, y);
+    coverage.put_pixel(x, y, Rgba([255, 255, 255, (alpha * 255.0) as u8]));
+}
+
+/// How strongly one source pixel lands: its alpha with the layer's opacity,
+/// mask, clipping, and dissolve. `source` is x, y, width, height in the
+/// layer; `at` is x, y in the region, then x, y in the document.
+pub(crate) fn layer_pixel_alpha(
+    source_pixel: [u8; 4],
+    [source_x, source_y, source_width, source_height]: [u32; 4],
+    layer: &Layer,
+    clip: Option<&RgbaImage>,
+    [x, y, document_x, document_y]: [u32; 4],
+) -> f32 {
     let mask_alpha = if layer_mask_allows(layer, source_x, source_y, source_width, source_height) {
         255
     } else {
@@ -875,7 +900,7 @@ pub(crate) fn composite_pixel(
     } else {
         255
     };
-    let alpha = if layer.blend_mode == crate::BlendMode::Dissolve {
+    if layer.blend_mode == crate::BlendMode::Dissolve {
         let coverage =
             crate::dissolve_coverage(source_pixel[3], layer.opacity, mask_alpha, clip_alpha);
         if crate::dissolve_pixel_present(layer.dissolve_seed, document_x, document_y, coverage) {
@@ -888,12 +913,7 @@ pub(crate) fn composite_pixel(
             * layer.opacity
             * (mask_alpha as f32 / 255.0)
             * (clip_alpha as f32 / 255.0)
-    };
-    if alpha <= 0.0 {
-        return;
     }
-    composite_blended_pixel(canvas, source_pixel, layer.blend_mode, alpha, x, y);
-    coverage.put_pixel(x, y, Rgba([255, 255, 255, (alpha * 255.0) as u8]));
 }
 
 pub(crate) fn layer_mask_allows(layer: &Layer, x: u32, y: u32, width: u32, height: u32) -> bool {
@@ -904,34 +924,6 @@ pub(crate) fn layer_mask_allows(layer: &Layer, x: u32, y: u32, width: u32, heigh
         && normalized_y >= layer.mask.y
         && normalized_y <= layer.mask.y + layer.mask.height;
     !layer.mask.enabled || in_mask != layer.mask.invert
-}
-
-pub(crate) fn composite_blended_pixel(
-    canvas: &mut RgbaImage,
-    source_pixel: [u8; 4],
-    blend_mode: crate::BlendMode,
-    alpha: f32,
-    x: u32,
-    y: u32,
-) {
-    let destination = *canvas.get_pixel(x, y);
-    let blended = blend_rgb(source_pixel, destination.0, blend_mode);
-    let destination_alpha = destination[3] as f32 / 255.0;
-    let output_alpha = alpha + destination_alpha * (1.0 - alpha);
-    let mut output = [0; 4];
-    for channel in 0..3 {
-        let value = if output_alpha > 0.0 {
-            (source_pixel[channel] as f32 * alpha * (1.0 - destination_alpha)
-                + blended[channel] as f32 * alpha * destination_alpha
-                + destination[channel] as f32 * destination_alpha * (1.0 - alpha))
-                / output_alpha
-        } else {
-            0.0
-        };
-        output[channel] = value.round().clamp(0.0, 255.0) as u8;
-    }
-    output[3] = (output_alpha * 255.0).round() as u8;
-    canvas.put_pixel(x, y, Rgba(output));
 }
 
 #[cfg(test)]

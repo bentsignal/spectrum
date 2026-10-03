@@ -1,7 +1,7 @@
 use clap::ValueEnum;
 use prism_core::BlendMode;
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub(super) enum CliBlend {
     Normal,
     Dissolve,

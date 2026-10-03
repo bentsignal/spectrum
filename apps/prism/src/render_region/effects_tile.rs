@@ -1,5 +1,7 @@
 //! Where a layer's styles draw within a render region, and the layer alpha
 //! they are computed from.
+use rayon::prelude::*;
+
 use crate::{Layer, LayerStyle, RenderRegion, layer_effects::AlphaTile};
 
 use super::{
@@ -72,18 +74,24 @@ impl EffectsTileBounds {
     ) -> AlphaTile {
         let width = (self.right - self.left) as usize;
         let height = (self.bottom - self.top) as usize;
-        let mut alpha = Vec::with_capacity(width * height);
-        for y in self.top..self.bottom {
-            for x in self.left..self.right {
-                alpha.push(sample_output_alpha(source, geometry, layer, x, y));
-            }
-        }
+        let mut alpha = vec![0u8; width * height];
+        alpha
+            .par_chunks_mut(width.max(1))
+            .enumerate()
+            .for_each(|(row, values)| {
+                let y = self.top + row as i64;
+                for (column, value) in values.iter_mut().enumerate() {
+                    *value =
+                        sample_output_alpha(source, geometry, layer, self.left + column as i64, y);
+                }
+            });
         AlphaTile {
             left: self.left,
             top: self.top,
             width,
             height,
             alpha,
+            extent: [geometry.output_width as f32, geometry.output_height as f32],
         }
     }
 }

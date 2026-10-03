@@ -6,7 +6,11 @@
 use crate::{canvas_split::render_alone, workspace::Workspace};
 use gpui::*;
 use prism_core::{BlendMode, Document, Layer};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// A layer's own render and where it was when rendered.
 pub struct LayerImage {
@@ -29,7 +33,13 @@ pub struct LayerCache {
     busy: HashMap<u64, String>,
     /// Keys that failed to render, not retried until the layer changes.
     failed: HashMap<u64, String>,
+    /// Each layer's latest full-quality key and when it last changed.
+    changed: HashMap<u64, (String, Instant)>,
 }
+
+/// Changes closer together than this (a slider or resize drag) render as
+/// drafts at half density; the full render follows once they stop.
+const RAPID: Duration = Duration::from_millis(150);
 
 /// Whether every layer can be drawn on its own and stacked on screen.
 pub fn stackable(doc: &Document) -> bool {
@@ -73,31 +83,83 @@ impl Workspace {
             return;
         }
         let density = canvas.density;
+        // A layer being resized renders at the size it is being dragged to.
+        let resizing = canvas.drag.and_then(|drag| {
+            let (transform, _) = Self::resize_transform(canvas, drag)?;
+            let mut layer = canvas.doc.layers.iter().find(|l| l.id == drag.id)?.clone();
+            layer.transform = transform;
+            Some(layer)
+        });
         let cache = &mut canvas.cache;
         cache
             .images
             .retain(|id, _| canvas.doc.layers.iter().any(|l| l.id == *id));
         for layer in &canvas.doc.layers {
+            let layer = resizing
+                .as_ref()
+                .filter(|r| r.id == layer.id)
+                .unwrap_or(layer);
             // A font being previewed on this layer is part of its look.
             let preview = canvas
                 .font_preview
                 .as_ref()
                 .filter(|(previewed, _)| *previewed == layer.id)
                 .map(|(_, path)| path.clone());
-            let wanted = match &preview {
-                Some(path) => format!("{}|font:{}", key(layer, density), path.display()),
-                None => key(layer, density),
-            };
+            let font = preview
+                .as_ref()
+                .map_or(String::new(), |path| format!("|font:{}", path.display()));
+            let full = format!("{}{font}", key(layer, density));
             let current = cache.images.get(&layer.id).map(|i| i.key.as_str());
+            if current == Some(full.as_str()) {
+                continue;
+            }
+            // A change soon after the last one renders as a draft.
+            let now = Instant::now();
+            let rapid = match cache.changed.get(&layer.id) {
+                Some((last, at)) if *last == full => at.elapsed() < RAPID,
+                Some((_, at)) => {
+                    let rapid = at.elapsed() < RAPID;
+                    cache.changed.insert(layer.id, (full.clone(), now));
+                    rapid
+                }
+                None => {
+                    cache.changed.insert(layer.id, (full.clone(), now));
+                    false
+                }
+            };
+            let render_density = if rapid {
+                (density * 0.5).max(0.5)
+            } else {
+                density
+            };
+            let wanted = if rapid {
+                format!("{}{font}|draft", key(layer, render_density))
+            } else {
+                full
+            };
             if current == Some(wanted.as_str())
                 || cache.busy.contains_key(&layer.id)
                 || cache.failed.get(&layer.id) == Some(&wanted)
             {
                 continue;
             }
+            if rapid {
+                // Come back for the full render once the changes stop.
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor()
+                        .timer(RAPID + Duration::from_millis(20))
+                        .await;
+                    this.update_in(cx, |this, window, cx| this.refresh_layers(window, cx))
+                        .ok();
+                })
+                .detach();
+            }
             cache.busy.insert(layer.id, wanted.clone());
-            let (root, doc, id, layer_id) =
+            let (root, mut doc, id, layer_id) =
                 (store.root.clone(), canvas.doc.clone(), canvas.id, layer.id);
+            if let Some(slot) = doc.layers.iter_mut().find(|l| l.id == layer_id) {
+                *slot = layer.clone();
+            }
             let at = (layer.transform.x, layer.transform.y);
             let previewed = preview.clone();
             let task = cx.background_executor().spawn(async move {
@@ -105,7 +167,7 @@ impl Workspace {
                     Some(path) => crate::font_browser::with_font(&doc, layer_id, &path)?,
                     None => doc,
                 };
-                render_alone(&root, &doc, layer_id, density)
+                render_alone(&root, &doc, layer_id, render_density)
             });
             cx.spawn_in(window, async move |this, cx| {
                 let result = task.await;
@@ -134,7 +196,7 @@ impl Workspace {
                         image,
                         pixel,
                         extent,
-                        density,
+                        density: render_density,
                         bounds,
                         key: wanted,
                     };

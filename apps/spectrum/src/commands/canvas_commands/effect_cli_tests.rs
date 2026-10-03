@@ -47,7 +47,8 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
         .unwrap()
         .layer(1)
         .unwrap()
-        .style;
+        .style
+        .clone();
     let stroke = style.stroke.unwrap();
     assert_eq!(stroke.size, 2.0, "later edits change only what they name");
     assert_eq!(stroke.position, prism_core::StrokePosition::Center);
@@ -57,13 +58,83 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
     assert!(style.color_overlay.is_some());
     assert_eq!(style.drop_shadow.unwrap().blur_radius, 4.0, "shadow stays");
 
+    invoke(
+        &project,
+        &[
+            "effect",
+            "1",
+            "bevel",
+            "--bevel-style",
+            "emboss",
+            "--angle",
+            "45",
+            "--down",
+            "true",
+        ],
+    )
+    .unwrap();
+    invoke(
+        &project,
+        &[
+            "effect",
+            "1",
+            "satin",
+            "--mode",
+            "screen",
+            "--distance",
+            "6",
+        ],
+    )
+    .unwrap();
+    invoke(
+        &project,
+        &[
+            "effect",
+            "1",
+            "gradient-overlay",
+            "--stop",
+            "0:ff0000ff",
+            "--stop",
+            "0.5:00ff00ff",
+            "--stop",
+            "1:0000ffff",
+            "--gradient-kind",
+            "radial",
+        ],
+    )
+    .unwrap();
+    let style = Workspace::load_read_only(&project)
+        .unwrap()
+        .layer(1)
+        .unwrap()
+        .style
+        .clone();
+    let bevel = style.bevel.unwrap();
+    assert_eq!(bevel.style, prism_core::BevelStyle::Emboss);
+    assert!(!bevel.up && bevel.angle == 45.0);
+    assert_eq!(
+        style.satin.unwrap().blend_mode,
+        prism_core::BlendMode::Screen
+    );
+    let overlay = style.gradient_overlay.unwrap();
+    assert_eq!(overlay.gradient.stops.len(), 3);
+    assert_eq!(overlay.gradient.kind, prism_core::GradientKind::Radial);
+    assert!(
+        invoke(
+            &project,
+            &["effect", "1", "gradient-overlay", "--stop", "0:ffffffff"]
+        )
+        .is_err()
+    );
+
     invoke(&project, &["effect", "1", "outer-glow", "--clear"]).unwrap();
     invoke(&project, &["shadow", "1", "--clear"]).unwrap();
     let style = Workspace::load_read_only(&project)
         .unwrap()
         .layer(1)
         .unwrap()
-        .style;
+        .style
+        .clone();
     assert!(style.outer_glow.is_none() && style.drop_shadow.is_none());
     assert!(style.stroke.is_some(), "clearing one style keeps the rest");
     std::fs::remove_file(project).unwrap();

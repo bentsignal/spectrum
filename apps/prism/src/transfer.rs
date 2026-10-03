@@ -387,7 +387,7 @@ fn sanitize_layer(layer: &mut Layer) -> Result<()> {
     layer.transform = layer.transform.sanitized();
     layer.adjustments = layer.adjustments.clone().sanitized();
     layer.mask = layer.mask.sanitized();
-    layer.style = layer.style.sanitized();
+    layer.style = std::mem::take(&mut layer.style).sanitized();
     layer.shape_fill = layer.shape_fill.clone().map(crate::ShapeFill::sanitized);
     layer.stroke = layer.stroke.sanitized();
 

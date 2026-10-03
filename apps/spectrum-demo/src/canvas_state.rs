@@ -92,7 +92,7 @@ pub fn render_at(root: &std::path::Path, doc: &Document, density: f32) -> anyhow
         .layers
         .iter()
         .filter_map(|layer| {
-            let geometry = prism_core::layer_geometry(layer).ok()?;
+            let geometry = prism_core::document_layer_geometry(&resolved, layer).ok()?;
             Some((layer.id, (geometry.min, geometry.max)))
         })
         .collect();

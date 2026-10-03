@@ -4,7 +4,7 @@
 use crate::{theme::*, workspace::Workspace};
 use gpui::{prelude::*, *};
 use gpui_component::{Icon, IconName, Sizable};
-use prism_core::Command;
+use prism_core::{Command, GradientStop, ShapeFill, ShapeGradient};
 
 #[derive(Clone, Copy, PartialEq, Default)]
 pub enum Tool {
@@ -13,14 +13,20 @@ pub enum Tool {
     Text,
     Box,
     Circle,
+    Gradient,
     Image,
 }
 
-pub const TOOLS: [(Tool, &str, &str); 5] = [
+pub const TOOLS: [(Tool, &str, &str); 6] = [
     (Tool::Move, "Move", "Select, move, and resize layers"),
     (Tool::Text, "Text", "Click to place text"),
     (Tool::Box, "Box", "Drag to draw a box"),
     (Tool::Circle, "Circle", "Drag to draw a circle"),
+    (
+        Tool::Gradient,
+        "Gradient",
+        "Drag to fill a new layer from the foreground to the background color",
+    ),
     (Tool::Image, "Image", "Place an image from the project"),
 ];
 
@@ -43,6 +49,14 @@ pub fn tool_glyph(tool: Tool) -> AnyElement {
     let mark = match tool {
         Tool::Box => outline().rounded_xs().into_any_element(),
         Tool::Circle => outline().rounded_full().into_any_element(),
+        Tool::Gradient => outline()
+            .rounded_xs()
+            .bg(linear_gradient(
+                90.,
+                linear_color_stop(rgb(0x2a2a2a), 0.),
+                linear_color_stop(rgb(MUTED), 1.),
+            ))
+            .into_any_element(),
         Tool::Text => div()
             .text_sm()
             .font_weight(FontWeight::MEDIUM)
@@ -110,6 +124,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if tool == Tool::Gradient {
+            return self.create_gradient(start, end, window, cx);
+        }
         let Some(canvas) = &mut self.canvas else {
             return;
         };
@@ -170,6 +187,66 @@ impl Workspace {
             self.text_input
                 .update(cx, |state, cx| state.set_value("", window, cx));
         }
+    }
+
+    /// A new layer covering the canvas, filled from the foreground to the
+    /// background color along the drag from `start` to `end`.
+    fn create_gradient(
+        &mut self,
+        start: (f32, f32),
+        end: (f32, f32),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(canvas) = &mut self.canvas else {
+            return;
+        };
+        canvas.tool = Tool::Move;
+        let (width, height) = (canvas.doc.width, canvas.doc.height);
+        let id = canvas.doc.next_id;
+        let (w, h) = (width.max(1) as f32, height.max(1) as f32);
+        // Linear gradients run in the layer's normalized box: the drag's
+        // direction there, and where it starts and how far it reaches.
+        let a = (start.0 / w, start.1 / h);
+        let d = (end.0 / w - a.0, end.1 / h - a.1);
+        let length = d.0.hypot(d.1);
+        let (angle, offset, extent) = if length < 0.01 {
+            (0., 0., 1.)
+        } else {
+            let dir = (d.0 / length, d.1 / length);
+            let angle = dir.1.atan2(dir.0).to_degrees().rem_euclid(360.);
+            let offset = (a.0 - 0.5) * dir.0 + (a.1 - 0.5) * dir.1 + 0.5;
+            (angle, offset, length)
+        };
+        let gradient = ShapeGradient {
+            angle,
+            offset,
+            extent,
+            stops: vec![
+                GradientStop::new(0., self.colors.fore),
+                GradientStop::new(1., self.colors.back),
+            ],
+            ..ShapeGradient::default()
+        };
+        self.canvas_commands(
+            vec![
+                Command::AddRectangle {
+                    name: Some("Gradient".into()),
+                    width,
+                    height,
+                    color: self.colors.fore,
+                    corner_radius: 0.,
+                    x: 0.,
+                    y: 0.,
+                },
+                Command::SetShapeFill {
+                    id,
+                    fill: Some(ShapeFill::Gradient(gradient)),
+                },
+            ],
+            window,
+            cx,
+        );
     }
 
     /// The current tool, as a button that opens the tool list.

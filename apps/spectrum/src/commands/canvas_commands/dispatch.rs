@@ -6,7 +6,7 @@ use spectrum_imaging::AdjustmentPatch;
 
 use super::{
     CliCommand, GuideCommand, PathCommand, effects, live_bridge::decode_commands, paint,
-    parse_color, paths, selection, text_shaping, transfer, updated_typography,
+    parse_color, paths, selection, style_effects, text_shaping, transfer, updated_typography,
 };
 
 pub(super) struct SemanticPlan {
@@ -162,12 +162,12 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
             },
         }],
         CliCommand::Shadow(arguments) => {
-            let style = document.layer(arguments.id)?.style;
+            let style = document.layer(arguments.id)?.style.clone();
             vec![effects::shadow_command(arguments, style)?]
         }
         CliCommand::Effect(arguments) => {
-            let style = document.layer(arguments.id)?.style;
-            vec![effects::effect_command(arguments, style)?]
+            let style = document.layer(arguments.id)?.style.clone();
+            vec![style_effects::effect_command(arguments, style)?]
         }
         CliCommand::Gradient(arguments) => {
             vec![effects::gradient_command(arguments)?]

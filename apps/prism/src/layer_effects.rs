@@ -2,11 +2,12 @@
 //! inner glow, inner shadow, and color overlay. Each is computed from the
 //! layer's alpha in a padded tile and drawn behind or above the layer.
 use anyhow::{Result, bail};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     DropShadow, LayerStyle,
-    effects::{blur_shadow_alpha, shadow_reach},
+    effects::{blur_shadow_alpha, shadow_reach, transpose},
     validation::require_finite,
 };
 
@@ -116,6 +117,28 @@ pub(crate) fn validate_effects(style: &LayerStyle) -> Result<()> {
     if let Some(stroke) = style.stroke {
         require_finite("stroke size", stroke.size)?;
     }
+    if let Some(bevel) = style.bevel {
+        for (name, value) in [
+            ("bevel size", bevel.size),
+            ("bevel depth", bevel.depth),
+            ("bevel angle", bevel.angle),
+            ("bevel altitude", bevel.altitude),
+        ] {
+            require_finite(name, value)?;
+        }
+    }
+    if let Some(satin) = style.satin {
+        for (name, value) in [
+            ("satin angle", satin.angle),
+            ("satin distance", satin.distance),
+            ("satin size", satin.size),
+        ] {
+            require_finite(name, value)?;
+        }
+    }
+    if let Some(overlay) = &style.gradient_overlay {
+        overlay.gradient.validate().map_err(anyhow::Error::new)?;
+    }
     Ok(())
 }
 
@@ -135,7 +158,11 @@ pub(crate) fn effects_reach(style: &LayerStyle) -> i64 {
         .max(glow(style.inner_glow))
         .max(stroke)
         .max(inner)
-        .max(i64::from(style.color_overlay.is_some()))
+        .max(style.bevel.map_or(0, |b| b.reach()))
+        .max(style.satin.map_or(0, |s| s.reach()))
+        .max(i64::from(
+            style.color_overlay.is_some() || style.gradient_overlay.is_some(),
+        ))
 }
 
 /// How far a layer's styles, including its drop shadow, can draw past the
@@ -153,6 +180,9 @@ pub(crate) fn has_effects(style: &LayerStyle) -> bool {
         || style.inner_glow.is_some()
         || style.inner_shadow.is_some()
         || style.color_overlay.is_some()
+        || style.gradient_overlay.is_some()
+        || style.bevel.is_some()
+        || style.satin.is_some()
 }
 
 /// The layer's alpha over an area, in the layer's output pixels.
@@ -162,12 +192,28 @@ pub(crate) struct AlphaTile {
     pub width: usize,
     pub height: usize,
     pub alpha: Vec<u8>,
+    /// The layer's own size in the same pixels, for gradients across it.
+    pub extent: [f32; 2],
 }
 
 /// One style to draw: a color and its strength over the tile's area.
 pub(crate) struct EffectPass {
     pub color: [u8; 4],
     pub alpha: Vec<u8>,
+    pub mode: crate::BlendMode,
+    /// A color per pixel, as for a gradient; its alpha scales `alpha`.
+    pub colors: Option<Vec<[u8; 4]>>,
+}
+
+impl EffectPass {
+    fn solid(color: [u8; 4], alpha: Vec<u8>) -> Self {
+        Self {
+            color,
+            alpha,
+            mode: crate::BlendMode::Normal,
+            colors: None,
+        }
+    }
 }
 
 /// The styles drawn behind the layer and above it, in drawing order.
@@ -178,35 +224,49 @@ pub(crate) fn effect_passes(
     let (width, height, alpha) = (tile.width, tile.height, &tile.alpha);
     let mut behind = Vec::new();
     let mut above = Vec::new();
-    let outside = || distance_to(alpha, width, height, |a| a >= 128);
-    let inside = || distance_to(alpha, width, height, |a| a < 128);
+    // Distances are the costly part; each is computed at most once.
+    let outside_cell = std::cell::OnceCell::new();
+    let inside_cell = std::cell::OnceCell::new();
+    let outside = || {
+        outside_cell
+            .get_or_init(|| distance_to(alpha, width, height, |a| a >= 128))
+            .as_slice()
+    };
+    let inside = || {
+        inside_cell
+            .get_or_init(|| distance_to(alpha, width, height, |a| a < 128))
+            .as_slice()
+    };
     if let Some(glow) = style.outer_glow {
-        let grown = grow(alpha, &outside(), glow.size * glow.spread);
-        behind.push(EffectPass {
-            color: glow.color,
-            alpha: blurred(grown, width, height, glow.size * (1.0 - glow.spread)),
-        });
+        let grown = grow(alpha, || outside(), glow.size * glow.spread);
+        behind.push(EffectPass::solid(
+            glow.color,
+            blurred(grown, width, height, glow.size * (1.0 - glow.spread)),
+        ));
+    }
+    if let Some(overlay) = &style.gradient_overlay {
+        above.push(crate::layer_shading::gradient_overlay_pass(overlay, tile));
     }
     if let Some(overlay) = style.color_overlay {
-        above.push(EffectPass {
-            color: overlay.color,
-            alpha: alpha.clone(),
-        });
+        above.push(EffectPass::solid(overlay.color, alpha.clone()));
+    }
+    if let Some(satin) = &style.satin {
+        above.push(crate::layer_shading::satin_pass(satin, tile));
     }
     if let Some(glow) = style.inner_glow {
-        let inverse: Vec<u8> = alpha.iter().map(|a| 255 - a).collect();
-        let grown = grow(&inverse, &inside(), glow.size * glow.spread);
+        let inverse: Vec<u8> = alpha.par_iter().map(|a| 255 - a).collect();
+        let grown = grow(&inverse, || inside(), glow.size * glow.spread);
         let edge = blurred(grown, width, height, glow.size * (1.0 - glow.spread));
-        above.push(EffectPass {
-            color: glow.color,
-            alpha: within(&edge, alpha),
-        });
+        above.push(EffectPass::solid(glow.color, within(&edge, alpha)));
     }
     if let Some(shadow) = style.inner_shadow {
-        above.push(EffectPass {
-            color: shadow.color,
-            alpha: inner_shadow(alpha, width, height, shadow),
-        });
+        above.push(EffectPass::solid(
+            shadow.color,
+            inner_shadow(alpha, width, height, shadow),
+        ));
+    }
+    if let Some(bevel) = &style.bevel {
+        above.extend(crate::layer_shading::bevel_passes(bevel, tile));
     }
     if let Some(stroke) = style.stroke.filter(|s| s.size > 0.0) {
         let (out, inn) = match stroke.position {
@@ -216,7 +276,7 @@ pub(crate) fn effect_passes(
         };
         let mut band = vec![0u8; alpha.len()];
         if out > 0.0 {
-            let grown = grow(alpha, &outside(), out);
+            let grown = grow(alpha, || outside(), out);
             for ((b, g), a) in band.iter_mut().zip(grown).zip(alpha) {
                 *b = (u16::from(g) * u16::from(255 - a) / 255) as u8;
             }
@@ -225,28 +285,31 @@ pub(crate) fn effect_passes(
             let to_edge = inside();
             for ((b, d), a) in band.iter_mut().zip(to_edge).zip(alpha) {
                 let near = (inn + 1.0 - d).clamp(0.0, 1.0);
-                *b = b.saturating_add((f32::from(*a) * near).round() as u8);
+                *b = b.saturating_add(crate::render::round_byte(f32::from(*a) * near));
             }
         }
-        above.push(EffectPass {
-            color: stroke.color,
-            alpha: band,
-        });
+        above.push(EffectPass::solid(stroke.color, band));
     }
     (behind, above)
 }
 
 /// Alpha grown outward by `radius` pixels, given each pixel's distance to
 /// the shape; edges stay antialiased.
-fn grow(alpha: &[u8], distance: &[f32], radius: f32) -> Vec<u8> {
+fn grow<'a>(alpha: &[u8], distance: impl FnOnce() -> &'a [f32], radius: f32) -> Vec<u8> {
+    if radius <= 0.0 {
+        return alpha.to_vec();
+    }
+    let distance = distance();
     alpha
-        .iter()
+        .par_iter()
         .zip(distance)
         .map(|(&a, &d)| {
             if d == 0.0 {
                 a
             } else {
-                a.max(((radius + 1.0 - d).clamp(0.0, 1.0) * 255.0).round() as u8)
+                a.max(crate::render::round_byte(
+                    (radius + 1.0 - d).clamp(0.0, 1.0) * 255.0,
+                ))
             }
         })
         .collect()
@@ -259,7 +322,7 @@ fn blurred(mut alpha: Vec<u8>, width: usize, height: usize, radius: f32) -> Vec<
 
 fn within(effect: &[u8], alpha: &[u8]) -> Vec<u8> {
     effect
-        .iter()
+        .par_iter()
         .zip(alpha)
         .map(|(&e, &a)| (u16::from(e) * u16::from(a) / 255) as u8)
         .collect()
@@ -272,82 +335,101 @@ fn inner_shadow(alpha: &[u8], width: usize, height: usize, shadow: DropShadow) -
         shadow.offset_y.round() as i64,
     );
     let mut cast = vec![0u8; alpha.len()];
-    for y in 0..height as i64 {
-        for x in 0..width as i64 {
-            let (sx, sy) = (x - dx, y - dy);
-            let covered = if sx < 0 || sy < 0 || sx >= width as i64 || sy >= height as i64 {
-                0
-            } else {
-                alpha[sy as usize * width + sx as usize]
-            };
-            cast[y as usize * width + x as usize] = 255 - covered;
-        }
-    }
+    cast.par_chunks_mut(width.max(1))
+        .enumerate()
+        .for_each(|(y, row)| {
+            for (x, value) in row.iter_mut().enumerate() {
+                let (sx, sy) = (x as i64 - dx, y as i64 - dy);
+                let covered = if sx < 0 || sy < 0 || sx >= width as i64 || sy >= height as i64 {
+                    0
+                } else {
+                    alpha[sy as usize * width + sx as usize]
+                };
+                *value = 255 - covered;
+            }
+        });
     within(&blurred(cast, width, height, shadow.blur_radius), alpha)
 }
 
 /// Euclidean distance from each pixel to the nearest pixel where `target`
 /// holds (0 there), by Felzenszwalb and Huttenlocher's two-pass transform.
-fn distance_to(alpha: &[u8], width: usize, height: usize, target: impl Fn(u8) -> bool) -> Vec<f32> {
+/// Columns run as rows of the transposed tile; rows run in parallel.
+fn distance_to(
+    alpha: &[u8],
+    width: usize,
+    height: usize,
+    target: impl Fn(u8) -> bool + Sync,
+) -> Vec<f32> {
     const FAR: f32 = 1e12;
-    let mut squared: Vec<f32> = alpha
-        .iter()
+    let squared: Vec<f32> = alpha
+        .par_iter()
         .map(|&a| if target(a) { 0.0 } else { FAR })
         .collect();
-    let mut line = Vec::new();
-    let mut out = Vec::new();
-    for x in 0..width {
-        line.clear();
-        line.extend((0..height).map(|y| squared[y * width + x]));
-        transform_line(&line, &mut out);
-        for (y, value) in out.iter().enumerate() {
-            squared[y * width + x] = *value;
-        }
-    }
-    for y in 0..height {
-        let row = &mut squared[y * width..(y + 1) * width];
-        line.clear();
-        line.extend_from_slice(row);
-        transform_line(&line, &mut out);
-        row.copy_from_slice(&out);
-    }
-    squared.into_iter().map(f32::sqrt).collect()
+    let mut columns = transpose(&squared, width, height);
+    columns
+        .par_chunks_mut(height.max(1))
+        .for_each_init(LineScratch::default, |scratch, line| {
+            scratch.transform(line)
+        });
+    let mut rows = transpose(&columns, height, width);
+    rows.par_chunks_mut(width.max(1))
+        .for_each_init(LineScratch::default, |scratch, line| {
+            scratch.transform(line);
+            for value in line {
+                *value = value.sqrt();
+            }
+        });
+    rows
 }
 
-fn transform_line(f: &[f32], out: &mut Vec<f32>) {
-    let n = f.len();
-    out.clear();
-    out.resize(n, 0.0);
-    if n == 0 {
-        return;
-    }
-    let mut hull = vec![0usize; n];
-    let mut bounds = vec![0f32; n + 1];
-    let mut k = 0;
-    bounds[0] = f32::NEG_INFINITY;
-    bounds[1] = f32::INFINITY;
-    let intersect = |q: usize, p: usize| {
-        let (q, p) = (q as f32, p as f32);
-        ((f[q as usize] + q * q) - (f[p as usize] + p * p)) / (2.0 * q - 2.0 * p)
-    };
-    for q in 1..n {
-        let mut s = intersect(q, hull[k]);
-        while s <= bounds[k] {
-            k -= 1;
-            s = intersect(q, hull[k]);
+#[derive(Default)]
+struct LineScratch {
+    f: Vec<f32>,
+    hull: Vec<usize>,
+    bounds: Vec<f32>,
+}
+
+impl LineScratch {
+    /// Replaces squared distances along one line with the lower envelope of
+    /// parabolas rooted at each sample.
+    fn transform(&mut self, line: &mut [f32]) {
+        let n = line.len();
+        if n == 0 {
+            return;
         }
-        k += 1;
-        hull[k] = q;
-        bounds[k] = s;
-        bounds[k + 1] = f32::INFINITY;
-    }
-    k = 0;
-    for (q, value) in out.iter_mut().enumerate() {
-        while bounds[k + 1] < q as f32 {
+        self.f.clear();
+        self.f.extend_from_slice(line);
+        self.hull.clear();
+        self.hull.resize(n, 0);
+        self.bounds.clear();
+        self.bounds.resize(n + 1, 0.0);
+        let (f, hull, bounds) = (&self.f, &mut self.hull, &mut self.bounds);
+        let intersect = |q: usize, p: usize| {
+            let (qf, pf) = (q as f32, p as f32);
+            ((f[q] + qf * qf) - (f[p] + pf * pf)) / (2.0 * qf - 2.0 * pf)
+        };
+        let mut k = 0;
+        bounds[0] = f32::NEG_INFINITY;
+        bounds[1] = f32::INFINITY;
+        for q in 1..n {
+            let mut s = intersect(q, hull[k]);
+            while s <= bounds[k] {
+                k -= 1;
+                s = intersect(q, hull[k]);
+            }
             k += 1;
+            hull[k] = q;
+            bounds[k] = s;
+            bounds[k + 1] = f32::INFINITY;
         }
-        let d = q as f32 - hull[k] as f32;
-        *value = d * d + f[hull[k]];
+        k = 0;
+        for (q, value) in line.iter_mut().enumerate() {
+            while bounds[k + 1] < q as f32 {
+                k += 1;
+            }
+            let d = q as f32 - hull[k] as f32;
+            *value = d * d + f[hull[k]];
+        }
     }
 }
 
@@ -368,6 +450,7 @@ mod tests {
             width: size,
             height: size,
             alpha,
+            extent: [size as f32; 2],
         }
     }
 

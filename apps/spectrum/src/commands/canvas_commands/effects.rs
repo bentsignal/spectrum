@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
 use prism_core::{
-    ColorOverlay, Command, DropShadow, Glow, GradientInterpolation, GradientKind, GradientSpread,
-    GradientStop, LayerStroke, LayerStyle, ShapeFill, ShapeGradient, StrokePosition,
+    Command, DropShadow, GradientInterpolation, GradientKind, GradientSpread, GradientStop,
+    LayerStyle, ShapeFill, ShapeGradient,
 };
 use serde::Deserialize;
 
@@ -108,7 +108,7 @@ struct StructuredGradientStop {
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum GradientKindArg {
+pub(super) enum GradientKindArg {
     #[default]
     Linear,
     Radial,
@@ -154,97 +154,6 @@ pub(super) fn shadow_command(arguments: ShadowArgs, mut style: LayerStyle) -> Re
             blur_radius: arguments.blur,
         })
     };
-    Ok(Command::SetLayerStyle {
-        id: arguments.id,
-        style,
-    })
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub(super) enum EffectKind {
-    Stroke,
-    OuterGlow,
-    InnerGlow,
-    InnerShadow,
-    ColorOverlay,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum StrokePositionArg {
-    Outside,
-    Inside,
-    Center,
-}
-
-#[derive(Args, Debug)]
-pub(super) struct EffectArgs {
-    pub id: u64,
-    pub kind: EffectKind,
-    /// Remove this style from the layer.
-    #[arg(long)]
-    pub clear: bool,
-    /// Color and strength as RRGGBBAA; each style has its own default.
-    #[arg(long)]
-    pub color: Option<String>,
-    /// Stroke width, glow size, or inner shadow blur, in canvas pixels.
-    #[arg(long)]
-    pub size: Option<f32>,
-    /// Glow spread from 0 (soft) to 1 (solid).
-    #[arg(long)]
-    pub spread: Option<f32>,
-    /// Stroke position relative to the layer's edge.
-    #[arg(long, value_enum)]
-    position: Option<StrokePositionArg>,
-    /// Inner shadow offsets in canvas pixels.
-    #[arg(long, allow_negative_numbers = true)]
-    pub x: Option<f32>,
-    #[arg(long, allow_negative_numbers = true)]
-    pub y: Option<f32>,
-}
-
-/// Sets one style, starting from the layer's current settings for it.
-pub(super) fn effect_command(arguments: EffectArgs, mut style: LayerStyle) -> Result<Command> {
-    let color = arguments.color.as_deref().map(parse_color).transpose()?;
-    let glow = |current: Option<Glow>| {
-        let current = current.unwrap_or_default();
-        Glow {
-            color: color.unwrap_or(current.color),
-            size: arguments.size.unwrap_or(current.size),
-            spread: arguments.spread.unwrap_or(current.spread),
-        }
-    };
-    let clear = arguments.clear;
-    match arguments.kind {
-        EffectKind::Stroke => {
-            let current = style.stroke.unwrap_or_default();
-            style.stroke = (!clear).then(|| LayerStroke {
-                size: arguments.size.unwrap_or(current.size),
-                position: arguments.position.map_or(current.position, |p| match p {
-                    StrokePositionArg::Outside => StrokePosition::Outside,
-                    StrokePositionArg::Inside => StrokePosition::Inside,
-                    StrokePositionArg::Center => StrokePosition::Center,
-                }),
-                color: color.unwrap_or(current.color),
-            });
-        }
-        EffectKind::OuterGlow => style.outer_glow = (!clear).then(|| glow(style.outer_glow)),
-        EffectKind::InnerGlow => style.inner_glow = (!clear).then(|| glow(style.inner_glow)),
-        EffectKind::InnerShadow => {
-            let current = style.inner_shadow.unwrap_or_default();
-            style.inner_shadow = (!clear).then(|| DropShadow {
-                color: color.unwrap_or(current.color),
-                offset_x: arguments.x.unwrap_or(current.offset_x),
-                offset_y: arguments.y.unwrap_or(current.offset_y),
-                blur_radius: arguments.size.unwrap_or(current.blur_radius),
-            });
-        }
-        EffectKind::ColorOverlay => {
-            let current = style.color_overlay.unwrap_or_default();
-            style.color_overlay = (!clear).then(|| ColorOverlay {
-                color: color.unwrap_or(current.color),
-            });
-        }
-    }
     Ok(Command::SetLayerStyle {
         id: arguments.id,
         style,
@@ -341,7 +250,7 @@ fn parse_structured_gradient(json: &str) -> Result<ShapeGradient> {
     Ok(gradient)
 }
 
-fn parse_stop(value: &str) -> Result<GradientStop> {
+pub(super) fn parse_stop(value: &str) -> Result<GradientStop> {
     let (position, color) = value
         .split_once(':')
         .context("gradient stop must use POSITION:RRGGBBAA")?;
@@ -351,7 +260,7 @@ fn parse_stop(value: &str) -> Result<GradientStop> {
     Ok(GradientStop::new(position, parse_color(color)?))
 }
 
-fn parse_color(value: &str) -> Result<[u8; 4]> {
+pub(super) fn parse_color(value: &str) -> Result<[u8; 4]> {
     let value = value.trim().trim_start_matches('#');
     if value.len() != 8 {
         bail!("color must use 8 hexadecimal RGBA digits");

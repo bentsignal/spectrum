@@ -92,11 +92,17 @@ pub(crate) fn composite_style_pixel(
 pub(crate) fn source_alpha_tile(source: &RgbaImage, layer: &Layer, reach: i64) -> AlphaTile {
     let width = source.width() as usize + 2 * reach as usize;
     let height = source.height() as usize + 2 * reach as usize;
-    let mut alpha = Vec::with_capacity(width * height);
-    for y in 0..height as i64 {
-        for x in 0..width as i64 {
-            alpha.push(masked_source_alpha(source, layer, x - reach, y - reach));
-        }
+    let mut alpha = vec![0u8; width * height];
+    {
+        use rayon::prelude::*;
+        alpha
+            .par_chunks_mut(width.max(1))
+            .enumerate()
+            .for_each(|(y, row)| {
+                for (x, value) in row.iter_mut().enumerate() {
+                    *value = masked_source_alpha(source, layer, x as i64 - reach, y as i64 - reach);
+                }
+            });
     }
     AlphaTile {
         left: -reach,
@@ -104,11 +110,13 @@ pub(crate) fn source_alpha_tile(source: &RgbaImage, layer: &Layer, reach: i64) -
         width,
         height,
         alpha,
+        extent: [source.width() as f32, source.height() as f32],
     }
 }
 
 /// Draws style passes computed over `tile`, whose pixel (0, 0) sits at
-/// `origin + (tile.left, tile.top)` on the canvas, within `region`.
+/// `origin + (tile.left, tile.top)` on the canvas, within `region`. Rows
+/// blend in parallel; each pixel takes the passes in order.
 pub(crate) fn composite_effect_passes(
     canvas: &mut RgbaImage,
     passes: &[EffectPass],
@@ -118,31 +126,72 @@ pub(crate) fn composite_effect_passes(
     clip: Option<&RgbaImage>,
     region: RenderRegion,
 ) {
+    use rayon::prelude::*;
+    if passes.is_empty() {
+        return;
+    }
     let left = origin.0 + tile.left;
     let top = origin.1 + tile.top;
     let x0 = left.max(i64::from(region.x));
     let y0 = top.max(i64::from(region.y));
     let x1 = (left + tile.width as i64).min(i64::from(region.x + region.width));
     let y1 = (top + tile.height as i64).min(i64::from(region.y + region.height));
-    for pass in passes {
-        for canvas_y in y0..y1 {
-            let row = (canvas_y - top) as usize * tile.width;
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let stride = region.width as usize * 4;
+    let (opacity, clipped) = (layer.opacity, layer.clip_to_below);
+    canvas
+        .par_chunks_mut(stride)
+        .enumerate()
+        .skip((y0 - i64::from(region.y)) as usize)
+        .take((y1 - y0) as usize)
+        .for_each(|(row, pixels)| {
+            let canvas_y = i64::from(region.y) + row as i64;
+            let tile_row = (canvas_y - top) as usize * tile.width;
             for canvas_x in x0..x1 {
-                let strength = pass.alpha[row + (canvas_x - left) as usize];
-                if strength == 0 {
+                let x = (canvas_x - i64::from(region.x)) as usize;
+                let clip_alpha = if clipped {
+                    clip.map_or(0.0, |image| {
+                        f32::from(image.get_pixel(x as u32, row as u32)[3]) / 255.0
+                    })
+                } else {
+                    1.0
+                };
+                if clip_alpha <= 0.0 {
                     continue;
                 }
-                let alpha = u16::from(strength) * u16::from(pass.color[3]) / 255;
-                composite_style_pixel(
-                    canvas,
-                    [pass.color[0], pass.color[1], pass.color[2], alpha as u8],
-                    layer.opacity,
-                    layer.clip_to_below,
-                    clip,
-                    (canvas_x - i64::from(region.x)) as u32,
-                    (canvas_y - i64::from(region.y)) as u32,
-                );
+                let at = tile_row + (canvas_x - left) as usize;
+                let slot = &mut pixels[x * 4..x * 4 + 4];
+                for pass in passes {
+                    let strength = pass.alpha[at];
+                    if strength == 0 {
+                        continue;
+                    }
+                    let color = pass.colors.as_ref().map_or(pass.color, |colors| {
+                        let [r, g, b, a] = colors[at];
+                        [
+                            r,
+                            g,
+                            b,
+                            (u16::from(a) * u16::from(pass.color[3]) / 255) as u8,
+                        ]
+                    });
+                    let alpha = f32::from(strength) / 255.0 * f32::from(color[3]) / 255.0
+                        * opacity
+                        * clip_alpha;
+                    if alpha <= 0.0 {
+                        continue;
+                    }
+                    let source = [color[0], color[1], color[2], 255];
+                    let destination = [slot[0], slot[1], slot[2], slot[3]];
+                    slot.copy_from_slice(&crate::render::blend_pixel(
+                        destination,
+                        source,
+                        pass.mode,
+                        alpha,
+                    ));
+                }
             }
-        }
-    }
+        });
 }

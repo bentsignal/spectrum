@@ -52,12 +52,12 @@ offer three modes: Layers (the current tool, foreground and background colors,
 and the layer list: drag a row to reorder, with a line showing where it lands
 (above or below the list means top or bottom); duplicate, delete, show and hide), Style (one section at a time:
 Look for blending, opacity, text (font, alignment, line height, tracking), and fills; Arrange for alignment and
-rotation, and Guides (add, show, snapping); Effects for a drop shadow, stroke, outer and inner glow, inner shadow, and color overlay; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
+rotation, and Guides (add, show, snapping); Effects for Photoshop's layer styles (drop shadow, stroke, glows, inner shadow, bevel & emboss, satin, color and gradient overlays; a style renders as a draft while its sliders move); or, with nothing selected, the canvas's size (Resize… sets exact pixels,
 with proportions kept or not, or a preset) and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
 to select it, drag to move it, or drag a corner handle to resize it (that corner
 stays put and the layer scales from the opposite side). Text places text where
-you click; Box and Circle draw by dragging; Move returns after. With Snap on in the title bar, dragged layers snap to guides, the canvas, and other layers; drag a guide to move it, or off the canvas to remove it. Double-click text,
+you click; Box and Circle draw by dragging; Gradient drags a new full-canvas layer from the foreground to the background color; Move returns after. Shape fills are Solid or Gradient, with a stop editor (drag, add, remove, reverse), kind, and angle. With Snap on in the title bar, dragged layers snap to guides, the canvas, and other layers; drag a guide to move it, or off the canvas to remove it. Double-click text,
 or press Command+E, to edit it in a field under it on the canvas. Edits apply
 to a local copy of the document at once and save in order behind it; a dragged
 layer, or one whose style changes, is drawn from separate renders of the layers

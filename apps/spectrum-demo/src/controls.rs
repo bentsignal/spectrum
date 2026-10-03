@@ -254,3 +254,34 @@ impl RenderOnce for Field {
         field_box(self.base, self.label, self.open)
     }
 }
+
+/// An on/off switch with its label. On is a light track with a dark knob at
+/// the right, off a dark track with a light knob at the left, so the state
+/// reads at a glance. Click toggles; the caller flips `on`.
+pub fn toggle(id: impl Into<ElementId>, label: &'static str, on: bool) -> Stateful<Div> {
+    let (track, knob) = if on {
+        (0xe6e6e6, 0x141414)
+    } else {
+        (0x333333, 0xf4f4f4)
+    };
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_2()
+        .cursor_pointer()
+        .child(
+            div()
+                .w(px(32.))
+                .h(px(18.))
+                .flex_none()
+                .rounded_full()
+                .bg(rgb(track))
+                .flex()
+                .items_center()
+                .px(px(2.))
+                .when(on, |el| el.justify_end())
+                .child(div().size(px(14.)).rounded_full().bg(rgb(knob))),
+        )
+        .child(div().text_sm().child(label))
+}

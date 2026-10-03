@@ -136,7 +136,7 @@ pub(super) fn schema() -> Value {
         },
         "layer_styles": {
             "drop_shadow": "shadow <layer> [--x <px>] [--y <px>] [--blur <px>] [--color <RRGGBBAA>] [--clear]",
-            "effects": "effect <layer> <stroke|outer-glow|inner-glow|inner-shadow|color-overlay> [--color <RRGGBBAA>] [--size <px>] [--spread <0..1>] [--position <outside|inside|center>] [--x <px>] [--y <px>] [--clear]; unset flags keep the layer's current values and other styles stay",
+            "effects": "effect <layer> <stroke|outer-glow|inner-glow|inner-shadow|color-overlay|gradient-overlay|satin|bevel> [--color <RRGGBBAA>] [--size <px>] [--spread <0..1>] [--position <outside|inside|center>] [--x <px>] [--y <px>] [--angle <deg>] [--distance <px>] [--depth <n>] [--altitude <deg>] [--bevel-style <inner|outer|emboss|pillow>] [--down <bool>] [--highlight <RRGGBBAA>] [--shadow-color <RRGGBBAA>] [--invert <bool>] [--mode <blend>] [--stop <POSITION:RRGGBBAA>]... [--gradient-kind <linear|radial|angle>] [--clear]; unset flags keep the layer's current values and other styles stay",
             "shape_gradient": "gradient <shape> (--gradient-json <bounded strict object> | [--kind <linear|radial|angle>] [--angle <degrees>] [--spread <pad|repeat|reflect>] [--center-x <0..1>] [--center-y <0..1>] [--radius <positive normal>] [--offset <finite>] [--extent <positive normal>] (--stop <POSITION:RRGGBBAA> repeated 2..32 times | legacy --start <RRGGBBAA> and/or --end <RRGGBBAA>) | --clear); structured JSON, modern --stop, legacy endpoints, and --clear are mutually exclusive surfaces",
             "gradient_contract": {
                 "model": "spectrum_shape_gradient_v1",

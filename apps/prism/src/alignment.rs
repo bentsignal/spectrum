@@ -81,6 +81,18 @@ pub fn layer_geometry(layer: &Layer) -> Result<LayerGeometry> {
     ))
 }
 
+/// A layer's geometry measured with its document's fonts, so text in an
+/// imported font gets that font's size rather than the default font's.
+pub fn document_layer_geometry(document: &Document, layer: &Layer) -> Result<LayerGeometry> {
+    let font = document.font_for_layer(layer);
+    let (source_origin, source_size) = layer_source_bounds(layer, font)?;
+    Ok(layer_geometry_with_bounds(
+        layer,
+        source_origin,
+        source_size,
+    ))
+}
+
 pub fn layer_geometry_with_size(layer: &Layer, source_size: [f32; 2]) -> LayerGeometry {
     layer_geometry_with_bounds(layer, [0.0, 0.0], source_size)
 }

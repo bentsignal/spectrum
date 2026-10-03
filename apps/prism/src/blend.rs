@@ -324,7 +324,7 @@ fn rgb_to_unit(color: [u8; 4]) -> [f32; 3] {
 }
 
 fn unit_to_u8(value: f32) -> u8 {
-    (value * 255.0).round().clamp(0.0, 255.0) as u8
+    crate::render::round_byte(value * 255.0)
 }
 
 fn luminosity(color: [f32; 3]) -> f32 {

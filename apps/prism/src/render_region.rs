@@ -1,12 +1,12 @@
 use anyhow::{Context, Result, bail};
 use image::RgbaImage;
+use rayon::prelude::*;
 
 use crate::{
     Document, FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
     effects::{colored_shadow_pixel, drop_shadow_alpha},
     effects_render::composite_effect_passes,
-    effects_render::composite_style_pixel,
-    render::composite_pixel,
+    render::{blend_pixel, layer_pixel_alpha},
     shapes::constrained_shape_scale,
     text_render::measure_text_geometry_with_typography,
 };
@@ -203,47 +203,59 @@ pub(crate) fn composite_bounded_source_region(
             stats.max_shadow_alpha_tile_pixels = stats.max_shadow_alpha_tile_pixels.max(pixels);
             stats.max_shadow_alpha_tile_bytes = stats.max_shadow_alpha_tile_bytes.max(pixels);
         }
-        for canvas_y in intersection.top..intersection.bottom {
-            for canvas_x in intersection.left..intersection.right {
-                let center_x = canvas_x - geometry.origin_x - shadow.offset_x.round() as i64;
-                let center_y = canvas_y - geometry.origin_y - shadow.offset_y.round() as i64;
-                let alpha = alpha_tile.as_ref().map_or_else(
-                    || {
-                        drop_shadow_alpha(center_x, center_y, shadow.blur_radius, |x, y| {
-                            sample_output_alpha(&source, &geometry, base_layer, x, y)
-                        })
-                    },
-                    |tile| tile.filtered_alpha(center_x, center_y, shadow.blur_radius),
-                );
-                stats.shadow_samples =
-                    stats
-                        .shadow_samples
-                        .saturating_add(if shadow.blur_radius < 0.5 {
-                            1
-                        } else {
-                            crate::effects::DROP_SHADOW_KERNEL_TAPS
-                        });
-                if alpha_tile.is_none() {
-                    stats.shadow_source_samples =
-                        stats
-                            .shadow_source_samples
-                            .saturating_add(if shadow.blur_radius < 0.5 {
-                                1
-                            } else {
-                                crate::effects::DROP_SHADOW_KERNEL_TAPS
-                            });
-                }
-                composite_style_pixel(
-                    canvas,
-                    colored_shadow_pixel(shadow, alpha),
-                    scaled_layer.opacity,
-                    scaled_layer.clip_to_below,
-                    clip,
-                    canvas_x as u32 - region.x,
-                    canvas_y as u32 - region.y,
-                );
-            }
+        let pixels = ((intersection.bottom - intersection.top)
+            * (intersection.right - intersection.left)) as u64;
+        let taps = if shadow.blur_radius < 0.5 {
+            1
+        } else {
+            crate::effects::DROP_SHADOW_KERNEL_TAPS
+        };
+        stats.shadow_samples = stats.shadow_samples.saturating_add(pixels * taps);
+        if alpha_tile.is_none() {
+            stats.shadow_source_samples = stats.shadow_source_samples.saturating_add(pixels * taps);
         }
+        let stride = region.width as usize * 4;
+        let (source, alpha_tile) = (&source, &alpha_tile);
+        canvas
+            .par_chunks_mut(stride)
+            .enumerate()
+            .skip((intersection.top - i64::from(region.y)) as usize)
+            .take((intersection.bottom - intersection.top) as usize)
+            .for_each(|(row, canvas_row)| {
+                let canvas_y = i64::from(region.y) + row as i64;
+                for canvas_x in intersection.left..intersection.right {
+                    let center_x = canvas_x - geometry.origin_x - shadow.offset_x.round() as i64;
+                    let center_y = canvas_y - geometry.origin_y - shadow.offset_y.round() as i64;
+                    let alpha = alpha_tile.as_ref().map_or_else(
+                        || {
+                            drop_shadow_alpha(center_x, center_y, shadow.blur_radius, |x, y| {
+                                sample_output_alpha(source, &geometry, base_layer, x, y)
+                            })
+                        },
+                        |tile| tile.filtered_alpha(center_x, center_y, shadow.blur_radius),
+                    );
+                    let x = (canvas_x - i64::from(region.x)) as usize;
+                    let pixel = colored_shadow_pixel(shadow, alpha);
+                    let clip_alpha = if scaled_layer.clip_to_below {
+                        clip.map_or(0.0, |image| {
+                            f32::from(image.get_pixel(x as u32, row as u32)[3]) / 255.0
+                        })
+                    } else {
+                        1.0
+                    };
+                    let strength = f32::from(pixel[3]) / 255.0 * scaled_layer.opacity * clip_alpha;
+                    if strength > 0.0 {
+                        let slot = &mut canvas_row[x * 4..x * 4 + 4];
+                        let destination = [slot[0], slot[1], slot[2], slot[3]];
+                        slot.copy_from_slice(&blend_pixel(
+                            destination,
+                            pixel,
+                            crate::BlendMode::Normal,
+                            strength,
+                        ));
+                    }
+                }
+            });
     }
 
     let effects = effects.map(|bounds| {
@@ -256,36 +268,65 @@ pub(crate) fn composite_bounded_source_region(
         composite_effect_passes(canvas, behind, tile, origin, scaled_layer, clip, region);
     }
     if let Some(intersection) = intersection {
-        for canvas_y in intersection.top..intersection.bottom {
-            for canvas_x in intersection.left..intersection.right {
-                let output_x = (canvas_x - geometry.origin_x) as u32;
-                let output_y = (canvas_y - geometry.origin_y) as u32;
-                let Some((scaled_x, scaled_y)) = geometry.inverse_sample(output_x, output_y) else {
-                    continue;
-                };
-                let source_pixel = sample_triangle_resize(
-                    &source,
-                    (geometry.source_width, geometry.source_height),
-                    (geometry.scaled_width, geometry.scaled_height),
-                    (scaled_x, scaled_y),
-                );
-                composite_pixel(
-                    canvas,
-                    coverage,
-                    source_pixel,
-                    output_x,
-                    output_y,
-                    geometry.output_width,
-                    geometry.output_height,
-                    scaled_layer,
-                    clip,
-                    canvas_x as u32 - region.x,
-                    canvas_y as u32 - region.y,
-                    canvas_x as u32,
-                    canvas_y as u32,
-                );
-            }
-        }
+        // Rows are independent: each samples the source and blends its own
+        // canvas and coverage pixels.
+        let stride = region.width as usize * 4;
+        let first = (intersection.top - i64::from(region.y)) as usize;
+        let rows = (intersection.bottom - intersection.top) as usize;
+        let source = &source;
+        canvas
+            .par_chunks_mut(stride)
+            .zip(coverage.par_chunks_mut(stride))
+            .enumerate()
+            .skip(first)
+            .take(rows)
+            .for_each(|(row, (canvas_row, coverage_row))| {
+                let canvas_y = i64::from(region.y) + row as i64;
+                for canvas_x in intersection.left..intersection.right {
+                    let output_x = (canvas_x - geometry.origin_x) as u32;
+                    let output_y = (canvas_y - geometry.origin_y) as u32;
+                    let Some((scaled_x, scaled_y)) = geometry.inverse_sample(output_x, output_y)
+                    else {
+                        continue;
+                    };
+                    let source_pixel = sample_triangle_resize(
+                        source,
+                        (geometry.source_width, geometry.source_height),
+                        (geometry.scaled_width, geometry.scaled_height),
+                        (scaled_x, scaled_y),
+                    );
+                    let x = (canvas_x - i64::from(region.x)) as usize;
+                    let alpha = layer_pixel_alpha(
+                        source_pixel,
+                        [
+                            output_x,
+                            output_y,
+                            geometry.output_width,
+                            geometry.output_height,
+                        ],
+                        scaled_layer,
+                        clip,
+                        [x as u32, row as u32, canvas_x as u32, canvas_y as u32],
+                    );
+                    if alpha <= 0.0 {
+                        continue;
+                    }
+                    let slot = &mut canvas_row[x * 4..x * 4 + 4];
+                    let destination = [slot[0], slot[1], slot[2], slot[3]];
+                    slot.copy_from_slice(&blend_pixel(
+                        destination,
+                        source_pixel,
+                        scaled_layer.blend_mode,
+                        alpha,
+                    ));
+                    coverage_row[x * 4..x * 4 + 4].copy_from_slice(&[
+                        255,
+                        255,
+                        255,
+                        (alpha * 255.0) as u8,
+                    ]);
+                }
+            });
     }
     if let Some((tile, (_, above))) = &effects {
         composite_effect_passes(canvas, above, tile, origin, scaled_layer, clip, region);

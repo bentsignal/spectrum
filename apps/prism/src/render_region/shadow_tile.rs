@@ -35,17 +35,31 @@ impl ShadowAlphaTile {
         if bounds.pixel_count() > MAX_SOURCE_STAGING_PIXELS {
             return None;
         }
+        let width = u32::try_from(bounds.right - bounds.left).ok()?;
+        let height = u32::try_from(bounds.bottom - bounds.top).ok()?;
         let mut pixels = Vec::new();
         pixels
             .try_reserve_exact(bounds.pixel_count() as usize)
             .ok()?;
-        for y in bounds.top..bounds.bottom {
-            for x in bounds.left..bounds.right {
-                pixels.push(sample_output_alpha(source, geometry, layer, x, y));
-            }
+        pixels.resize(bounds.pixel_count() as usize, 0);
+        {
+            use rayon::prelude::*;
+            pixels
+                .par_chunks_mut(width.max(1) as usize)
+                .enumerate()
+                .for_each(|(row, values)| {
+                    let y = bounds.top + row as i64;
+                    for (column, value) in values.iter_mut().enumerate() {
+                        *value = sample_output_alpha(
+                            source,
+                            geometry,
+                            layer,
+                            bounds.left + column as i64,
+                            y,
+                        );
+                    }
+                });
         }
-        let width = u32::try_from(bounds.right - bounds.left).ok()?;
-        let height = u32::try_from(bounds.bottom - bounds.top).ok()?;
         crate::effects::blur_shadow_alpha(
             &mut pixels,
             width as usize,

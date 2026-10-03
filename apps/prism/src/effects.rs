@@ -7,6 +7,7 @@ pub use spectrum_imaging::{
 
 use crate::{
     layer_effects::{ColorOverlay, Glow, LayerStroke},
+    layer_shading::{BevelEmboss, GradientOverlay, Satin},
     validation::require_finite,
 };
 
@@ -115,7 +116,7 @@ impl DropShadow {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LayerStyle {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,6 +131,12 @@ pub struct LayerStyle {
     pub inner_shadow: Option<DropShadow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stroke: Option<LayerStroke>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bevel: Option<BevelEmboss>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub satin: Option<Satin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gradient_overlay: Option<GradientOverlay>,
 }
 
 impl LayerStyle {
@@ -145,6 +152,12 @@ impl LayerStyle {
             inner_glow: self.inner_glow.map(Glow::sanitized),
             inner_shadow: self.inner_shadow.map(DropShadow::sanitized),
             stroke: self.stroke.map(LayerStroke::sanitized),
+            bevel: self.bevel.map(BevelEmboss::sanitized),
+            satin: self.satin.map(Satin::sanitized),
+            gradient_overlay: self.gradient_overlay.map(|overlay| GradientOverlay {
+                gradient: overlay.gradient.canonicalized(),
+                ..overlay
+            }),
         }
     }
 
@@ -163,6 +176,16 @@ impl LayerStyle {
                 size: stroke.size * scale,
                 ..stroke
             }),
+            bevel: self.bevel.map(|bevel| BevelEmboss {
+                size: bevel.size * scale,
+                ..bevel
+            }),
+            satin: self.satin.map(|satin| Satin {
+                size: satin.size * scale,
+                distance: satin.distance * scale,
+                ..satin
+            }),
+            gradient_overlay: self.gradient_overlay.clone(),
         }
     }
 }
@@ -284,58 +307,113 @@ pub(crate) fn shadow_reach(radius: f32) -> i64 {
 }
 
 /// Blurs an alpha tile in place with three box passes each way, treating
-/// pixels outside the tile as clear. The cost does not grow with the radius.
+/// pixels outside the tile as clear. The cost does not grow with the radius;
+/// rows run in parallel, and columns as rows of the transposed tile.
 pub(crate) fn blur_shadow_alpha(pixels: &mut [u8], width: usize, height: usize, radius: f32) {
+    use rayon::prelude::*;
     let halves = shadow_box_halves(radius);
     if halves == [0; 3] || width == 0 || height == 0 {
         return;
     }
-    let mut values: Vec<f32> = pixels.iter().map(|&a| f32::from(a)).collect();
+    let mut values: Vec<f32> = pixels.par_iter().map(|&a| f32::from(a)).collect();
     let mut scratch = vec![0f32; values.len()];
+    blur_rows(&mut values, &mut scratch, width, halves);
+    let mut prefix = vec![0f32; (height + 1) * width];
     for half in halves {
-        box_pass(&values, &mut scratch, width, height, half, true);
-        box_pass(&scratch, &mut values, width, height, half, false);
+        box_columns(&values, &mut scratch, &mut prefix, width, half);
+        std::mem::swap(&mut values, &mut scratch);
     }
-    for (pixel, value) in pixels.iter_mut().zip(values) {
-        *pixel = value.round().clamp(0., 255.) as u8;
+    pixels
+        .par_iter_mut()
+        .zip(values.par_iter())
+        .for_each(|(pixel, value)| *pixel = crate::render::round_byte(*value));
+}
+
+/// Runs each box pass along every row of `values`, in parallel.
+fn blur_rows(values: &mut Vec<f32>, scratch: &mut Vec<f32>, width: usize, halves: [usize; 3]) {
+    use rayon::prelude::*;
+    for half in halves {
+        scratch
+            .par_chunks_mut(width)
+            .zip(values.par_chunks(width))
+            .for_each(|(output, input)| box_line(input, output, half));
+        std::mem::swap(values, scratch);
     }
 }
 
-/// One sliding-window box average along rows or columns.
-fn box_pass(
-    input: &[f32],
-    output: &mut [f32],
+/// One box average down every column: running sums down the rows, then
+/// each output row from two of them, in parallel.
+fn box_columns(input: &[f32], output: &mut [f32], prefix: &mut [f32], width: usize, half: usize) {
+    use rayon::prelude::*;
+    let height = input.len() / width;
+    prefix[..width].fill(0.0);
+    for row in 0..height {
+        let (done, rest) = prefix.split_at_mut((row + 1) * width);
+        let above = &done[row * width..];
+        let line = &input[row * width..(row + 1) * width];
+        for ((sum, previous), value) in rest[..width].iter_mut().zip(above).zip(line) {
+            *sum = previous + value;
+        }
+    }
+    let span = (2 * half + 1) as f32;
+    let prefix = &*prefix;
+    output
+        .par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(row, out)| {
+            let low = &prefix[row.saturating_sub(half) * width..][..width];
+            let high = &prefix[(row + half + 1).min(height) * width..][..width];
+            for ((value, high), low) in out.iter_mut().zip(high).zip(low) {
+                *value = (high - low) / span;
+            }
+        });
+}
+
+/// A `height`-row tile as `width` rows of `height`, in parallel, a block at
+/// a time so reads and writes both stay in cache.
+pub(crate) fn transpose<T: Copy + Default + Send + Sync>(
+    values: &[T],
     width: usize,
     height: usize,
-    half: usize,
-    horizontal: bool,
-) {
-    let (lines, length) = if horizontal {
-        (height, width)
-    } else {
-        (width, height)
-    };
-    let at = |line: usize, i: usize| {
-        if horizontal {
-            line * width + i
-        } else {
-            i * width + line
-        }
-    };
+) -> Vec<T> {
+    use rayon::prelude::*;
+    const BLOCK: usize = 64;
+    let mut out = vec![T::default(); values.len()];
+    if height == 0 {
+        return out;
+    }
+    out.par_chunks_mut(height * BLOCK)
+        .enumerate()
+        .for_each(|(block, columns)| {
+            let x0 = block * BLOCK;
+            let count = columns.len() / height;
+            for y0 in (0..height).step_by(BLOCK) {
+                for y in y0..(y0 + BLOCK).min(height) {
+                    let row = &values[y * width + x0..y * width + x0 + count];
+                    for (dx, value) in row.iter().enumerate() {
+                        columns[dx * height + y] = *value;
+                    }
+                }
+            }
+        });
+    out
+}
+
+/// One sliding-window box average along a line.
+fn box_line(input: &[f32], output: &mut [f32], half: usize) {
+    let length = input.len();
     let span = (2 * half + 1) as f32;
-    for line in 0..lines {
-        let mut sum = 0f32;
-        for i in 0..=half.min(length - 1) {
-            sum += input[at(line, i)];
+    let mut sum = 0f32;
+    for value in &input[..=half.min(length - 1)] {
+        sum += value;
+    }
+    for i in 0..length {
+        output[i] = sum / span;
+        if i + half + 1 < length {
+            sum += input[i + half + 1];
         }
-        for i in 0..length {
-            output[at(line, i)] = sum / span;
-            if i + half + 1 < length {
-                sum += input[at(line, i + half + 1)];
-            }
-            if i >= half {
-                sum -= input[at(line, i - half)];
-            }
+        if i >= half {
+            sum -= input[i - half];
         }
     }
 }

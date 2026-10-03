@@ -2,7 +2,7 @@
 //! and removing layers. Style holds the selected layer's appearance, or the
 //! canvas's when nothing is selected.
 use crate::{
-    controls::{Field, group, slider_row},
+    controls::{Field, chip, group, slider_row},
     theme::*,
     workspace::Workspace,
 };
@@ -86,13 +86,8 @@ impl Workspace {
         } else {
             rotation
         };
-        let shadow = layer.style.drop_shadow.unwrap_or_default();
         self.rotation
             .update(cx, |s, cx| s.set_value(rotation, window, cx));
-        self.shadow_blur
-            .update(cx, |s, cx| s.set_value(shadow.blur_radius, window, cx));
-        self.shadow_distance
-            .update(cx, |s, cx| s.set_value(shadow.offset_y, window, cx));
         self.sync_style_controls(window, cx);
         // Leave the field alone while it is being typed in.
         let typing = self.text_input.focus_handle(cx).is_focused(window);
@@ -334,10 +329,41 @@ impl Workspace {
             LayerKind::Rectangle { color, .. } | LayerKind::Ellipse { color, .. } => {
                 let rectangle = matches!(layer.kind, LayerKind::Rectangle { .. });
                 let radius = self.corner.read(cx).value().start();
+                let gradient = layer.shape_fill.is_some();
+                let color = *color;
                 body = body.child(
                     group("Fill", None)
                         .gap_4()
-                        .child(self.fill_color_row(*color))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_1p5()
+                                .child(chip("fill-solid", "Solid", !gradient).on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.set_gradient(
+                                            crate::gradient_editor::GradientTarget::Fill,
+                                            None,
+                                            window,
+                                            cx,
+                                        )
+                                    }),
+                                ))
+                                .child(chip("fill-gradient", "Gradient", gradient).on_click(
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.start_fill_gradient(color, window, cx)
+                                    }),
+                                )),
+                        )
+                        .map(|el| {
+                            if gradient {
+                                el.child(self.gradient_editor(
+                                    crate::gradient_editor::GradientTarget::Fill,
+                                    cx,
+                                ))
+                            } else {
+                                el.child(self.fill_color_row(color))
+                            }
+                        })
                         .when(rectangle, |el| {
                             el.child(slider_row(
                                 "Corner radius",
