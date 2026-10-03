@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 /// A move in canvas units, rounded to whole pixels of the canvas render, so
 /// the moved layer's pixels match its render exactly when dropped.
-fn whole_pixels(delta: f32, density: f32) -> f32 {
+pub fn whole_pixels(delta: f32, density: f32) -> f32 {
     (delta * density).round() / density.max(f32::EPSILON)
 }
 
@@ -105,6 +105,13 @@ impl Workspace {
             return cx.notify();
         }
         let corner = self.corner_at(event.position);
+        if corner.is_none()
+            && let Some(guide) = self.guide_at(event.position)
+            && let Some(canvas) = &mut self.canvas
+        {
+            canvas.guide_drag = Some(guide);
+            return cx.notify();
+        }
         let hit = corner.map(|(id, _)| id).or_else(|| self.layer_at(point));
         if event.click_count == 2
             && hit.is_some()
@@ -130,6 +137,9 @@ impl Workspace {
     }
 
     fn canvas_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if self.canvas.as_ref().is_some_and(|c| c.guide_drag.is_some()) {
+            return self.move_guide(event.position, cx);
+        }
         let point = self.to_canvas(event.position);
         let Some(canvas) = &mut self.canvas else {
             return;
@@ -149,7 +159,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn canvas_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn canvas_up(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.canvas.as_ref().is_some_and(|c| c.guide_drag.is_some()) {
+            self.move_guide(at, cx);
+            return self.drop_guide(window, cx);
+        }
+        let moved = self.drag_delta();
         if let Some(canvas) = &mut self.canvas
             && let Some((start, end)) = canvas.creating.take()
         {
@@ -162,10 +177,7 @@ impl Workspace {
         let Some(canvas) = &self.canvas else {
             return;
         };
-        let (dx, dy) = (
-            whole_pixels(drag.now.0 - drag.start.0, canvas.density),
-            whole_pixels(drag.now.1 - drag.start.1, canvas.density),
-        );
+        let (dx, dy) = moved.map_or((0., 0.), |(_, dx, dy)| (dx, dy));
         if dx == 0. && dy == 0. && drag.corner.is_none() {
             cx.notify();
             return;
@@ -303,6 +315,7 @@ impl Workspace {
             }
         };
         let image = self.canvas.as_ref().and_then(|c| c.image.clone());
+        let moved = self.drag_delta();
         // Where a layer sits now in canvas space, following any drag.
         let current = |canvas: &crate::canvas_state::CanvasState, id: u64| {
             let (mut min, mut max) = *canvas.bounds.get(&id)?;
@@ -315,11 +328,8 @@ impl Workspace {
                 }) => {
                     (min, max, _) = Self::resized(min, max, corner, start, now);
                 }
-                Some(d) => {
-                    let (dx, dy) = (
-                        whole_pixels(d.now.0 - d.start.0, canvas.density),
-                        whole_pixels(d.now.1 - d.start.1, canvas.density),
-                    );
+                Some(_) => {
+                    let (_, dx, dy) = moved?;
                     min = [min[0] + dx, min[1] + dy];
                     max = [max[0] + dx, max[1] + dy];
                 }
@@ -577,6 +587,7 @@ impl Workspace {
                         .border_color(hsla(0., 0., 1., 0.9))
                         .when(round, |el| el.rounded_full())
                 }))
+                .child(self.guide_overlay(offset, scale, rect.size))
                 .children(outline.map(|b| {
                     div()
                         .absolute()
@@ -607,11 +618,15 @@ impl Workspace {
                 .on_mouse_move(cx.listener(|this, event, _, cx| this.canvas_move(event, cx)))
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.canvas_up(window, cx)),
+                    cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                        this.canvas_up(event.position, window, cx)
+                    }),
                 )
                 .on_mouse_up_out(
                     MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.canvas_up(window, cx)),
+                    cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                        this.canvas_up(event.position, window, cx)
+                    }),
                 ),
         )
     }

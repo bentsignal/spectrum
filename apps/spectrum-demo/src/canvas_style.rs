@@ -62,6 +62,7 @@ impl Workspace {
                 ),
             )
             .child(look)
+            .child(self.guides_section(cx))
     }
 
     fn arrange_section(&self, cx: &mut Context<Self>) -> Div {
@@ -76,14 +77,21 @@ impl Workspace {
             }))
         });
         let rotation = self.rotation.read(cx).value().start();
-        group("Align to canvas", None)
-            .gap_4()
-            .child(div().grid().grid_cols(3).gap_1p5().children(chips))
-            .child(slider_row(
-                "Rotation",
-                format!("{rotation:.0}°"),
-                &self.rotation,
-            ))
+        div()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .child(
+                group("Align to canvas", None)
+                    .gap_4()
+                    .child(div().grid().grid_cols(3).gap_1p5().children(chips))
+                    .child(slider_row(
+                        "Rotation",
+                        format!("{rotation:.0}°"),
+                        &self.rotation,
+                    )),
+            )
+            .child(self.guides_section(cx))
     }
 
     fn shadow_section(&self, cx: &mut Context<Self>) -> Div {

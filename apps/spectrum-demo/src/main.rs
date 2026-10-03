@@ -17,6 +17,8 @@ mod edits;
 mod export;
 mod font_browser;
 mod grid;
+mod guides;
+mod header;
 mod histogram;
 mod home;
 mod info;
@@ -78,7 +80,9 @@ gpui::actions!(
         EditText,
         OpenTools,
         CopyLayer,
-        PasteLayer
+        PasteLayer,
+        ToggleGuides,
+        ToggleSnapping
     ]
 );
 
@@ -114,6 +118,8 @@ fn main() {
             KeyBinding::new("secondary-c", CopyLayer, None),
             KeyBinding::new("secondary-v", PasteLayer, None),
             KeyBinding::new("secondary-shift-v", PasteEdits, None),
+            KeyBinding::new("secondary-;", ToggleGuides, None),
+            KeyBinding::new("secondary-shift-;", ToggleSnapping, None),
             // Text fields bind these in their own context, which wins while typing.
             KeyBinding::new("backspace", DeleteSelection, None),
             KeyBinding::new("delete", DeleteSelection, None),

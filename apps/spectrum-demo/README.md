@@ -26,6 +26,7 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Command+P | On a canvas, choose a tool (Move, Text, Box, Circle, Image) |
 | Command+E | Edit the selected text layer on the canvas |
 | Command+C, Command+V | Copy the selected layer; paste it above the selection, in any canvas |
+| Command+;, Command+Shift+; | Show or hide guides; turn snapping on or off |
 | Command+Z, Command+Shift+Z | Undo and redo edits to the open image or canvas |
 | Command+Shift+C, Command+Shift+V | Copy the open or selected image's edits; paste them onto the open or selected images |
 | Arrow keys, Shift+arrows | Nudge the selected canvas layer 1 or 10 pixels |
@@ -51,12 +52,12 @@ offer three modes: Layers (the current tool, foreground and background colors,
 and the layer list: drag a row to reorder, with a line showing where it lands
 (above or below the list means top or bottom); duplicate, delete, show and hide), Style (one section at a time:
 Look for blending, opacity, text (font, alignment, line height, tracking), and fills; Arrange for alignment and
-rotation; Shadow for a drop shadow; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
+rotation, and Guides (add, show, snapping); Shadow for a drop shadow; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
 with proportions kept or not, or a preset) and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
 to select it, drag to move it, or drag a corner handle to resize it (that corner
 stays put and the layer scales from the opposite side). Text places text where
-you click; Box and Circle draw by dragging; Move returns after. Double-click text,
+you click; Box and Circle draw by dragging; Move returns after. With Snap on in the title bar, dragged layers snap to guides, the canvas, and other layers; drag a guide to move it, or off the canvas to remove it. Double-click text,
 or press Command+E, to edit it in a field under it on the canvas. Edits apply
 to a local copy of the document at once and save in order behind it; a dragged
 layer, or one whose style changes, is drawn from separate renders of the layers

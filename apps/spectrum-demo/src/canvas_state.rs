@@ -23,6 +23,7 @@ pub struct CanvasState {
     pub bounds: Bounds2,
     pub selected: Option<u64>,
     pub drag: Option<LayerDrag>,
+    pub guide_drag: Option<crate::guides::GuideDrag>,
     /// A drag or nudge landed; draw `split` until the render catches up.
     pub settling: bool,
     /// Each layer's own render, for canvases drawn layer by layer.
@@ -116,6 +117,7 @@ impl Workspace {
             bounds: HashMap::new(),
             selected: None,
             drag: None,
+            guide_drag: None,
             settling: false,
             split: None,
             cache: Default::default(),

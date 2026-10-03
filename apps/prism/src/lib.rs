@@ -22,6 +22,8 @@ pub use effects::{
 
 mod text;
 
+mod snapping;
+pub use snapping::{Snapped, snap_move, snap_targets};
 mod system_fonts;
 pub use system_fonts::{SystemFont, regular_face, system_fonts};
 mod typography;
