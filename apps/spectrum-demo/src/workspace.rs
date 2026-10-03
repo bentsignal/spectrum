@@ -1,9 +1,9 @@
 use crate::{
-    ClearSelection, CopyEdits, CopyLayer, DeleteSelection, EditText, Mode1, Mode2, Mode3, Mode4,
-    Mode5, NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp,
-    NudgeUpFar, OpenPalette, OpenTools, PasteEdits, PasteLayer, Redo, Section1, Section2, Section3,
-    Section4, Section5, Section6, SelectAll, ToggleGuides, ToggleSnapping, Undo,
-    controls::in_sidebar, store::Store, theme::*,
+    ClearSelection, CopyEdits, CopyLayer, DeleteSelection, Deselect, EditText, InvertSelection,
+    Mode1, Mode2, Mode3, Mode4, Mode5, NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar,
+    NudgeRight, NudgeRightFar, NudgeUp, NudgeUpFar, OpenPalette, OpenTools, PasteEdits, PasteLayer,
+    Redo, Section1, Section2, Section3, Section4, Section5, Section6, SelectAll, ToggleGuides,
+    ToggleSnapping, Undo, controls::in_sidebar, store::Store, theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -176,6 +176,7 @@ pub struct Workspace {
     pub line_height: Entity<SliderState>,
     pub tracking: Entity<SliderState>,
     pub styles: crate::layer_styles::StyleControls,
+    pub tool_options: crate::tool_options::ToolOptions,
     pub fill_gradient: crate::gradient_editor::GradientEditor,
     pub overlay_gradient: crate::gradient_editor::GradientEditor,
     pub style_section: usize,
@@ -395,6 +396,7 @@ impl Workspace {
             line_height,
             tracking,
             styles: crate::layer_styles::StyleControls::new(window, cx),
+            tool_options: crate::tool_options::ToolOptions::new(cx),
             fill_gradient: crate::gradient_editor::GradientEditor::new(
                 crate::gradient_editor::GradientTarget::Fill,
                 window,
@@ -458,6 +460,7 @@ impl Workspace {
             return;
         }
         match self.open {
+            Open::Canvas(_) if self.has_canvas_selection() => self.delete_in_selection(window, cx),
             Open::Canvas(_) => {
                 self.on_selected(window, cx, |id| prism_core::Command::RemoveLayer { id })
             }
@@ -836,7 +839,26 @@ impl Render for Workspace {
                     this.open_palette(window, cx)
                 }
             }))
-            .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
+            .on_action(cx.listener(|this, _: &SelectAll, window, cx| {
+                if matches!(this.open, Open::Canvas(_)) && this.place != Place::Home {
+                    this.select_canvas(window, cx)
+                } else {
+                    this.select_all(cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Deselect, window, cx| this.deselect(window, cx)))
+            .on_action(cx.listener(|this, _: &InvertSelection, window, cx| {
+                this.invert_selection(window, cx)
+            }))
+            // Enter closes a shape being drawn with the Pen; fields and
+            // lists that use Enter handle it before it gets here.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "enter"
+                    && this.canvas.as_ref().is_some_and(|c| !c.pen.is_empty())
+                {
+                    this.finish_pen(window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &NudgeLeft, w, cx| this.nudge(-1., 0., w, cx)))
             .on_action(cx.listener(|this, _: &NudgeRight, w, cx| this.nudge(1., 0., w, cx)))
             .on_action(cx.listener(|this, _: &NudgeUp, w, cx| this.nudge(0., -1., w, cx)))
@@ -863,7 +885,12 @@ impl Render for Workspace {
                 cx.listener(|this, _: &PasteEdits, window, cx| this.paste_edits(None, window, cx)),
             )
             .on_action(cx.listener(|this, _: &ClearSelection, window, cx| {
-                if this.picker_open {
+                if this.canvas.as_ref().is_some_and(|c| !c.pen.is_empty()) {
+                    if let Some(canvas) = &mut this.canvas {
+                        canvas.pen.clear();
+                    }
+                    cx.notify()
+                } else if this.picker_open {
                     this.close_picker(window, cx)
                 } else if this.palette_open {
                     this.close_palette(cx)

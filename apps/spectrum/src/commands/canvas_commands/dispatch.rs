@@ -197,7 +197,7 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
             vec![Command::SelectLayer { id }]
         }
         CliCommand::Selection(arguments) => {
-            vec![selection::command(arguments)?]
+            vec![selection::command(arguments, document)?]
         }
         CliCommand::Reorder { id, index } => {
             vec![Command::MoveLayer { id, index }]

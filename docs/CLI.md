@@ -64,7 +64,7 @@ spectrum canvas --asset <canvas-uuid> run '{"command":"undo"}'
 Image commands include get, edit, crop, HSL, curves, grading, spot repair, pick,
 batch rename, history navigation, reset, presets, copying edits, rotate, flip,
 remove, batch export, raw command batches, collaboration, and live inspection.
-Canvas commands include text, images, shapes, paths, painting, selection, masks,
+Canvas commands include text, images, shapes, paths, painting, selection (rectangle, ellipse, lasso, magic wand, invert, mask a layer to it), masks,
 effects (`shadow`; `effect` for stroke, glows, inner shadow, bevel, satin, color and gradient overlays), transforms, alignment, guides, typography, font inspection/subsetting,
 layer transfer, history, raw command batches, collaboration, and live inspection.
 Run `spectrum images --help`, `spectrum canvas --help`, or a command's `--help`

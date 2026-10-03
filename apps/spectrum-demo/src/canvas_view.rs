@@ -126,7 +126,14 @@ impl Workspace {
     fn canvas_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let point = self.to_canvas(event.position);
         if let Some(canvas) = self.canvas.as_mut().filter(|c| c.tool != Tool::Move) {
+            canvas.select_mode = crate::selection_view::combine_mode(event.modifiers);
+            match canvas.tool {
+                Tool::Pen => return self.pen_click(point, window, cx),
+                Tool::Wand => return self.magic_wand(point, window, cx),
+                _ => {}
+            }
             canvas.creating = Some((point, point));
+            canvas.points = vec![point];
             return cx.notify();
         }
         let corner = self.corner_at(event.position);
@@ -166,11 +173,26 @@ impl Workspace {
             return self.move_guide(event.position, cx);
         }
         let point = self.to_canvas(event.position);
+        let (_, scale) = self.canvas_rect();
         let Some(canvas) = &mut self.canvas else {
             return;
         };
+        if canvas.tool == Tool::Pen {
+            canvas.pointer = Some(point);
+            return cx.notify();
+        }
         if let Some((_, now)) = &mut canvas.creating {
             *now = point;
+            // Freehand tools keep every point at least a screen pixel apart.
+            let freehand = matches!(canvas.tool, Tool::Lasso | Tool::Brush | Tool::Eraser);
+            if freehand
+                && canvas
+                    .points
+                    .last()
+                    .is_none_or(|l| (l.0 - point.0).hypot(l.1 - point.1) * scale >= 1.)
+            {
+                canvas.points.push(point);
+            }
             return cx.notify();
         }
         let Some(drag) = &mut canvas.drag else {
@@ -518,6 +540,10 @@ impl Workspace {
             div()
                 .id("canvas-area")
                 .relative()
+                .when(
+                    self.canvas.as_ref().is_some_and(|c| c.tool != Tool::Move),
+                    |el| el.cursor_crosshair(),
+                )
                 .size_full()
                 .overflow_hidden()
                 .child(
@@ -614,6 +640,8 @@ impl Workspace {
                         .when(round, |el| el.rounded_full())
                 }))
                 .child(self.guide_overlay(offset, scale, rect.size))
+                .children(self.selection_overlay(offset, scale))
+                .children(self.paint_overlay(offset, scale, cx))
                 .children(gradient_line.map(|(from, to)| {
                     canvas(
                         |_, _, _| {},

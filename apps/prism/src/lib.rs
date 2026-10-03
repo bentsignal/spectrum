@@ -175,6 +175,11 @@ pub use selection::{MAX_COLOR_SELECTION_PIXELS, Selection, magic_wand_selection}
 mod pixel_masks;
 mod render_preview;
 mod selection_commands;
+mod selection_tools;
+pub use selection_tools::{
+    ellipse_lasso, inverted_selection, rectangle_lasso, selection_outline_polygon,
+    vector_mask_from_selection,
+};
 mod selection_outline;
 pub use selection_outline::{
     MAX_SELECTION_OUTLINE_EDGES, SelectionMaskOutline, SelectionOutlineFrame, SelectionOutlinePath,

@@ -41,6 +41,19 @@ pub struct CanvasState {
     pub tool: crate::tools::Tool,
     /// A layer being drawn with the current tool, from and to in canvas space.
     pub creating: Option<((f32, f32), (f32, f32))>,
+    /// Points of a lasso or brush stroke being drawn, in canvas space.
+    pub points: Vec<(f32, f32)>,
+    /// How the selection being drawn combines with the current one.
+    pub select_mode: prism_core::SelectionCombineMode,
+    /// The selection's outline, keyed by the selection it was traced from.
+    pub ants: std::cell::RefCell<Option<(u64, std::sync::Arc<[prism_core::SelectionOutlinePath]>)>>,
+    /// Marching ants are animating.
+    pub ants_running: bool,
+    /// Anchors placed so far with the Pen, and where the pointer is.
+    pub pen: Vec<(f32, f32)>,
+    pub pointer: Option<(f32, f32)>,
+    /// A magic wand selection is being computed.
+    pub wand_busy: bool,
     /// Counts changes to the document; a reload only applies if none
     /// happened while it loaded.
     edits: u64,
@@ -127,6 +140,13 @@ impl Workspace {
             editing: None,
             tool: Default::default(),
             creating: None,
+            points: Vec::new(),
+            select_mode: Default::default(),
+            ants: Default::default(),
+            ants_running: false,
+            pen: Vec::new(),
+            pointer: None,
+            wand_busy: false,
             edits: 0,
             version: 0,
             rendered: 0,
@@ -186,6 +206,9 @@ impl Workspace {
                         canvas.edits += 1;
                         canvas.version += 1;
                         canvas.loaded = true;
+                        if canvas.doc.selection.is_some() {
+                            this.animate_ants(window, cx);
+                        }
                         this.render_canvas(window, cx);
                         this.refresh_layers(window, cx);
                         this.sync_layer_controls(window, cx);

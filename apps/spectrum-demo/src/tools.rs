@@ -15,10 +15,50 @@ pub enum Tool {
     Circle,
     Gradient,
     Image,
+    Marquee,
+    EllipseSelect,
+    Lasso,
+    Wand,
+    Brush,
+    Eraser,
+    Crop,
+    Pen,
 }
 
-pub const TOOLS: [(Tool, &str, &str); 6] = [
+impl Tool {
+    /// Tools that make or change the selection; they stay current after use.
+    pub fn selects(self) -> bool {
+        matches!(
+            self,
+            Tool::Marquee | Tool::EllipseSelect | Tool::Lasso | Tool::Wand
+        )
+    }
+}
+
+pub const TOOLS: [(Tool, &str, &str); 14] = [
     (Tool::Move, "Move", "Select, move, and resize layers"),
+    (
+        Tool::Marquee,
+        "Marquee",
+        "Drag to select a box; Shift adds, Option subtracts",
+    ),
+    (
+        Tool::EllipseSelect,
+        "Ellipse select",
+        "Drag to select an ellipse; Shift adds, Option subtracts",
+    ),
+    (
+        Tool::Lasso,
+        "Lasso",
+        "Draw around what to select; Shift adds, Option subtracts",
+    ),
+    (Tool::Wand, "Magic wand", "Click to select similar colors"),
+    (
+        Tool::Brush,
+        "Brush",
+        "Paint with the foreground color on a Paint layer",
+    ),
+    (Tool::Eraser, "Eraser", "Erase paint on a Paint layer"),
     (Tool::Text, "Text", "Click to place text"),
     (Tool::Box, "Box", "Drag to draw a box"),
     (Tool::Circle, "Circle", "Drag to draw a circle"),
@@ -27,6 +67,12 @@ pub const TOOLS: [(Tool, &str, &str); 6] = [
         "Gradient",
         "Drag to fill a new layer from the foreground to the background color",
     ),
+    (
+        Tool::Pen,
+        "Pen",
+        "Click points to draw a shape; click the first point or press Enter to close",
+    ),
+    (Tool::Crop, "Crop", "Drag the area to crop the canvas to"),
     (Tool::Image, "Image", "Place an image from the project"),
 ];
 
@@ -41,6 +87,14 @@ pub fn tool_name(tool: Tool) -> &'static str {
         .iter()
         .find(|(t, ..)| *t == tool)
         .map_or("Move", |(_, name, ..)| name)
+}
+
+fn glyph_text(mark: &'static str) -> AnyElement {
+    div()
+        .text_sm()
+        .text_color(rgb(MUTED))
+        .child(mark)
+        .into_any_element()
 }
 
 /// A small mark for each tool, in the muted text color.
@@ -63,6 +117,17 @@ pub fn tool_glyph(tool: Tool) -> AnyElement {
             .text_color(rgb(MUTED))
             .child("T")
             .into_any_element(),
+        Tool::Marquee => outline().border_dashed().into_any_element(),
+        Tool::EllipseSelect => outline().rounded_full().border_dashed().into_any_element(),
+        Tool::Lasso => glyph_text("ʘ"),
+        Tool::Wand => glyph_text("✦"),
+        Tool::Brush => glyph_text("✎"),
+        Tool::Eraser => outline().rounded_xs().bg(rgb(MUTED)).into_any_element(),
+        Tool::Crop => Icon::new(IconName::Maximize)
+            .small()
+            .text_color(rgb(MUTED))
+            .into_any_element(),
+        Tool::Pen => glyph_text("✒"),
         Tool::Image => Icon::new(IconName::Frame)
             .small()
             .text_color(rgb(MUTED))
@@ -124,8 +189,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if tool == Tool::Gradient {
-            return self.create_gradient(start, end, window, cx);
+        match tool {
+            Tool::Gradient => return self.create_gradient(start, end, window, cx),
+            Tool::Brush | Tool::Eraser => return self.finish_stroke(tool, window, cx),
+            Tool::Crop => return self.crop_canvas(start, end, window, cx),
+            tool if tool.selects() => return self.finish_selection(tool, start, end, window, cx),
+            Tool::Text | Tool::Box | Tool::Circle => {}
+            _ => return,
         }
         let Some(canvas) = &mut self.canvas else {
             return;

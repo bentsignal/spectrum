@@ -26,16 +26,20 @@ mod info;
 mod layer_cache;
 mod layer_clipboard;
 mod layer_drag;
+mod layer_masks;
 mod layer_styles;
 mod library;
 mod marquee;
+mod paint_tools;
 mod palette;
 mod picker;
 mod preview;
 mod project;
+mod selection_view;
 mod store;
 mod theme;
 mod titlebar;
+mod tool_options;
 mod tools;
 mod trash;
 mod workspace;
@@ -84,7 +88,9 @@ gpui::actions!(
         CopyLayer,
         PasteLayer,
         ToggleGuides,
-        ToggleSnapping
+        ToggleSnapping,
+        Deselect,
+        InvertSelection
     ]
 );
 
@@ -121,6 +127,8 @@ fn main() {
             KeyBinding::new("secondary-v", PasteLayer, None),
             KeyBinding::new("secondary-shift-v", PasteEdits, None),
             KeyBinding::new("secondary-;", ToggleGuides, None),
+            KeyBinding::new("secondary-d", Deselect, None),
+            KeyBinding::new("secondary-shift-i", InvertSelection, None),
             KeyBinding::new("secondary-shift-;", ToggleSnapping, None),
             // Text fields bind these in their own context, which wins while typing.
             KeyBinding::new("backspace", DeleteSelection, None),

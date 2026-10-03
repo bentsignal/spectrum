@@ -139,3 +139,33 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
     assert!(style.stroke.is_some(), "clearing one style keeps the rest");
     std::fs::remove_file(project).unwrap();
 }
+
+#[test]
+fn selection_cli_selects_ellipses_inverts_and_masks_layers() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let project = std::env::temp_dir().join(format!("prism-cli-selection-{stamp}.prism"));
+    invoke(
+        &project,
+        &["init", "Selections", "--width", "80", "--height", "60"],
+    )
+    .unwrap();
+    invoke(
+        &project,
+        &["add-rectangle", "--width", "40", "--height", "30"],
+    )
+    .unwrap();
+    invoke(&project, &["selection", "ellipse", "10", "10", "30", "20"]).unwrap();
+    let selected = Workspace::load_read_only(&project).unwrap();
+    assert!(selected.selection.is_some());
+    invoke(&project, &["selection", "invert"]).unwrap();
+    let inverted = Workspace::load_read_only(&project).unwrap();
+    let (.., width, height) = inverted.selection.as_ref().unwrap().bounds();
+    assert_eq!((width, height), (80, 60), "the inverse spans the canvas");
+    invoke(&project, &["selection", "mask", "1"]).unwrap();
+    let masked = Workspace::load_read_only(&project).unwrap();
+    assert!(masked.layer(1).unwrap().vector_mask.is_some());
+    std::fs::remove_file(project).unwrap();
+}

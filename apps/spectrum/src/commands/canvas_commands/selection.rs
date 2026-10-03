@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
-use prism_core::{Command, LassoPath, LassoPoint, Selection, SelectionCombineMode};
+use prism_core::{Command, Document, LassoPath, LassoPoint, Selection, SelectionCombineMode};
 
 use super::parse_color;
 
@@ -44,6 +44,21 @@ enum SelectionAction {
         #[arg(long)]
         no_antialias: bool,
     },
+    /// Select an ellipse inside a box, combined with the current selection.
+    Ellipse {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        #[arg(long, value_enum, default_value_t = SelectionModeArg::Replace)]
+        mode: SelectionModeArg,
+        #[arg(long)]
+        no_antialias: bool,
+    },
+    /// Select everything the current selection leaves out.
+    Invert,
+    /// Mask a layer to the selection: a vector mask that follows the layer.
+    Mask { layer: u64 },
     /// Clear the current document selection.
     Clear,
     /// Crop the canvas to the current rectangular selection and clear it atomically.
@@ -94,7 +109,7 @@ fn parse_lasso_point(value: &str) -> Result<LassoPoint, String> {
     LassoPoint::from_canvas(x, y).map_err(|error| error.to_string())
 }
 
-pub(super) fn command(arguments: SelectionArgs) -> Result<Command> {
+pub(super) fn command(arguments: SelectionArgs, document: &Document) -> Result<Command> {
     Ok(match arguments.action {
         SelectionAction::Rectangle {
             x,
@@ -126,6 +141,25 @@ pub(super) fn command(arguments: SelectionArgs) -> Result<Command> {
             points: LassoPath::new(points)?,
             mode: mode.into(),
             antialias: !no_antialias,
+        },
+        SelectionAction::Ellipse {
+            x,
+            y,
+            width,
+            height,
+            mode,
+            no_antialias,
+        } => Command::LassoSelection {
+            points: prism_core::ellipse_lasso((x, y), (x + width, y + height))?,
+            mode: mode.into(),
+            antialias: !no_antialias,
+        },
+        SelectionAction::Invert => Command::SetSelection {
+            selection: Some(prism_core::inverted_selection(document)?),
+        },
+        SelectionAction::Mask { layer } => Command::SetVectorMask {
+            id: layer,
+            mask: Some(prism_core::vector_mask_from_selection(document, layer)?),
         },
         SelectionAction::Clear => Command::SetSelection { selection: None },
         SelectionAction::Crop => Command::CropToSelection,
@@ -160,14 +194,17 @@ mod tests {
 
     #[test]
     fn selection_actions_map_to_the_public_command_protocol() {
-        let rectangle = command(SelectionArgs {
-            action: SelectionAction::Rectangle {
-                x: 4,
-                y: 5,
-                width: 20,
-                height: 10,
+        let rectangle = command(
+            SelectionArgs {
+                action: SelectionAction::Rectangle {
+                    x: 4,
+                    y: 5,
+                    width: 20,
+                    height: 10,
+                },
             },
-        })
+            &Document::new("Test", 40, 40),
+        )
         .unwrap();
         assert_eq!(
             rectangle,
@@ -177,25 +214,31 @@ mod tests {
         );
 
         assert_eq!(
-            command(SelectionArgs {
-                action: SelectionAction::Delete { layer: 7 },
-            })
+            command(
+                SelectionArgs {
+                    action: SelectionAction::Delete { layer: 7 },
+                },
+                &Document::new("Test", 40, 40),
+            )
             .unwrap(),
             Command::DeleteSelectedPixels { id: 7 }
         );
 
         assert_eq!(
-            command(SelectionArgs {
-                action: SelectionAction::Lasso {
-                    points: vec![
-                        parse_lasso_point("1,2").unwrap(),
-                        parse_lasso_point("5,2").unwrap(),
-                        parse_lasso_point("1,6").unwrap(),
-                    ],
-                    mode: SelectionModeArg::Add,
-                    no_antialias: true,
+            command(
+                SelectionArgs {
+                    action: SelectionAction::Lasso {
+                        points: vec![
+                            parse_lasso_point("1,2").unwrap(),
+                            parse_lasso_point("5,2").unwrap(),
+                            parse_lasso_point("1,6").unwrap(),
+                        ],
+                        mode: SelectionModeArg::Add,
+                        no_antialias: true,
+                    },
                 },
-            })
+                &Document::new("Test", 40, 40),
+            )
             .unwrap(),
             Command::LassoSelection {
                 points: LassoPath::new(vec![
@@ -210,15 +253,18 @@ mod tests {
         );
 
         assert_eq!(
-            command(SelectionArgs {
-                action: SelectionAction::MagicWand {
-                    x: 12,
-                    y: 18,
-                    tolerance: 24,
-                    noncontiguous: true,
-                    no_antialias: false,
+            command(
+                SelectionArgs {
+                    action: SelectionAction::MagicWand {
+                        x: 12,
+                        y: 18,
+                        tolerance: 24,
+                        noncontiguous: true,
+                        no_antialias: false,
+                    },
                 },
-            })
+                &Document::new("Test", 40, 40),
+            )
             .unwrap(),
             Command::MagicWandSelection {
                 x: 12,
@@ -231,19 +277,25 @@ mod tests {
         );
 
         assert_eq!(
-            command(SelectionArgs {
-                action: SelectionAction::Crop,
-            })
+            command(
+                SelectionArgs {
+                    action: SelectionAction::Crop,
+                },
+                &Document::new("Test", 40, 40),
+            )
             .unwrap(),
             Command::CropToSelection
         );
 
-        let fill = command(SelectionArgs {
-            action: SelectionAction::Fill {
-                color: "12345678".into(),
-                name: Some("Wash".into()),
+        let fill = command(
+            SelectionArgs {
+                action: SelectionAction::Fill {
+                    color: "12345678".into(),
+                    name: Some("Wash".into()),
+                },
             },
-        })
+            &Document::new("Test", 40, 40),
+        )
         .unwrap();
         assert_eq!(
             fill,

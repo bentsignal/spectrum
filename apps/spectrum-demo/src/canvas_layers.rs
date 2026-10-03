@@ -107,11 +107,15 @@ impl Workspace {
         };
         let defaults = self.default_colors(cx).into_any_element();
         let tool = self.tool_button(cx).into_any_element();
+        let selection_panel = self.selection_panel(cx);
+        let brush_panel = self.brush_panel(cx);
         let rows = canvas.doc.layers.iter().rev().map(|layer| {
             let id = layer.id;
             let selected = canvas.selected == Some(id);
             let visible = layer.visible;
             let name = layer.name.clone();
+            let clipped = layer.clip_to_below;
+            let masked = layer.vector_mask.as_ref().is_some_and(|m| m.enabled);
             div()
                 .id(("layer-row", id))
                 .h(px(36.))
@@ -127,6 +131,10 @@ impl Workspace {
                 .on_drag(LayerRow(id, name.clone()), |row, _, _, cx| {
                     cx.new(|_| LayerRow(row.0, row.1.clone()))
                 })
+                // Clipped layers sit indented under the layer they clip to.
+                .when(clipped, |el| {
+                    el.child(div().text_xs().text_color(rgb(FAINT)).child("↳"))
+                })
                 .child(
                     Icon::new(kind_icon(&layer.kind))
                         .small()
@@ -141,6 +149,20 @@ impl Workspace {
                         .text_color(rgb(if visible { TEXT } else { FAINT }))
                         .child(name.clone()),
                 )
+                .when(masked, |el| {
+                    el.child(
+                        div()
+                            .size(px(12.))
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(rgb(MUTED))
+                            .bg(linear_gradient(
+                                90.,
+                                linear_color_stop(rgb(0xf4f4f4), 0.5),
+                                linear_color_stop(rgb(0x141414), 0.5),
+                            )),
+                    )
+                })
                 .child(
                     Button::new(("visible", id))
                         .ghost()
@@ -185,6 +207,8 @@ impl Workspace {
             .flex_col()
             .gap_5()
             .child(group("Tool", Some(defaults)).child(tool))
+            .children(selection_panel)
+            .children(brush_panel)
             .child(
                 group(
                     "Layers",
@@ -375,7 +399,7 @@ impl Workspace {
             }
             _ => {}
         }
-        body
+        body.child(self.mask_section(layer, cx))
     }
 
     fn open_rename_layer(

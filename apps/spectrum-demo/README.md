@@ -23,7 +23,8 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Command+K | Go to a project, place, or asset; at Home, search the whole library |
 | Command+A, Esc | Select all assets, clear the selection |
 | Option+1 to 6 | Switch to the nth section of Color or Style |
-| Command+P | On a canvas, choose a tool (Move, Text, Box, Circle, Image) |
+| Command+P | On a canvas, choose a tool (Move, selection tools, Brush, Eraser, Text, Box, Circle, Gradient, Pen, Crop, Image) |
+| Command+A, Command+D, Command+Shift+I | On a canvas, select all, deselect, invert the selection |
 | Command+E | Edit the selected text layer on the canvas |
 | Command+C, Command+V | Copy the selected layer; paste it above the selection, in any canvas |
 | Command+;, Command+Shift+; | Show or hide guides; turn snapping on or off |
@@ -57,7 +58,7 @@ with proportions kept or not, or a preset) and background), and Color (the selec
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
 to select it, drag to move it, or drag a corner handle to resize it (that corner
 stays put and the layer scales from the opposite side). Text places text where
-you click; Box and Circle draw by dragging; Gradient drags a new full-canvas layer from the foreground to the background color; Move returns after. Shape fills are Solid or Gradient, with a stop editor (drag, add, remove, reverse), kind, and angle. With Snap on in the title bar, dragged layers snap to guides, the canvas, and other layers; drag a guide to move it, or off the canvas to remove it. Double-click text,
+you click; Box and Circle draw by dragging; Gradient drags a new full-canvas layer from the foreground to the background color; Move returns after. Marquee, Ellipse select, Lasso, and Magic wand select (Shift adds, Option subtracts, both intersect) with marching ants; the Selection group fills, masks, hides (Delete), or crops to it. Brush and Eraser paint on Paint layers within the selection; Pen clicks out a filled shape (Enter or the first point closes it); Crop drags the new canvas bounds. Look's Mask and clipping group clips to the layer below and shows, inverts, or removes a layer's mask. Shape fills are Solid or Gradient, with a stop editor (drag, add, remove, reverse), kind, and angle. With Snap on in the title bar, dragged layers snap to guides, the canvas, and other layers; drag a guide to move it, or off the canvas to remove it. Double-click text,
 or press Command+E, to edit it in a field under it on the canvas. Edits apply
 to a local copy of the document at once and save in order behind it; a dragged
 layer, or one whose style changes, is drawn from separate renders of the layers
