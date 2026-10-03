@@ -5,10 +5,10 @@ use crate::{
     workspace::Workspace,
 };
 use gpui::{prelude::*, *};
-use gpui_component::{Sizable, button::Button, switch::Switch};
-use prism_core::{Alignment, AlignmentReference, Command, DropShadow, LayerStyle};
+use gpui_component::{Sizable, button::Button};
+use prism_core::{Alignment, AlignmentReference, Command};
 
-pub const SECTIONS: [&str; 3] = ["Look", "Arrange", "Shadow"];
+pub const SECTIONS: [&str; 3] = ["Look", "Arrange", "Effects"];
 const ALIGN: [(&str, Alignment); 6] = [
     ("Left", Alignment::Left),
     ("Center", Alignment::HorizontalCenter),
@@ -19,21 +19,6 @@ const ALIGN: [(&str, Alignment); 6] = [
 ];
 
 impl Workspace {
-    /// Applies the shadow sliders, or removes the shadow when `on` is false.
-    pub fn set_shadow(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let distance = self.shadow_distance.read(cx).value().start();
-        let blur = self.shadow_blur.read(cx).value().start();
-        let style = LayerStyle {
-            drop_shadow: on.then(|| DropShadow {
-                offset_x: distance,
-                offset_y: distance,
-                blur_radius: blur,
-                ..DropShadow::default()
-            }),
-        };
-        self.on_selected(window, cx, |id| Command::SetLayerStyle { id, style });
-    }
-
     fn canvas_settings(&self, cx: &mut Context<Self>) -> Div {
         let look = self.look_section(cx);
         let (w, h) = self
@@ -94,36 +79,6 @@ impl Workspace {
             .child(self.guides_section(cx))
     }
 
-    fn shadow_section(&self, cx: &mut Context<Self>) -> Div {
-        let on = self
-            .selected_layer()
-            .is_some_and(|l| l.style.drop_shadow.is_some());
-        let distance = self.shadow_distance.read(cx).value().start();
-        let blur = self.shadow_blur.read(cx).value().start();
-        group("Drop shadow", None)
-            .gap_4()
-            .child(
-                Switch::new("shadow")
-                    .label("Show a shadow")
-                    .checked(on)
-                    .on_click(cx.listener(|this, checked, window, cx| {
-                        this.set_shadow(*checked, window, cx)
-                    })),
-            )
-            .when(on, |el| {
-                el.child(slider_row(
-                    "Distance",
-                    format!("{distance:.0}"),
-                    &self.shadow_distance,
-                ))
-                .child(slider_row(
-                    "Blur",
-                    format!("{blur:.0}"),
-                    &self.shadow_blur,
-                ))
-            })
-    }
-
     pub fn style_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         if self.selected_layer().is_none() {
             return self.canvas_settings(cx);
@@ -144,7 +99,7 @@ impl Workspace {
             .collect();
         let body = match self.style_section {
             1 => self.arrange_section(cx),
-            2 => self.shadow_section(cx),
+            2 => self.effects_section(cx),
             _ => self.look_section(cx),
         };
         div()

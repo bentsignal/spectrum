@@ -52,7 +52,7 @@ offer three modes: Layers (the current tool, foreground and background colors,
 and the layer list: drag a row to reorder, with a line showing where it lands
 (above or below the list means top or bottom); duplicate, delete, show and hide), Style (one section at a time:
 Look for blending, opacity, text (font, alignment, line height, tracking), and fills; Arrange for alignment and
-rotation, and Guides (add, show, snapping); Shadow for a drop shadow; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
+rotation, and Guides (add, show, snapping); Effects for a drop shadow, stroke, outer and inner glow, inner shadow, and color overlay; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
 with proportions kept or not, or a preset) and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
 to select it, drag to move it, or drag a corner handle to resize it (that corner

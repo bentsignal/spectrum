@@ -329,6 +329,7 @@ fn vector_pixel_rectangle_masks_and_shadow_keep_exact_region_parity() {
                 offset_y: 5.0,
                 blur_radius: 7.0,
             }),
+            ..LayerStyle::default()
         },
         kind: LayerKind::Rectangle {
             width: 80,

@@ -415,6 +415,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
                     offset_y: 16.0,
                     blur_radius: 12.0,
                 }),
+                ..LayerStyle::default()
             },
             shape_fill: Some(ShapeFill::Gradient(ShapeGradient {
                 angle: 28.0,

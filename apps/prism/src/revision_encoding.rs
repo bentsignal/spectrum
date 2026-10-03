@@ -364,6 +364,7 @@ mod tests {
             id: 7,
             style: LayerStyle {
                 drop_shadow: Some(DropShadow::default()),
+                ..LayerStyle::default()
             },
         }];
         assert_eq!(

@@ -93,6 +93,7 @@ impl Workspace {
             .update(cx, |s, cx| s.set_value(shadow.blur_radius, window, cx));
         self.shadow_distance
             .update(cx, |s, cx| s.set_value(shadow.offset_y, window, cx));
+        self.sync_style_controls(window, cx);
         // Leave the field alone while it is being typed in.
         let typing = self.text_input.focus_handle(cx).is_focused(window);
         if let Some(text) = text.filter(|_| !typing) {

@@ -177,6 +177,7 @@ pub struct Workspace {
     pub tracking: Entity<SliderState>,
     pub shadow_blur: Entity<SliderState>,
     pub shadow_distance: Entity<SliderState>,
+    pub styles: crate::layer_styles::StyleControls,
     pub style_section: usize,
     /// The open image's record, for Info mode.
     pub photo_info: Option<lumen_core::Photo>,
@@ -285,12 +286,30 @@ impl Workspace {
             cx.subscribe_in(
                 &shadow_blur,
                 window,
-                |this, _, _: &SliderEvent, window, cx| this.set_shadow(true, window, cx),
+                |this, _, _: &SliderEvent, window, cx| {
+                    this.set_effect(
+                        crate::layer_styles::Effect::Shadow,
+                        true,
+                        None,
+                        None,
+                        window,
+                        cx,
+                    )
+                },
             ),
             cx.subscribe_in(
                 &shadow_distance,
                 window,
-                |this, _, _: &SliderEvent, window, cx| this.set_shadow(true, window, cx),
+                |this, _, _: &SliderEvent, window, cx| {
+                    this.set_effect(
+                        crate::layer_styles::Effect::Shadow,
+                        true,
+                        None,
+                        None,
+                        window,
+                        cx,
+                    )
+                },
             ),
             cx.subscribe_in(&font_query, window, |this, _, event, window, cx| {
                 this.font_query_event(event, window, cx)
@@ -407,6 +426,7 @@ impl Workspace {
             tracking,
             shadow_blur,
             shadow_distance,
+            styles: crate::layer_styles::StyleControls::new(window, cx),
             style_section: 0,
             photo_info: None,
             compare: false,

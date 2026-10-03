@@ -14,10 +14,14 @@ pub use commands::{Command, CommandOutput, PaintSelection};
 
 mod effects;
 mod effects_render;
+mod layer_effects;
 pub use effects::{
     DROP_SHADOW_KERNEL, DROP_SHADOW_KERNEL_TOTAL_WEIGHT, DropShadow, GradientInterpolation,
     GradientKind, GradientSpread, GradientStop, LayerStyle, MAX_DROP_SHADOW_BLUR,
     MAX_DROP_SHADOW_OFFSET, MAX_GRADIENT_STOPS, ShapeFill, ShapeGradient, ShapeStroke,
+};
+pub use layer_effects::{
+    ColorOverlay, Glow, LayerStroke, MAX_EFFECT_SIZE, StrokePosition, style_reach,
 };
 
 mod text;
@@ -633,7 +637,7 @@ impl Document {
             layer.opacity = layer.opacity.clamp(0.0, 1.0);
             layer.transform = layer.transform.sanitized();
             layer.mask = layer.mask.sanitized();
-            layer.style = layer.style.clone().sanitized();
+            layer.style = layer.style.sanitized();
             layer.shape_fill = layer.shape_fill.clone().map(ShapeFill::sanitized);
             layer.stroke = layer.stroke.sanitized();
             layer.adjustments = layer.adjustments.clone().sanitized();
@@ -843,6 +847,8 @@ mod durable_asset_tests;
 #[cfg(test)]
 #[path = "effect_tests.rs"]
 mod effect_tests;
+#[cfg(test)]
+mod layer_effect_render_tests;
 
 #[cfg(test)]
 #[path = "gradient_tests.rs"]

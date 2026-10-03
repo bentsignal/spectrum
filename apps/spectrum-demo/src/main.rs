@@ -25,6 +25,7 @@ mod info;
 mod layer_cache;
 mod layer_clipboard;
 mod layer_drag;
+mod layer_styles;
 mod library;
 mod marquee;
 mod palette;

@@ -32,7 +32,7 @@ use blend::CliBlend;
 mod dispatch;
 #[path = "canvas_commands/effects.rs"]
 mod effects;
-use effects::{GradientArgs, ShadowArgs};
+use effects::{EffectArgs, GradientArgs, ShadowArgs};
 #[path = "canvas_commands/from_lumen.rs"]
 mod from_lumen;
 use from_lumen::from_lumen;
@@ -239,6 +239,9 @@ enum CliCommand {
     },
     /// Add, update, or clear a portable layer drop shadow.
     Shadow(ShadowArgs),
+    /// Add, update, or clear a layer style: stroke, outer or inner glow,
+    /// inner shadow, or color overlay. Other styles on the layer stay.
+    Effect(EffectArgs),
     /// Add, update, or clear a bounded multi-stop shape gradient.
     Gradient(GradientArgs),
     /// Freeze an editable shape into an embedded raster asset.

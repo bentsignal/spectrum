@@ -5,7 +5,10 @@ pub use spectrum_imaging::{
     GradientSpread, GradientStop, MAX_GRADIENT_STOPS,
 };
 
-use crate::validation::require_finite;
+use crate::{
+    layer_effects::{ColorOverlay, Glow, LayerStroke},
+    validation::require_finite,
+};
 
 pub const MAX_DROP_SHADOW_BLUR: f32 = 128.0;
 pub const MAX_DROP_SHADOW_OFFSET: f32 = 4_096.0;
@@ -112,27 +115,54 @@ impl DropShadow {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LayerStyle {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drop_shadow: Option<DropShadow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outer_glow: Option<Glow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_overlay: Option<ColorOverlay>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inner_glow: Option<Glow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inner_shadow: Option<DropShadow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<LayerStroke>,
 }
 
 impl LayerStyle {
     pub fn is_empty(&self) -> bool {
-        self.drop_shadow.is_none()
+        *self == Self::default()
     }
 
     pub(crate) fn sanitized(self) -> Self {
         Self {
             drop_shadow: self.drop_shadow.map(DropShadow::sanitized),
+            outer_glow: self.outer_glow.map(Glow::sanitized),
+            color_overlay: self.color_overlay,
+            inner_glow: self.inner_glow.map(Glow::sanitized),
+            inner_shadow: self.inner_shadow.map(DropShadow::sanitized),
+            stroke: self.stroke.map(LayerStroke::sanitized),
         }
     }
 
     pub(crate) fn scaled(&self, scale: f32) -> Self {
+        let glow = |glow: Glow| Glow {
+            size: glow.size * scale,
+            ..glow
+        };
         Self {
             drop_shadow: self.drop_shadow.map(|shadow| shadow.scaled(scale)),
+            outer_glow: self.outer_glow.map(glow),
+            color_overlay: self.color_overlay,
+            inner_glow: self.inner_glow.map(glow),
+            inner_shadow: self.inner_shadow.map(|shadow| shadow.scaled(scale)),
+            stroke: self.stroke.map(|stroke| LayerStroke {
+                size: stroke.size * scale,
+                ..stroke
+            }),
         }
     }
 }
@@ -201,6 +231,7 @@ impl ShapeFillSampler<'_> {
 }
 
 pub(crate) fn validate_layer_style(style: &LayerStyle) -> Result<()> {
+    crate::layer_effects::validate_effects(style)?;
     let Some(shadow) = style.drop_shadow else {
         return Ok(());
     };

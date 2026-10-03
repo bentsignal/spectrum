@@ -162,7 +162,12 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
             },
         }],
         CliCommand::Shadow(arguments) => {
-            vec![effects::shadow_command(arguments)?]
+            let style = document.layer(arguments.id)?.style;
+            vec![effects::shadow_command(arguments, style)?]
+        }
+        CliCommand::Effect(arguments) => {
+            let style = document.layer(arguments.id)?.style;
+            vec![effects::effect_command(arguments, style)?]
         }
         CliCommand::Gradient(arguments) => {
             vec![effects::gradient_command(arguments)?]

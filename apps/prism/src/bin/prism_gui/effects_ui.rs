@@ -11,6 +11,7 @@ impl PrismApp {
                 id: layer.id,
                 style: LayerStyle {
                     drop_shadow: shadow_enabled.then(DropShadow::default),
+                    ..LayerStyle::default()
                 },
             });
         }
@@ -26,6 +27,7 @@ impl PrismApp {
                     id: layer.id,
                     style: LayerStyle {
                         drop_shadow: Some(shadow),
+                        ..LayerStyle::default()
                     },
                 },
             );
@@ -40,6 +42,7 @@ impl PrismApp {
                     id: layer.id,
                     style: LayerStyle {
                         drop_shadow: Some(shadow),
+                        ..LayerStyle::default()
                     },
                 },
             );
@@ -54,6 +57,7 @@ impl PrismApp {
                     id: layer.id,
                     style: LayerStyle {
                         drop_shadow: Some(shadow),
+                        ..LayerStyle::default()
                     },
                 },
             );
@@ -71,6 +75,7 @@ impl PrismApp {
                     id: layer.id,
                     style: LayerStyle {
                         drop_shadow: Some(shadow),
+                        ..LayerStyle::default()
                     },
                 },
             );

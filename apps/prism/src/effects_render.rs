@@ -3,6 +3,7 @@ use image::RgbaImage;
 use crate::{
     DropShadow, Layer,
     effects::{blur_shadow_alpha, colored_shadow_pixel, shadow_reach},
+    layer_effects::{AlphaTile, EffectPass},
     render::{RegionRenderStats, RenderRegion, composite_blended_pixel, layer_mask_allows},
 };
 
@@ -83,5 +84,65 @@ pub(crate) fn composite_style_pixel(
     let alpha = source_pixel[3] as f32 / 255.0 * opacity * clip_alpha;
     if alpha > 0.0 {
         composite_blended_pixel(canvas, source_pixel, crate::BlendMode::Normal, alpha, x, y);
+    }
+}
+
+/// The layer's alpha around its source image, padded by `reach` so styles
+/// can spread past its edge.
+pub(crate) fn source_alpha_tile(source: &RgbaImage, layer: &Layer, reach: i64) -> AlphaTile {
+    let width = source.width() as usize + 2 * reach as usize;
+    let height = source.height() as usize + 2 * reach as usize;
+    let mut alpha = Vec::with_capacity(width * height);
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            alpha.push(masked_source_alpha(source, layer, x - reach, y - reach));
+        }
+    }
+    AlphaTile {
+        left: -reach,
+        top: -reach,
+        width,
+        height,
+        alpha,
+    }
+}
+
+/// Draws style passes computed over `tile`, whose pixel (0, 0) sits at
+/// `origin + (tile.left, tile.top)` on the canvas, within `region`.
+pub(crate) fn composite_effect_passes(
+    canvas: &mut RgbaImage,
+    passes: &[EffectPass],
+    tile: &AlphaTile,
+    origin: (i64, i64),
+    layer: &Layer,
+    clip: Option<&RgbaImage>,
+    region: RenderRegion,
+) {
+    let left = origin.0 + tile.left;
+    let top = origin.1 + tile.top;
+    let x0 = left.max(i64::from(region.x));
+    let y0 = top.max(i64::from(region.y));
+    let x1 = (left + tile.width as i64).min(i64::from(region.x + region.width));
+    let y1 = (top + tile.height as i64).min(i64::from(region.y + region.height));
+    for pass in passes {
+        for canvas_y in y0..y1 {
+            let row = (canvas_y - top) as usize * tile.width;
+            for canvas_x in x0..x1 {
+                let strength = pass.alpha[row + (canvas_x - left) as usize];
+                if strength == 0 {
+                    continue;
+                }
+                let alpha = u16::from(strength) * u16::from(pass.color[3]) / 255;
+                composite_style_pixel(
+                    canvas,
+                    [pass.color[0], pass.color[1], pass.color[2], alpha as u8],
+                    layer.opacity,
+                    layer.clip_to_below,
+                    clip,
+                    (canvas_x - i64::from(region.x)) as u32,
+                    (canvas_y - i64::from(region.y)) as u32,
+                );
+            }
+        }
     }
 }

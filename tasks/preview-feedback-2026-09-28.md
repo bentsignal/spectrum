@@ -6,7 +6,7 @@ priority: high
 # Address the 2026-09-28 preview reviews
 
 Review of `aee56f0` ([rules](../docs/design/workflow.md)); the per-layer canvas is approved.
-Every feature gets its engine command and CLI surface with its control. Done: 1–3, 5, 6.
+Every feature gets its engine command and CLI surface with its control. Done: 1–3, 5, 6; 4 has all blend modes and stroke, glows, inner shadow, color overlay (bevel, satin, gradient overlay remain). `canvas benchmark --strict` misses four gradient budgets here at e5e1106 too.
 
 1. Command+C and Command+V copy and paste layers.
 2. Layer list drags: show where the layer lands; above or below the list means top or bottom.

@@ -17,6 +17,7 @@ fn styled_shape_document() -> Document {
                 offset_y: 0.0,
                 blur_radius: 0.0,
             }),
+            ..LayerStyle::default()
         },
         shape_fill: Some(ShapeFill::Gradient(ShapeGradient {
             angle: 0.0,
@@ -76,6 +77,7 @@ fn style_and_fill_commands_validate_layer_kind_and_undo_separately() {
             id: 1,
             style: LayerStyle {
                 drop_shadow: Some(DropShadow::default()),
+                ..LayerStyle::default()
             },
         })
         .unwrap();
@@ -121,10 +123,10 @@ fn style_and_fill_commands_validate_layer_kind_and_undo_separately() {
 #[test]
 fn previewed_effect_changes_commit_as_one_undoable_revision() {
     let mut workspace = Workspace::new(styled_shape_document(), None);
-    let original = workspace.document.layer(1).unwrap().style.clone();
+    let original = workspace.document.layer(1).unwrap().style;
     workspace.begin_interaction().unwrap();
     for offset_x in [24.0, 28.0, 32.0] {
-        let mut style = original.clone();
+        let mut style = original;
         style.drop_shadow.as_mut().unwrap().offset_x = offset_x;
         workspace
             .preview(Command::SetLayerStyle { id: 1, style })
@@ -318,6 +320,7 @@ fn durable_effect_edits_use_the_version_three_operation_envelope() {
             id: 1,
             style: LayerStyle {
                 drop_shadow: Some(DropShadow::default()),
+                ..LayerStyle::default()
             },
         })
         .unwrap();

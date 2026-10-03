@@ -520,6 +520,30 @@ pub(super) fn render_document_region_scaled_untiled(
                 stats,
             );
         }
+        let effects = crate::layer_effects::has_effects(&scaled_layer.style).then(|| {
+            let reach = crate::layer_effects::effects_reach(&scaled_layer.style);
+            let tile = crate::effects_render::source_alpha_tile(&source, &scaled_layer, reach);
+            let passes = crate::layer_effects::effect_passes(&scaled_layer.style, &tile);
+            let origin = (
+                scaled_layer.transform.x.round() as i64,
+                scaled_layer.transform.y.round() as i64,
+            );
+            (tile, passes, origin)
+        });
+        let draw = |canvas: &mut RgbaImage, above: bool| {
+            if let Some((tile, (behind, over), origin)) = &effects {
+                crate::effects_render::composite_effect_passes(
+                    canvas,
+                    if above { over } else { behind },
+                    tile,
+                    *origin,
+                    &scaled_layer,
+                    previous_coverage.as_ref(),
+                    region,
+                );
+            }
+        };
+        draw(&mut canvas, false);
         composite_layer_region(
             &mut canvas,
             &mut coverage,
@@ -528,6 +552,7 @@ pub(super) fn render_document_region_scaled_untiled(
             previous_coverage.as_ref(),
             region,
         );
+        draw(&mut canvas, true);
         previous_coverage = Some(coverage);
     }
     Ok(DynamicImage::ImageRgba8(canvas))

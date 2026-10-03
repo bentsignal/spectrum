@@ -106,6 +106,7 @@ fn transfer_preserves_every_layer_field_except_local_ids_in_one_undo_step() {
         },
         style: LayerStyle {
             drop_shadow: Some(DropShadow::default()),
+            ..LayerStyle::default()
         },
         shape_fill: Some(ShapeFill::Gradient(ShapeGradient {
             angle: 35.0,
@@ -280,6 +281,7 @@ fn unmasked_transfer_envelopes_remain_legacy_readable() {
     transfer.version = 2;
     transfer.layer.style = LayerStyle {
         drop_shadow: Some(DropShadow::default()),
+        ..LayerStyle::default()
     };
     assert!(LayerTransfer::from_json(&transfer.to_json().unwrap()).is_ok());
 }

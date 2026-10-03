@@ -4,6 +4,7 @@ use image::RgbaImage;
 use crate::{
     Document, FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
     effects::{colored_shadow_pixel, drop_shadow_alpha},
+    effects_render::composite_effect_passes,
     effects_render::composite_style_pixel,
     render::composite_pixel,
     shapes::constrained_shape_scale,
@@ -15,7 +16,9 @@ use source::{
     SampleSource, SourceDescriptor, SourceRegion, sample_triangle_resize,
     sample_triangle_resize_alpha, source_sample_bounds,
 };
+mod effects_tile;
 mod shadow_tile;
+use effects_tile::effects_tile_bounds;
 use shadow_tile::ShadowAlphaTile;
 
 #[derive(Debug)]
@@ -153,7 +156,8 @@ pub(crate) fn composite_bounded_source_region(
     let shadow = scaled_layer.style.drop_shadow;
     let shadow_intersection =
         shadow.and_then(|shadow| geometry.shadow_intersection(region, shadow));
-    if intersection.is_none() && shadow_intersection.is_none() {
+    let effects = effects_tile_bounds(&geometry, region, &scaled_layer.style);
+    if intersection.is_none() && shadow_intersection.is_none() && effects.is_none() {
         return Ok(true);
     }
     let staging_region = if descriptor.is_unadjusted_shape() {
@@ -169,6 +173,10 @@ pub(crate) fn composite_bounded_source_region(
         if let (Some(shadow), Some(intersection)) = (shadow, shadow_intersection) {
             let shadow_region = required_shadow_source_region(&geometry, intersection, shadow);
             staging_region = union_source_regions(staging_region, shadow_region);
+        }
+        if let Some(bounds) = effects.and_then(|b| b.within_output(&geometry)) {
+            let effects_region = required_source_region(&geometry, bounds);
+            staging_region = union_source_regions(staging_region, effects_region);
         }
         let Some(staging_region) = staging_region else {
             return Ok(true);
@@ -238,6 +246,15 @@ pub(crate) fn composite_bounded_source_region(
         }
     }
 
+    let effects = effects.map(|bounds| {
+        let tile = bounds.sample(&source, &geometry, base_layer);
+        let passes = crate::layer_effects::effect_passes(&scaled_layer.style, &tile);
+        (tile, passes)
+    });
+    let origin = (geometry.origin_x, geometry.origin_y);
+    if let Some((tile, (behind, _))) = &effects {
+        composite_effect_passes(canvas, behind, tile, origin, scaled_layer, clip, region);
+    }
     if let Some(intersection) = intersection {
         for canvas_y in intersection.top..intersection.bottom {
             for canvas_x in intersection.left..intersection.right {
@@ -269,6 +286,9 @@ pub(crate) fn composite_bounded_source_region(
                 );
             }
         }
+    }
+    if let Some((tile, (_, above))) = &effects {
+        composite_effect_passes(canvas, above, tile, origin, scaled_layer, clip, region);
     }
     Ok(true)
 }

@@ -115,9 +115,7 @@ pub fn render_alone(
     let geometry = prism_core::layer_geometry(first)?;
     let (min, max) = (geometry.min, geometry.max);
     // Room for effects that reach past the layer, such as a drop shadow.
-    let reach = first.style.drop_shadow.map_or(0., |s| {
-        s.offset_x.abs().max(s.offset_y.abs()) + s.blur_radius * 3. + 2.
-    });
+    let reach = prism_core::style_reach(&first.style);
     let pixel = [
         ((min[0] - reach) * density).floor(),
         ((min[1] - reach) * density).floor(),
