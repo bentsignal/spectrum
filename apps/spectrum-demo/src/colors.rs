@@ -201,3 +201,58 @@ impl Workspace {
         )
     }
 }
+
+impl Workspace {
+    /// Sets the foreground color, or the background color, and its well.
+    pub fn set_default_color(
+        &mut self,
+        color: [u8; 4],
+        background: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let colors = &mut self.colors;
+        let picker = if background {
+            colors.back = color;
+            colors.back_picker.clone()
+        } else {
+            colors.fore = color;
+            colors.fore_picker.clone()
+        };
+        picker.update(cx, |picker, cx| picker.set(color, window, cx));
+        cx.notify();
+    }
+
+    /// The Eyedropper: the canvas's color at `at`, as rendered, becomes the
+    /// foreground color (the background color with Option).
+    pub fn pick_canvas_color(
+        &mut self,
+        at: (f32, f32),
+        background: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(canvas), Ok(store)) = (&self.canvas, &self.store) else {
+            return;
+        };
+        let (x, y) = (at.0.floor(), at.1.floor());
+        if x < 0. || y < 0. || x >= canvas.doc.width as f32 || y >= canvas.doc.height as f32 {
+            return;
+        }
+        let (root, doc) = (store.root.clone(), canvas.render_doc());
+        let task = cx.background_executor().spawn(async move {
+            let mut resolved = doc;
+            spectrum::library::Service::open(&root)?.resolve(&mut resolved)?;
+            prism_core::sample_document_color(&resolved, x as u32, y as u32)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(color) => this.set_default_color(color, background, window, cx),
+                Err(error) => this.notify_error(error, window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+}

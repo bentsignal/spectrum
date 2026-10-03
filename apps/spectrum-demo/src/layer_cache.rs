@@ -90,11 +90,12 @@ impl Workspace {
             layer.transform = transform;
             Some(layer)
         });
+        let render_doc = canvas.render_doc();
         let cache = &mut canvas.cache;
         cache
             .images
             .retain(|id, _| canvas.doc.layers.iter().any(|l| l.id == *id));
-        for layer in &canvas.doc.layers {
+        for layer in &render_doc.layers {
             let layer = resizing
                 .as_ref()
                 .filter(|r| r.id == layer.id)
@@ -156,7 +157,7 @@ impl Workspace {
             }
             cache.busy.insert(layer.id, wanted.clone());
             let (root, mut doc, id, layer_id) =
-                (store.root.clone(), canvas.doc.clone(), canvas.id, layer.id);
+                (store.root.clone(), render_doc.clone(), canvas.id, layer.id);
             if let Some(slot) = doc.layers.iter_mut().find(|l| l.id == layer_id) {
                 *slot = layer.clone();
             }

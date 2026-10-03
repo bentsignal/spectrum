@@ -32,6 +32,14 @@ pub struct CanvasState {
     pub split: Option<crate::canvas_split::Split>,
     /// Image layers: edit the shared image rather than this placement.
     pub global: bool,
+    /// A shared image being edited: its id, original file, and the edits
+    /// not saved yet. Its layers render from the original with these edits
+    /// until the save lands.
+    pub shared_edit: Option<(
+        spectrum_library::AssetId,
+        std::path::PathBuf,
+        lumen_core::Adjustments,
+    )>,
     /// A text layer shown in an installed font that is not applied yet.
     pub font_preview: Option<(u64, std::path::PathBuf)>,
     /// Where a dragged layer row would land in the list, top first.
@@ -54,6 +62,8 @@ pub struct CanvasState {
     pub pointer: Option<(f32, f32)>,
     /// A magic wand selection is being computed.
     pub wand_busy: bool,
+    /// The guide under the pointer, which a drag would move.
+    pub hover_guide: Option<prism_core::GuideOrientation>,
     /// Counts changes to the document; a reload only applies if none
     /// happened while it loaded.
     edits: u64,
@@ -67,8 +77,34 @@ pub struct CanvasState {
     /// Commands applied locally and waiting to be saved.
     queue: Vec<Command>,
     saving: bool,
+    /// When the document last changed; saves wait for a pause so one
+    /// slider drag saves, and undoes, as one step.
+    changed_at: Option<std::time::Instant>,
+    save_waiting: bool,
     /// Reload from the library once saving finishes (after undo or redo).
     reload: bool,
+}
+
+impl CanvasState {
+    /// The document to render: the saved one, with any shared image being
+    /// edited drawn from its original file and the unsaved edits.
+    pub fn render_doc(&self) -> Document {
+        let mut doc = self.doc.clone();
+        if let Some((asset, original, adjustments)) = &self.shared_edit {
+            for layer in &mut doc.layers {
+                let plain = layer.adjustments == lumen_core::Adjustments::default();
+                if layer.image_asset == Some(*asset) && plain {
+                    layer.image_asset = None;
+                    layer.kind = prism_core::LayerKind::Raster {
+                        path: original.clone(),
+                        original_path: None,
+                    };
+                    layer.adjustments = adjustments.clone();
+                }
+            }
+        }
+        doc
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -135,6 +171,7 @@ impl Workspace {
             split: None,
             cache: Default::default(),
             global: false,
+            shared_edit: None,
             drop_slot: None,
             font_preview: None,
             editing: None,
@@ -147,6 +184,7 @@ impl Workspace {
             pen: Vec::new(),
             pointer: None,
             wand_busy: false,
+            hover_guide: None,
             edits: 0,
             version: 0,
             rendered: 0,
@@ -154,6 +192,8 @@ impl Workspace {
             rendering: false,
             queue: Vec::new(),
             saving: false,
+            changed_at: None,
+            save_waiting: false,
             reload: true,
         });
         self.reload_canvas(window, cx);
@@ -277,7 +317,7 @@ impl Workspace {
             store.root.clone(),
             canvas.id,
             canvas.version,
-            canvas.doc.clone(),
+            canvas.render_doc(),
             canvas.density,
         );
         let task = cx
@@ -355,6 +395,7 @@ impl Workspace {
             canvas.edits += 1;
             canvas.version += 1;
         }
+        canvas.changed_at = Some(std::time::Instant::now());
         if history {
             canvas.reload = true;
         }
@@ -381,6 +422,28 @@ impl Workspace {
             return;
         };
         if canvas.saving || canvas.queue.is_empty() {
+            return;
+        }
+        const PAUSE: std::time::Duration = std::time::Duration::from_millis(300);
+        let quiet = canvas.changed_at.map_or(PAUSE, |at| at.elapsed());
+        // Undo and redo show once saved, so they never wait.
+        let history = matches!(canvas.queue.last(), Some(Command::Undo | Command::Redo));
+        if quiet < PAUSE && !history {
+            if !canvas.save_waiting {
+                canvas.save_waiting = true;
+                let wait = PAUSE - quiet;
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(wait).await;
+                    this.update_in(cx, |this, window, cx| {
+                        if let Some(canvas) = &mut this.canvas {
+                            canvas.save_waiting = false;
+                        }
+                        this.save_canvas(window, cx);
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             return;
         }
         canvas.saving = true;

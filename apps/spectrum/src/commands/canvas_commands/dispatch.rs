@@ -358,6 +358,7 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
         | CliCommand::OptimizedCopy { .. }
         | CliCommand::LayerCopy(..)
         | CliCommand::Export { .. }
+        | CliCommand::Sample { .. }
         | CliCommand::FromLumen { .. }
         | CliCommand::Agent { .. }
         | CliCommand::Live { .. }

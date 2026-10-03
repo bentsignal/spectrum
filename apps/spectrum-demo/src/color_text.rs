@@ -30,6 +30,11 @@ pub fn name(format: Format) -> &'static str {
         .map_or("Hex", |(_, n)| n)
 }
 
+/// The format with this name, as `name` gives it.
+pub fn format_named(name: &str) -> Option<Format> {
+    FORMATS.iter().find(|(_, n)| *n == name).map(|(f, _)| *f)
+}
+
 pub const FORMATS: [(Format, &str); 4] = [
     (Format::Hex, "Hex"),
     (Format::Rgb, "RGB"),

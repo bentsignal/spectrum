@@ -213,7 +213,7 @@ impl Workspace {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;
         };
-        let (id, doc, density) = (canvas.id, canvas.doc.clone(), canvas.density);
+        let (id, doc, density) = (canvas.id, canvas.render_doc(), canvas.density);
         let Some(split) = &mut canvas.split else {
             return;
         };

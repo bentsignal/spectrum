@@ -130,6 +130,9 @@ impl Workspace {
             match canvas.tool {
                 Tool::Pen => return self.pen_click(point, window, cx),
                 Tool::Wand => return self.magic_wand(point, window, cx),
+                Tool::Eyedropper => {
+                    return self.pick_canvas_color(point, event.modifiers.alt, window, cx);
+                }
                 _ => {}
             }
             canvas.creating = Some((point, point));
@@ -174,9 +177,19 @@ impl Workspace {
         }
         let point = self.to_canvas(event.position);
         let (_, scale) = self.canvas_rect();
+        let hover = self
+            .canvas
+            .as_ref()
+            .filter(|c| c.tool == Tool::Move && c.drag.is_none())
+            .and_then(|_| self.guide_at(event.position))
+            .map(|g| g.orientation);
         let Some(canvas) = &mut self.canvas else {
             return;
         };
+        if canvas.hover_guide != hover {
+            canvas.hover_guide = hover;
+            cx.notify();
+        }
         if canvas.tool == Tool::Pen {
             canvas.pointer = Some(point);
             return cx.notify();
@@ -543,6 +556,13 @@ impl Workspace {
                 .when(
                     self.canvas.as_ref().is_some_and(|c| c.tool != Tool::Move),
                     |el| el.cursor_crosshair(),
+                )
+                .map(
+                    |el| match self.canvas.as_ref().and_then(|c| c.hover_guide) {
+                        Some(prism_core::GuideOrientation::Vertical) => el.cursor_col_resize(),
+                        Some(prism_core::GuideOrientation::Horizontal) => el.cursor_row_resize(),
+                        None => el,
+                    },
                 )
                 .size_full()
                 .overflow_hidden()

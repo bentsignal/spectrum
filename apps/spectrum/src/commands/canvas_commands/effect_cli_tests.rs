@@ -169,3 +169,48 @@ fn selection_cli_selects_ellipses_inverts_and_masks_layers() {
     assert!(masked.layer(1).unwrap().vector_mask.is_some());
     std::fs::remove_file(project).unwrap();
 }
+
+#[test]
+fn sample_cli_reads_the_composited_color() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let project = std::env::temp_dir().join(format!("prism-cli-sample-{stamp}.prism"));
+    invoke(
+        &project,
+        &["init", "Sample", "--width", "40", "--height", "30"],
+    )
+    .unwrap();
+    invoke(
+        &project,
+        &[
+            "add-rectangle",
+            "--width",
+            "10",
+            "--height",
+            "10",
+            "--color",
+            "ff0000ff",
+        ],
+    )
+    .unwrap();
+    let document = Workspace::load_read_only(&project).unwrap();
+    assert_eq!(
+        prism_core::sample_document_color(&document, 5, 5).unwrap(),
+        [255, 0, 0, 255]
+    );
+    assert!(prism_core::sample_document_color(&document, 50, 5).is_err());
+    let sampled = run(Cli::try_parse_from([
+        "prism",
+        "--document",
+        project.to_str().unwrap(),
+        "sample",
+        "5",
+        "5",
+    ])
+    .unwrap())
+    .unwrap();
+    assert_eq!(sampled["color"], "ff0000ff");
+    std::fs::remove_file(project).unwrap();
+}

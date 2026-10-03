@@ -33,6 +33,7 @@ mod marquee;
 mod paint_tools;
 mod palette;
 mod picker;
+mod prefs;
 mod preview;
 mod project;
 mod selection_view;
@@ -99,6 +100,7 @@ fn main() {
         println!("Spectrum preview {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    prefs::load();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
         // Command+S stays unbound: people press it by habit, and Spectrum saves as it goes.

@@ -147,6 +147,17 @@ impl Workspace {
             return;
         };
         let (root, adjustments) = (store.root.clone(), self.adjust.clone());
+        // Show the edit now from the original image; the save follows.
+        let original = store
+            .service
+            .library
+            .get(asset)
+            .and_then(|a| store.service.library.path(&a));
+        if let (Some(canvas), Ok(original)) = (&mut self.canvas, original) {
+            canvas.shared_edit = Some((asset, original, adjustments.clone()));
+            self.render_canvas(window, cx);
+            self.refresh_layers(window, cx);
+        }
         self.color_busy = true;
         self.color_dirty = false;
         let edit = cx
@@ -162,11 +173,14 @@ impl Workspace {
                 if let Ok(store) = &mut this.store {
                     store.thumbs.remove(&asset);
                 }
-                // Re-render the canvas, which resolves the image's new look.
-                this.rerender_canvas(window, cx);
                 if this.color_dirty {
-                    this.schedule_color_edit(window, cx);
+                    return this.schedule_color_edit(window, cx);
                 }
+                // Saved: render from the image's new look again.
+                if let Some(canvas) = &mut this.canvas {
+                    canvas.shared_edit = None;
+                }
+                this.rerender_canvas(window, cx);
             })
             .ok();
         })

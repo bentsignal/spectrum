@@ -284,6 +284,7 @@ impl Render for ColorPicker {
                             cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 color_text::set_preferred(format);
+                                crate::prefs::save_color_format();
                                 this.choosing = false;
                                 this.format = format;
                                 this.show_hex(window, cx);

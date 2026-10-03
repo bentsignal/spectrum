@@ -23,6 +23,7 @@ pub enum Tool {
     Eraser,
     Crop,
     Pen,
+    Eyedropper,
 }
 
 impl Tool {
@@ -35,7 +36,7 @@ impl Tool {
     }
 }
 
-pub const TOOLS: [(Tool, &str, &str); 14] = [
+pub const TOOLS: [(Tool, &str, &str); 15] = [
     (Tool::Move, "Move", "Select, move, and resize layers"),
     (
         Tool::Marquee,
@@ -73,6 +74,11 @@ pub const TOOLS: [(Tool, &str, &str); 14] = [
         "Click points to draw a shape; click the first point or press Enter to close",
     ),
     (Tool::Crop, "Crop", "Drag the area to crop the canvas to"),
+    (
+        Tool::Eyedropper,
+        "Eyedropper",
+        "Click to take a color from the canvas; Option sets the background",
+    ),
     (Tool::Image, "Image", "Place an image from the project"),
 ];
 
@@ -128,6 +134,7 @@ pub fn tool_glyph(tool: Tool) -> AnyElement {
             .text_color(rgb(MUTED))
             .into_any_element(),
         Tool::Pen => glyph_text("✒"),
+        Tool::Eyedropper => glyph_text("◉"),
         Tool::Image => Icon::new(IconName::Frame)
             .small()
             .text_color(rgb(MUTED))

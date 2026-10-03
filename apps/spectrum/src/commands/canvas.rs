@@ -393,6 +393,11 @@ enum CliCommand {
         width: u32,
         height: u32,
     },
+    /// Read the composited color at a canvas pixel, as the eyedropper does.
+    Sample {
+        x: u32,
+        y: u32,
+    },
     /// Flatten the current document into PNG or JPEG.
     Export {
         path: PathBuf,
@@ -508,6 +513,13 @@ fn run(cli: Cli) -> Result<Value> {
         }
         CliCommand::LayerCopy(arguments) => {
             transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)
+        }
+        CliCommand::Sample { x, y } => {
+            let document = session_document(&cli.project, cli.session)?;
+            let [r, g, b, a] = prism_core::sample_document_color(&document, x, y)?;
+            Ok(
+                json!({"ok": true, "x": x, "y": y, "color": format!("{r:02x}{g:02x}{b:02x}{a:02x}")}),
+            )
         }
         CliCommand::Export { path, quality } => {
             let document = session_document(&cli.project, cli.session)?;

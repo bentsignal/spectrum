@@ -13,6 +13,24 @@ use crate::{Document, LayerKind, RasterSourceResolver, render_document_with_sour
 
 static EXPORT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// The canvas's composited color at one document pixel, as the eyedropper
+/// and `spectrum canvas sample` read it.
+pub fn sample_document_color(document: &Document, x: u32, y: u32) -> Result<[u8; 4]> {
+    if x >= document.width || y >= document.height {
+        bail!("sample point must be inside the canvas");
+    }
+    let cache_root = crate::default_raster_backing_cache_root()?;
+    let sources = crate::prepare_export_raster_sources(document, &cache_root)?;
+    let region = crate::RenderRegion {
+        x,
+        y,
+        width: 1,
+        height: 1,
+    };
+    let image = crate::render_document_region_scaled_with_sources(document, 1.0, region, &sources)?;
+    Ok(image.to_rgba8().get_pixel(0, 0).0)
+}
+
 pub fn export_document(document: &Document, path: &Path, quality: u8) -> Result<()> {
     export_document_sized(document, path, quality, None)
 }
