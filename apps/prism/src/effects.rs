@@ -222,6 +222,93 @@ pub(crate) fn validate_shape_fill(fill: &ShapeFill) -> Result<()> {
     Ok(())
 }
 
+/// Half-widths of three box blurs whose result approximates a Gaussian with
+/// sigma = radius / 3, so the shadow fades out at about `radius`.
+pub(crate) fn shadow_box_halves(radius: f32) -> [usize; 3] {
+    if radius < 0.5 {
+        return [0; 3];
+    }
+    let sigma = f64::from(radius) / 3.;
+    let ideal = (12. * sigma * sigma / 3. + 1.).sqrt();
+    let mut lower = ideal.floor() as i64;
+    if lower % 2 == 0 {
+        lower -= 1;
+    }
+    let lower = lower.max(1);
+    let upper = lower + 2;
+    let lower_f = lower as f64;
+    let count = ((12. * sigma * sigma - 3. * lower_f * lower_f - 12. * lower_f - 9.)
+        / (-4. * lower_f - 4.))
+        .round()
+        .clamp(0., 3.) as usize;
+    std::array::from_fn(|pass| {
+        let width = if pass < count { lower } else { upper };
+        ((width - 1) / 2) as usize
+    })
+}
+
+/// How far a blurred shadow reaches past its source, in pixels.
+pub(crate) fn shadow_reach(radius: f32) -> i64 {
+    shadow_box_halves(radius).iter().sum::<usize>() as i64
+}
+
+/// Blurs an alpha tile in place with three box passes each way, treating
+/// pixels outside the tile as clear. The cost does not grow with the radius.
+pub(crate) fn blur_shadow_alpha(pixels: &mut [u8], width: usize, height: usize, radius: f32) {
+    let halves = shadow_box_halves(radius);
+    if halves == [0; 3] || width == 0 || height == 0 {
+        return;
+    }
+    let mut values: Vec<f32> = pixels.iter().map(|&a| f32::from(a)).collect();
+    let mut scratch = vec![0f32; values.len()];
+    for half in halves {
+        box_pass(&values, &mut scratch, width, height, half, true);
+        box_pass(&scratch, &mut values, width, height, half, false);
+    }
+    for (pixel, value) in pixels.iter_mut().zip(values) {
+        *pixel = value.round().clamp(0., 255.) as u8;
+    }
+}
+
+/// One sliding-window box average along rows or columns.
+fn box_pass(
+    input: &[f32],
+    output: &mut [f32],
+    width: usize,
+    height: usize,
+    half: usize,
+    horizontal: bool,
+) {
+    let (lines, length) = if horizontal {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let at = |line: usize, i: usize| {
+        if horizontal {
+            line * width + i
+        } else {
+            i * width + line
+        }
+    };
+    let span = (2 * half + 1) as f32;
+    for line in 0..lines {
+        let mut sum = 0f32;
+        for i in 0..=half.min(length - 1) {
+            sum += input[at(line, i)];
+        }
+        for i in 0..length {
+            output[at(line, i)] = sum / span;
+            if i + half + 1 < length {
+                sum += input[at(line, i + half + 1)];
+            }
+            if i >= half {
+                sum -= input[at(line, i - half)];
+            }
+        }
+    }
+}
+
 pub(crate) fn drop_shadow_alpha(
     center_x: i64,
     center_y: i64,
@@ -250,4 +337,39 @@ pub(crate) fn colored_shadow_pixel(shadow: DropShadow, source_alpha: u8) -> [u8;
         shadow.color[2],
         alpha as u8,
     ]
+}
+
+#[cfg(test)]
+mod shadow_blur_tests {
+    use super::{blur_shadow_alpha, shadow_reach};
+
+    #[test]
+    fn blur_is_smooth_symmetric_and_stays_within_its_reach() {
+        let radius = 24.;
+        let reach = shadow_reach(radius) as usize;
+        let size = 2 * reach + 41;
+        let mut tile = vec![0u8; size * size];
+        // An opaque 21 x 21 square in the middle.
+        for y in reach + 10..reach + 31 {
+            for x in reach + 10..reach + 31 {
+                tile[y * size + x] = 255;
+            }
+        }
+        let before: u32 = tile.iter().map(|&a| u32::from(a)).sum();
+        blur_shadow_alpha(&mut tile, size, size, radius);
+        let after: u32 = tile.iter().map(|&a| u32::from(a)).sum();
+        // Rounding aside, the blur keeps the amount of shadow.
+        assert!(before.abs_diff(after) < before / 50, "{before} vs {after}");
+        let row: Vec<u8> = (0..size).map(|x| tile[(size / 2) * size + x]).collect();
+        // Mirror symmetric and falling smoothly from the middle outward.
+        for x in 0..size {
+            assert!(row[x].abs_diff(row[size - 1 - x]) <= 1);
+        }
+        for x in 1..=size / 2 {
+            assert!(row[x] >= row[x - 1], "not monotonic at {x}: {row:?}");
+            assert!(row[x] - row[x - 1] < 24, "step too sharp at {x}: {row:?}");
+        }
+        // Nothing reaches the tile's outer edge.
+        assert_eq!(row[0], 0);
+    }
 }

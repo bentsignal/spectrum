@@ -25,6 +25,7 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 | Option+1 to 6 | Switch to the nth section of Color or Style |
 | Command+P | On a canvas, choose a tool (Move, Text, Box, Circle, Image) |
 | Command+E | Edit the selected text layer on the canvas |
+| Command+C, Command+V | Copy the selected layer; paste it above the selection, in any canvas |
 | Command+Z, Command+Shift+Z | Undo and redo edits to the open image or canvas |
 | Command+Shift+C, Command+Shift+V | Copy the open or selected image's edits; paste them onto the open or selected images |
 | Arrow keys, Shift+arrows | Nudge the selected canvas layer 1 or 10 pixels |
@@ -47,7 +48,8 @@ aspect presets; its sidebar rotates, flips, and straightens. Compare in the titl
 shows capture details, the image's projects, and the canvases that use it. Inside a project,
 "Recently added" sorts by when assets joined it. Double-click a canvas, or use New canvas in a project, to open it. Canvases
 offer three modes: Layers (the current tool, foreground and background colors,
-and the layer list: drag a row to reorder; duplicate, delete, show and hide), Style (one section at a time:
+and the layer list: drag a row to reorder, with a line showing where it lands
+(above or below the list means top or bottom); duplicate, delete, show and hide), Style (one section at a time:
 Look for blending, opacity, text with alignment, line height, and tracking, and fills; Arrange for alignment and
 rotation; Shadow for a drop shadow; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
 with proportions kept or not, or a preset) and background), and Color (the selected layer's adjustments;

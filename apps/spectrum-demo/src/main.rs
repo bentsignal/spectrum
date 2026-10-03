@@ -20,6 +20,8 @@ mod histogram;
 mod home;
 mod info;
 mod layer_cache;
+mod layer_clipboard;
+mod layer_drag;
 mod library;
 mod marquee;
 mod palette;
@@ -73,7 +75,9 @@ gpui::actions!(
         Section5,
         Section6,
         EditText,
-        OpenTools
+        OpenTools,
+        CopyLayer,
+        PasteLayer
     ]
 );
 
@@ -106,6 +110,8 @@ fn main() {
             KeyBinding::new("secondary-shift-c", CopyEdits, None),
             KeyBinding::new("secondary-e", EditText, None),
             KeyBinding::new("secondary-p", OpenTools, None),
+            KeyBinding::new("secondary-c", CopyLayer, None),
+            KeyBinding::new("secondary-v", PasteLayer, None),
             KeyBinding::new("secondary-shift-v", PasteEdits, None),
             // Text fields bind these in their own context, which wins while typing.
             KeyBinding::new("backspace", DeleteSelection, None),

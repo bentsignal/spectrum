@@ -1,8 +1,8 @@
 use crate::{
-    ClearSelection, CopyEdits, DeleteSelection, EditText, Mode1, Mode2, Mode3, Mode4, Mode5,
-    NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp,
-    NudgeUpFar, OpenPalette, OpenTools, PasteEdits, Redo, Section1, Section2, Section3, Section4,
-    Section5, Section6, SelectAll, Undo, controls::in_sidebar, store::Store, theme::*,
+    ClearSelection, CopyEdits, CopyLayer, DeleteSelection, EditText, Mode1, Mode2, Mode3, Mode4,
+    Mode5, NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar, NudgeRight, NudgeRightFar, NudgeUp,
+    NudgeUpFar, OpenPalette, OpenTools, PasteEdits, PasteLayer, Redo, Section1, Section2, Section3,
+    Section4, Section5, Section6, SelectAll, Undo, controls::in_sidebar, store::Store, theme::*,
 };
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -847,6 +847,12 @@ impl Render for Workspace {
             .bg(rgb(BACKGROUND))
             .text_color(rgb(TEXT))
             .track_focus(&self.focus_handle)
+            // A dragged layer row can be released anywhere in the window.
+            .on_drop(
+                cx.listener(|this, row: &crate::canvas_layers::LayerRow, window, cx| {
+                    this.drop_layer(row, window, cx)
+                }),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -858,6 +864,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Mode1, window, cx| this.nth_mode(0, window, cx)))
             .on_action(cx.listener(|this, _: &EditText, window, cx| this.edit_text(window, cx)))
             .on_action(cx.listener(|this, _: &OpenTools, window, cx| this.open_tools(window, cx)))
+            .on_action(cx.listener(|this, _: &CopyLayer, window, cx| this.copy_layer(window, cx)))
+            .on_action(cx.listener(|this, _: &PasteLayer, window, cx| this.paste_layer(window, cx)))
             .on_action(cx.listener(|this, _: &Section1, _, cx| this.nth_section(0, cx)))
             .on_action(cx.listener(|this, _: &Section2, _, cx| this.nth_section(1, cx)))
             .on_action(cx.listener(|this, _: &Section3, _, cx| this.nth_section(2, cx)))

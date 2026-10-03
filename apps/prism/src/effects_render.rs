@@ -2,7 +2,7 @@ use image::RgbaImage;
 
 use crate::{
     DropShadow, Layer,
-    effects::{DROP_SHADOW_KERNEL_TAPS, colored_shadow_pixel, drop_shadow_alpha},
+    effects::{blur_shadow_alpha, colored_shadow_pixel, shadow_reach},
     render::{RegionRenderStats, RenderRegion, composite_blended_pixel, layer_mask_allows},
 };
 
@@ -18,28 +18,30 @@ pub(crate) fn composite_shadow_region(
 ) {
     let origin_x = layer.transform.x.round() as i64 + shadow.offset_x.round() as i64;
     let origin_y = layer.transform.y.round() as i64 + shadow.offset_y.round() as i64;
-    let radius = shadow.blur_radius.ceil() as i64;
-    let left = (origin_x - radius).max(i64::from(region.x));
-    let top = (origin_y - radius).max(i64::from(region.y));
+    // The shadow is the layer's alpha blurred once into a tile padded by how
+    // far the blur reaches, then looked up per pixel.
+    let reach = shadow_reach(shadow.blur_radius);
+    let tile_width = source.width() as usize + 2 * reach as usize;
+    let tile_height = source.height() as usize + 2 * reach as usize;
+    let mut tile = Vec::with_capacity(tile_width * tile_height);
+    for y in 0..tile_height as i64 {
+        for x in 0..tile_width as i64 {
+            tile.push(masked_source_alpha(source, layer, x - reach, y - reach));
+        }
+    }
+    blur_shadow_alpha(&mut tile, tile_width, tile_height, shadow.blur_radius);
+    let left = (origin_x - reach).max(i64::from(region.x));
+    let top = (origin_y - reach).max(i64::from(region.y));
     let right =
-        (origin_x + i64::from(source.width()) + radius).min(i64::from(region.x + region.width));
+        (origin_x + i64::from(source.width()) + reach).min(i64::from(region.x + region.width));
     let bottom =
-        (origin_y + i64::from(source.height()) + radius).min(i64::from(region.y + region.height));
+        (origin_y + i64::from(source.height()) + reach).min(i64::from(region.y + region.height));
     for canvas_y in top..bottom {
         for canvas_x in left..right {
-            let center_x = canvas_x - origin_x;
-            let center_y = canvas_y - origin_y;
-            let alpha = drop_shadow_alpha(center_x, center_y, shadow.blur_radius, |x, y| {
-                masked_source_alpha(source, layer, x, y)
-            });
-            stats.shadow_samples =
-                stats
-                    .shadow_samples
-                    .saturating_add(if shadow.blur_radius < 0.5 {
-                        1
-                    } else {
-                        DROP_SHADOW_KERNEL_TAPS
-                    });
+            let tile_x = (canvas_x - origin_x + reach) as usize;
+            let tile_y = (canvas_y - origin_y + reach) as usize;
+            let alpha = tile[tile_y * tile_width + tile_x];
+            stats.shadow_samples = stats.shadow_samples.saturating_add(1);
             composite_style_pixel(
                 canvas,
                 colored_shadow_pixel(shadow, alpha),

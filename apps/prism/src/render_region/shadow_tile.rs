@@ -1,7 +1,4 @@
-use crate::{
-    Layer,
-    effects::{DROP_SHADOW_KERNEL, DROP_SHADOW_KERNEL_TAPS},
-};
+use crate::Layer;
 
 use super::{
     CanvasIntersection, MAX_SOURCE_STAGING_PIXELS, SampleSource, SamplingGeometry,
@@ -47,11 +44,19 @@ impl ShadowAlphaTile {
                 pixels.push(sample_output_alpha(source, geometry, layer, x, y));
             }
         }
+        let width = u32::try_from(bounds.right - bounds.left).ok()?;
+        let height = u32::try_from(bounds.bottom - bounds.top).ok()?;
+        crate::effects::blur_shadow_alpha(
+            &mut pixels,
+            width as usize,
+            height as usize,
+            shadow.blur_radius,
+        );
         Some(Self {
             left: bounds.left,
             top: bounds.top,
-            width: u32::try_from(bounds.right - bounds.left).ok()?,
-            height: u32::try_from(bounds.bottom - bounds.top).ok()?,
+            width,
+            height,
             pixels,
         })
     }
@@ -72,18 +77,8 @@ impl ShadowAlphaTile {
 
     #[inline]
     pub(super) fn filtered_alpha(&self, center_x: i64, center_y: i64, radius: f32) -> u8 {
-        if radius < 0.5 {
-            return self.alpha(center_x, center_y);
-        }
-        let mut weighted_alpha = 0_u32;
-        let mut total_weight = 0_u32;
-        for (unit_x, unit_y, weight) in DROP_SHADOW_KERNEL {
-            let x = center_x + (unit_x * radius).round() as i64;
-            let y = center_y + (unit_y * radius).round() as i64;
-            weighted_alpha += u32::from(self.alpha(x, y)) * weight;
-            total_weight += weight;
-        }
-        debug_assert_eq!(DROP_SHADOW_KERNEL_TAPS, DROP_SHADOW_KERNEL.len() as u64);
-        (weighted_alpha / total_weight) as u8
+        // The tile was blurred when it was built.
+        let _ = radius;
+        self.alpha(center_x, center_y)
     }
 }

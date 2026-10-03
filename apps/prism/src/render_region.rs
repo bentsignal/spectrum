@@ -3,7 +3,7 @@ use image::RgbaImage;
 
 use crate::{
     Document, FontAsset, Layer, LayerKind, RasterSourceResolver, RegionRenderStats, RenderRegion,
-    effects::{DROP_SHADOW_KERNEL, colored_shadow_pixel, drop_shadow_alpha},
+    effects::{colored_shadow_pixel, drop_shadow_alpha},
     effects_render::composite_style_pixel,
     render::composite_pixel,
     shapes::constrained_shape_scale,
@@ -318,14 +318,8 @@ fn shadow_kernel_bounds(radius: f32) -> (i64, i64, i64, i64) {
     if radius < 0.5 {
         return (0, 0, 0, 0);
     }
-    DROP_SHADOW_KERNEL.into_iter().fold(
-        (0, 0, 0, 0),
-        |(left, top, right, bottom), (unit_x, unit_y, _)| {
-            let x = (unit_x * radius).round() as i64;
-            let y = (unit_y * radius).round() as i64;
-            (left.min(x), top.min(y), right.max(x), bottom.max(y))
-        },
-    )
+    let reach = crate::effects::shadow_reach(radius);
+    (-reach, -reach, reach, reach)
 }
 
 #[derive(Clone, Copy)]

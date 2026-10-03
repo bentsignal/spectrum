@@ -31,6 +31,8 @@ pub struct CanvasState {
     pub split: Option<crate::canvas_split::Split>,
     /// Image layers: edit the shared image rather than this placement.
     pub global: bool,
+    /// Where a dragged layer row would land in the list, top first.
+    pub drop_slot: Option<usize>,
     /// A text layer being edited on the canvas.
     pub editing: Option<u64>,
     pub tool: crate::tools::Tool,
@@ -116,6 +118,7 @@ impl Workspace {
             split: None,
             cache: Default::default(),
             global: false,
+            drop_slot: None,
             editing: None,
             tool: Default::default(),
             creating: None,
