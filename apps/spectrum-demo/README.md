@@ -57,7 +57,7 @@ rotation, and Guides (add, show, snapping); Effects for Photoshop's layer styles
 with proportions kept or not, or a preset) and background), and Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
 to select it, drag to move it, or drag a corner handle to resize it (that corner
-stays put and the layer scales from the opposite side). Text places text where
+stays put and the layer scales from the opposite side), or the handle above it to rotate it (snapping near 45°). Text places text where
 you click; Box and Circle draw by dragging; Gradient drags a new full-canvas layer from the foreground to the background color; Move returns after. Marquee, Ellipse select, Lasso, and Magic wand select (Shift adds, Option subtracts, both intersect) with marching ants; the Selection group fills, masks, hides (Delete), or crops to it. Brush and Eraser paint on Paint layers within the selection; Pen clicks out a filled shape (Enter or the first point closes it); Crop drags the new canvas bounds; Eyedropper takes the canvas's color as the foreground (Option: background). A slider drag saves, and undoes, as one step. Look's Mask and clipping group clips to the layer below and shows, inverts, or removes a layer's mask. Shape fills are Solid or Gradient, with a stop editor (drag, add, remove, reverse), kind, and angle. With Snap on in the title bar, dragged layers snap to guides, the canvas, and other layers; drag a guide to move it, or off the canvas to remove it. Double-click text,
 or press Command+E, to edit it in a field under it on the canvas. Edits apply
 to a local copy of the document at once and save in order behind it; a dragged

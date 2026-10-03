@@ -127,7 +127,7 @@ impl Workspace {
         let canvas = self.canvas.as_ref()?;
         let drag = canvas
             .drag
-            .filter(|d| d.corner.is_none() && d.now != d.start)?;
+            .filter(|d| d.corner.is_none() && !d.rotate && d.now != d.start)?;
         let (_, scale) = self.canvas_rect();
         let (dx, dy) = (drag.now.0 - drag.start.0, drag.now.1 - drag.start.1);
         if !canvas.doc.snapping_enabled {

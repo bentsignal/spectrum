@@ -81,6 +81,9 @@ pub struct CanvasState {
     /// slider drag saves, and undoes, as one step.
     changed_at: Option<std::time::Instant>,
     save_waiting: bool,
+    /// When a whole-canvas render was last asked for; renders asked for in
+    /// quick succession are drafts, and a sharp one follows.
+    render_asked: Option<std::time::Instant>,
     /// Reload from the library once saving finishes (after undo or redo).
     reload: bool,
 }
@@ -114,6 +117,8 @@ pub struct LayerDrag {
     pub now: (f32, f32),
     /// Resizing from this corner (right, bottom) instead of moving.
     pub corner: Option<(bool, bool)>,
+    /// Rotating by the handle above the layer instead of moving.
+    pub rotate: bool,
 }
 
 pub struct Rendered {
@@ -194,6 +199,7 @@ impl Workspace {
             saving: false,
             changed_at: None,
             save_waiting: false,
+            render_asked: None,
             reload: true,
         });
         self.reload_canvas(window, cx);
@@ -313,12 +319,37 @@ impl Workspace {
             return;
         }
         canvas.rendering = true;
-        let (root, id, version, doc, density) = (
+        const RAPID: std::time::Duration = std::time::Duration::from_millis(150);
+        let rapid = canvas.render_asked.is_some_and(|at| at.elapsed() < RAPID);
+        canvas.render_asked = Some(std::time::Instant::now());
+        let density = if rapid {
+            (canvas.density * 0.5).max(0.5)
+        } else {
+            canvas.density
+        };
+        if rapid {
+            // Render sharp once the changes stop.
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor()
+                    .timer(RAPID + std::time::Duration::from_millis(30))
+                    .await;
+                this.update_in(cx, |this, window, cx| {
+                    if let Some(canvas) = &mut this.canvas
+                        && canvas.render_asked.is_some_and(|at| at.elapsed() >= RAPID)
+                    {
+                        canvas.version += 1;
+                        this.render_canvas(window, cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+        let (root, id, version, doc) = (
             store.root.clone(),
             canvas.id,
             canvas.version,
             canvas.render_doc(),
-            canvas.density,
         );
         let task = cx
             .background_executor()

@@ -36,6 +36,7 @@ mod picker;
 mod prefs;
 mod preview;
 mod project;
+mod rotate;
 mod selection_view;
 mod store;
 mod theme;

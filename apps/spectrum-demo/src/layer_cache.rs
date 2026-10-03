@@ -85,7 +85,9 @@ impl Workspace {
         let density = canvas.density;
         // A layer being resized renders at the size it is being dragged to.
         let resizing = canvas.drag.and_then(|drag| {
-            let (transform, _) = Self::resize_transform(canvas, drag)?;
+            let transform = Self::resize_transform(canvas, drag)
+                .map(|(transform, _)| transform)
+                .or_else(|| Self::rotate_transform(canvas, drag))?;
             let mut layer = canvas.doc.layers.iter().find(|l| l.id == drag.id)?.clone();
             layer.transform = transform;
             Some(layer)

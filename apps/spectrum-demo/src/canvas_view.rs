@@ -139,6 +139,18 @@ impl Workspace {
             canvas.points = vec![point];
             return cx.notify();
         }
+        if let Some(id) = self.rotate_handle_at(event.position)
+            && let Some(canvas) = &mut self.canvas
+        {
+            canvas.drag = Some(LayerDrag {
+                id,
+                start: point,
+                now: point,
+                corner: None,
+                rotate: true,
+            });
+            return cx.notify();
+        }
         let corner = self.corner_at(event.position);
         if corner.is_none()
             && let Some(guide) = self.guide_at(event.position)
@@ -165,6 +177,7 @@ impl Workspace {
                 start: point,
                 now: point,
                 corner: corner.map(|(_, c)| c),
+                rotate: false,
             });
         }
         self.sync_layer_controls(window, cx);
@@ -218,7 +231,7 @@ impl Workspace {
         drag.now = point;
         // A resize re-renders the layer at its new size as it goes, so its
         // effects keep their own size instead of stretching with it.
-        if drag.corner.is_some() {
+        if drag.corner.is_some() || drag.rotate {
             self.refresh_layers(window, cx);
         }
         cx.notify();
@@ -242,6 +255,9 @@ impl Workspace {
         let Some(canvas) = &self.canvas else {
             return;
         };
+        if drag.rotate {
+            return self.finish_rotate(drag, window, cx);
+        }
         let (dx, dy) = moved.map_or((0., 0.), |(_, dx, dy)| (dx, dy));
         if dx == 0. && dy == 0. && drag.corner.is_none() {
             cx.notify();
@@ -371,6 +387,12 @@ impl Workspace {
         // Where a layer sits now in canvas space, following any drag.
         let current = |canvas: &crate::canvas_state::CanvasState, id: u64| {
             let (mut min, mut max) = *canvas.bounds.get(&id)?;
+            // A layer being rotated shows its latest render where it fell.
+            if canvas.drag.is_some_and(|d| d.id == id && d.rotate)
+                && let Some(cached) = canvas.cache.images.get(&id)
+            {
+                return Some(cached.bounds);
+            }
             match canvas.drag.filter(|d| d.id == id) {
                 Some(LayerDrag {
                     corner: Some(corner),
@@ -710,6 +732,7 @@ impl Workspace {
                         .border_1()
                         .border_color(hsla(0., 0., 1., 0.9))
                 }))
+                .children(self.rotate_handle_element())
                 .children(outline.into_iter().flat_map(|b| {
                     [b.origin, b.top_right(), b.bottom_left(), b.bottom_right()].map(|corner| {
                         div()
