@@ -31,6 +31,21 @@ use super::{
 // barrier -> cache flock; child-spawn code takes only the barrier.
 static CACHE_TEST_FORK_BARRIER: OnceLock<RwLock<()>> = OnceLock::new();
 
+// Tests that hold the process-wide decode permit, or fork the test binary,
+// take this first and so never overlap. Otherwise one can hold the permit
+// while a sibling's maintenance lease (a fork-barrier read guard) waits for
+// it, a third test's spawn queues for the barrier's write side, and the
+// first test's own worker then cannot take a read guard behind that writer.
+#[cfg(test)]
+static CACHE_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn cache_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    CACHE_TEST_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 pub(crate) fn spawn_cache_test_child(
     command: &mut std::process::Command,

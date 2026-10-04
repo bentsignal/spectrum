@@ -367,6 +367,7 @@ fn deterministic_lru_uses_access_mtime_then_key() {
 #[test]
 fn child_spawn_cannot_inherit_a_live_cache_maintenance_lease() {
     use std::os::unix::process::CommandExt;
+    let _serial = crate::raster_backing_cache::cache_test_serial();
 
     let directory = TestDirectory::new("fork-inherited-maintenance");
     let cache_root = directory.path().join("cache");
@@ -636,6 +637,7 @@ fn incomplete_entry_and_crash_tombstones_are_handled_fail_closed() {
 
 #[test]
 fn cross_process_reader_lease_blocks_eviction() {
+    let _serial = crate::raster_backing_cache::cache_test_serial();
     if let Some(child) = child_config() {
         let cache = DerivedBackingCache::new(
             child.root,

@@ -705,70 +705,77 @@ impl Workspace {
                     }))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             });
-        div().size_full().p_8().pb(px(40.)).child(
-            div()
-                .id("canvas-area")
-                .relative()
-                .when(
-                    self.canvas.as_ref().is_some_and(|c| c.tool != Tool::Move),
-                    |el| el.cursor_crosshair(),
-                )
-                .map(
-                    |el| match self.canvas.as_ref().and_then(|c| c.hover_guide) {
-                        Some(prism_core::GuideOrientation::Vertical) => el.cursor_col_resize(),
-                        Some(prism_core::GuideOrientation::Horizontal) => el.cursor_row_resize(),
-                        None => el,
-                    },
-                )
-                .size_full()
-                .overflow_hidden()
-                .child(
-                    canvas(
-                        move |bounds, _, _| *bounds_slot.borrow_mut() = bounds,
-                        |_, _, _, _| {},
+        div()
+            .size_full()
+            .p_8()
+            .pb(px(40.))
+            // A press in the margin around the canvas area deselects with a
+            // selection tool, as a click off the canvas does.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    let area = *this.image_bounds.borrow();
+                    let selecting = this.canvas.as_ref().is_some_and(|c| c.tool.selects());
+                    if selecting && !area.contains(&event.position) && !event.modifiers.shift {
+                        this.deselect(window, cx);
+                    }
+                }),
+            )
+            .child(
+                div()
+                    .id("canvas-area")
+                    .relative()
+                    .when(
+                        self.canvas.as_ref().is_some_and(|c| c.tool != Tool::Move),
+                        |el| el.cursor_crosshair(),
                     )
-                    .absolute()
-                    .size_full(),
-                )
-                .when(loading, |el| {
-                    el.flex()
-                        .items_center()
-                        .justify_center()
-                        .text_sm()
-                        .text_color(rgb(FAINT))
-                        .child("Rendering…")
-                })
-                .children(stack.map(|(background, layers)| {
-                    div()
+                    .map(
+                        |el| match self.canvas.as_ref().and_then(|c| c.hover_guide) {
+                            Some(prism_core::GuideOrientation::Vertical) => el.cursor_col_resize(),
+                            Some(prism_core::GuideOrientation::Horizontal) => {
+                                el.cursor_row_resize()
+                            }
+                            None => el,
+                        },
+                    )
+                    .size_full()
+                    .overflow_hidden()
+                    .child(
+                        canvas(
+                            move |bounds, _, _| *bounds_slot.borrow_mut() = bounds,
+                            |_, _, _, _| {},
+                        )
                         .absolute()
-                        .left(offset.x)
-                        .top(offset.y)
-                        .w(rect.size.width)
-                        .h(rect.size.height)
-                        .overflow_hidden()
-                        .bg(background)
-                        .children(layers.into_iter().map(|(image, at, shown)| {
-                            img(image)
-                                .absolute()
-                                .left(at.x)
-                                .top(at.y)
-                                .w(shown.width)
-                                .h(shown.height)
-                                .object_fit(ObjectFit::Fill)
-                        }))
-                }))
-                .children(image.map(|image| {
-                    let shown = fit(&image);
-                    img(image)
-                        .absolute()
-                        .left(offset.x)
-                        .top(offset.y)
-                        .w(shown.width)
-                        .h(shown.height)
-                        .object_fit(ObjectFit::Fill)
-                }))
-                .children(composite.map(|([below, alone, above], origin, size)| {
-                    let whole = |image: Arc<RenderImage>| {
+                        .size_full(),
+                    )
+                    .when(loading, |el| {
+                        el.flex()
+                            .items_center()
+                            .justify_center()
+                            .text_sm()
+                            .text_color(rgb(FAINT))
+                            .child("Rendering…")
+                    })
+                    .children(stack.map(|(background, layers)| {
+                        div()
+                            .absolute()
+                            .left(offset.x)
+                            .top(offset.y)
+                            .w(rect.size.width)
+                            .h(rect.size.height)
+                            .overflow_hidden()
+                            .bg(background)
+                            .children(layers.into_iter().map(|(image, at, shown)| {
+                                img(image)
+                                    .absolute()
+                                    .left(at.x)
+                                    .top(at.y)
+                                    .w(shown.width)
+                                    .h(shown.height)
+                                    .object_fit(ObjectFit::Fill)
+                            }))
+                    }))
+                    .children(image.map(|image| {
                         let shown = fit(&image);
                         img(image)
                             .absolute()
@@ -777,131 +784,142 @@ impl Workspace {
                             .w(shown.width)
                             .h(shown.height)
                             .object_fit(ObjectFit::Fill)
-                    };
-                    div()
-                        .absolute()
-                        .size_full()
-                        .child(whole(below))
-                        // Clipped to the canvas, as the finished render will be.
-                        .child(
-                            div()
+                    }))
+                    .children(composite.map(|([below, alone, above], origin, size)| {
+                        let whole = |image: Arc<RenderImage>| {
+                            let shown = fit(&image);
+                            img(image)
                                 .absolute()
                                 .left(offset.x)
                                 .top(offset.y)
-                                .w(rect.size.width)
-                                .h(rect.size.height)
-                                .overflow_hidden()
-                                .child(
-                                    img(alone)
-                                        .absolute()
-                                        .left(origin.x)
-                                        .top(origin.y)
-                                        .w(size.width)
-                                        .h(size.height)
-                                        .object_fit(ObjectFit::Fill),
-                                ),
-                        )
-                        .child(whole(above))
-                }))
-                .children(editor)
-                .children(drawing.map(|(b, round)| {
-                    div()
-                        .absolute()
-                        .left(b.origin.x)
-                        .top(b.origin.y)
-                        .w(b.size.width)
-                        .h(b.size.height)
-                        .border_1()
-                        .border_color(hsla(0., 0., 1., 0.9))
-                        .when(round, |el| el.rounded_full())
-                }))
-                .child(self.guide_overlay(offset, scale, rect.size))
-                .children(self.selection_overlay(offset, scale))
-                .children(self.brush_overlay(offset, scale, cx))
-                .children(self.pen_overlay(offset, scale))
-                .children(self.crop_overlay(offset, scale))
-                .children(self.eyedropper_overlay(offset, scale))
-                .children(gradient_line.map(|(from, to)| {
-                    canvas(
-                        |_, _, _| {},
-                        move |bounds, _, window, _| {
-                            let (from, to) = (bounds.origin + from, bounds.origin + to);
-                            let mut line = PathBuilder::stroke(px(1.5));
-                            line.move_to(from);
-                            line.line_to(to);
-                            if let Ok(path) = line.build() {
-                                window.paint_path(path, hsla(0., 0., 1., 0.9));
-                            }
-                            for end in [from, to] {
-                                let mut dot = PathBuilder::fill();
-                                let r = px(3.5);
-                                dot.move_to(end + point(r, px(0.)));
-                                dot.arc_to(
-                                    point(r, r),
-                                    px(0.),
-                                    false,
-                                    true,
-                                    end - point(r, px(0.)),
-                                );
-                                dot.arc_to(
-                                    point(r, r),
-                                    px(0.),
-                                    false,
-                                    true,
-                                    end + point(r, px(0.)),
-                                );
-                                if let Ok(path) = dot.build() {
-                                    window.paint_path(path, hsla(0., 0., 1., 0.95));
-                                }
-                            }
-                        },
-                    )
-                    .absolute()
-                    .size_full()
-                }))
-                .children(outline.map(|b| {
-                    div()
-                        .absolute()
-                        .left(b.origin.x - px(1.))
-                        .top(b.origin.y - px(1.))
-                        .w(b.size.width + px(2.))
-                        .h(b.size.height + px(2.))
-                        .border_1()
-                        .border_color(hsla(0., 0., 1., 0.9))
-                }))
-                .children(self.rotate_handle_element())
-                .children(outline.into_iter().flat_map(|b| {
-                    [b.origin, b.top_right(), b.bottom_left(), b.bottom_right()].map(|corner| {
+                                .w(shown.width)
+                                .h(shown.height)
+                                .object_fit(ObjectFit::Fill)
+                        };
                         div()
                             .absolute()
-                            .left(corner.x - px(4.5))
-                            .top(corner.y - px(4.5))
-                            .size(px(9.))
-                            .rounded_sm()
-                            .bg(rgb(0xf4f4f4))
+                            .size_full()
+                            .child(whole(below))
+                            // Clipped to the canvas, as the finished render will be.
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(offset.x)
+                                    .top(offset.y)
+                                    .w(rect.size.width)
+                                    .h(rect.size.height)
+                                    .overflow_hidden()
+                                    .child(
+                                        img(alone)
+                                            .absolute()
+                                            .left(origin.x)
+                                            .top(origin.y)
+                                            .w(size.width)
+                                            .h(size.height)
+                                            .object_fit(ObjectFit::Fill),
+                                    ),
+                            )
+                            .child(whole(above))
+                    }))
+                    .children(editor)
+                    .children(drawing.map(|(b, round)| {
+                        div()
+                            .absolute()
+                            .left(b.origin.x)
+                            .top(b.origin.y)
+                            .w(b.size.width)
+                            .h(b.size.height)
                             .border_1()
-                            .border_color(rgb(0x2a2a2a))
-                    })
-                }))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, event, window, cx| this.canvas_down(event, window, cx)),
-                )
-                .on_mouse_move(
-                    cx.listener(|this, event, window, cx| this.canvas_move(event, window, cx)),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, event: &MouseUpEvent, window, cx| {
-                        this.canvas_up(event.position, window, cx)
-                    }),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(|this, event: &MouseUpEvent, window, cx| {
-                        this.canvas_up(event.position, window, cx)
-                    }),
-                ),
-        )
+                            .border_color(hsla(0., 0., 1., 0.9))
+                            .when(round, |el| el.rounded_full())
+                    }))
+                    .child(self.guide_overlay(offset, scale, rect.size))
+                    .children(self.selection_overlay(offset, scale))
+                    .children(self.brush_overlay(offset, scale, cx))
+                    .children(self.pen_overlay(offset, scale))
+                    .children(self.crop_overlay(offset, scale))
+                    .children(self.eyedropper_overlay(offset, scale))
+                    .children(gradient_line.map(|(from, to)| {
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _, window, _| {
+                                let (from, to) = (bounds.origin + from, bounds.origin + to);
+                                let mut line = PathBuilder::stroke(px(1.5));
+                                line.move_to(from);
+                                line.line_to(to);
+                                if let Ok(path) = line.build() {
+                                    window.paint_path(path, hsla(0., 0., 1., 0.9));
+                                }
+                                for end in [from, to] {
+                                    let mut dot = PathBuilder::fill();
+                                    let r = px(3.5);
+                                    dot.move_to(end + point(r, px(0.)));
+                                    dot.arc_to(
+                                        point(r, r),
+                                        px(0.),
+                                        false,
+                                        true,
+                                        end - point(r, px(0.)),
+                                    );
+                                    dot.arc_to(
+                                        point(r, r),
+                                        px(0.),
+                                        false,
+                                        true,
+                                        end + point(r, px(0.)),
+                                    );
+                                    if let Ok(path) = dot.build() {
+                                        window.paint_path(path, hsla(0., 0., 1., 0.95));
+                                    }
+                                }
+                            },
+                        )
+                        .absolute()
+                        .size_full()
+                    }))
+                    .children(outline.map(|b| {
+                        div()
+                            .absolute()
+                            .left(b.origin.x - px(1.))
+                            .top(b.origin.y - px(1.))
+                            .w(b.size.width + px(2.))
+                            .h(b.size.height + px(2.))
+                            .border_1()
+                            .border_color(hsla(0., 0., 1., 0.9))
+                    }))
+                    .children(self.rotate_handle_element())
+                    .children(outline.into_iter().flat_map(|b| {
+                        [b.origin, b.top_right(), b.bottom_left(), b.bottom_right()].map(|corner| {
+                            div()
+                                .absolute()
+                                .left(corner.x - px(4.5))
+                                .top(corner.y - px(4.5))
+                                .size(px(9.))
+                                .rounded_sm()
+                                .bg(rgb(0xf4f4f4))
+                                .border_1()
+                                .border_color(rgb(0x2a2a2a))
+                        })
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event, window, cx| this.canvas_down(event, window, cx)),
+                    )
+                    .on_mouse_move(
+                        cx.listener(|this, event, window, cx| this.canvas_move(event, window, cx)),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                            this.canvas_up(event.position, window, cx)
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                            this.canvas_up(event.position, window, cx)
+                        }),
+                    ),
+            )
     }
 }

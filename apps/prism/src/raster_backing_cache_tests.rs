@@ -299,6 +299,7 @@ fn preparation_memory_plan_separates_publication_from_decoder_owned_buffers() {
 
 #[test]
 fn process_wide_decode_permit_serializes_different_workers() {
+    let _serial = crate::raster_backing_cache::cache_test_serial();
     let (first_acquired_tx, first_acquired_rx) = mpsc::channel();
     let (release_first_tx, release_first_rx) = mpsc::channel();
     let first = thread::spawn(move || {
