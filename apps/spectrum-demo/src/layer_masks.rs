@@ -1,5 +1,6 @@
-//! Style > Look's Mask and clipping group: clip a layer to the one below it,
-//! and show, invert, or remove its vector mask, or mask it to the selection.
+//! Style > Look's Inside and mask group: put a layer inside the one below it
+//! (it shows only where that layer is: clipping), take it out, and show,
+//! invert, or remove its mask, or mask it to the selection.
 //! Each is an engine command, as `spectrum canvas clip`, `vector-mask`, and
 //! `selection mask`.
 use crate::{
@@ -38,20 +39,50 @@ impl Workspace {
         let clipped = layer.clip_to_below;
         let mask = layer.vector_mask.as_ref().map(|m| (m.enabled, m.invert));
         let selection = self.has_canvas_selection();
-        let mut section = group("Mask and clipping", None).gap_3().child(
-            toggle("clip-below", "Clip to layer below", clipped).on_click(cx.listener(
-                move |this, _, window, cx| {
-                    this.canvas_commands(
-                        vec![Command::SetClipping {
-                            id,
-                            enabled: !clipped,
-                        }],
-                        window,
-                        cx,
-                    )
-                },
-            )),
-        );
+        let layers = self.canvas.as_ref().map_or(&[][..], |c| &c.doc.layers[..]);
+        let index = layers.iter().position(|l| l.id == id);
+        // The layer below, which this one can go inside.
+        let below = index
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| layers.get(i))
+            .map(|l| l.name.clone());
+        // Layers inside this one: those directly above that are clipped.
+        let holds: Vec<String> = index.map_or(Vec::new(), |i| {
+            layers[i + 1..]
+                .iter()
+                .take_while(|l| l.clip_to_below)
+                .map(|l| l.name.clone())
+                .collect()
+        });
+        let take_out = cx.listener(move |this: &mut Self, _: &ClickEvent, window, cx| {
+            this.canvas_commands(
+                vec![Command::SetClipping { id, enabled: false }],
+                window,
+                cx,
+            )
+        });
+        let put_in = cx.listener(move |this: &mut Self, _: &ClickEvent, window, cx| {
+            this.canvas_commands(vec![Command::SetClipping { id, enabled: true }], window, cx)
+        });
+        let note = |text: String| div().text_xs().text_color(rgb(FAINT)).child(text);
+        let mut section = group("Inside and mask", None).gap_3();
+        section = match (clipped, below) {
+            (true, Some(below)) => section
+                .child(note(format!("Shows only where “{below}” is.")))
+                .child(chip("take-out", "Take out", false).on_click(take_out)),
+            (false, Some(below)) => section
+                .child(
+                    chip("put-inside", "Put inside the layer below", false)
+                        .on_click(put_in),
+                )
+                .child(note(format!(
+                    "Shows this layer only where “{below}” is. You can also drop it on a layer in the list."
+                ))),
+            _ => section,
+        };
+        if !holds.is_empty() {
+            section = section.child(note(format!("Holds {}.", holds.join(", "))));
+        }
         let edit_mask = |edit: fn(&mut prism_core::VectorMask) -> bool| {
             cx.listener(move |this: &mut Self, _: &ClickEvent, window, cx| {
                 if let Some(layer) = this.selected_layer().cloned() {

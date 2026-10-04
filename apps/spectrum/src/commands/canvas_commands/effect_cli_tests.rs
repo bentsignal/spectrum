@@ -100,6 +100,10 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
             "1:0000ffff",
             "--gradient-kind",
             "radial",
+            "--center-x",
+            "0.25",
+            "--radius",
+            "0.8",
         ],
     )
     .unwrap();
@@ -119,6 +123,8 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
     let overlay = style.gradient_overlay.unwrap();
     assert_eq!(overlay.gradient.stops.len(), 3);
     assert_eq!(overlay.gradient.kind, prism_core::GradientKind::Radial);
+    assert_eq!(overlay.gradient.center[0], 0.25);
+    assert_eq!(overlay.gradient.radius, 0.8);
     assert!(
         invoke(
             &project,

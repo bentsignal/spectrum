@@ -1,6 +1,7 @@
 //! Rotating the selected layer by its handle above the top edge. The layer
 //! re-renders at its new angle as the handle moves (drafts while it moves
-//! quickly) and the angle snaps to multiples of 45 degrees nearby. Release
+//! quickly) and the angle snaps to multiples of 45 degrees nearby, or to
+//! 15 degree steps with Shift. Release
 //! sends one `SetTransform`, as `spectrum canvas transform`.
 use crate::{canvas_state::CanvasState, canvas_state::LayerDrag, workspace::Workspace};
 use gpui::*;
@@ -21,7 +22,7 @@ impl Workspace {
         if layer.locked || canvas.editing.is_some() || canvas.tool != crate::tools::Tool::Move {
             return None;
         }
-        let (min, max) = *canvas.bounds.get(&id)?;
+        let (min, max) = self.bounds_now(id)?;
         let (rect, scale) = self.canvas_rect();
         let top = rect.origin + point(px((min[0] + max[0]) / 2. * scale), px(min[1] * scale));
         Some((id, top - point(px(0.), px(LIFT)), top))
@@ -44,9 +45,14 @@ impl Workspace {
         let center = ((min[0] + max[0]) / 2., (min[1] + max[1]) / 2.);
         let angle = |p: (f32, f32)| (p.1 - center.1).atan2(p.0 - center.0).to_degrees();
         let mut rotation = (t.rotation + angle(drag.now) - angle(drag.start)).rem_euclid(360.);
-        let nearest = (rotation / 45.).round() * 45.;
-        if (rotation - nearest).abs() <= SNAP {
-            rotation = nearest.rem_euclid(360.);
+        if drag.constrain {
+            // Shift turns in 15 degree steps, as in Photoshop.
+            rotation = ((rotation / 15.).round() * 15.).rem_euclid(360.);
+        } else {
+            let nearest = (rotation / 45.).round() * 45.;
+            if (rotation - nearest).abs() <= SNAP {
+                rotation = nearest.rem_euclid(360.);
+            }
         }
         Some(Transform { rotation, ..t })
     }

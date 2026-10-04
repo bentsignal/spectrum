@@ -16,6 +16,8 @@ use std::{path::Path, path::PathBuf, sync::Arc};
 pub struct Family {
     pub name: SharedString,
     pub path: PathBuf,
+    /// Has Latin letters; other fonts show boxes for English text.
+    pub latin: bool,
 }
 
 const ROW: f32 = 34.;
@@ -93,6 +95,7 @@ impl Workspace {
                         families.push(Family {
                             name: face.family.clone().into(),
                             path: face.path.clone(),
+                            latin: face.latin,
                         });
                     }
                 }
@@ -302,14 +305,23 @@ impl Workspace {
                                 .font_family(family.name.clone())
                                 .child(family.name.clone()),
                         )
-                        .when(blocked.contains(&family.path), |el| {
-                            el.child(
+                        .map(|el| {
+                            // Why a font may not show the text: it can't be
+                            // embedded, or it has no Latin letters.
+                            let note = if blocked.contains(&family.path) {
+                                Some("Can't embed")
+                            } else if !family.latin {
+                                Some("No Latin letters")
+                            } else {
+                                None
+                            };
+                            el.children(note.map(|note| {
                                 div()
                                     .flex_none()
                                     .text_xs()
                                     .text_color(rgb(FAINT))
-                                    .child("Can't embed"),
-                            )
+                                    .child(note)
+                            }))
                         })
                         .on_hover(move |hovered, window, cx| {
                             enter.update(cx, |this, cx| {
@@ -331,6 +343,9 @@ impl Workspace {
         .h(px(ROW * 9.));
         let loading = self.fonts.is_none();
         div()
+            .id("font-browser")
+            // Scrolling here scrolls the list, never the sidebar behind it.
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .flex()
             .flex_col()
             .gap_1()

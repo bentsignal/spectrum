@@ -44,6 +44,8 @@ pub struct CanvasState {
     pub font_preview: Option<(u64, std::path::PathBuf)>,
     /// Where a dragged layer row would land in the list, top first.
     pub drop_slot: Option<usize>,
+    /// The row a dragged layer would go inside instead, top first.
+    pub drop_inside: Option<usize>,
     /// A text layer being edited on the canvas.
     pub editing: Option<u64>,
     pub tool: crate::tools::Tool,
@@ -58,12 +60,24 @@ pub struct CanvasState {
     /// Marching ants are animating.
     pub ants_running: bool,
     /// Anchors placed so far with the Pen, and where the pointer is.
-    pub pen: Vec<(f32, f32)>,
+    pub pen: Vec<crate::pen::PenPoint>,
+    /// A Pen point was just placed and a drag pulls out its handles.
+    pub pen_dragging: bool,
     pub pointer: Option<(f32, f32)>,
     /// A magic wand selection is being computed.
     pub wand_busy: bool,
     /// The guide under the pointer, which a drag would move.
     pub hover_guide: Option<prism_core::GuideOrientation>,
+    /// The document with the brush stroke being drawn already applied, so
+    /// its layer renders as the stroke goes; `doc` once it lands.
+    pub live_doc: Option<Document>,
+    /// A layer's transform mid-drag, for canvases drawn as one render
+    /// (blend modes, layers inside others), so the render follows the drag.
+    pub drag_preview: Option<(u64, prism_core::Transform)>,
+    /// The flattened canvas at one pixel per unit, for the Eyedropper, and
+    /// the look it was rendered from.
+    pub pixels: Option<(u64, std::sync::Arc<image::RgbaImage>)>,
+    pub pixels_busy: bool,
     /// Counts changes to the document; a reload only applies if none
     /// happened while it loaded.
     edits: u64,
@@ -89,10 +103,60 @@ pub struct CanvasState {
 }
 
 impl CanvasState {
+    /// Counts changes to how the canvas looks.
+    pub fn look_version(&self) -> u64 {
+        self.version
+    }
+
+    /// Something about how the canvas looks changed; renders catch up.
+    pub fn bump_version(&mut self) {
+        self.version += 1;
+    }
+
+    /// The document as drawn: with any stroke being drawn.
+    pub fn shown(&self) -> &Document {
+        self.live_doc.as_ref().unwrap_or(&self.doc)
+    }
+
+    /// Before `doc` replaces the document (undo, redo, a reload), moves each
+    /// layer's image and bounds by how far the layer moved, so layers that
+    /// only moved are drawn in place at once.
+    pub fn follow_moves(&mut self, doc: &Document) {
+        for layer in &doc.layers {
+            let Some(old) = self.doc.layers.iter().find(|l| l.id == layer.id) else {
+                continue;
+            };
+            let (t, o) = (layer.transform, old.transform);
+            let only_moved =
+                t.scale_x == o.scale_x && t.scale_y == o.scale_y && t.rotation == o.rotation;
+            let (dx, dy) = (t.x - o.x, t.y - o.y);
+            if !only_moved || (dx == 0. && dy == 0.) {
+                continue;
+            }
+            if let Some(image) = self.cache.images.get_mut(&layer.id) {
+                image.pixel = [
+                    image.pixel[0] + dx * image.density,
+                    image.pixel[1] + dy * image.density,
+                ];
+                let (min, max) = image.bounds;
+                image.bounds = ([min[0] + dx, min[1] + dy], [max[0] + dx, max[1] + dy]);
+            }
+            if let Some((min, max)) = self.bounds.get_mut(&layer.id) {
+                *min = [min[0] + dx, min[1] + dy];
+                *max = [max[0] + dx, max[1] + dy];
+            }
+        }
+    }
+
     /// The document to render: the saved one, with any shared image being
     /// edited drawn from its original file and the unsaved edits.
     pub fn render_doc(&self) -> Document {
-        let mut doc = self.doc.clone();
+        let mut doc = self.shown().clone();
+        if let Some((id, transform)) = self.drag_preview
+            && let Some(layer) = doc.layers.iter_mut().find(|l| l.id == id)
+        {
+            layer.transform = transform;
+        }
         if let Some((asset, original, adjustments)) = &self.shared_edit {
             for layer in &mut doc.layers {
                 let plain = layer.adjustments == lumen_core::Adjustments::default();
@@ -119,6 +183,8 @@ pub struct LayerDrag {
     pub corner: Option<(bool, bool)>,
     /// Rotating by the handle above the layer instead of moving.
     pub rotate: bool,
+    /// Shift is held: rotation turns in fixed steps.
+    pub constrain: bool,
 }
 
 pub struct Rendered {
@@ -178,6 +244,7 @@ impl Workspace {
             global: false,
             shared_edit: None,
             drop_slot: None,
+            drop_inside: None,
             font_preview: None,
             editing: None,
             tool: Default::default(),
@@ -187,9 +254,14 @@ impl Workspace {
             ants: Default::default(),
             ants_running: false,
             pen: Vec::new(),
+            pen_dragging: false,
             pointer: None,
             wand_busy: false,
             hover_guide: None,
+            live_doc: None,
+            drag_preview: None,
+            pixels: None,
+            pixels_busy: false,
             edits: 0,
             version: 0,
             rendered: 0,
@@ -248,6 +320,7 @@ impl Workspace {
                         {
                             canvas.selected = None;
                         }
+                        canvas.follow_moves(&doc);
                         canvas.doc = doc;
                         canvas.edits += 1;
                         canvas.version += 1;
@@ -400,6 +473,16 @@ impl Workspace {
         let history = commands
             .iter()
             .any(|c| matches!(c, Command::Undo | Command::Redo));
+        // A crop moves every layer with the canvas's origin; move what is on
+        // screen with them now rather than when each layer re-renders.
+        let crop = commands.iter().find_map(|command| match command {
+            Command::CropCanvas { x, y, .. } => Some((*x, *y)),
+            Command::CropToSelection => canvas.doc.selection.as_ref().map(|s| {
+                let (x, y, ..) = s.bounds();
+                (x, y)
+            }),
+            _ => None,
+        });
         if !history && !commands.is_empty() {
             let mut local = prism_core::Workspace::new(canvas.doc.clone(), None);
             if let Err(error) = local.execute_batch(commands.clone()) {
@@ -425,6 +508,14 @@ impl Workspace {
             canvas.doc = doc;
             canvas.edits += 1;
             canvas.version += 1;
+            if let Some((x, y)) = crop {
+                let (dx, dy) = (-(x as f32), -(y as f32));
+                canvas.cache.shift(dx, dy);
+                for (min, max) in canvas.bounds.values_mut() {
+                    *min = [min[0] + dx, min[1] + dy];
+                    *max = [max[0] + dx, max[1] + dy];
+                }
+            }
         }
         canvas.changed_at = Some(std::time::Instant::now());
         if history {

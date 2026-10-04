@@ -41,12 +41,60 @@ pub struct LayerCache {
 /// drafts at half density; the full render follows once they stop.
 const RAPID: Duration = Duration::from_millis(150);
 
-/// Whether every layer can be drawn on its own and stacked on screen.
+impl LayerCache {
+    /// Moves every layer image by a canvas-space offset at once, as when the
+    /// canvas is cropped and every layer shifts with its origin.
+    pub fn shift(&mut self, dx: f32, dy: f32) {
+        for image in self.images.values_mut() {
+            image.pixel = [
+                image.pixel[0] + dx * image.density,
+                image.pixel[1] + dy * image.density,
+            ];
+            let (min, max) = image.bounds;
+            image.bounds = ([min[0] + dx, min[1] + dy], [max[0] + dx, max[1] + dy]);
+        }
+    }
+}
+
+/// Whether the canvas can be drawn from layer images stacked on screen:
+/// true unless a layer blends with what is under it. A layer and the layers
+/// inside it (clipped to it) render together as one image.
 pub fn stackable(doc: &Document) -> bool {
     doc.layers
         .iter()
         .filter(|l| l.visible)
-        .all(|l| matches!(l.blend_mode, BlendMode::Normal) && !l.clip_to_below)
+        .all(|l| matches!(l.blend_mode, BlendMode::Normal))
+}
+
+/// Whether the layer at `index` is drawn inside the one below it.
+pub fn inside(doc: &Document, index: usize) -> bool {
+    index > 0 && doc.layers[index].clip_to_below
+}
+
+/// The layers drawn as one image with the layer at `index`: it and the
+/// layers inside it, bottom first.
+pub fn unit(doc: &Document, index: usize) -> Vec<u64> {
+    std::iter::once(doc.layers[index].id)
+        .chain(
+            doc.layers[index + 1..]
+                .iter()
+                .take_while(|l| l.clip_to_below)
+                .map(|l| l.id),
+        )
+        .collect()
+}
+
+/// The unit a layer is drawn in: the id of its holder, if it is inside one.
+fn unit_members(doc: &Document, index: usize) -> usize {
+    unit(doc, index).len()
+}
+
+pub fn holder_of(doc: &Document, id: u64) -> Option<u64> {
+    let mut index = doc.layers.iter().position(|l| l.id == id)?;
+    while inside(doc, index) {
+        index -= 1;
+    }
+    Some(doc.layers[index].id)
 }
 
 /// What a layer looks like, without its name, lock, or position.
@@ -76,7 +124,7 @@ impl Workspace {
     /// Renders layers whose look, scale, or sub-pixel position changed; the
     /// previous image stays on screen until the new one arrives.
     pub fn refresh_layers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
+        let (Some(canvas), Ok(_)) = (&mut self.canvas, &self.store) else {
             return;
         };
         if !canvas.loaded || !stackable(&canvas.doc) {
@@ -92,26 +140,62 @@ impl Workspace {
             layer.transform = transform;
             Some(layer)
         });
-        let render_doc = canvas.render_doc();
+        // A move inside a unit changes how the unit looks, so it renders
+        // with the layer where the drag has it.
+        let moving = canvas.drag.and_then(|drag| {
+            let unit = holder_of(&canvas.doc, drag.id)?;
+            let index = canvas.doc.layers.iter().position(|l| l.id == unit)?;
+            let members = unit_members(&canvas.doc, index);
+            (members > 1 && drag.corner.is_none() && !drag.rotate).then_some(drag.id)
+        });
+        let moved = moving.and_then(|id| {
+            let (_, dx, dy) = self.drag_delta()?;
+            let mut layer = self.canvas.as_ref()?.doc.layer(id).ok()?.clone();
+            layer.transform.x += dx;
+            layer.transform.y += dy;
+            Some(layer)
+        });
+        let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
+            return;
+        };
+        let mut render_doc = canvas.render_doc();
+        for changed in resizing.iter().chain(moved.iter()) {
+            if let Some(slot) = render_doc.layers.iter_mut().find(|l| l.id == changed.id) {
+                *slot = changed.clone();
+            }
+        }
         let cache = &mut canvas.cache;
         cache
             .images
-            .retain(|id, _| canvas.doc.layers.iter().any(|l| l.id == *id));
-        for layer in &render_doc.layers {
-            let layer = resizing
-                .as_ref()
-                .filter(|r| r.id == layer.id)
-                .unwrap_or(layer);
-            // A font being previewed on this layer is part of its look.
+            .retain(|id, _| render_doc.layers.iter().any(|l| l.id == *id));
+        for (index, layer) in render_doc.layers.iter().enumerate() {
+            if inside(&render_doc, index) {
+                continue;
+            }
+            let members = unit(&render_doc, index);
+            // A font being previewed in this unit is part of its look.
             let preview = canvas
                 .font_preview
                 .as_ref()
-                .filter(|(previewed, _)| *previewed == layer.id)
-                .map(|(_, path)| path.clone());
-            let font = preview
-                .as_ref()
-                .map_or(String::new(), |path| format!("|font:{}", path.display()));
-            let full = format!("{}{font}", key(layer, density));
+                .filter(|(previewed, _)| members.contains(previewed))
+                .cloned();
+            let font = preview.as_ref().map_or(String::new(), |(id, path)| {
+                format!("|font:{id}:{}", path.display())
+            });
+            // The layers inside it, and where they sit relative to it.
+            let inner: String = members[1..]
+                .iter()
+                .filter_map(|id| render_doc.layer(*id).ok())
+                .map(|m| {
+                    format!(
+                        "|in:{}@{:.2},{:.2}",
+                        look(m),
+                        m.transform.x - layer.transform.x,
+                        m.transform.y - layer.transform.y
+                    )
+                })
+                .collect();
+            let full = format!("{}{inner}{font}", key(layer, density));
             let current = cache.images.get(&layer.id).map(|i| i.key.as_str());
             if current == Some(full.as_str()) {
                 continue;
@@ -136,7 +220,7 @@ impl Workspace {
                 density
             };
             let wanted = if rapid {
-                format!("{}{font}|draft", key(layer, render_density))
+                format!("{}{inner}{font}|draft", key(layer, render_density))
             } else {
                 full
             };
@@ -158,19 +242,18 @@ impl Workspace {
                 .detach();
             }
             cache.busy.insert(layer.id, wanted.clone());
-            let (root, mut doc, id, layer_id) =
+            let (root, doc, id, layer_id) =
                 (store.root.clone(), render_doc.clone(), canvas.id, layer.id);
-            if let Some(slot) = doc.layers.iter_mut().find(|l| l.id == layer_id) {
-                *slot = layer.clone();
-            }
             let at = (layer.transform.x, layer.transform.y);
-            let previewed = preview.clone();
+            let previewed = preview.as_ref().map(|(_, path)| path.clone());
             let task = cx.background_executor().spawn(async move {
                 let doc = match preview {
-                    Some(path) => crate::font_browser::with_font(&doc, layer_id, &path)?,
+                    Some((previewed, path)) => {
+                        crate::font_browser::with_font(&doc, previewed, &path)?
+                    }
                     None => doc,
                 };
-                render_alone(&root, &doc, layer_id, render_density)
+                render_alone(&root, &doc, &members, render_density)
             });
             cx.spawn_in(window, async move |this, cx| {
                 let result = task.await;
@@ -208,7 +291,7 @@ impl Workspace {
                     }
                     // Bounds follow the layer if it moved meanwhile.
                     let dragging = canvas.drag.is_some_and(|d| d.id == layer_id);
-                    if let Some(now) = canvas.doc.layers.iter().find(|l| l.id == layer_id)
+                    if let Some(now) = canvas.shown().layers.iter().find(|l| l.id == layer_id)
                         && !dragging
                     {
                         let (dx, dy) = (now.transform.x - at.0, now.transform.y - at.1);

@@ -107,8 +107,6 @@ impl Workspace {
         };
         let defaults = self.default_colors(cx).into_any_element();
         let tool = self.tool_button(cx).into_any_element();
-        let selection_panel = self.selection_panel(cx);
-        let brush_panel = self.brush_panel(cx);
         let rows = canvas.doc.layers.iter().rev().map(|layer| {
             let id = layer.id;
             let selected = canvas.selected == Some(id);
@@ -116,6 +114,13 @@ impl Workspace {
             let name = layer.name.clone();
             let clipped = layer.clip_to_below;
             let masked = layer.vector_mask.as_ref().is_some_and(|m| m.enabled);
+            // The layer this one shows inside, if it is clipped.
+            let holder = clipped
+                .then(|| {
+                    let index = canvas.doc.layers.iter().position(|l| l.id == id)?;
+                    Some(canvas.doc.layers.get(index.checked_sub(1)?)?.name.clone())
+                })
+                .flatten();
             div()
                 .id(("layer-row", id))
                 .h(px(36.))
@@ -131,10 +136,20 @@ impl Workspace {
                 .on_drag(LayerRow(id, name.clone()), |row, _, _, cx| {
                     cx.new(|_| LayerRow(row.0, row.1.clone()))
                 })
-                // Clipped layers sit indented under the layer they clip to.
+                // A layer inside another sits indented above it, joined to
+                // it by a line.
                 .when(clipped, |el| {
-                    el.child(div().text_xs().text_color(rgb(FAINT)).child("↳"))
+                    el.pl(px(22.)).child(
+                        div()
+                            .absolute()
+                            .left(px(12.))
+                            .top(px(6.))
+                            .bottom(px(-8.))
+                            .w(px(1.))
+                            .bg(rgb(0x4a5568)),
+                    )
                 })
+                .relative()
                 .child(
                     Icon::new(kind_icon(&layer.kind))
                         .small()
@@ -149,6 +164,15 @@ impl Workspace {
                         .text_color(rgb(if visible { TEXT } else { FAINT }))
                         .child(name.clone()),
                 )
+                .children(holder.map(|holder| {
+                    div()
+                        .flex_none()
+                        .max_w(px(96.))
+                        .truncate()
+                        .text_xs()
+                        .text_color(rgb(FAINT))
+                        .child(format!("inside {holder}"))
+                }))
                 .when(masked, |el| {
                     el.child(
                         div()
@@ -207,8 +231,6 @@ impl Workspace {
             .flex_col()
             .gap_5()
             .child(group("Tool", Some(defaults)).child(tool))
-            .children(selection_panel)
-            .children(brush_panel)
             .child(
                 group(
                     "Layers",

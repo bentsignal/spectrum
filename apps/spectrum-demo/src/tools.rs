@@ -182,6 +182,7 @@ impl Workspace {
         if let Some(canvas) = &mut self.canvas {
             canvas.tool = tool;
         }
+        self.ensure_pixels(window, cx);
         self.stop_editing_text(window, cx);
         cx.notify();
     }
@@ -264,6 +265,52 @@ impl Workspace {
             self.text_input
                 .update(cx, |state, cx| state.set_value("", window, cx));
         }
+    }
+
+    /// Photoshop's single keys: V move, M marquee (Shift cycles to the
+    /// ellipse), L lasso, W magic wand, B brush, E eraser, T text, U shape
+    /// (Shift cycles box and circle), G gradient, P pen, C crop, I
+    /// eyedropper; X swaps and D resets the colors.
+    pub fn tool_key(&mut self, key: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        let m = &key.modifiers;
+        if m.platform || m.control || m.alt || m.function {
+            return;
+        }
+        let Some(canvas) = &self.canvas else {
+            return;
+        };
+        let current = canvas.tool;
+        let cycle = |a: Tool, b: Tool| match (m.shift, current) {
+            (true, t) if t == a => b,
+            (true, t) if t == b => a,
+            (_, t) if t == a || t == b => t,
+            _ => a,
+        };
+        let tool = match key.key.as_str() {
+            "v" => Tool::Move,
+            "m" => cycle(Tool::Marquee, Tool::EllipseSelect),
+            "l" => Tool::Lasso,
+            "w" => Tool::Wand,
+            "b" => Tool::Brush,
+            "e" => Tool::Eraser,
+            "t" => Tool::Text,
+            "u" => cycle(Tool::Box, Tool::Circle),
+            "g" => Tool::Gradient,
+            "p" => Tool::Pen,
+            "c" => Tool::Crop,
+            "i" => Tool::Eyedropper,
+            "x" => {
+                let (fore, back) = (self.colors.fore, self.colors.back);
+                self.set_default_color(back, false, window, cx);
+                return self.set_default_color(fore, true, window, cx);
+            }
+            "d" => {
+                self.set_default_color([255, 255, 255, 255], false, window, cx);
+                return self.set_default_color([0, 0, 0, 255], true, window, cx);
+            }
+            _ => return,
+        };
+        self.set_tool(tool, window, cx);
     }
 
     /// A new layer covering the canvas, filled from the foreground to the

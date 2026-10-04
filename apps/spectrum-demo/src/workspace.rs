@@ -203,14 +203,16 @@ pub fn slider(
     step: f32,
     value: f32,
 ) -> Entity<SliderState> {
-    cx.new(|_| {
+    let state = cx.new(|_| {
         // Set the upper bound first: `min` clamps against the current maximum.
         SliderState::new()
             .max(max)
             .min(min)
             .step(step)
             .default_value(value)
-    })
+    });
+    crate::controls::remember_range(&state, min, max);
+    state
 }
 
 impl Workspace {
@@ -778,6 +780,9 @@ impl Render for Workspace {
             (_, Open::Image(_)) => self.image_view(cx).into_any_element(),
             (_, Open::Canvas(_)) => self.canvas_main(window, cx).into_any_element(),
         };
+        let options = matches!(self.open, Open::Canvas(_))
+            .then(|| self.options_bar(cx))
+            .flatten();
         let main = div()
             .flex_1()
             .min_w_0()
@@ -785,6 +790,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .child(self.header(cx))
+            .children(options)
             .child(div().flex_1().min_h_0().child(content))
             .drag_over::<ExternalPaths>(|el, _, _, _| el.bg(rgb(0x141414)))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
@@ -857,6 +863,9 @@ impl Render for Workspace {
                     && this.canvas.as_ref().is_some_and(|c| !c.pen.is_empty())
                 {
                     this.finish_pen(window, cx);
+                } else if this.focus_handle.is_focused(window) {
+                    // Photoshop's one-key tools, only while no field has focus.
+                    this.tool_key(&event.keystroke, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &NudgeLeft, w, cx| this.nudge(-1., 0., w, cx)))
@@ -890,6 +899,8 @@ impl Render for Workspace {
                         canvas.pen.clear();
                     }
                     cx.notify()
+                } else if !this.picker_open && !this.palette_open && this.has_canvas_selection() {
+                    this.deselect(window, cx)
                 } else if this.picker_open {
                     this.close_picker(window, cx)
                 } else if this.palette_open {

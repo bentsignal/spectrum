@@ -2,12 +2,7 @@
 //! wand tools, marching ants around the selection, and what a selection can
 //! do (fill, hide, mask, crop, invert). Each change is an engine command,
 //! as `spectrum canvas selection`.
-use crate::{
-    controls::{chip, group, slider_row, toggle},
-    theme::*,
-    tools::Tool,
-    workspace::Workspace,
-};
+use crate::{tools::Tool, workspace::Workspace};
 use gpui::{prelude::*, *};
 use prism_core::{
     Command, LayerKind, Selection, SelectionCombineMode, SelectionMaskOutline,
@@ -129,6 +124,10 @@ impl Workspace {
         }
         let (x, y) = (at.0.floor(), at.1.floor());
         if x < 0. || y < 0. || x >= canvas.doc.width as f32 || y >= canvas.doc.height as f32 {
+            // A click off the canvas clears the selection, as in Photoshop.
+            if canvas.select_mode == SelectionCombineMode::Replace {
+                self.deselect(window, cx);
+            }
             return;
         }
         canvas.wand_busy = true;
@@ -258,8 +257,34 @@ impl Workspace {
         let Some(canvas) = &self.canvas else {
             return;
         };
-        let Some(layer) = canvas.selected.and_then(|id| canvas.doc.layer(id).ok()) else {
+        let Some(selection) = &canvas.doc.selection else {
             return;
+        };
+        // The selected layer, or else the top one the selection covers.
+        let (sx, sy, sw, sh) = selection.bounds();
+        let covers = |id: u64| {
+            canvas.bounds.get(&id).is_some_and(|(min, max)| {
+                min[0] < (sx + sw) as f32
+                    && max[0] > sx as f32
+                    && min[1] < (sy + sh) as f32
+                    && max[1] > sy as f32
+            })
+        };
+        let target = canvas.selected.filter(|id| covers(*id)).or_else(|| {
+            canvas
+                .doc
+                .layers
+                .iter()
+                .rev()
+                .find(|l| l.visible && !l.locked && covers(l.id))
+                .map(|l| l.id)
+        });
+        let Some(layer) = target.and_then(|id| canvas.doc.layer(id).ok()) else {
+            return self.notify_error(
+                anyhow::anyhow!("Nothing under the selection to hide."),
+                window,
+                cx,
+            );
         };
         let id = layer.id;
         if matches!(layer.kind, LayerKind::Raster { .. }) {
@@ -409,75 +434,6 @@ impl Workspace {
             .absolute()
             .size_full()
             .into_any_element(),
-        )
-    }
-
-    /// The Tool group's options for selections and the magic wand.
-    pub fn selection_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let canvas = self.canvas.as_ref()?;
-        let selecting = canvas.tool.selects();
-        let selected = canvas.doc.selection.is_some();
-        if !selecting && !selected {
-            return None;
-        }
-        let action = |id: &'static str,
-                      label: &'static str,
-                      run: fn(&mut Self, &mut Window, &mut Context<Self>)| {
-            chip(id, label, false)
-                .px_2()
-                .on_click(cx.listener(move |this, _, window, cx| run(this, window, cx)))
-        };
-        let mut panel = group("Selection", None).gap_2();
-        if canvas.tool == Tool::Wand {
-            let tolerance = self.tool_options.tolerance(cx);
-            panel = panel
-                .child(slider_row(
-                    "Tolerance",
-                    tolerance.to_string(),
-                    &self.tool_options.wand_tolerance,
-                ))
-                .child(
-                    toggle(
-                        "wand-contiguous",
-                        "Contiguous",
-                        self.tool_options.contiguous,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tool_options.contiguous = !this.tool_options.contiguous;
-                        cx.notify();
-                    })),
-                );
-        }
-        panel = panel.child(
-            div()
-                .flex()
-                .gap_1p5()
-                .child(action("select-all", "All", Self::select_canvas))
-                .child(action("select-none", "None", Self::deselect))
-                .child(action("select-invert", "Invert", Self::invert_selection)),
-        );
-        if selected {
-            panel = panel.child(
-                div()
-                    .flex()
-                    .gap_1p5()
-                    .child(action("selection-fill", "Fill", Self::fill_selection))
-                    .child(action("selection-mask", "Mask", Self::mask_to_selection))
-                    .child(action(
-                        "selection-delete",
-                        "Hide",
-                        Self::delete_in_selection,
-                    ))
-                    .child(action("selection-crop", "Crop", Self::crop_to_selection)),
-            );
-        }
-        Some(
-            panel.child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(FAINT))
-                    .child("Shift adds to the selection, Option subtracts, both intersect."),
-            ),
         )
     }
 }

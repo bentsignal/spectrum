@@ -2,8 +2,9 @@ use crate::{theme::*, workspace::SIDEBAR_WIDTH};
 use gpui::{prelude::*, *};
 use gpui_component::{
     Icon, IconName, Selectable, Sizable,
+    input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenu, PopupMenuItem},
-    slider::{Slider, SliderState},
+    slider::{Slider, SliderEvent, SliderState},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -76,8 +77,101 @@ pub fn take_slider_frame() -> bool {
     NEEDS_FRAME.with(|needs| needs.replace(false))
 }
 
+thread_local! {
+    /// Each slider's range, so typed values stay within it.
+    static RANGES: RefCell<std::collections::HashMap<EntityId, (f32, f32)>> =
+        RefCell::default();
+    /// The slider whose value is being typed, its field, and the field's
+    /// subscription.
+    static TYPING: RefCell<Option<(EntityId, Entity<InputState>, Subscription)>> =
+        const { RefCell::new(None) };
+}
+
+/// Records a slider's range for typed values.
+pub fn remember_range(state: &Entity<SliderState>, min: f32, max: f32) {
+    RANGES.with(|ranges| ranges.borrow_mut().insert(state.entity_id(), (min, max)));
+}
+
+/// The first number in `text`, ignoring units and accepting a typographic
+/// minus sign.
+fn typed_number(text: &str) -> Option<f32> {
+    let text = text.replace('−', "-");
+    let start = text.find(|c: char| c.is_ascii_digit() || c == '-' || c == '.')?;
+    let number: String = text[start..]
+        .chars()
+        .enumerate()
+        .take_while(|(i, c)| c.is_ascii_digit() || *c == '.' || (*i == 0 && *c == '-'))
+        .map(|(_, c)| c)
+        .collect();
+    number.parse().ok().filter(|v: &f32| v.is_finite())
+}
+
+/// Ends typing into a slider; with `apply`, the typed value moves the
+/// slider and is reported as a change, so its usual handler applies it.
+fn finish_typing(apply: bool, window: &mut Window, cx: &mut App) {
+    let Some((id, input, _)) = TYPING.with(|typing| typing.borrow_mut().take()) else {
+        return;
+    };
+    let typed = typed_number(&input.read(cx).value());
+    if let (true, Some(value)) = (apply, typed)
+        && let Some(slider) = SLIDERS.with(|sliders| sliders.borrow().get(&id).cloned())
+    {
+        let (min, max) = RANGES
+            .with(|ranges| ranges.borrow().get(&id).copied())
+            .unwrap_or((f32::MIN, f32::MAX));
+        let value = value.clamp(min, max);
+        slider.update(cx, |state, cx| {
+            state.set_value(value, window, cx);
+            cx.emit(SliderEvent::Change(value.into()));
+        });
+    }
+    window.refresh();
+}
+
+/// Turns a slider's readout into a field holding its value.
+fn start_typing(state: &Entity<SliderState>, window: &mut Window, cx: &mut App) {
+    finish_typing(true, window, cx);
+    let value = state.read(cx).value().start();
+    let text = format!("{value:.2}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string();
+    // Empty with the value as a hint, so typing replaces it.
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder(text));
+    input.update(cx, |input, cx| input.focus(window, cx));
+    let subscription = window.subscribe(&input, cx, |_, event: &InputEvent, window, cx| {
+        if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+            // After this event, so the field outlives its own handler.
+            window.defer(cx, |window, cx| finish_typing(true, window, cx));
+        }
+    });
+    SLIDERS.with(|sliders| {
+        sliders
+            .borrow_mut()
+            .insert(state.entity_id(), state.clone())
+    });
+    TYPING.with(|typing| *typing.borrow_mut() = Some((state.entity_id(), input, subscription)));
+    window.refresh();
+}
+
+thread_local! {
+    static SLIDERS: RefCell<std::collections::HashMap<EntityId, Entity<SliderState>>> =
+        RefCell::default();
+}
+
+/// A label, a readout that can be clicked to type an exact value, and the
+/// slider. Enter or clicking away applies the value; Escape cancels.
 pub fn slider_row(label: &'static str, value: String, state: &Entity<SliderState>) -> Div {
     let first = first_frame(state);
+    let id = state.entity_id();
+    let typing = TYPING.with(|typing| {
+        typing
+            .borrow()
+            .as_ref()
+            .filter(|(editing, ..)| *editing == id)
+            .map(|(_, input, _)| input.clone())
+    });
+    let readout = readout(value, state, typing);
     div()
         .flex()
         .flex_col()
@@ -85,16 +179,73 @@ pub fn slider_row(label: &'static str, value: String, state: &Entity<SliderState
         .child(
             div()
                 .flex()
+                .items_center()
                 .justify_between()
                 .text_sm()
                 .child(label)
-                .child(div().text_color(rgb(MUTED)).child(value)),
+                .child(readout),
         )
         .child(
             div()
                 .when(first, |el| el.opacity(0.))
                 .child(Slider::new(state)),
         )
+}
+
+/// A compact slider for the tool options bar: label, slider, and a readout
+/// that can be clicked to type a value.
+pub fn inline_slider(
+    label: &'static str,
+    value: String,
+    state: &Entity<SliderState>,
+    width: f32,
+) -> Div {
+    let id = state.entity_id();
+    let typing = TYPING.with(|typing| {
+        typing
+            .borrow()
+            .as_ref()
+            .filter(|(editing, ..)| *editing == id)
+            .map(|(_, input, _)| input.clone())
+    });
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_xs()
+        .child(div().text_color(rgb(MUTED)).child(label))
+        .child(div().w(px(width)).child(Slider::new(state)))
+        .child(div().min_w(px(44.)).child(readout(value, state, typing)))
+}
+
+fn readout(
+    value: String,
+    state: &Entity<SliderState>,
+    typing: Option<Entity<InputState>>,
+) -> AnyElement {
+    let id = state.entity_id();
+    match typing {
+        Some(input) => div()
+            .w(px(76.))
+            .on_action(|_: &gpui_component::input::Escape, window, cx| {
+                finish_typing(false, window, cx)
+            })
+            .child(Input::new(&input).xsmall())
+            .into_any_element(),
+        None => {
+            let state = state.clone();
+            div()
+                .id(("slider-value", id.as_u64()))
+                .px_1()
+                .rounded_sm()
+                .cursor_text()
+                .text_color(rgb(MUTED))
+                .hover(|el| el.text_color(rgb(TEXT)).bg(rgb(HOVER)))
+                .child(value)
+                .on_click(move |_, window, cx| start_typing(&state, window, cx))
+                .into_any_element()
+        }
+    }
 }
 
 /// Equal-width segments with one selected, such as sidebar modes or edit scope.

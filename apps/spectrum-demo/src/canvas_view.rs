@@ -5,6 +5,38 @@ use gpui_component::input::{self, Input};
 use prism_core::{Command, LayerKind, Transform};
 use std::sync::Arc;
 
+/// Whether a paint stroke passes within its brush's reach of a canvas point.
+fn painted_at(program: &prism_core::BrushProgram, t: Transform, (x, y): (f32, f32)) -> bool {
+    let (x, y) = (
+        (x - t.x) / t.scale_x.max(1e-3),
+        (y - t.y) / t.scale_y.max(1e-3),
+    );
+    program.strokes.iter().any(|stroke| {
+        if stroke.style.mode == prism_core::BrushMode::Erase {
+            return false;
+        }
+        let reach = stroke.style.size / 2. + 2.;
+        let near = |a: &prism_core::BrushSample, b: &prism_core::BrushSample| {
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let length = dx * dx + dy * dy;
+            let t = if length > 0. {
+                (((x - a.x) * dx + (y - a.y) * dy) / length).clamp(0., 1.)
+            } else {
+                0.
+            };
+            (a.x + dx * t - x).hypot(a.y + dy * t - y) <= reach
+        };
+        match stroke.samples.len() {
+            0 => false,
+            1 => near(&stroke.samples[0], &stroke.samples[0]),
+            _ => stroke
+                .samples
+                .windows(2)
+                .any(|pair| near(&pair[0], &pair[1])),
+        }
+    })
+}
+
 /// A move in canvas units, rounded to whole pixels of the canvas render, so
 /// the moved layer's pixels match its render exactly when dropped.
 pub fn whole_pixels(delta: f32, density: f32) -> f32 {
@@ -40,13 +72,18 @@ impl Workspace {
         )
     }
 
-    /// The topmost visible, unlocked layer under a canvas point.
+    /// The topmost visible, unlocked layer under a canvas point. Paint
+    /// layers cover the canvas, so they count only where they have paint.
     fn layer_at(&self, (x, y): (f32, f32)) -> Option<u64> {
         let canvas = self.canvas.as_ref()?;
         canvas.doc.layers.iter().rev().find_map(|layer| {
             let (min, max) = canvas.bounds.get(&layer.id)?;
             let inside = x >= min[0] && x <= max[0] && y >= min[1] && y <= max[1];
-            (layer.visible && !layer.locked && inside).then_some(layer.id)
+            let painted = match &layer.kind {
+                LayerKind::Paint { program } => painted_at(program, layer.transform, (x, y)),
+                _ => true,
+            };
+            (layer.visible && !layer.locked && inside && painted).then_some(layer.id)
         })
     }
 
@@ -123,20 +160,76 @@ impl Workspace {
         Some((transform, (new_min, new_max)))
     }
 
+    /// Where a layer sits now in canvas space, following any drag: moved,
+    /// resized from a corner, or (while rotating) where its latest render fell.
+    pub fn bounds_now(&self, id: u64) -> Option<crate::canvas_split::LayerBounds> {
+        let canvas = self.canvas.as_ref()?;
+        let moved = self.drag_delta();
+        // A layer only in the stroke being drawn has its render's bounds.
+        let (mut min, mut max) = match canvas.bounds.get(&id) {
+            Some(bounds) => *bounds,
+            None => canvas.cache.images.get(&id)?.bounds,
+        };
+        if canvas.drag.is_some_and(|d| d.id == id && d.rotate)
+            && let Some(cached) = canvas.cache.images.get(&id)
+        {
+            return Some(cached.bounds);
+        }
+        match canvas.drag.filter(|d| d.id == id) {
+            Some(LayerDrag {
+                corner: Some(corner),
+                start,
+                now,
+                ..
+            }) => {
+                (min, max, _) = Self::resized(min, max, corner, start, now);
+            }
+            Some(_) => {
+                // Pressed but not moved yet: the layer stays where it is.
+                let (dx, dy) = moved.map_or((0., 0.), |(_, dx, dy)| (dx, dy));
+                min = [min[0] + dx, min[1] + dy];
+                max = [max[0] + dx, max[1] + dy];
+            }
+            None => {}
+        }
+        Some((min, max))
+    }
+
     fn canvas_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let point = self.to_canvas(event.position);
+        // Keys go to the canvas after a click on it (tool keys, Delete).
+        if self.canvas.as_ref().is_some_and(|c| c.editing.is_none()) {
+            self.focus_handle.focus(window);
+        }
+        // Selection tools act on the layer under the pointer when none is
+        // chosen; the wand always takes the layer it was clicked on.
+        let under = self.layer_at(point);
         if let Some(canvas) = self.canvas.as_mut().filter(|c| c.tool != Tool::Move) {
             canvas.select_mode = crate::selection_view::combine_mode(event.modifiers);
+            if canvas.tool == Tool::Wand && under.is_some()
+                || canvas.tool.selects() && canvas.selected.is_none()
+            {
+                canvas.selected = under.or(canvas.selected);
+            }
             match canvas.tool {
-                Tool::Pen => return self.pen_click(point, window, cx),
+                Tool::Pen => return self.pen_down(point, event.modifiers.shift, window, cx),
                 Tool::Wand => return self.magic_wand(point, window, cx),
                 Tool::Eyedropper => {
                     return self.pick_canvas_color(point, event.modifiers.alt, window, cx);
                 }
                 _ => {}
             }
-            canvas.creating = Some((point, point));
-            canvas.points = vec![point];
+            let tool = canvas.tool;
+            if matches!(tool, Tool::Brush | Tool::Eraser) && !self.can_stroke(tool, window, cx) {
+                return;
+            }
+            if let Some(canvas) = &mut self.canvas {
+                canvas.creating = Some((point, point));
+                canvas.points = vec![point];
+            }
+            if matches!(tool, Tool::Brush | Tool::Eraser) {
+                self.update_live_stroke(tool, window, cx);
+            }
             return cx.notify();
         }
         if let Some(id) = self.rotate_handle_at(event.position)
@@ -148,6 +241,7 @@ impl Workspace {
                 now: point,
                 corner: None,
                 rotate: true,
+                constrain: event.modifiers.shift,
             });
             return cx.notify();
         }
@@ -178,6 +272,7 @@ impl Workspace {
                 now: point,
                 corner: corner.map(|(_, c)| c),
                 rotate: false,
+                constrain: false,
             });
         }
         self.sync_layer_controls(window, cx);
@@ -203,8 +298,20 @@ impl Workspace {
             canvas.hover_guide = hover;
             cx.notify();
         }
+        canvas.pointer = Some(point);
         if canvas.tool == Tool::Pen {
-            canvas.pointer = Some(point);
+            let pressed = event.pressed_button == Some(MouseButton::Left);
+            if pressed {
+                return self.pen_drag(point, event.modifiers.shift, cx);
+            }
+            return cx.notify();
+        }
+        if matches!(canvas.tool, Tool::Brush | Tool::Eraser) && canvas.creating.is_none() {
+            // The brush outline follows the pointer.
+            cx.notify();
+        }
+        if canvas.tool == Tool::Eyedropper {
+            self.ensure_pixels(window, cx);
             return cx.notify();
         }
         if let Some((_, now)) = &mut canvas.creating {
@@ -218,6 +325,10 @@ impl Workspace {
                     .is_none_or(|l| (l.0 - point.0).hypot(l.1 - point.1) * scale >= 1.)
             {
                 canvas.points.push(point);
+                let tool = canvas.tool;
+                if matches!(tool, Tool::Brush | Tool::Eraser) {
+                    self.update_live_stroke(tool, window, cx);
+                }
             }
             return cx.notify();
         }
@@ -229,20 +340,65 @@ impl Workspace {
             return;
         }
         drag.now = point;
+        drag.constrain = event.modifiers.shift;
+        let drag = *drag;
+        // Canvases drawn as one render re-render with the layer where the
+        // drag has it.
+        if !crate::layer_cache::stackable(&canvas.doc) {
+            let shaped = Self::resize_transform(canvas, drag)
+                .map(|(transform, _)| transform)
+                .or_else(|| Self::rotate_transform(canvas, drag));
+            let t = canvas.doc.layer(drag.id).ok().map(|l| l.transform);
+            let preview = shaped.or_else(|| {
+                let (_, dx, dy) = self.drag_delta()?;
+                let t = t?;
+                Some(prism_core::Transform {
+                    x: t.x + dx,
+                    y: t.y + dy,
+                    ..t
+                })
+            });
+            if let Some(canvas) = &mut self.canvas {
+                canvas.drag_preview = preview.map(|t| (drag.id, t));
+                canvas.bump_version();
+            }
+            self.render_canvas(window, cx);
+        }
+        let Some(canvas) = &mut self.canvas else {
+            return;
+        };
+        let Some(drag) = &mut canvas.drag else {
+            return;
+        };
         // A resize re-renders the layer at its new size as it goes, so its
         // effects keep their own size instead of stretching with it.
-        if drag.corner.is_some() || drag.rotate {
+        let in_unit = crate::layer_cache::holder_of(&canvas.doc, drag.id).is_some_and(|holder| {
+            holder != drag.id
+                || canvas
+                    .doc
+                    .layers
+                    .iter()
+                    .position(|l| l.id == holder)
+                    .is_some_and(|i| crate::layer_cache::unit(&canvas.doc, i).len() > 1)
+        });
+        if drag.corner.is_some() || drag.rotate || in_unit {
             self.refresh_layers(window, cx);
         }
         cx.notify();
     }
 
     fn canvas_up(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.canvas.as_ref().is_some_and(|c| c.tool == Tool::Pen) {
+            return self.pen_up();
+        }
         if self.canvas.as_ref().is_some_and(|c| c.guide_drag.is_some()) {
             self.move_guide(at, cx);
             return self.drop_guide(window, cx);
         }
         let moved = self.drag_delta();
+        if let Some(canvas) = &mut self.canvas {
+            canvas.drag_preview = None;
+        }
         if let Some(canvas) = &mut self.canvas
             && let Some((start, end)) = canvas.creating.take()
         {
@@ -383,35 +539,8 @@ impl Workspace {
             }
         };
         let image = self.canvas.as_ref().and_then(|c| c.image.clone());
-        let moved = self.drag_delta();
         // Where a layer sits now in canvas space, following any drag.
-        let current = |canvas: &crate::canvas_state::CanvasState, id: u64| {
-            let (mut min, mut max) = *canvas.bounds.get(&id)?;
-            // A layer being rotated shows its latest render where it fell.
-            if canvas.drag.is_some_and(|d| d.id == id && d.rotate)
-                && let Some(cached) = canvas.cache.images.get(&id)
-            {
-                return Some(cached.bounds);
-            }
-            match canvas.drag.filter(|d| d.id == id) {
-                Some(LayerDrag {
-                    corner: Some(corner),
-                    start,
-                    now,
-                    ..
-                }) => {
-                    (min, max, _) = Self::resized(min, max, corner, start, now);
-                }
-                Some(_) => {
-                    // Pressed but not moved yet: the layer stays where it is.
-                    let (dx, dy) = moved.map_or((0., 0.), |(_, dx, dy)| (dx, dy));
-                    min = [min[0] + dx, min[1] + dy];
-                    max = [max[0] + dx, max[1] + dy];
-                }
-                None => {}
-            }
-            Some((min, max))
-        };
+        let current = |_: &crate::canvas_state::CanvasState, id: u64| self.bounds_now(id);
         let outline = self.canvas.as_ref().and_then(|canvas| {
             let (min, max) = current(canvas, canvas.selected?)?;
             Some(Bounds::from_corners(
@@ -476,11 +605,16 @@ impl Workspace {
                     return None;
                 }
                 let device = scale * pixel;
-                let layers = canvas
-                    .doc
+                let shown = canvas.shown();
+                let layers = shown
                     .layers
                     .iter()
-                    .filter(|layer| layer.visible)
+                    .enumerate()
+                    // Layers inside another are drawn in its image.
+                    .filter(|(index, layer)| {
+                        layer.visible && !crate::layer_cache::inside(shown, *index)
+                    })
+                    .map(|(_, layer)| layer)
                     .filter_map(|layer| {
                         let cached = canvas.cache.images.get(&layer.id)?;
                         let (min, max) = current(canvas, layer.id)?;
@@ -543,7 +677,7 @@ impl Workspace {
         // The box or circle being drawn.
         let drawing = self.canvas.as_ref().and_then(|c| {
             let ((ax, ay), (bx, by)) = c.creating?;
-            (c.tool != Tool::Text && c.tool != Tool::Gradient).then(|| {
+            matches!(c.tool, Tool::Box | Tool::Circle).then(|| {
                 let at = |x: f32, y: f32| offset + point(px(x * scale), px(y * scale));
                 (
                     Bounds::from_corners(at(ax.min(bx), ay.min(by)), at(ax.max(bx), ay.max(by))),
@@ -683,7 +817,10 @@ impl Workspace {
                 }))
                 .child(self.guide_overlay(offset, scale, rect.size))
                 .children(self.selection_overlay(offset, scale))
-                .children(self.paint_overlay(offset, scale, cx))
+                .children(self.brush_overlay(offset, scale, cx))
+                .children(self.pen_overlay(offset, scale))
+                .children(self.crop_overlay(offset, scale))
+                .children(self.eyedropper_overlay(offset, scale))
                 .children(gradient_line.map(|(from, to)| {
                     canvas(
                         |_, _, _| {},

@@ -14,6 +14,9 @@ use gpui_component::slider::{SliderEvent, SliderState};
 use prism_core::{Command, GradientKind, GradientOverlay, GradientStop, ShapeFill, ShapeGradient};
 use std::{cell::Cell, rc::Rc};
 
+/// Writes a slider's value into one field of a gradient.
+type SetField = fn(&mut ShapeGradient, f32);
+
 /// What a gradient editor edits.
 #[derive(Clone, Copy, PartialEq)]
 pub enum GradientTarget {
@@ -24,6 +27,11 @@ pub enum GradientTarget {
 pub struct GradientEditor {
     picker: Entity<ColorPicker>,
     angle: Entity<SliderState>,
+    /// Center (percent of the layer), radial size, and linear scale.
+    center_x: Entity<SliderState>,
+    center_y: Entity<SliderState>,
+    size: Entity<SliderState>,
+    scale: Entity<SliderState>,
     selected: usize,
     dragging: Option<usize>,
     bar: Rc<Cell<Bounds<Pixels>>>,
@@ -34,7 +42,11 @@ impl GradientEditor {
     pub fn new(target: GradientTarget, window: &mut Window, cx: &mut Context<Workspace>) -> Self {
         let picker = ColorPicker::new([255, 255, 255, 255], window, cx);
         let angle = in_sidebar(slider(cx, 0., 360., 1., 0.));
-        let _subscriptions = vec![
+        let center_x = in_sidebar(slider(cx, 0., 100., 1., 50.));
+        let center_y = in_sidebar(slider(cx, 0., 100., 1., 50.));
+        let size = in_sidebar(slider(cx, 5., 300., 1., 50.));
+        let scale = in_sidebar(slider(cx, 10., 400., 1., 100.));
+        let mut _subscriptions = vec![
             cx.subscribe_in(
                 &picker,
                 window,
@@ -56,9 +68,30 @@ impl GradientEditor {
                 },
             ),
         ];
+        // Each shape slider writes one field of the gradient.
+        let fields: [(&Entity<SliderState>, SetField); 4] = [
+            (&center_x, |g, v| g.center[0] = v / 100.),
+            (&center_y, |g, v| g.center[1] = v / 100.),
+            (&size, |g, v| g.radius = (v / 100.).max(0.01)),
+            (&scale, |g, v| g.extent = (v / 100.).max(0.01)),
+        ];
+        for (state, set) in fields {
+            _subscriptions.push(cx.subscribe_in(
+                state,
+                window,
+                move |this, state, _: &SliderEvent, window, cx| {
+                    let value = state.read(cx).value().start();
+                    this.edit_gradient(target, window, cx, |gradient, _| set(gradient, value))
+                },
+            ));
+        }
         Self {
             picker,
             angle,
+            center_x,
+            center_y,
+            size,
+            scale,
             selected: 0,
             dragging: None,
             bar: Rc::default(),
@@ -189,10 +222,18 @@ impl Workspace {
             };
             editor.selected = editor.selected.min(gradient.stops.len().saturating_sub(1));
             let color = gradient.stops[editor.selected].color;
-            let angle = gradient.angle;
-            let (picker, slider) = (editor.picker.clone(), editor.angle.clone());
+            let values = [
+                (editor.angle.clone(), gradient.angle),
+                (editor.center_x.clone(), gradient.center[0] * 100.),
+                (editor.center_y.clone(), gradient.center[1] * 100.),
+                (editor.size.clone(), gradient.radius * 100.),
+                (editor.scale.clone(), gradient.extent * 100.),
+            ];
+            let picker = editor.picker.clone();
             picker.update(cx, |picker, cx| picker.set(color, window, cx));
-            slider.update(cx, |s, cx| s.set_value(angle, window, cx));
+            for (slider, value) in values {
+                slider.update(cx, |s, cx| s.set_value(value, window, cx));
+            }
         }
     }
 
@@ -469,6 +510,29 @@ impl Workspace {
             .child(div().flex().gap_1p5().children(kinds))
             .when(gradient.kind != GradientKind::Radial, |el| {
                 el.child(slider_row("Angle", format!("{angle:.0}°"), &editor.angle))
+            })
+            .map(|el| {
+                let percent =
+                    |state: &Entity<SliderState>| format!("{:.0}%", state.read(cx).value().start());
+                match gradient.kind {
+                    GradientKind::Linear => {
+                        el.child(slider_row("Scale", percent(&editor.scale), &editor.scale))
+                    }
+                    kind => el
+                        .child(slider_row(
+                            "Center X",
+                            percent(&editor.center_x),
+                            &editor.center_x,
+                        ))
+                        .child(slider_row(
+                            "Center Y",
+                            percent(&editor.center_y),
+                            &editor.center_y,
+                        ))
+                        .when(kind == GradientKind::Radial, |el| {
+                            el.child(slider_row("Size", percent(&editor.size), &editor.size))
+                        }),
+                }
             })
     }
 }

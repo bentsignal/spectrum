@@ -100,12 +100,14 @@ fn around(doc: &Document, layer: u64, above: bool) -> Document {
 pub fn render_alone(
     root: &std::path::Path,
     doc: &Document,
-    layer: u64,
+    layers: &[u64],
     density: f32,
 ) -> anyhow::Result<(Arc<RenderImage>, LayerBounds, [[f32; 2]; 2])> {
+    // The first layer, and any layers inside it, which show only within it.
+    let layer = layers.first().copied().unwrap_or_default();
     let mut alone = doc.clone();
     alone.background = [0, 0, 0, 0];
-    alone.layers.retain(|l| l.id == layer);
+    alone.layers.retain(|l| layers.contains(&l.id));
     let mut resolved = alone.clone();
     Service::open(root)?.resolve(&mut resolved)?;
     let first = resolved
@@ -148,8 +150,12 @@ impl Workspace {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;
         };
-        // Stackable canvases draw every layer from its own image instead.
-        if crate::layer_cache::stackable(&canvas.doc) {
+        // Stackable canvases draw every layer from its own image, and the
+        // others re-render whole as a layer is dragged (`drag_preview`):
+        // drawing one layer apart cannot show it inside another layer or
+        // blending with what is under it.
+        let _ = (&store, layer, &window);
+        if canvas.loaded {
             return;
         }
         if canvas.split.as_ref().is_some_and(|s| s.layer == layer) {
@@ -226,7 +232,7 @@ impl Workspace {
         let (root, layer) = (store.root.clone(), split.layer);
         let task = cx
             .background_executor()
-            .spawn(async move { render_alone(&root, &doc, layer, density) });
+            .spawn(async move { render_alone(&root, &doc, &[layer], density) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {

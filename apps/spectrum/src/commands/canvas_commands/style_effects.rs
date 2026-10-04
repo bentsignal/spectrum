@@ -96,6 +96,17 @@ pub(super) struct EffectArgs {
     pub stops: Vec<String>,
     #[arg(long, value_enum)]
     gradient_kind: Option<GradientKindArg>,
+    /// Gradient overlay center as fractions of the layer (0 to 1).
+    #[arg(long)]
+    pub center_x: Option<f32>,
+    #[arg(long)]
+    pub center_y: Option<f32>,
+    /// Radial gradient overlay size as a fraction of the layer's short side.
+    #[arg(long)]
+    pub radius: Option<f32>,
+    /// Linear gradient overlay length as a fraction of the layer.
+    #[arg(long)]
+    pub scale: Option<f32>,
 }
 
 /// Sets one style, starting from the layer's current settings for it.
@@ -202,6 +213,12 @@ pub(super) fn effect_command(arguments: EffectArgs, mut style: LayerStyle) -> Re
                     kind: arguments
                         .gradient_kind
                         .map_or(current.gradient.kind, Into::into),
+                    center: [
+                        arguments.center_x.unwrap_or(current.gradient.center[0]),
+                        arguments.center_y.unwrap_or(current.gradient.center[1]),
+                    ],
+                    radius: arguments.radius.unwrap_or(current.gradient.radius),
+                    extent: arguments.scale.unwrap_or(current.gradient.extent),
                     ..current.gradient.clone()
                 };
                 style.gradient_overlay = Some(GradientOverlay {

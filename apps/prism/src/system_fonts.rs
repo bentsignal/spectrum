@@ -12,6 +12,9 @@ pub struct SystemFont {
     pub weight: u16,
     pub italic: bool,
     pub path: PathBuf,
+    /// Has the Latin letters and digits, so English text shows in it; fonts
+    /// for other scripts or symbols show boxes for letters they lack.
+    pub latin: bool,
 }
 
 fn style_name(weight: u16, italic: bool) -> String {
@@ -53,7 +56,15 @@ pub fn system_fonts() -> Vec<SystemFont> {
             let family = face.families.first()?.0.clone();
             let italic = face.style != fontdb::Style::Normal;
             let weight = face.weight.0;
+            let latin = database
+                .with_face_data(face.id, |data, index| {
+                    ttf_parser::Face::parse(data, index).is_ok_and(|parsed| {
+                        "AZaz09".chars().all(|c| parsed.glyph_index(c).is_some())
+                    })
+                })
+                .unwrap_or(false);
             Some(SystemFont {
+                latin,
                 style: style_name(weight, italic),
                 family,
                 weight,

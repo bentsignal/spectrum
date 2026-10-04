@@ -184,6 +184,8 @@ impl Effect {
 
 /// Color pickers and sliders for every style.
 pub struct StyleControls {
+    /// The style whose settings show below the list.
+    pub chosen: Effect,
     pickers: Vec<Entity<ColorPicker>>,
     bevel_shadow: Entity<ColorPicker>,
     sliders: Vec<(Effect, Param, Entity<SliderState>)>,
@@ -227,6 +229,7 @@ impl StyleControls {
             },
         ));
         Self {
+            chosen: Effect::Shadow,
             pickers,
             bevel_shadow,
             sliders,
@@ -442,121 +445,191 @@ impl Workspace {
             }))
     }
 
-    /// Style > Effects: a switch per style, and its settings while on.
+    /// Style > Effects, as Photoshop's Layer Style dialog: a fixed list of
+    /// every style with its switch, and below it the chosen style's
+    /// settings. Turning styles on and off never moves anything.
     pub fn effects_section(&self, cx: &mut Context<Self>) -> Div {
         let Some(style) = self.selected_layer().map(|l| l.style.clone()) else {
             return div();
         };
+        let chosen = self.styles.chosen;
+        let rows =
+            Effect::ALL.map(|effect| {
+                let (on, color, _) = effect.read(&style);
+                let picked = effect == chosen;
+                div()
+                    .id(effect.id())
+                    .h(px(32.))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(picked, |el| el.bg(rgb(SELECTED)))
+                    .when(!picked, |el| el.hover(|el| el.bg(rgb(HOVER))))
+                    .child(toggle(("effect-switch", effect as usize), "", on).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.set_effect(effect, Change::Toggle(!on), window, cx)
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(rgb(if on { TEXT } else { MUTED }))
+                            .child(effect.label()),
+                    )
+                    .when(on && effect != Effect::GradientOverlay, |el| {
+                        el.child(
+                            div()
+                                .size(px(12.))
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .bg(rgba(u32::from_be_bytes(color))),
+                        )
+                    })
+                    // Choosing a style shows its settings, and turns it on.
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.styles.chosen = effect;
+                        if !on {
+                            this.set_effect(effect, Change::Toggle(true), window, cx);
+                        }
+                        this.settle_next_frame();
+                        cx.notify();
+                    }))
+            });
         div()
             .flex()
             .flex_col()
-            .gap_5()
-            .children(Effect::ALL.map(|effect| {
-                let (on, color, _) = effect.read(&style);
-                let header = div()
+            .gap_4()
+            .child(div().flex().flex_col().gap_0p5().children(rows))
+            .child(div().h(px(1.)).bg(rgb(BORDER)))
+            .child(self.effect_settings(chosen, &style, cx))
+    }
+
+    /// The settings of one style, or a way to turn it on.
+    fn effect_settings(&self, effect: Effect, style: &LayerStyle, cx: &mut Context<Self>) -> Div {
+        let (on, color, _) = effect.read(style);
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(effect.label()),
+            )
+            .when(on && effect != Effect::GradientOverlay, |el| {
+                el.child(color_well(effect.id(), color, self.styles.picker(effect)))
+            });
+        let mut body = div().flex().flex_col().gap_3().child(header);
+        if !on {
+            return body.child(
+                div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        toggle(effect.id(), effect.label(), on).on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.set_effect(effect, Change::Toggle(!on), window, cx)
-                            },
-                        )),
-                    )
-                    .when(on && effect != Effect::GradientOverlay, |el| {
-                        el.child(color_well(effect.id(), color, self.styles.picker(effect)))
-                    });
-                let mut body = div().flex().flex_col().gap_3().child(header);
-                if !on {
-                    return body;
-                }
-                for &(param, label, ..) in effect.params() {
-                    if let Some(state) = self.styles.slider(effect, param) {
-                        let value = state.read(cx).value().start();
-                        let text = match param {
-                            Param::Angle | Param::Altitude => format!("{value:.0}°"),
-                            Param::Spread | Param::Depth => format!("{value:.0}%"),
-                            _ => format!("{value:.0}"),
-                        };
-                        body = body.child(slider_row(label, text, state));
-                    }
-                }
-                match effect {
-                    Effect::Stroke => {
-                        let current = style.stroke.unwrap_or_default().position;
-                        body = body.child(self.choices(
-                            effect,
-                            current,
-                            &[
-                                ("stroke-outside", "Outside", StrokePosition::Outside),
-                                ("stroke-inside", "Inside", StrokePosition::Inside),
-                                ("stroke-center", "Center", StrokePosition::Center),
-                            ],
-                            Change::Position,
-                            cx,
-                        ));
-                    }
-                    Effect::Bevel => {
-                        let bevel = style.bevel.unwrap_or_default();
-                        body = body
-                            .child(self.choices(
-                                effect,
-                                bevel.style,
-                                &[
-                                    ("bevel-inner", "Inner", BevelStyle::Inner),
-                                    ("bevel-outer", "Outer", BevelStyle::Outer),
-                                    ("bevel-emboss", "Emboss", BevelStyle::Emboss),
-                                    ("bevel-pillow", "Pillow", BevelStyle::Pillow),
-                                ],
-                                Change::Bevel,
-                                cx,
-                            ))
-                            .child(self.choices(
-                                effect,
-                                bevel.up,
-                                &[("bevel-up", "Up", true), ("bevel-down", "Down", false)],
-                                Change::Up,
-                                cx,
-                            ))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(div().text_sm().text_color(rgb(MUTED)).child("Shadow"))
-                                    .child(color_well(
-                                        "bevel-shadow",
-                                        bevel.shadow,
-                                        &self.styles.bevel_shadow,
-                                    )),
-                            );
-                    }
-                    Effect::Satin => {
-                        let invert = style.satin.unwrap_or_default().invert;
-                        body = body.child(self.choices(
-                            effect,
-                            invert,
-                            &[
-                                ("satin-edges", "Edges", true),
-                                ("satin-center", "Center", false),
-                            ],
-                            Change::Invert,
-                            cx,
-                        ));
-                    }
-                    Effect::GradientOverlay => {
-                        body = body.child(self.gradient_editor(GradientTarget::Overlay, cx));
-                    }
-                    _ => {}
-                }
-                body
-            }))
-            .child(
-                div()
-                    .text_xs()
+                    .text_sm()
                     .text_color(rgb(FAINT))
-                    .child("A color's alpha sets how strong its style is."),
-            )
+                    .child("Off")
+                    .child(
+                        chip("effect-turn-on", "Turn on", false)
+                            .flex_none()
+                            .px_3()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.set_effect(effect, Change::Toggle(true), window, cx)
+                            })),
+                    ),
+            );
+        }
+        for &(param, label, ..) in effect.params() {
+            if let Some(state) = self.styles.slider(effect, param) {
+                let value = state.read(cx).value().start();
+                let text = match param {
+                    Param::Angle | Param::Altitude => format!("{value:.0}°"),
+                    Param::Spread | Param::Depth => format!("{value:.0}%"),
+                    _ => format!("{value:.0}"),
+                };
+                body = body.child(slider_row(label, text, state));
+            }
+        }
+        match effect {
+            Effect::Stroke => {
+                let current = style.stroke.unwrap_or_default().position;
+                body = body.child(self.choices(
+                    effect,
+                    current,
+                    &[
+                        ("stroke-outside", "Outside", StrokePosition::Outside),
+                        ("stroke-inside", "Inside", StrokePosition::Inside),
+                        ("stroke-center", "Center", StrokePosition::Center),
+                    ],
+                    Change::Position,
+                    cx,
+                ));
+            }
+            Effect::Bevel => {
+                let bevel = style.bevel.unwrap_or_default();
+                body = body
+                    .child(self.choices(
+                        effect,
+                        bevel.style,
+                        &[
+                            ("bevel-inner", "Inner", BevelStyle::Inner),
+                            ("bevel-outer", "Outer", BevelStyle::Outer),
+                            ("bevel-emboss", "Emboss", BevelStyle::Emboss),
+                            ("bevel-pillow", "Pillow", BevelStyle::Pillow),
+                        ],
+                        Change::Bevel,
+                        cx,
+                    ))
+                    .child(self.choices(
+                        effect,
+                        bevel.up,
+                        &[("bevel-up", "Up", true), ("bevel-down", "Down", false)],
+                        Change::Up,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_sm().text_color(rgb(MUTED)).child("Shadow"))
+                            .child(color_well(
+                                "bevel-shadow",
+                                bevel.shadow,
+                                &self.styles.bevel_shadow,
+                            )),
+                    );
+            }
+            Effect::Satin => {
+                let invert = style.satin.unwrap_or_default().invert;
+                body = body.child(self.choices(
+                    effect,
+                    invert,
+                    &[
+                        ("satin-edges", "Edges", true),
+                        ("satin-center", "Center", false),
+                    ],
+                    Change::Invert,
+                    cx,
+                ));
+            }
+            Effect::GradientOverlay => {
+                body = body.child(self.gradient_editor(GradientTarget::Overlay, cx));
+            }
+            _ => {}
+        }
+        body.child(
+            div()
+                .text_xs()
+                .text_color(rgb(FAINT))
+                .child("A color's alpha sets how strong its style is."),
+        )
     }
 }

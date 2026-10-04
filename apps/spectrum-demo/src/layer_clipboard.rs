@@ -7,6 +7,9 @@ use prism_core::{Command, LayerTransfer};
 
 impl Workspace {
     pub fn copy_layer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.copy_picked_color(cx) {
+            return;
+        }
         let Some(canvas) = &self.canvas else {
             return;
         };
