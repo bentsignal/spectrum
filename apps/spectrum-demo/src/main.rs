@@ -34,6 +34,7 @@ mod layer_masks;
 mod layer_styles;
 mod library;
 mod marquee;
+mod mode_menu;
 mod palette;
 mod pen;
 mod picker;

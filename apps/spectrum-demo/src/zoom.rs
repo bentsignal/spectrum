@@ -20,6 +20,8 @@ const STEPS: [f32; 19] = [
 ];
 /// How long after the last zoom change the canvas renders at the new size.
 pub const SETTLE: Duration = Duration::from_millis(250);
+/// Room around a fitted canvas, in screen pixels.
+const FIT_MARGIN: f32 = 16.;
 /// The canvas stays at least this far on screen when panned.
 const KEEP: f32 = 80.;
 
@@ -34,7 +36,12 @@ impl Workspace {
             canvas.doc.width.max(1) as f32,
             canvas.doc.height.max(1) as f32,
         );
-        (f32::from(area.size.width) / w).min(f32::from(area.size.height) / h)
+        // A margin keeps the selected layer's outline and handles in view
+        // when it reaches the canvas's edge.
+        let margin = 2. * FIT_MARGIN;
+        ((f32::from(area.size.width) - margin) / w)
+            .min((f32::from(area.size.height) - margin) / h)
+            .max(0.001)
     }
 
     /// The pan that keeps part of a canvas `size` wide on screen.

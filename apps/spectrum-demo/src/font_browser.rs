@@ -150,6 +150,27 @@ impl Workspace {
             .position(|f| f.name.as_ref() == font.family)
     }
 
+    /// Hovers the family at a window position after the list scrolled under
+    /// a still pointer, which moves no hover by itself.
+    fn hover_font_at(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let handle = self.font_scroll.0.borrow().base_handle.clone();
+        let bounds = handle.bounds();
+        if !bounds.contains(&position) {
+            return;
+        }
+        let row = f32::from(position.y - bounds.top() - handle.offset().y) / ROW;
+        let hovered = self.font_matches(cx).get(row.floor() as usize).copied();
+        if hovered.is_some() && hovered != self.font_hover {
+            self.font_hover = hovered;
+            self.preview_font(window, cx);
+        }
+    }
+
     /// Shows the hovered family, or else the highlighted one, on the canvas.
     fn preview_font(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let matches = self.font_matches(cx);
@@ -344,8 +365,15 @@ impl Workspace {
         let loading = self.fonts.is_none();
         div()
             .id("font-browser")
-            // Scrolling here scrolls the list, never the sidebar behind it.
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            // Scrolling here scrolls the list, never the sidebar behind it,
+            // and the family that comes under the pointer shows at once.
+            .on_scroll_wheel(cx.listener(|_, event: &ScrollWheelEvent, window, cx| {
+                cx.stop_propagation();
+                let position = event.position;
+                cx.defer_in(window, move |this, window, cx| {
+                    this.hover_font_at(position, window, cx)
+                });
+            }))
             .flex()
             .flex_col()
             .gap_1()

@@ -1,7 +1,6 @@
-//! The Tool tab of a canvas's sidebar: the current tool and the foreground
-//! and background colors, the tool's settings (brush size, hardness, and
-//! opacity; wand tolerance), what a selection can do, and how to use the
-//! tool. The Layers tab keeps only the layers.
+//! A canvas's Overview, where its sidebar starts: the selected layer (a
+//! click opens Layers), the foreground and background colors, the current
+//! tool with its settings and how to use it, and what a selection can do.
 use crate::{
     controls::{chip, group, slider_row, toggle},
     theme::*,
@@ -9,12 +8,13 @@ use crate::{
     workspace::Workspace,
 };
 use gpui::{prelude::*, *};
+use gpui_component::{Icon, IconName, Sizable};
 
 /// How to use each tool, in a line.
 fn hint(tool: Tool) -> &'static str {
     match tool {
         Tool::Move => {
-            "Drag to move. Corners resize; the handle on top rotates (Shift turns in 15° steps)."
+            "Drag to move. Corners resize; the handle on top rotates (Shift turns in 15° steps). A layer's box moves what is inside it."
         }
         Tool::Marquee | Tool::EllipseSelect | Tool::Lasso => {
             "Drag to select. Shift-drag adds, Option-drag subtracts, both intersect. Click off the canvas or press Esc to deselect."
@@ -49,13 +49,62 @@ impl Workspace {
         };
         let tool = canvas.tool;
         let selected = canvas.doc.selection.is_some();
-        let defaults = self.default_colors(cx).into_any_element();
-        let mut panel = div().flex().flex_col().gap_6().child(
-            group("Tool", Some(defaults))
-                .gap_3()
-                .child(self.tool_button(cx))
-                .child(div().text_xs().text_color(rgb(FAINT)).child(hint(tool))),
-        );
+        let layer = canvas.selected.and_then(|id| canvas.doc.layer(id).ok());
+        let current = div()
+            .id("overview-layer")
+            .h(px(40.))
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_2p5()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(SURFACE))
+            .hover(|el| el.bg(rgb(HOVER)))
+            .map(|el| match layer {
+                Some(layer) => el
+                    .child(
+                        Icon::new(crate::canvas_layers::kind_icon(&layer.kind))
+                            .small()
+                            .text_color(rgb(MUTED)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .child(layer.name.clone()),
+                    ),
+                None => el.child(
+                    div()
+                        .flex_1()
+                        .text_sm()
+                        .text_color(rgb(FAINT))
+                        .child("No layer selected"),
+                ),
+            })
+            .child(
+                Icon::new(IconName::ChevronRight)
+                    .small()
+                    .text_color(rgb(FAINT)),
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.set_mode(crate::workspace::Mode::Layers, window, cx)
+            }));
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .child(group("Selected layer", None).child(current))
+            .child(group("Colors", None).child(self.color_pair(cx)))
+            .child(
+                group("Tool", None)
+                    .gap_3()
+                    .child(self.tool_button(cx))
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(hint(tool))),
+            );
         match tool {
             Tool::Brush | Tool::Eraser => {
                 let (size, hardness, opacity) = self.tool_options.brush(cx);
@@ -108,6 +157,26 @@ impl Workspace {
                                 cx.notify();
                             })),
                         ),
+                );
+            }
+            Tool::Move => {
+                panel = panel.child(
+                    group("Move", None)
+                        .gap_2()
+                        .child(
+                            toggle("auto-select", "Auto-select", self.tool_options.auto_select)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.tool_options.auto_select = !this.tool_options.auto_select;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(div().text_xs().text_color(rgb(FAINT)).child(
+                            if self.tool_options.auto_select {
+                                "A click picks a layer's box first and what is inside it on a second click; ⌘-click picks what is under the pointer at once."
+                            } else {
+                                "Drags move the selected layer wherever they start; ⌘-click picks what is under the pointer."
+                            },
+                        )),
                 );
             }
             _ => {}

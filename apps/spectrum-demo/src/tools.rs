@@ -59,7 +59,11 @@ pub const TOOLS: [(Tool, &str, &str); 15] = [
         "Brush",
         "Paint with the foreground color on a Paint layer",
     ),
-    (Tool::Eraser, "Eraser", "Erase paint on a Paint layer"),
+    (
+        Tool::Eraser,
+        "Eraser",
+        "Erase part of whatever layer you start on",
+    ),
     (Tool::Text, "Text", "Click to place text"),
     (Tool::Box, "Box", "Drag to draw a box"),
     (Tool::Circle, "Circle", "Drag to draw a circle"),

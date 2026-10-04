@@ -255,6 +255,26 @@ impl Service {
             kind => bail!("exporting is not implemented for {kind}"),
         }
     }
+    /// The width and height an asset exports at full size.
+    pub fn export_size(&self, id: AssetId) -> Result<(u32, u32)> {
+        let asset = self.library.get(id)?;
+        match asset.kind.as_str() {
+            "image" => {
+                let photo = self.image(id)?;
+                spectrum_imaging::adjusted_image_dimensions(
+                    photo.width,
+                    photo.height,
+                    &photo.adjustments,
+                )
+                .context("the image has no size")
+            }
+            "canvas" => {
+                let doc = prism_core::Workspace::load_read_only(&self.library.path(&asset)?)?;
+                Ok((doc.width, doc.height))
+            }
+            kind => bail!("exporting is not implemented for {kind}"),
+        }
+    }
     pub fn create_canvas(&self, name: String, width: u32, height: u32) -> Result<Asset> {
         let path = self
             .library

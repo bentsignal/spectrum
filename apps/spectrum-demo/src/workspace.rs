@@ -43,9 +43,10 @@ pub enum Mode {
     Color,
     Crop,
     Layers,
-    Tool,
+    Overview,
     Style,
     Info,
+    Canvas,
 }
 
 impl Mode {
@@ -58,11 +59,12 @@ impl Mode {
             Mode::Style => "Style",
             Mode::Info => "Info",
             Mode::Layers => "Layers",
-            Mode::Tool => "Tool",
+            Mode::Overview => "Overview",
+            Mode::Canvas => "Canvas",
         }
     }
 
-    fn icon(self) -> IconName {
+    pub fn icon(self) -> IconName {
         match self {
             Mode::Projects => IconName::FolderClosed,
             Mode::Assets => IconName::LayoutDashboard,
@@ -71,7 +73,8 @@ impl Mode {
             Mode::Style => IconName::Palette,
             Mode::Info => IconName::Info,
             Mode::Layers => IconName::GalleryVerticalEnd,
-            Mode::Tool => IconName::Settings2,
+            Mode::Overview => IconName::Inspector,
+            Mode::Canvas => IconName::Frame,
         }
     }
 }
@@ -161,6 +164,12 @@ pub struct Workspace {
     pub edits: crate::preview::ImageEdits,
     pub export: Entity<crate::export::ExportSettings>,
     pub canvas_size: Entity<crate::canvas_size::CanvasSize>,
+    /// The sidebar's mode list is open, and whether holding Command opened it.
+    pub mode_menu: bool,
+    pub mode_menu_held: bool,
+    /// Counts Command presses and other keys, so a pending hold knows if it
+    /// is still the same one.
+    pub hold_token: u64,
     pub colors: crate::colors::Colors,
     pub crop_drag: Option<crate::crop::CropDrag>,
     pub crop_aspect: usize,
@@ -386,6 +395,9 @@ impl Workspace {
             edits: Default::default(),
             export: crate::export::ExportSettings::new(window, cx),
             canvas_size: crate::canvas_size::CanvasSize::new(window, cx),
+            mode_menu: false,
+            mode_menu_held: false,
+            hold_token: 0,
             colors: crate::colors::Colors::new(window, cx),
             crop_drag: None,
             crop_aspect: 0,
@@ -433,7 +445,13 @@ impl Workspace {
             (Place::Home, _) => vec![Mode::Projects, Mode::Assets],
             (_, Open::Overview) => Vec::new(),
             (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop, Mode::Info],
-            (_, Open::Canvas(_)) => vec![Mode::Layers, Mode::Tool, Mode::Style, Mode::Color],
+            (_, Open::Canvas(_)) => vec![
+                Mode::Overview,
+                Mode::Layers,
+                Mode::Style,
+                Mode::Color,
+                Mode::Canvas,
+            ],
         }
     }
 
@@ -538,7 +556,7 @@ impl Workspace {
             }
             Open::Canvas(id) => {
                 self.load_canvas(id, window, cx);
-                Mode::Layers
+                Mode::Overview
             }
         };
         cx.notify();
@@ -645,9 +663,6 @@ impl Workspace {
                 .and_then(|s| s.project_name(id))
                 .map(|name| name.to_string().into()),
         };
-        let selected = modes.iter().position(|m| *m == self.mode).unwrap_or(0);
-        let view = cx.entity();
-        let tabs = modes.clone();
         div()
             .px_3()
             .pb_3()
@@ -674,17 +689,7 @@ impl Workspace {
                     .child(div().truncate().child(label))
                     .on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))
             }))
-            .when(!modes.is_empty(), |el| {
-                el.child(crate::controls::segmented(
-                    "modes",
-                    modes.iter().map(|m| (Some(m.icon()), m.label())),
-                    selected,
-                    move |index, window, cx| {
-                        let mode = tabs[index];
-                        view.update(cx, |this, cx| this.set_mode(mode, window, cx));
-                    },
-                ))
-            })
+            .when(!modes.is_empty(), |el| el.child(self.mode_switcher(cx)))
     }
 
     fn sidebar(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -696,7 +701,8 @@ impl Workspace {
             (_, Mode::Color) => self.color_sidebar(cx).into_any_element(),
             (_, Mode::Crop) => self.crop_sidebar(cx).into_any_element(),
             (_, Mode::Style) => self.style_sidebar(cx).into_any_element(),
-            (_, Mode::Tool) => self.tool_sidebar(cx).into_any_element(),
+            (_, Mode::Overview) => self.tool_sidebar(cx).into_any_element(),
+            (_, Mode::Canvas) => self.canvas_settings(cx).into_any_element(),
             (_, Mode::Info) => self.info_sidebar(cx).into_any_element(),
             _ => self.layers_sidebar(cx).into_any_element(),
         };
@@ -858,6 +864,13 @@ impl Render for Workspace {
             }))
             // Enter closes a shape being drawn with the Pen; fields and
             // lists that use Enter handle it before it gets here.
+            // Any key during a Command hold is a shortcut, not a hold.
+            .capture_key_down(cx.listener(|this, _: &KeyDownEvent, _, _| this.hold_token += 1))
+            .on_modifiers_changed(
+                cx.listener(|this, event: &ModifiersChangedEvent, window, cx| {
+                    this.modifiers_changed(&event.modifiers, window, cx)
+                }),
+            )
             .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, cx| {
                 if event.keystroke.key == "space" {
                     this.hold_space(false, cx);

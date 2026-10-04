@@ -19,7 +19,7 @@ top of the sidebar goes up one level, from an item to the project, then Home.
 
 | Shortcut | Action |
 | --- | --- |
-| Command+1 to 5 | Switch to the nth sidebar mode |
+| Command+1 to 5 | Switch to the nth sidebar mode (hold Command to see the list) |
 | Command+K | Go to a project, place, or asset; at Home, search the whole library |
 | Command+A, Esc | Select all assets, clear the selection |
 | Option+1 to 6 | Switch to the nth section of Color or Style |
@@ -51,23 +51,22 @@ edit history. Crop mode shows the whole frame with a draggable crop box and
 aspect presets; its sidebar rotates, flips, and straightens. Compare in the title bar shows the unedited original beside the edit. Info
 shows capture details, the image's projects, and the canvases that use it. Inside a project,
 "Recently added" sorts by when assets joined it. Double-click a canvas, or use New canvas in a project, to open it. Canvases
-offer four modes: Layers (the layer list: drag a row to reorder, with a line showing where it lands
-(above or below the list means top or bottom); right-click to rename, duplicate, hide, put inside, or delete; layers inside another share a box with it), Tool, Style (one section at a time:
+offer five modes, chosen from the sidebar's dropdown: Overview (where it starts: the selected layer, the foreground and background colors, the tool with its settings, and the selection's actions), Layers (the layer list: drag a row to reorder, with a line showing where it lands
+(above or below the list means top or bottom); right-click to rename, duplicate, hide, put inside, or delete; layers inside another share a box with it), Style (one section at a time:
 Look for blending, opacity, text (font, alignment, line height, tracking), and fills; Arrange for alignment and
-rotation, and Guides (add, show, snapping); Effects lists Photoshop's layer styles with switches (drop shadow, stroke, glows, inner shadow, bevel & emboss, satin, color and gradient overlays) and shows the chosen one's settings below; or, with nothing selected, the canvas's size (Resize… sets exact pixels,
-with proportions kept or not, or a preset) and background), and Color (the selected layer's adjustments;
+rotation, and Guides (add, show, snapping); Effects lists Photoshop's layer styles with switches (drop shadow, stroke, glows, inner shadow, bevel & emboss, satin, color and gradient overlays) and shows the chosen one's settings below), Color (the selected layer's adjustments;
 image layers choose Edit locally or Edit globally). Click a layer on the canvas
 to select it, drag to move it, or drag a corner handle to resize it (that corner
 stays put and the layer scales from the opposite side), or the handle above it to rotate it (snapping near 45°). Text places text where
-you click; Box and Circle draw by dragging; Gradient drags a new full-canvas layer from the foreground to the background color; Move returns after. A canvas's Tool tab holds the current tool, the colors, the tool's settings ([ and ] size the brush), and the selection's actions (fill, hide with Delete, crop, invert). Marquee, Ellipse select, Lasso, and Magic wand select (Shift adds, Option subtracts, both intersect; a click off the canvas or Esc deselects); Delete hides what the selection covers on the selected layer, or else the topmost layer showing there, text and shapes included, which stay editable. The Brush previews its stroke exactly as it lands; the Eraser works on whatever layer shows where the stroke starts, of any kind, within the selection, and Look's mask group brings erased parts back; Pen clicks corners, drags curves, and keeps 45° with Shift; Crop drags the bounds to keep; Eyedropper shows a loupe with the color's code (⌘C copies). Every slider's value can be clicked and typed. A slider drag saves, and undoes, as one step. Look's Inside and mask group puts a layer inside the one below it (it shows only where that layer is; dropping a row on another in the list does the same) or takes it out, and shows, inverts, or removes a layer's mask. Shape fills are Solid or Gradient, with a stop editor (drag, add, remove, reverse), kind, angle, scale, center, and size. With Snap on in the title bar, dragged layers snap to guides, the canvas, and other layers; drag a guide to move it, or off the canvas to remove it. Double-click text,
+you click; Box and Circle draw by dragging; Gradient drags a new full-canvas layer from the foreground to the background color; Move returns after. Overview holds the current tool, the colors, the tool's settings ([ and ] size the brush; Move's Auto-select picks a layer's box first and what is inside it on a second click, or at once with Command), and the selection's actions (fill, hide with Delete, crop, invert); dragging a box moves what is inside it. The Canvas mode sets the canvas's size (Resize… sets exact pixels, with proportions kept or not, or a preset), background, and guides. Marquee, Ellipse select, Lasso, and Magic wand select (Shift adds, Option subtracts, both intersect; a click off the canvas or Esc deselects); Delete hides what the selection covers on the selected layer, or else the topmost layer showing there, text and shapes included, which stay editable. The Brush previews its stroke exactly as it lands; the Eraser works on whatever layer shows where the stroke starts, of any kind, within the selection, and Look's mask group brings erased parts back; Pen clicks corners, drags curves, and keeps 45° with Shift; Crop drags the bounds to keep; Eyedropper shows a loupe with the color's code (⌘C copies). Every slider's value can be clicked and typed. A slider drag saves, and undoes, as one step. Look's Inside and mask group puts a layer inside the one below it (it shows only where that layer is; dropping a row on another in the list does the same) or takes it out, and shows, inverts, or removes a layer's mask. Shape fills are Solid or Gradient, with a stop editor (drag, add, remove, reverse), kind, angle, scale, center, and size. With Snap on in the title bar, dragged layers snap to guides, the canvas, and other layers; drag a guide to move it, or off the canvas to remove it. Double-click text,
 or press Command+E, to edit it in a field under it on the canvas. Edits apply
 to a local copy of the document at once and save in order behind it; a dragged
 layer, or one whose style changes, is drawn from separate renders of the layers
 below it, the layer itself, and the layers above, so it updates at once. Image
 layers can swap their image, which also replaces a missing-image placeholder.
 Export… in the title bar or the right-click menu picks a format (JPEG, PNG,
-TIFF, or WebP for images; JPEG or PNG for canvases), JPEG quality, and full size
-or a long edge, then asks where to save; choices and the folder carry over. Delete or Backspace removes the selected layer or asks to delete the
+TIFF, or WebP for images; JPEG or PNG for canvases), JPEG quality, and resolution
+(100%, 75%, 50%, 25%, or a custom percent or width, showing the size it makes), then asks where to save; choices and the folder carry over. Delete or Backspace removes the selected layer or asks to delete the
 selected assets. Command+Z steps canvas history too.
 
 GPUI 0.2.2 and GPUI Component 0.5.1 are pinned. Spectrum owns its grayscale theme

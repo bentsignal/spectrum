@@ -123,6 +123,8 @@ fn export_writes_images_and_canvases_outside_the_library() {
     service.place(canvas.id, image.id).unwrap();
     let out = tmp.path().join("out");
     std::fs::create_dir_all(&out).unwrap();
+    assert_eq!(service.export_size(image.id).unwrap(), (12, 8));
+    assert_eq!(service.export_size(canvas.id).unwrap(), (16, 16));
     service.export(image.id, &out.join("image.jpg")).unwrap();
     service.export(canvas.id, &out.join("canvas.png")).unwrap();
     assert_eq!(

@@ -395,22 +395,26 @@ impl Workspace {
                     item.detail
                         .map(|d| div().text_xs().text_color(rgb(FAINT)).child(d)),
                 )
-                // A tool's one-key shortcut, as a key cap.
-                .children(item.tool.and_then(crate::tools::tool_letter).map(|key| {
-                    div()
-                        .flex_none()
-                        .min_w(px(22.))
-                        .h(px(22.))
-                        .px_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(rgb(BORDER))
-                        .text_xs()
-                        .text_color(rgb(MUTED))
-                        .child(key)
+                // A tool's one-key shortcut, as a key cap in a slot as wide
+                // as the widest, so the text beside every tool lines up.
+                .children(item.tool.map(|tool| {
+                    div().flex_none().w(px(34.)).flex().justify_end().children(
+                        crate::tools::tool_letter(tool).map(|key| {
+                            div()
+                                .min_w(px(22.))
+                                .h(px(22.))
+                                .px_1()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(rgb(BORDER))
+                                .text_xs()
+                                .text_color(rgb(MUTED))
+                                .child(key)
+                        }),
+                    )
                 }))
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.choose(choice.clone(), window, cx)),

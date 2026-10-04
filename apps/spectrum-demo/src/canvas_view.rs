@@ -24,8 +24,7 @@ impl Workspace {
             canvas.doc.width.max(1) as f32,
             canvas.doc.height.max(1) as f32,
         );
-        let fit = (f32::from(area.size.width) / w).min(f32::from(area.size.height) / h);
-        let scale = canvas.zoom.unwrap_or(fit);
+        let scale = canvas.zoom.unwrap_or_else(|| self.fit_scale());
         let size = size(px(w * scale), px(h * scale));
         let origin = area.origin
             + point(
@@ -56,6 +55,25 @@ impl Workspace {
             };
             (layer.visible && !layer.locked && inside && painted).then_some(layer.id)
         })
+    }
+
+    /// The layer a Move click takes. Auto-select picks a layer's box first
+    /// and what is inside it on a second click (or at once with ⌘); with
+    /// auto-select off, the selected layer moves wherever the drag starts.
+    fn pick_layer(&self, point: (f32, f32), deep: bool) -> Option<u64> {
+        let canvas = self.canvas.as_ref()?;
+        if !self.tool_options.auto_select && !deep && canvas.selected.is_some() {
+            return canvas.selected;
+        }
+        let under = self.layer_at(point)?;
+        if deep {
+            return Some(under);
+        }
+        let holder = crate::layer_cache::holder_of(&canvas.doc, under)?;
+        let inside_already = canvas
+            .selected
+            .is_some_and(|s| crate::layer_cache::holder_of(&canvas.doc, s) == Some(holder));
+        Some(if inside_already { under } else { holder })
     }
 
     /// The selected layer's corner under the pointer, if any.
@@ -190,7 +208,10 @@ impl Workspace {
             canvas.guide_drag = Some(guide);
             return cx.notify();
         }
-        let hit = corner.map(|(id, _)| id).or_else(|| self.layer_at(point));
+        let deep = event.modifiers.secondary();
+        let hit = corner
+            .map(|(id, _)| id)
+            .or_else(|| self.pick_layer(point, deep));
         if event.click_count == 2
             && hit.is_some()
             && hit == self.canvas.as_ref().and_then(|c| c.selected)
@@ -404,17 +425,30 @@ impl Workspace {
         let Some(canvas) = &mut self.canvas else {
             return;
         };
-        let Some(layer) = canvas.doc.layers.iter_mut().find(|l| l.id == id) else {
-            return;
+        // A layer holding others carries them along, as its box shows.
+        let index = canvas.doc.layers.iter().position(|l| l.id == id);
+        let moving = match index {
+            Some(index) if !crate::layer_cache::inside(&canvas.doc, index) => {
+                crate::layer_cache::unit(&canvas.doc, index)
+            }
+            Some(_) => vec![id],
+            None => return,
         };
-        layer.transform.x += dx;
-        layer.transform.y += dy;
-        let transform = layer.transform;
-        if let Some((min, max)) = canvas.bounds.get_mut(&id) {
-            *min = [min[0] + dx, min[1] + dy];
-            *max = [max[0] + dx, max[1] + dy];
+        let mut commands = Vec::new();
+        for id in moving {
+            let Some(layer) = canvas.doc.layers.iter_mut().find(|l| l.id == id) else {
+                continue;
+            };
+            layer.transform.x += dx;
+            layer.transform.y += dy;
+            let transform = layer.transform;
+            if let Some((min, max)) = canvas.bounds.get_mut(&id) {
+                *min = [min[0] + dx, min[1] + dy];
+                *max = [max[0] + dx, max[1] + dy];
+            }
+            commands.push(Command::SetTransform { id, transform });
         }
-        self.canvas_commands(vec![Command::SetTransform { id, transform }], window, cx);
+        self.canvas_commands(commands, window, cx);
     }
 
     /// Command+E or a double-click: edit the selected text layer on the canvas.
@@ -656,8 +690,8 @@ impl Workspace {
             });
         div()
             .size_full()
-            .p_8()
-            .pb(px(40.))
+            .p_4()
+            .pb(px(24.))
             // A press in the margin around the canvas area deselects with a
             // selection tool, as a click off the canvas does.
             .on_mouse_down(

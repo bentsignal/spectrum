@@ -1,5 +1,5 @@
 //! Style mode: one section at a time for the selected layer's look, its
-//! arrangement, and its shadow; with nothing selected, the canvas itself.
+//! arrangement, and its effects; and the Canvas mode's settings.
 use crate::{
     controls::{chip, group, slider_row},
     workspace::Workspace,
@@ -19,12 +19,11 @@ const ALIGN: [(&str, Alignment); 6] = [
 ];
 
 impl Workspace {
-    fn canvas_settings(&self, cx: &mut Context<Self>) -> Div {
-        let look = self.look_section(cx);
-        let (w, h) = self
-            .canvas
-            .as_ref()
-            .map_or((0, 0), |c| (c.doc.width, c.doc.height));
+    /// The Canvas mode: its size, background, and guides.
+    pub fn canvas_settings(&self, cx: &mut Context<Self>) -> Div {
+        let (w, h, background) = self.canvas.as_ref().map_or((0, 0, [0; 4]), |c| {
+            (c.doc.width, c.doc.height, c.doc.background)
+        });
         div()
             .flex()
             .flex_col()
@@ -46,7 +45,7 @@ impl Workspace {
                         ),
                 ),
             )
-            .child(look)
+            .child(group("Background", None).child(self.background_color_row(background)))
             .child(self.guides_section(cx))
     }
 
@@ -81,7 +80,9 @@ impl Workspace {
 
     pub fn style_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         if self.selected_layer().is_none() {
-            return self.canvas_settings(cx);
+            return div().text_sm().text_color(rgb(crate::theme::FAINT)).child(
+                "Select a layer to style it. The canvas's size and background are in Canvas.",
+            );
         }
         let chips: Vec<_> = SECTIONS
             .iter()

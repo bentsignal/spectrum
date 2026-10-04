@@ -8,8 +8,12 @@ use crate::{canvas_layers::LayerRow, workspace::Workspace};
 use gpui::{prelude::*, *};
 use prism_core::Command;
 
-/// Row height plus the gap between rows.
-const PITCH: f32 = 38.;
+/// A row's height, the gap between rows, and the extra room around a box
+/// of layers inside another.
+const ROW: f32 = 36.;
+const GAP: f32 = 2.;
+const PITCH: f32 = ROW + GAP;
+const BOX_ROOM: f32 = 8.;
 
 impl Workspace {
     /// The rows, with the drop line while a row is dragged.
@@ -49,37 +53,66 @@ impl Workspace {
                 })
                 .collect()
         });
+        // Rows sit 2px apart, with more room around each box so a selected
+        // row beside one never touches it.
+        let mut tops = Vec::with_capacity(count);
+        let mut y = 0.;
+        for row in 0..count {
+            let opens = boxes.iter().any(|(first, _)| *first == row);
+            let after = boxes.iter().any(|(first, rows)| first + rows == row);
+            if row > 0 && (opens || after) {
+                y += BOX_ROOM;
+            }
+            tops.push(y);
+            y += PITCH;
+        }
+        let end = (y - GAP).max(0.);
+        let boundary = {
+            let tops = tops.clone();
+            move |slot: usize| tops.get(slot).map_or(end, |top| top - GAP / 2.)
+        };
+        let line_at = boundary.clone();
+        let tops_at = tops.clone();
         div()
             .id("layer-list")
             .relative()
             .flex()
             .flex_col()
-            .gap_0p5()
             .children(boxes.into_iter().map(|(first, rows)| {
+                let top = tops[first];
+                let bottom = tops[first + rows - 1] + ROW;
                 div()
                     .absolute()
                     .left(px(-4.))
                     .right(px(-4.))
-                    .top(px(first as f32 * PITCH - 4.))
-                    .h(px(rows as f32 * PITCH + 6.))
+                    .top(px(top - 4.))
+                    .h(px(bottom - top + 8.))
                     .rounded_lg()
                     .border_1()
                     .border_color(rgb(0x333333))
                     .bg(rgb(0x1c1c1c))
             }))
-            .children(rows)
+            .children(rows.into_iter().enumerate().map(|(row, element)| {
+                let previous = row.checked_sub(1).map_or(0., |p| tops[p] + ROW);
+                div().mt(px(tops[row] - previous)).child(element)
+            }))
             .on_drag_move::<LayerRow>(cx.listener(
                 move |this, event: &DragMoveEvent<LayerRow>, _, cx| {
                     let y = f32::from(event.event.position.y - event.bounds.top());
                     let dragged = event.drag(cx).0;
                     // The middle of another row means inside it.
-                    let row = (y / PITCH).floor();
-                    let within = y / PITCH - row;
-                    let target =
-                        (row >= 0. && (row as usize) < count && (0.3..0.7).contains(&within))
-                            .then_some(row as usize)
-                            .filter(|&row| shown.get(row).is_some_and(|(id, _)| *id != dragged));
-                    let slot = (y / PITCH).round().clamp(0., count as f32) as usize;
+                    let row = tops.iter().rposition(|top| *top <= y);
+                    let target = row
+                        .filter(|&row| (0.3..0.7).contains(&((y - tops[row]) / ROW)))
+                        .filter(|&row| shown.get(row).is_some_and(|(id, _)| *id != dragged));
+                    // Otherwise between rows: the nearest boundary.
+                    let slot = (0..=count)
+                        .min_by(|a, b| {
+                            (boundary(*a) - y)
+                                .abs()
+                                .total_cmp(&(boundary(*b) - y).abs())
+                        })
+                        .unwrap_or(0);
                     if let Some(canvas) = &mut this.canvas {
                         let (slot, inside) = match target {
                             Some(row) => (None, Some(row)),
@@ -94,7 +127,7 @@ impl Workspace {
                 },
             ))
             .children(slot.map(|slot| {
-                let top = (slot as f32 * PITCH - 2.).max(-1.);
+                let top = (line_at(slot) - 1.).max(-1.);
                 div()
                     .absolute()
                     .left_0()
@@ -114,8 +147,8 @@ impl Workspace {
                     .absolute()
                     .left_0()
                     .right_0()
-                    .top(px(row as f32 * PITCH))
-                    .h(px(PITCH - 2.))
+                    .top(px(tops_at[row]))
+                    .h(px(ROW))
                     .rounded_md()
                     .border_2()
                     .border_color(rgb(0x4a7fe0))

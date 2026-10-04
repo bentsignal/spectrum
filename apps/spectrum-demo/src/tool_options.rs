@@ -10,6 +10,9 @@ use gpui_component::slider::{SliderEvent, SliderState};
 pub struct ToolOptions {
     pub wand_tolerance: Entity<SliderState>,
     pub contiguous: bool,
+    /// The Move tool picks the layer clicked on (its box first); off, drags
+    /// move the selected layer wherever they start.
+    pub auto_select: bool,
     pub brush_size: Entity<SliderState>,
     pub brush_hardness: Entity<SliderState>,
     pub brush_opacity: Entity<SliderState>,
@@ -34,6 +37,7 @@ impl ToolOptions {
         Self {
             wand_tolerance,
             contiguous: true,
+            auto_select: true,
             brush_size,
             brush_hardness,
             brush_opacity,

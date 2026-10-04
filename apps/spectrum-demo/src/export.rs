@@ -1,5 +1,6 @@
-//! Export: a dialog for format, quality, and size, then the save panel. The
-//! choices and last folder carry over to the next export.
+//! Export: a dialog for format, quality, and resolution (a share of full
+//! size, or a custom percent or width, with the height following), then
+//! the save panel. The choices and last folder carry over to the next export.
 use crate::{
     controls::{segmented, slider_row},
     theme::*,
@@ -10,7 +11,7 @@ use gpui_component::{
     WindowExt,
     button::{Button, ButtonVariants},
     dialog::DialogButtonProps,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     notification::Notification,
     slider::SliderState,
 };
@@ -26,33 +27,75 @@ const FORMATS: [(&str, &str); 4] = [
     ("WebP", "webp"),
 ];
 
+/// The resolutions offered, as shares of full size; the last is custom.
+const SHARES: [(&str, f32); 4] = [("100%", 1.), ("75%", 0.75), ("50%", 0.5), ("25%", 0.25)];
+
 pub struct ExportSettings {
     format: usize,
     quality: Entity<SliderState>,
-    /// Limit the long edge to `edge` pixels instead of exporting at full size.
-    resize: bool,
-    edge: Entity<InputState>,
+    /// An index into `SHARES`, or its length for a custom size.
+    share: usize,
+    /// The custom size is a width in pixels rather than a percent.
+    in_pixels: bool,
+    custom: Entity<InputState>,
+    /// The asset's full size.
+    full: (u32, u32),
     folder: Option<PathBuf>,
+    _changed: Subscription,
 }
 
 impl ExportSettings {
     pub fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Entity<Self> {
         let quality = slider(cx, 1., 100., 1., 92.);
-        let edge = cx.new(|cx| InputState::new(window, cx).default_value("2048"));
-        cx.new(|_| Self {
+        let custom = cx.new(|cx| InputState::new(window, cx).default_value("50"));
+        cx.new(|cx| Self {
             format: 0,
             quality,
-            resize: false,
-            edge,
+            share: 0,
+            in_pixels: false,
+            _changed: cx.subscribe(&custom, |_, _, _: &InputEvent, cx| cx.notify()),
+            custom,
+            full: (0, 0),
             folder: None,
         })
     }
 
+    /// The share of full size to export at, at most all of it.
+    fn scale(&self, cx: &App) -> f32 {
+        if let Some((_, share)) = SHARES.get(self.share) {
+            return *share;
+        }
+        let value = self
+            .custom
+            .read(cx)
+            .value()
+            .trim()
+            .parse::<f32>()
+            .unwrap_or(100.);
+        let scale = if self.in_pixels {
+            value / self.full.0.max(1) as f32
+        } else {
+            value / 100.
+        };
+        if scale.is_finite() {
+            scale.clamp(0.001, 1.)
+        } else {
+            1.
+        }
+    }
+
+    /// The width and height the export will have.
+    fn size(&self, cx: &App) -> (u32, u32) {
+        let scale = self.scale(cx);
+        let side = |full: u32| ((full as f32 * scale).round() as u32).max(1);
+        (side(self.full.0), side(self.full.1))
+    }
+
     fn options(&self, cx: &App) -> ExportOptions {
-        let edge = self.edge.read(cx).value().trim().parse::<u32>().ok();
+        let (width, height) = self.size(cx);
         ExportOptions {
             quality: self.quality.read(cx).value().start().round() as u8,
-            max_size: edge.filter(|edge| self.resize && *edge > 0),
+            max_size: (self.scale(cx) < 1.).then_some(width.max(height)),
         }
     }
 }
@@ -73,11 +116,18 @@ impl Workspace {
             return;
         };
         let canvas = asset.kind == "canvas";
+        let full = self
+            .store
+            .as_ref()
+            .ok()
+            .and_then(|s| s.service.export_size(id).ok())
+            .unwrap_or((0, 0));
         let settings = self.export.clone();
         settings.update(cx, |settings, _| {
             if canvas && settings.format > 1 {
                 settings.format = 0;
             }
+            settings.full = full;
         });
         let view = cx.entity();
         let title: SharedString = format!("Export {}", asset.name).into();
@@ -89,7 +139,7 @@ impl Workspace {
                 .iter()
                 .take(if canvas { 2 } else { FORMATS.len() })
                 .map(|(name, _)| (None, *name));
-            let (pick_format, pick_size) = (settings.clone(), settings.clone());
+            let pick_format = settings.clone();
             let quality = current.quality.read(cx).value().start();
             let format = div()
                 .flex()
@@ -107,32 +157,69 @@ impl Workspace {
                         })
                     },
                 ));
+            let (pick_share, pick_unit) = (settings.clone(), settings.clone());
+            let shares = SHARES
+                .iter()
+                .map(|(name, _)| (None, *name))
+                .chain([(None, "Custom")]);
+            let (width, height) = current.size(cx);
             let size = div()
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(label("Size"))
+                .child(label("Resolution"))
                 .child(segmented(
-                    "export-size",
-                    [(None, "Full size"), (None, "Long edge")],
-                    current.resize as usize,
+                    "export-share",
+                    shares,
+                    current.share,
                     move |index, _, cx| {
-                        pick_size.update(cx, |settings, cx| {
-                            settings.resize = index == 1;
+                        pick_share.update(cx, |settings, cx| {
+                            settings.share = index;
                             cx.notify();
                         })
                     },
                 ))
-                .when(current.resize, |el| {
+                .when(current.share == SHARES.len(), |el| {
                     el.child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().w(px(120.)).child(Input::new(&current.edge)))
-                            .child(div().text_sm().text_color(rgb(MUTED)).child("pixels")),
+                            .child(div().w(px(120.)).child(Input::new(&current.custom)))
+                            .child(div().w(px(170.)).child(segmented(
+                                "export-unit",
+                                [(None, "Percent"), (None, "Width px")],
+                                current.in_pixels as usize,
+                                move |index, window, cx| {
+                                    pick_unit.update(cx, |settings, cx| {
+                                        let pixels = index == 1;
+                                        if settings.in_pixels != pixels {
+                                            // Keep the size, in the new unit.
+                                            let (width, _) = settings.size(cx);
+                                            let percent =
+                                                width as f32 * 100. / settings.full.0.max(1) as f32;
+                                            let value = if pixels {
+                                                width.to_string()
+                                            } else {
+                                                format!("{percent:.0}")
+                                            };
+                                            settings.in_pixels = pixels;
+                                            settings.custom.update(cx, |input, cx| {
+                                                input.set_value(value, window, cx)
+                                            });
+                                        }
+                                        cx.notify();
+                                    })
+                                },
+                            ))),
                     )
-                });
+                })
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(MUTED))
+                        .child(format!("{width} × {height} px")),
+                );
             let body = div()
                 .flex()
                 .flex_col()

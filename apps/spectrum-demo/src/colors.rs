@@ -62,7 +62,7 @@ impl Colors {
     }
 }
 
-/// A small arrow pointing both ways, drawn in the current text color.
+/// A small arrow pointing up and down, drawn in the current text color.
 fn swap_arrow() -> impl IntoElement {
     canvas(
         |_, _, _| {},
@@ -70,12 +70,12 @@ fn swap_arrow() -> impl IntoElement {
             let c = bounds.center();
             let color = window.text_style().color;
             let mut path = PathBuilder::stroke(px(1.25));
-            path.move_to(c + point(px(-6.), px(0.)));
-            path.line_to(c + point(px(6.), px(0.)));
+            path.move_to(c + point(px(0.), px(-6.)));
+            path.line_to(c + point(px(0.), px(6.)));
             for side in [-1., 1.] {
-                path.move_to(c + point(px(side * 3.), px(-3.)));
-                path.line_to(c + point(px(side * 6.), px(0.)));
-                path.line_to(c + point(px(side * 3.), px(3.)));
+                path.move_to(c + point(px(-3.), px(side * 3.)));
+                path.line_to(c + point(px(0.), px(side * 6.)));
+                path.line_to(c + point(px(3.), px(side * 3.)));
             }
             if let Ok(path) = path.build() {
                 window.paint_path(path, color);
@@ -140,50 +140,69 @@ impl Workspace {
         }
     }
 
-    /// Foreground and background wells, with a swap button.
-    pub fn default_colors(&self, cx: &mut Context<Self>) -> Div {
+    /// Foreground and background, each labeled with its code, and an arrow
+    /// at the left that swaps them (X; D resets them).
+    pub fn color_pair(&self, cx: &mut Context<Self>) -> Div {
+        let row = |id: &'static str, label: &'static str, color: [u8; 4], picker| {
+            let [r, g, b, _] = color;
+            div()
+                .flex()
+                .items_center()
+                .gap_2p5()
+                .child(color_well(id, color, picker))
+                .child(div().flex_1().text_sm().child(label))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(FAINT))
+                        .child(format!("#{r:02X}{g:02X}{b:02X}")),
+                )
+        };
         div()
             .flex()
             .items_center()
-            .gap_2()
-            .child(color_well(
-                "fore",
-                self.colors.fore,
-                &self.colors.fore_picker,
-            ))
+            .gap_1()
             .child(
                 div()
                     .id("swap-colors")
-                    .w(px(18.))
-                    .h(px(24.))
+                    .w(px(22.))
+                    .h(px(56.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded_sm()
+                    .rounded_md()
                     .text_color(rgb(MUTED))
-                    .hover(|el| el.text_color(rgb(TEXT)))
+                    .hover(|el| el.bg(rgb(HOVER)).text_color(rgb(TEXT)))
                     .child(swap_arrow())
                     .tooltip(|window, cx| {
-                        gpui_component::tooltip::Tooltip::new("Swap colors").build(window, cx)
+                        gpui_component::tooltip::Tooltip::new("Swap foreground and background (X)")
+                            .build(window, cx)
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
-                        let colors = &mut this.colors;
-                        (colors.fore, colors.back) = (colors.back, colors.fore);
-                        let (fore, back) = (colors.fore, colors.back);
-                        colors
-                            .fore_picker
-                            .update(cx, |picker, cx| picker.set(fore, window, cx));
-                        colors
-                            .back_picker
-                            .update(cx, |picker, cx| picker.set(back, window, cx));
-                        cx.notify();
+                        let (fore, back) = (this.colors.fore, this.colors.back);
+                        this.set_default_color(back, false, window, cx);
+                        this.set_default_color(fore, true, window, cx);
                     })),
             )
-            .child(color_well(
-                "back",
-                self.colors.back,
-                &self.colors.back_picker,
-            ))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(row(
+                        "fore",
+                        "Foreground",
+                        self.colors.fore,
+                        &self.colors.fore_picker,
+                    ))
+                    .child(row(
+                        "back",
+                        "Background",
+                        self.colors.back,
+                        &self.colors.back_picker,
+                    )),
+            )
     }
 
     pub fn text_color_row(&self, color: [u8; 4]) -> Div {

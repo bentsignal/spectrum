@@ -30,7 +30,7 @@ fn blend_name(mode: BlendMode) -> SharedString {
     out.into()
 }
 
-fn kind_icon(kind: &LayerKind) -> IconName {
+pub fn kind_icon(kind: &LayerKind) -> IconName {
     match kind {
         LayerKind::Text { .. } => IconName::ALargeSmall,
         LayerKind::Raster { .. } => IconName::Frame,
