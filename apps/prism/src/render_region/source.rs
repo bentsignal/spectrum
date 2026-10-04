@@ -317,6 +317,28 @@ impl<'a> SourceDescriptor<'a> {
         }
     }
 
+    /// What decides a staged region's pixels, for sources that can name
+    /// their content (authenticated rasters); `None` for anything else.
+    pub(super) fn cache_key(&self, region: SourceRegion) -> Option<String> {
+        let Self::RasterProvider {
+            source,
+            dimensions,
+            adjustments,
+            pixel_mask,
+            vector_mask,
+        } = self
+        else {
+            return None;
+        };
+        let content = source.content_sha256()?;
+        let adjustments = serde_json::to_string(adjustments).ok()?;
+        let mask = pixel_mask.map(|m| m.content_hash);
+        let vector = vector_mask.map(|m| (m.identity(), m.enabled, m.invert));
+        Some(format!(
+            "{content}|{dimensions:?}|{adjustments}|{mask:?}|{vector:?}|{region:?}"
+        ))
+    }
+
     fn adjustments(&self) -> &spectrum_imaging::Adjustments {
         match self {
             Self::RasterPath { adjustments, .. }
@@ -588,6 +610,30 @@ fn triangle_weights(source: u32, output: u32, coordinate: u32) -> TriangleWeight
         scale,
         sum,
     }
+}
+
+/// The source range under one scaled coordinate and each sample's weight,
+/// exactly as `sample_triangle_resize` weighs them. At equal sizes it is
+/// the one sample, whole (the neighbors it would also visit weigh zero).
+pub(super) fn triangle_weight_parts(
+    source: u32,
+    output: u32,
+    coordinate: u32,
+) -> (std::ops::Range<u32>, impl Fn(u32) -> f32) {
+    let weights = if source == output {
+        TriangleWeights {
+            start: coordinate,
+            end: coordinate + 1,
+            center: coordinate as f32,
+            scale: 1.0,
+            sum: 1.0,
+        }
+    } else {
+        triangle_weights(source, output, coordinate)
+    };
+    (weights.start..weights.end, move |sample| {
+        triangle_weight(sample, weights.center, weights.scale) / weights.sum
+    })
 }
 
 fn triangle_weight(sample: u32, center: f32, scale: f32) -> f32 {

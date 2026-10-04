@@ -192,32 +192,6 @@ pub fn slider_row(label: &'static str, value: String, state: &Entity<SliderState
         )
 }
 
-/// A compact slider for the tool options bar: label, slider, and a readout
-/// that can be clicked to type a value.
-pub fn inline_slider(
-    label: &'static str,
-    value: String,
-    state: &Entity<SliderState>,
-    width: f32,
-) -> Div {
-    let id = state.entity_id();
-    let typing = TYPING.with(|typing| {
-        typing
-            .borrow()
-            .as_ref()
-            .filter(|(editing, ..)| *editing == id)
-            .map(|(_, input, _)| input.clone())
-    });
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .text_xs()
-        .child(div().text_color(rgb(MUTED)).child(label))
-        .child(div().w(px(width)).child(Slider::new(state)))
-        .child(div().min_w(px(44.)).child(readout(value, state, typing)))
-}
-
 fn readout(
     value: String,
     state: &Entity<SliderState>,

@@ -3,7 +3,10 @@
 //! changed layer re-renders alone, and nothing older than the document is
 //! ever shown. Canvases that blend layers with what is under them (blend
 //! modes other than Normal, clipping) need the whole render instead.
-use crate::{canvas_split::render_alone, workspace::Workspace};
+use crate::{
+    canvas_split::{LayerBounds, render_alone},
+    workspace::Workspace,
+};
 use gpui::*;
 use prism_core::{BlendMode, Document, Layer};
 use std::{
@@ -38,8 +41,23 @@ pub struct LayerCache {
 }
 
 /// Changes closer together than this (a slider or resize drag) render as
-/// drafts at half density; the full render follows once they stop.
+/// drafts; the full render follows once they stop.
 const RAPID: Duration = Duration::from_millis(150);
+
+/// Drafts render at most this many device pixels, so they stay fast for
+/// large images while small layers such as text keep their full sharpness.
+const DRAFT_PIXELS: f32 = 1_200_000.;
+
+/// The density for a draft of a layer with these bounds and styles.
+fn draft_density(bounds: Option<LayerBounds>, style: &prism_core::LayerStyle, density: f32) -> f32 {
+    let Some((min, max)) = bounds else {
+        return (density * 0.5).max(0.25);
+    };
+    let reach = prism_core::style_reach(style);
+    let area = (max[0] - min[0] + 2. * reach) * (max[1] - min[1] + 2. * reach) * density * density;
+    let factor = (DRAFT_PIXELS / area.max(1.)).sqrt().clamp(0.25, 1.);
+    density * factor
+}
 
 impl LayerCache {
     /// Moves every layer image by a canvas-space offset at once, as when the
@@ -104,7 +122,20 @@ fn look(layer: &Layer) -> String {
     layer.transform.y = 0.;
     layer.name.clear();
     layer.locked = false;
-    serde_json::to_string(&layer).unwrap_or_default()
+    // Paint strokes and mask pixels go by their content hashes: writing
+    // them out on every refresh would cost more than the render.
+    let mut hashes = String::new();
+    if let prism_core::LayerKind::Paint { program } = &mut layer.kind {
+        hashes += &format!("|paint:{:?}", program.identity());
+        if let Ok(empty) = prism_core::BrushProgram::new(program.width, program.height) {
+            *program = empty;
+        }
+    }
+    if let Some(mask) = &mut layer.pixel_mask {
+        hashes += &format!("|mask:{:?}", mask.content_hash);
+        mask.alpha = std::sync::Arc::from([]);
+    }
+    serde_json::to_string(&layer).unwrap_or_default() + &hashes
 }
 
 /// The look plus what decides its pixels: the render scale and where the
@@ -197,7 +228,22 @@ impl Workspace {
                 .collect();
             let full = format!("{}{inner}{font}", key(layer, density));
             let current = cache.images.get(&layer.id).map(|i| i.key.as_str());
+            // A stroke being drawn shows as a patch; its layer renders once
+            // the stroke is applied, and the patch goes when that render is in.
+            let patched = canvas
+                .stroke_patch
+                .as_ref()
+                .filter(|p| members.contains(&p.layer))
+                .map(|p| p.committed);
             if current == Some(full.as_str()) {
+                if patched == Some(true)
+                    && let Some(patch) = canvas.stroke_patch.take()
+                {
+                    window.drop_image(patch.image).ok();
+                }
+                continue;
+            }
+            if patched == Some(false) {
                 continue;
             }
             // A change soon after the last one renders as a draft.
@@ -214,8 +260,11 @@ impl Workspace {
                     false
                 }
             };
+            // A layer being dragged (moved inside a unit, resized, or
+            // rotated) always renders as a draft.
+            let rapid = rapid || canvas.drag.is_some_and(|d| members.contains(&d.id));
             let render_density = if rapid {
-                (density * 0.5).max(0.5)
+                draft_density(canvas.bounds.get(&layer.id).copied(), &layer.style, density)
             } else {
                 density
             };

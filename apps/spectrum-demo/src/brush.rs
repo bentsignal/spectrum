@@ -6,7 +6,7 @@
 use crate::{tools::Tool, workspace::Workspace};
 use gpui::{prelude::*, *};
 use prism_core::{
-    BrushMode, BrushSample, BrushStroke, BrushStyle, Command, LayerKind, PaintSelection, Selection,
+    BrushMode, BrushSample, BrushStroke, BrushStyle, Command, LayerKind, PaintSelection,
 };
 
 impl Workspace {
@@ -94,18 +94,80 @@ impl Workspace {
     /// Applies the stroke so far to a copy of the document, so its layer
     /// renders with it while the pointer is still down.
     pub fn update_live_stroke(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        let (size, ..) = self.tool_options.brush(cx);
         let Some(command) = self.stroke_command(tool, cx) else {
             return;
         };
         let Some(canvas) = &mut self.canvas else {
             return;
         };
+        // The layer the stroke lands on: the selected Paint layer, or the
+        // one the command adds.
+        let target = match &command {
+            Command::AddBrushStroke { id, .. } => *id,
+            _ => canvas.doc.next_id,
+        };
+        let samples = match &command {
+            Command::AddBrushStroke { stroke, .. }
+            | Command::AddPaintLayerWithStroke { stroke, .. } => stroke.samples.clone(),
+            _ => return,
+        };
         let mut local = prism_core::Workspace::new(canvas.doc.clone(), None);
-        if local.execute(command).is_ok() {
-            canvas.live_doc = Some(local.document);
+        if local.execute(command).is_err() {
+            return;
+        }
+        let doc = local.document;
+        // Only where the stroke is: its samples' box, widened by the brush.
+        let Ok(layer) = doc.layer(target) else {
+            return;
+        };
+        let LayerKind::Paint { program } = &layer.kind else {
+            return;
+        };
+        let reach = size / 2. + 2.;
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for sample in samples.iter() {
+            x0 = x0.min(sample.x - reach);
+            y0 = y0.min(sample.y - reach);
+            x1 = x1.max(sample.x + reach);
+            y1 = y1.max(sample.y + reach);
+        }
+        let left = x0.floor().clamp(0., program.width as f32) as u32;
+        let top = y0.floor().clamp(0., program.height as f32) as u32;
+        let right = x1.ceil().clamp(0., program.width as f32) as u32;
+        let bottom = y1.ceil().clamp(0., program.height as f32) as u32;
+        if right <= left || bottom <= top {
+            return;
+        }
+        let region = (left, top, right - left, bottom - top);
+        let Ok(pixels) = prism_core::render_paint_layer_region(&doc, target, region) else {
+            return;
+        };
+        let t = layer.transform;
+        let image = crate::preview::to_render_image(image::DynamicImage::ImageRgba8(pixels)).0;
+        let bounds = (
+            [t.x + left as f32 * t.scale_x, t.y + top as f32 * t.scale_y],
+            [
+                t.x + right as f32 * t.scale_x,
+                t.y + bottom as f32 * t.scale_y,
+            ],
+        );
+        if let Some(old) = canvas
+            .stroke_patch
+            .replace(crate::canvas_state::StrokePatch {
+                layer: target,
+                bounds,
+                image,
+                committed: false,
+            })
+        {
+            window.drop_image(old.image).ok();
+        }
+        canvas.live_doc = Some(doc);
+        // Canvases drawn as one render show the stroke through it instead.
+        if !crate::layer_cache::stackable(&canvas.doc) {
             canvas.bump_version();
             self.render_canvas(window, cx);
-            self.refresh_layers(window, cx);
         }
     }
 
@@ -115,6 +177,10 @@ impl Workspace {
         if let Some(canvas) = &mut self.canvas {
             canvas.points.clear();
             canvas.live_doc = None;
+            // The patch stays until the layer's new render arrives.
+            if let Some(patch) = &mut canvas.stroke_patch {
+                patch.committed = true;
+            }
         }
         match command {
             Some(command) => self.canvas_commands(vec![command], window, cx),
@@ -122,64 +188,47 @@ impl Workspace {
         }
     }
 
-    /// The stroke being drawn as round dabs inside the selection, and the
-    /// brush's outline at the pointer.
+    /// The brush's outline and a small crosshair at the pointer. The system
+    /// cursor is hidden over the canvas with a brush, so these move together.
     pub fn brush_overlay(&self, offset: Point<Pixels>, scale: f32, cx: &App) -> Option<AnyElement> {
         let canvas = self.canvas.as_ref()?;
         if !matches!(canvas.tool, Tool::Brush | Tool::Eraser) {
             return None;
         }
-        let (brush, _, opacity) = self.tool_options.brush(cx);
-        let eraser = canvas.tool == Tool::Eraser;
-        let points = canvas.points.clone();
-        let pointer = canvas.pointer;
-        let selection = canvas.doc.selection.clone();
-        let [r, g, b, a] = self.colors.fore;
-        let color = Hsla::from(rgba(u32::from_be_bytes([r, g, b, 255])))
-            .opacity(opacity * f32::from(a) / 255.);
-        let inside = move |(x, y): (f32, f32)| selection.as_ref().is_none_or(|s| selected(s, x, y));
+        let (brush, ..) = self.tool_options.brush(cx);
+        let pointer = canvas.pointer?;
         Some(
             gpui::canvas(
                 |_, _, _| {},
                 move |bounds, _, window, _| {
-                    let at = |(x, y): (f32, f32)| {
-                        bounds.origin + offset + point(px(x * scale), px(y * scale))
-                    };
-                    let radius = (brush * scale / 2.).max(0.5);
-                    if !eraser && !points.is_empty() {
-                        // Dabs a quarter of the brush apart along the path.
-                        let step = (brush / 4.).max(0.5);
-                        let mut dab = |p: (f32, f32)| {
-                            if inside(p) {
-                                let quad = fill(
-                                    Bounds::centered_at(
-                                        at(p),
-                                        size(px(radius * 2.), px(radius * 2.)),
-                                    ),
-                                    color,
-                                )
-                                .corner_radii(px(radius));
-                                window.paint_quad(quad);
-                            }
-                        };
-                        dab(points[0]);
-                        for pair in points.windows(2) {
-                            let (a, b) = (pair[0], pair[1]);
-                            let length = (b.0 - a.0).hypot(b.1 - a.1);
-                            let count = (length / step).ceil() as usize;
-                            for i in 1..=count {
-                                let t = i as f32 / count as f32;
-                                dab((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
-                            }
+                    let center = bounds.origin
+                        + offset
+                        + point(px(pointer.0 * scale), px(pointer.1 * scale));
+                    let radius = (brush * scale / 2.).max(1.);
+                    let ring = Bounds::centered_at(center, size(px(radius * 2.), px(radius * 2.)));
+                    // A dark ring inside a light one reads on any color.
+                    window.paint_quad(
+                        outline(ring, hsla(0., 0., 1., 0.85), BorderStyle::Solid)
+                            .corner_radii(px(radius)),
+                    );
+                    let inner = Bounds::centered_at(
+                        center,
+                        size(
+                            px((radius - 1.).max(0.5) * 2.),
+                            px((radius - 1.).max(0.5) * 2.),
+                        ),
+                    );
+                    window.paint_quad(
+                        outline(inner, hsla(0., 0., 0., 0.5), BorderStyle::Solid)
+                            .corner_radii(px(radius - 1.)),
+                    );
+                    for (dx, dy) in [(1., 0.), (0., 1.)] {
+                        let mut tick = PathBuilder::stroke(px(1.));
+                        tick.move_to(center - point(px(4. * dx), px(4. * dy)));
+                        tick.line_to(center + point(px(4. * dx), px(4. * dy)));
+                        if let Ok(path) = tick.build() {
+                            window.paint_path(path, hsla(0., 0., 1., 0.9));
                         }
-                    }
-                    if let Some(p) = pointer {
-                        let ring =
-                            Bounds::centered_at(at(p), size(px(radius * 2.), px(radius * 2.)));
-                        window.paint_quad(
-                            outline(ring, hsla(0., 0., 1., 0.8), BorderStyle::Solid)
-                                .corner_radii(px(radius)),
-                        );
                     }
                 },
             )
@@ -188,19 +237,4 @@ impl Workspace {
             .into_any_element(),
         )
     }
-}
-
-/// Whether the canvas point is selected (at least half).
-fn selected(selection: &Selection, x: f32, y: f32) -> bool {
-    let (sx, sy, w, h) = selection.bounds();
-    let (px, py) = (
-        x.floor() as i64 - i64::from(sx),
-        y.floor() as i64 - i64::from(sy),
-    );
-    if px < 0 || py < 0 || px >= i64::from(w) || py >= i64::from(h) {
-        return false;
-    }
-    selection
-        .alpha()
-        .is_none_or(|alpha| alpha[(py as u32 * w + px as u32) as usize] >= 128)
 }

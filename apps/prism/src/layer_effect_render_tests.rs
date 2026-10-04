@@ -264,3 +264,59 @@ fn effects_timing_probe() {
         );
     }
 }
+
+#[test]
+#[ignore = "timing probe; run in release with --nocapture"]
+fn raster_rotation_timing_probe() {
+    let directory = std::env::temp_dir().join(format!("prism-rotate-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("photo.png");
+    let image = image::RgbaImage::from_fn(2560, 1600, |x, y| {
+        image::Rgba([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255])
+    });
+    image.save(&path).unwrap();
+    let mut document = Document::new("Rotate", 1920, 1080);
+    document.layers.push(Layer {
+        id: 1,
+        kind: LayerKind::Raster {
+            path: path.clone(),
+            original_path: None,
+        },
+        transform: Transform {
+            x: 100.0,
+            y: 100.0,
+            scale_x: 0.6,
+            scale_y: 0.6,
+            rotation: 17.0,
+        },
+        ..Layer::default()
+    });
+    document.next_id = 2;
+    let cache = directory.join("cache");
+    let sources = prepare_export_raster_sources(&document, &cache).unwrap();
+    set_interactive_source_cache(std::env::var("PROBE_CACHE").is_ok());
+    for overlay in [false, true] {
+        if overlay {
+            document.layers[0].style.gradient_overlay = Some(GradientOverlay::default());
+        }
+        for density in [0.5f32, 1.0, 2.0] {
+            let start = std::time::Instant::now();
+            for _ in 0..3 {
+                render_document_scaled_with_sources(&document, density, &sources).unwrap();
+            }
+            println!(
+                "rotated raster overlay={overlay} density {density}: {:.1} ms",
+                start.elapsed().as_secs_f64() * 1000.0 / 3.0
+            );
+        }
+    }
+    let start = std::time::Instant::now();
+    for _ in 0..3 {
+        prepare_export_raster_sources(&document, &cache).unwrap();
+    }
+    println!(
+        "prepare sources (warm): {:.1} ms",
+        start.elapsed().as_secs_f64() * 1000.0 / 3.0
+    );
+    std::fs::remove_dir_all(directory).ok();
+}

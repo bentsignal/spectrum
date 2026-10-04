@@ -28,6 +28,8 @@ mod dissolve_preview;
 mod font_picker;
 #[path = "benchmark/gradient.rs"]
 mod gradient;
+#[path = "benchmark/interactive.rs"]
+mod interactive;
 #[path = "benchmark/mixed_raster.rs"]
 mod mixed_raster;
 #[path = "benchmark/optimized_copy.rs"]
@@ -595,7 +597,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         sample_summary(&mut clone_stamp.viewport_samples);
     let (clone_live_median, clone_live_p95) = sample_summary(&mut clone_stamp.live_samples);
     let gradient_shadow_budget_ms = profile.gradient_shadow_budget_ms();
-    let metrics = vec![
+    let mut metrics = vec![
         BenchmarkMetric {
             name: "8x_16k_32_stop_radial_gradient_320x180_arbitrary_viewport",
             median_ms: gradient.radial_small_median_ms,
@@ -872,6 +874,10 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             pass: mixed_raster_16x_p95 <= 500.0 && mixed_raster.full_plane_copy_bytes == 0,
         },
     ];
+    metrics.extend(interactive::metrics(matches!(
+        profile,
+        BenchmarkProfile::HostedCi
+    ))?);
     let passed = metrics.iter().all(|metric| metric.pass);
     if strict && !passed {
         let failures = metrics

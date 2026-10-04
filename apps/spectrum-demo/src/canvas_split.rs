@@ -131,6 +131,8 @@ pub fn render_alone(
         ((end[0] - pixel[0]) / density).ceil().max(1.),
         ((end[1] - pixel[1]) / density).ceil().max(1.),
     );
+    // Render the resolved copy, so the library is read once.
+    let mut alone = resolved;
     alone.width = width as u32;
     alone.height = height as u32;
     for each in &mut alone.layers {
@@ -138,7 +140,7 @@ pub fn render_alone(
         each.transform.y -= origin[1];
     }
     Ok((
-        render_at(root, &alone, density)?.image,
+        crate::canvas_state::render_resolved(&alone, density)?,
         (min, max),
         [pixel, [width, height]],
     ))

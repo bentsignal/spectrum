@@ -88,7 +88,32 @@ impl Workspace {
     pub fn rotate_handle_element(&self) -> Option<AnyElement> {
         let (_, handle, top) = self.rotate_handle()?;
         let origin = self.image_bounds.borrow().origin;
-        Some(
+        // While turning: how far it has turned and the angle it is at.
+        let readout = self.canvas.as_ref().and_then(|canvas| {
+            let drag = canvas.drag.filter(|d| d.rotate)?;
+            let before = canvas.doc.layer(drag.id).ok()?.transform.rotation;
+            let after = Self::rotate_transform(canvas, drag)?.rotation;
+            let turned = (after - before + 540.).rem_euclid(360.) - 180.;
+            let (rect, scale) = self.canvas_rect();
+            let at = rect.origin
+                + point(px(drag.now.0 * scale + 18.), px(drag.now.1 * scale + 18.))
+                - origin;
+            Some(
+                div()
+                    .absolute()
+                    .left(at.x)
+                    .top(at.y)
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(0x1a1a1a))
+                    .border_1()
+                    .border_color(rgb(crate::theme::BORDER))
+                    .text_xs()
+                    .child(format!("{turned:+.0}° · {after:.0}°")),
+            )
+        });
+        let handle_element = Some(
             canvas(
                 |_, _, _| {},
                 move |_, _, window, _| {
@@ -112,6 +137,14 @@ impl Workspace {
             .top(-origin.y)
             .size_full()
             .into_any_element(),
+        );
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .children(handle_element)
+                .children(readout)
+                .into_any_element(),
         )
     }
 }

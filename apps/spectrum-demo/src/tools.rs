@@ -88,6 +88,27 @@ const SHORTCUT: &str = if cfg!(target_os = "macos") {
     "Ctrl+P"
 };
 
+/// The key that picks a tool, as Photoshop's.
+pub fn tool_letter(tool: Tool) -> Option<&'static str> {
+    Some(match tool {
+        Tool::Move => "V",
+        Tool::Marquee => "M",
+        Tool::EllipseSelect => "⇧M",
+        Tool::Lasso => "L",
+        Tool::Wand => "W",
+        Tool::Brush => "B",
+        Tool::Eraser => "E",
+        Tool::Text => "T",
+        Tool::Box => "U",
+        Tool::Circle => "⇧U",
+        Tool::Gradient => "G",
+        Tool::Pen => "P",
+        Tool::Crop => "C",
+        Tool::Eyedropper => "I",
+        Tool::Image => return None,
+    })
+}
+
 pub fn tool_name(tool: Tool) -> &'static str {
     TOOLS
         .iter()
@@ -299,6 +320,18 @@ impl Workspace {
             "p" => Tool::Pen,
             "c" => Tool::Crop,
             "i" => Tool::Eyedropper,
+            "[" | "]" => {
+                // Ten percent smaller or larger, at least a pixel.
+                let size = self.tool_options.brush(cx).0;
+                let next = if key.key == "]" {
+                    (size * 1.1).max(size + 1.)
+                } else {
+                    (size / 1.1).min(size - 1.)
+                };
+                let state = self.tool_options.brush_size.clone();
+                state.update(cx, |s, cx| s.set_value(next.clamp(1., 400.), window, cx));
+                return cx.notify();
+            }
             "x" => {
                 let (fore, back) = (self.colors.fore, self.colors.back);
                 self.set_default_color(back, false, window, cx);

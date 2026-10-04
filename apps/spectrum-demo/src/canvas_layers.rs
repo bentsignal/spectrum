@@ -11,6 +11,7 @@ use gpui_component::{
     Icon, IconName, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     input::Input,
+    menu::{ContextMenuExt, PopupMenuItem},
 };
 use prism_core::{BlendMode, Command, LayerKind, TextAlignment};
 
@@ -105,165 +106,206 @@ impl Workspace {
         let Some(canvas) = &self.canvas else {
             return div();
         };
-        let defaults = self.default_colors(cx).into_any_element();
-        let tool = self.tool_button(cx).into_any_element();
-        let rows = canvas.doc.layers.iter().rev().map(|layer| {
-            let id = layer.id;
-            let selected = canvas.selected == Some(id);
-            let visible = layer.visible;
-            let name = layer.name.clone();
-            let clipped = layer.clip_to_below;
-            let masked = layer.vector_mask.as_ref().is_some_and(|m| m.enabled);
-            // The layer this one shows inside, if it is clipped.
-            let holder = clipped
-                .then(|| {
-                    let index = canvas.doc.layers.iter().position(|l| l.id == id)?;
-                    Some(canvas.doc.layers.get(index.checked_sub(1)?)?.name.clone())
-                })
-                .flatten();
-            div()
-                .id(("layer-row", id))
-                .h(px(36.))
-                .pl_2p5()
-                .pr_1()
-                .flex()
-                .items_center()
-                .gap_2p5()
-                .rounded_md()
-                .when(selected, |el| el.bg(rgb(SELECTED)))
-                .when(!selected, |el| el.hover(|el| el.bg(rgb(HOVER))))
-                // Drag a row to move the layer; the list shows where it lands.
-                .on_drag(LayerRow(id, name.clone()), |row, _, _, cx| {
-                    cx.new(|_| LayerRow(row.0, row.1.clone()))
-                })
-                // A layer inside another sits indented above it, joined to
-                // it by a line.
-                .when(clipped, |el| {
-                    el.pl(px(22.)).child(
-                        div()
-                            .absolute()
-                            .left(px(12.))
-                            .top(px(6.))
-                            .bottom(px(-8.))
-                            .w(px(1.))
-                            .bg(rgb(0x4a5568)),
+        let view = cx.entity();
+        let rows = canvas
+            .doc
+            .layers
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(shown, layer)| {
+                let below = canvas.doc.layers.len() >= shown + 2;
+                let raster = matches!(layer.kind, LayerKind::Raster { .. });
+                let id = layer.id;
+                let selected = canvas.selected == Some(id);
+                let visible = layer.visible;
+                let name = layer.name.clone();
+                let clipped = layer.clip_to_below;
+                let masked = layer.vector_mask.as_ref().is_some_and(|m| m.enabled);
+                // The layer this one shows inside, if it is clipped.
+                let holder = clipped
+                    .then(|| {
+                        let index = canvas.doc.layers.iter().position(|l| l.id == id)?;
+                        Some(canvas.doc.layers.get(index.checked_sub(1)?)?.name.clone())
+                    })
+                    .flatten();
+                div()
+                    .id(("layer-row", id))
+                    .h(px(36.))
+                    .pl_2p5()
+                    .pr_1()
+                    .flex()
+                    .items_center()
+                    .gap_2p5()
+                    .rounded_md()
+                    .when(selected, |el| el.bg(rgb(SELECTED)))
+                    .when(!selected, |el| el.hover(|el| el.bg(rgb(HOVER))))
+                    // Drag a row to move the layer; the list shows where it lands.
+                    .on_drag(LayerRow(id, name.clone()), |row, _, _, cx| {
+                        cx.new(|_| LayerRow(row.0, row.1.clone()))
+                    })
+                    // A layer inside another sits indented above it, joined to
+                    // it by a line.
+                    .when(clipped, |el| {
+                        el.pl(px(22.)).child(
+                            div()
+                                .absolute()
+                                .left(px(12.))
+                                .top(px(6.))
+                                .bottom(px(-8.))
+                                .w(px(1.))
+                                .bg(rgb(0x4a5568)),
+                        )
+                    })
+                    .relative()
+                    .child(
+                        Icon::new(kind_icon(&layer.kind))
+                            .small()
+                            .text_color(rgb(MUTED)),
                     )
-                })
-                .relative()
-                .child(
-                    Icon::new(kind_icon(&layer.kind))
-                        .small()
-                        .text_color(rgb(MUTED)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .truncate()
-                        .text_color(rgb(if visible { TEXT } else { FAINT }))
-                        .child(name.clone()),
-                )
-                .children(holder.map(|holder| {
-                    div()
-                        .flex_none()
-                        .max_w(px(96.))
-                        .truncate()
-                        .text_xs()
-                        .text_color(rgb(FAINT))
-                        .child(format!("inside {holder}"))
-                }))
-                .when(masked, |el| {
-                    el.child(
+                    .child(
                         div()
-                            .size(px(12.))
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(rgb(MUTED))
-                            .bg(linear_gradient(
-                                90.,
-                                linear_color_stop(rgb(0xf4f4f4), 0.5),
-                                linear_color_stop(rgb(0x141414), 0.5),
-                            )),
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .truncate()
+                            .text_color(rgb(if visible { TEXT } else { FAINT }))
+                            .child(name.clone()),
                     )
-                })
-                .child(
-                    Button::new(("visible", id))
-                        .ghost()
-                        .xsmall()
-                        .icon(if visible {
-                            IconName::Eye
-                        } else {
-                            IconName::EyeOff
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.canvas_commands(
-                                vec![Command::SetVisibility {
-                                    id,
-                                    visible: !visible,
-                                }],
-                                window,
-                                cx,
-                            );
-                        })),
-                )
-                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                    if let Some(canvas) = &mut this.canvas {
-                        canvas.selected = Some(id);
-                    }
-                    this.sync_layer_controls(window, cx);
-                    if event.click_count() == 2 {
-                        this.open_rename_layer(id, name.clone(), window, cx);
-                    }
-                    cx.notify();
-                }))
-        });
-        let has_selection = canvas.selected.is_some();
-        let replaceable = self
-            .selected_layer()
-            .is_some_and(|l| matches!(l.kind, LayerKind::Raster { .. }));
-        let action = |id: &'static str, icon: IconName, tip: &'static str| {
-            Button::new(id).ghost().small().icon(icon).tooltip(tip)
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(group("Tool", Some(defaults)).child(tool))
-            .child(
-                group(
-                    "Layers",
-                    has_selection.then(|| {
+                    .children(holder.map(|holder| {
                         div()
-                            .flex()
-                            .when(replaceable, |el| {
-                                el.child(
-                                    action("layer-replace", IconName::Replace, "Replace image")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            if let Some(id) =
-                                                this.canvas.as_ref().and_then(|c| c.selected)
-                                            {
-                                                this.open_replace_picker(id, window, cx)
-                                            }
-                                        })),
-                                )
+                            .flex_none()
+                            .max_w(px(96.))
+                            .truncate()
+                            .text_xs()
+                            .text_color(rgb(FAINT))
+                            .child(format!("inside {holder}"))
+                    }))
+                    .when(masked, |el| {
+                        el.child(
+                            div()
+                                .size(px(12.))
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(rgb(MUTED))
+                                .bg(linear_gradient(
+                                    90.,
+                                    linear_color_stop(rgb(0xf4f4f4), 0.5),
+                                    linear_color_stop(rgb(0x141414), 0.5),
+                                )),
+                        )
+                    })
+                    .child(
+                        Button::new(("visible", id))
+                            .ghost()
+                            .xsmall()
+                            .icon(if visible {
+                                IconName::Eye
+                            } else {
+                                IconName::EyeOff
                             })
-                            .child(action("layer-copy", IconName::Copy, "Duplicate").on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.on_selected(window, cx, |id| Command::DuplicateLayer {
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.canvas_commands(
+                                    vec![Command::SetVisibility {
                                         id,
+                                        visible: !visible,
+                                    }],
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .on_click(cx.listener({
+                        let name = name.clone();
+                        move |this, event: &ClickEvent, window, cx| {
+                            if let Some(canvas) = &mut this.canvas {
+                                canvas.selected = Some(id);
+                            }
+                            this.sync_layer_controls(window, cx);
+                            if event.click_count() == 2 {
+                                this.open_rename_layer(id, name.clone(), window, cx);
+                            }
+                            cx.notify();
+                        }
+                    }))
+                    // Right-click: what can be done to this layer.
+                    .context_menu({
+                        let view = view.clone();
+                        move |menu, _, _| {
+                            let act = |command: fn(u64) -> Option<Command>| {
+                                let view = view.clone();
+                                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                    view.update(cx, |this, cx| {
+                                        if let Some(command) = command(id) {
+                                            this.canvas_commands(vec![command], window, cx);
+                                        }
                                     })
-                                }),
-                            ))
-                            .child(action("layer-delete", IconName::Delete, "Delete").on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.on_selected(window, cx, |id| Command::RemoveLayer { id })
-                                }),
-                            ))
-                            .into_any_element()
-                    }),
-                )
+                                }
+                            };
+                            let rename = view.clone();
+                            let replace = view.clone();
+                            let name = name.clone();
+                            let menu = menu
+                                .min_w(px(200.))
+                                .item(PopupMenuItem::new("Rename…").on_click(
+                                    move |_, window, cx| {
+                                        let name = name.clone();
+                                        rename.update(cx, |this, cx| {
+                                            this.open_rename_layer(id, name, window, cx)
+                                        })
+                                    },
+                                ))
+                                .item(
+                                    PopupMenuItem::new("Duplicate")
+                                        .on_click(act(|id| Some(Command::DuplicateLayer { id }))),
+                                )
+                                .item(
+                                    PopupMenuItem::new(if visible { "Hide" } else { "Show" })
+                                        .on_click(if visible {
+                                            act(|id| {
+                                                Some(Command::SetVisibility { id, visible: false })
+                                            })
+                                        } else {
+                                            act(|id| {
+                                                Some(Command::SetVisibility { id, visible: true })
+                                            })
+                                        }),
+                                );
+                            let menu = match (clipped, below) {
+                                (true, _) => {
+                                    menu.item(PopupMenuItem::new("Take out").on_click(act(|id| {
+                                        Some(Command::SetClipping { id, enabled: false })
+                                    })))
+                                }
+                                (false, true) => menu.item(
+                                    PopupMenuItem::new("Put inside the layer below").on_click(act(
+                                        |id| Some(Command::SetClipping { id, enabled: true }),
+                                    )),
+                                ),
+                                _ => menu,
+                            };
+                            let menu = if raster {
+                                menu.item(PopupMenuItem::new("Replace image…").on_click(
+                                    move |_, window, cx| {
+                                        replace.update(cx, |this, cx| {
+                                            this.open_replace_picker(id, window, cx)
+                                        })
+                                    },
+                                ))
+                            } else {
+                                menu
+                            };
+                            menu.separator().item(
+                                PopupMenuItem::new("Delete")
+                                    .on_click(act(|id| Some(Command::RemoveLayer { id }))),
+                            )
+                        }
+                    })
+                    .into_any_element()
+            });
+        div().flex().flex_col().gap_5().child(
+            group("Layers", None)
                 .gap_0p5()
                 .when(canvas.doc.layers.is_empty(), |el| {
                     el.child(
@@ -274,7 +316,7 @@ impl Workspace {
                     )
                 })
                 .child(self.layer_list(rows.collect(), cx)),
-            )
+        )
     }
 
     /// Style's Look section, or the canvas background when nothing is selected.

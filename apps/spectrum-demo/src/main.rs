@@ -2,6 +2,7 @@ mod brush;
 mod canvas_layers;
 mod canvas_size;
 mod canvas_split;
+mod canvas_stack;
 mod canvas_state;
 mod canvas_style;
 mod canvas_view;
@@ -33,7 +34,6 @@ mod layer_masks;
 mod layer_styles;
 mod library;
 mod marquee;
-mod options_bar;
 mod palette;
 mod pen;
 mod picker;
@@ -46,6 +46,7 @@ mod store;
 mod theme;
 mod titlebar;
 mod tool_options;
+mod tool_panel;
 mod tools;
 mod trash;
 mod workspace;
@@ -106,6 +107,8 @@ fn main() {
         return;
     }
     prefs::load();
+    // Re-renders of the same image reuse its decoded, resized pixels.
+    prism_core::set_interactive_source_cache(true);
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         cx.on_action(|_: &Quit, cx| cx.quit());
         // Command+S stays unbound: people press it by habit, and Spectrum saves as it goes.

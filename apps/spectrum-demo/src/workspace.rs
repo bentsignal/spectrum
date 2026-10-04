@@ -43,6 +43,7 @@ pub enum Mode {
     Color,
     Crop,
     Layers,
+    Tool,
     Style,
     Info,
 }
@@ -57,6 +58,7 @@ impl Mode {
             Mode::Style => "Style",
             Mode::Info => "Info",
             Mode::Layers => "Layers",
+            Mode::Tool => "Tool",
         }
     }
 
@@ -69,6 +71,7 @@ impl Mode {
             Mode::Style => IconName::Palette,
             Mode::Info => IconName::Info,
             Mode::Layers => IconName::GalleryVerticalEnd,
+            Mode::Tool => IconName::Settings2,
         }
     }
 }
@@ -430,7 +433,7 @@ impl Workspace {
             (Place::Home, _) => vec![Mode::Projects, Mode::Assets],
             (_, Open::Overview) => Vec::new(),
             (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop, Mode::Info],
-            (_, Open::Canvas(_)) => vec![Mode::Layers, Mode::Style, Mode::Color],
+            (_, Open::Canvas(_)) => vec![Mode::Layers, Mode::Tool, Mode::Style, Mode::Color],
         }
     }
 
@@ -693,6 +696,7 @@ impl Workspace {
             (_, Mode::Color) => self.color_sidebar(cx).into_any_element(),
             (_, Mode::Crop) => self.crop_sidebar(cx).into_any_element(),
             (_, Mode::Style) => self.style_sidebar(cx).into_any_element(),
+            (_, Mode::Tool) => self.tool_sidebar(cx).into_any_element(),
             (_, Mode::Info) => self.info_sidebar(cx).into_any_element(),
             _ => self.layers_sidebar(cx).into_any_element(),
         };
@@ -780,9 +784,6 @@ impl Render for Workspace {
             (_, Open::Image(_)) => self.image_view(cx).into_any_element(),
             (_, Open::Canvas(_)) => self.canvas_main(window, cx).into_any_element(),
         };
-        let options = matches!(self.open, Open::Canvas(_))
-            .then(|| self.options_bar(cx))
-            .flatten();
         let main = div()
             .flex_1()
             .min_w_0()
@@ -790,7 +791,6 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .child(self.header(cx))
-            .children(options)
             .child(div().flex_1().min_h_0().child(content))
             .drag_over::<ExternalPaths>(|el, _, _, _| el.bg(rgb(0x141414)))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {

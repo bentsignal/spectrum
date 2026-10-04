@@ -387,3 +387,29 @@ fn destination_out(destination: &mut Rgba<u8>, source_alpha: u8) {
         *destination = Rgba([0; 4]);
     }
 }
+
+/// A Paint layer's pixels over part of its viewport (`x`, `y`, `width`,
+/// `height` in its own pixels), exactly as the canvas renders them before
+/// scaling: for clients redrawing just where a stroke is being drawn.
+pub fn render_paint_layer_region(
+    document: &crate::Document,
+    id: u64,
+    (x, y, width, height): (u32, u32, u32, u32),
+) -> Result<RgbaImage> {
+    let layer = document.layer(id)?;
+    let crate::LayerKind::Paint { program } = &layer.kind else {
+        bail!("layer {id} is not a Paint layer");
+    };
+    render_paint_region_with_sources(
+        program,
+        layer.pixel_mask.as_ref(),
+        PixelRegion {
+            x,
+            y,
+            width,
+            height,
+        },
+        &document.sampled_sources,
+        None,
+    )
+}

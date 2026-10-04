@@ -43,6 +43,7 @@ impl Workspace {
             .flex_shrink_0()
             .flex()
             .items_center()
+            .gap_1p5()
             .pr_6()
             .child(
                 self.drag_area("main-header", cx)

@@ -74,6 +74,9 @@ pub struct CanvasState {
     /// A layer's transform mid-drag, for canvases drawn as one render
     /// (blend modes, layers inside others), so the render follows the drag.
     pub drag_preview: Option<(u64, prism_core::Transform)>,
+    /// The part of a Paint layer under the stroke being drawn, rendered as
+    /// it goes and drawn over the layer's image.
+    pub stroke_patch: Option<StrokePatch>,
     /// The flattened canvas at one pixel per unit, for the Eyedropper, and
     /// the look it was rendered from.
     pub pixels: Option<(u64, std::sync::Arc<image::RgbaImage>)>,
@@ -174,6 +177,15 @@ impl CanvasState {
     }
 }
 
+/// A Paint layer's pixels under a stroke, in canvas units.
+pub struct StrokePatch {
+    pub layer: u64,
+    pub bounds: crate::canvas_split::LayerBounds,
+    pub image: Arc<RenderImage>,
+    /// The stroke has been applied; the patch goes once the layer re-renders.
+    pub committed: bool,
+}
+
 #[derive(Clone, Copy)]
 pub struct LayerDrag {
     pub id: u64,
@@ -205,6 +217,16 @@ fn canvas_path(root: &std::path::Path, id: AssetId) -> anyhow::Result<std::path:
 }
 
 /// Resolves library images and renders the document with its layer bounds.
+/// Renders a document whose library images are already resolved.
+pub fn render_resolved(resolved: &Document, density: f32) -> anyhow::Result<Arc<RenderImage>> {
+    let sources = prism_core::prepare_export_raster_sources(
+        resolved,
+        &prism_core::default_raster_backing_cache_root()?,
+    )?;
+    let image = prism_core::render_document_scaled_with_sources(resolved, density, &sources)?;
+    Ok(to_render_image(image).0)
+}
+
 pub fn render_at(root: &std::path::Path, doc: &Document, density: f32) -> anyhow::Result<Rendered> {
     let mut resolved = doc.clone();
     Service::open(root)?.resolve(&mut resolved)?;
@@ -260,6 +282,7 @@ impl Workspace {
             hover_guide: None,
             live_doc: None,
             drag_preview: None,
+            stroke_patch: None,
             pixels: None,
             pixels_busy: false,
             edits: 0,

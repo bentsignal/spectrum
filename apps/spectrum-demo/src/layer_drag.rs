@@ -13,7 +13,7 @@ const PITCH: f32 = 38.;
 
 impl Workspace {
     /// The rows, with the drop line while a row is dragged.
-    pub fn layer_list(&self, rows: Vec<Stateful<Div>>, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub fn layer_list(&self, rows: Vec<AnyElement>, cx: &mut Context<Self>) -> Stateful<Div> {
         let count = rows.len();
         let dragging = cx.has_active_drag();
         let slot = self

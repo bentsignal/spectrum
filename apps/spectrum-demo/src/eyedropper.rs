@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 /// The loupe shows this many pixels across, each this many points wide.
 const SPAN: i64 = 11;
-const CELL: f32 = 10.;
+const CELL: f32 = 14.;
 
 impl Workspace {
     /// Renders the flattened canvas for the loupe when it is missing or out
@@ -161,8 +161,8 @@ impl Workspace {
                 .absolute()
                 .left(at.x)
                 .top(at.y)
-                .w(px(side + 16.))
-                .p_2()
+                .w(px(side + 24.))
+                .p_3()
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -192,13 +192,18 @@ impl Workspace {
                                 .border_color(rgb(BORDER))
                                 .bg(rgb(u32::from_be_bytes([0, r, g, b]))),
                         )
-                        .child(div().text_xs().truncate().child(code)),
+                        .child(div().text_sm().truncate().child(code)),
                 )
                 .child(
                     div()
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
                         .text_xs()
                         .text_color(rgb(FAINT))
-                        .child("Click: foreground · Option: background · ⌘C copies"),
+                        .child("Click: foreground color")
+                        .child("Option-click: background color")
+                        .child("⌘C: copy the code"),
                 )
                 .into_any_element(),
         )

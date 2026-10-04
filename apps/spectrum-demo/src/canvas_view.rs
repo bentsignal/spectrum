@@ -1,41 +1,11 @@
 //! The canvas in the main area: click a layer to select it, drag to move it.
-use crate::{canvas_state::LayerDrag, theme::*, tools::Tool, workspace::Workspace};
+use crate::{
+    canvas_stack::painted_at, canvas_state::LayerDrag, theme::*, tools::Tool, workspace::Workspace,
+};
 use gpui::{prelude::*, *};
 use gpui_component::input::{self, Input};
 use prism_core::{Command, LayerKind, Transform};
 use std::sync::Arc;
-
-/// Whether a paint stroke passes within its brush's reach of a canvas point.
-fn painted_at(program: &prism_core::BrushProgram, t: Transform, (x, y): (f32, f32)) -> bool {
-    let (x, y) = (
-        (x - t.x) / t.scale_x.max(1e-3),
-        (y - t.y) / t.scale_y.max(1e-3),
-    );
-    program.strokes.iter().any(|stroke| {
-        if stroke.style.mode == prism_core::BrushMode::Erase {
-            return false;
-        }
-        let reach = stroke.style.size / 2. + 2.;
-        let near = |a: &prism_core::BrushSample, b: &prism_core::BrushSample| {
-            let (dx, dy) = (b.x - a.x, b.y - a.y);
-            let length = dx * dx + dy * dy;
-            let t = if length > 0. {
-                (((x - a.x) * dx + (y - a.y) * dy) / length).clamp(0., 1.)
-            } else {
-                0.
-            };
-            (a.x + dx * t - x).hypot(a.y + dy * t - y) <= reach
-        };
-        match stroke.samples.len() {
-            0 => false,
-            1 => near(&stroke.samples[0], &stroke.samples[0]),
-            _ => stroke
-                .samples
-                .windows(2)
-                .any(|pair| near(&pair[0], &pair[1])),
-        }
-    })
-}
 
 /// A move in canvas units, rounded to whole pixels of the canvas render, so
 /// the moved layer's pixels match its render exactly when dropped.
@@ -112,7 +82,7 @@ impl Workspace {
     /// Bounds while resizing: the grabbed corner stays put and the layer
     /// scales evenly from the opposite side, growing as the pointer moves out
     /// and shrinking as it moves in.
-    fn resized(
+    pub fn resized(
         min: [f32; 2],
         max: [f32; 2],
         corner: (bool, bool),
@@ -158,41 +128,6 @@ impl Workspace {
             ..t
         };
         Some((transform, (new_min, new_max)))
-    }
-
-    /// Where a layer sits now in canvas space, following any drag: moved,
-    /// resized from a corner, or (while rotating) where its latest render fell.
-    pub fn bounds_now(&self, id: u64) -> Option<crate::canvas_split::LayerBounds> {
-        let canvas = self.canvas.as_ref()?;
-        let moved = self.drag_delta();
-        // A layer only in the stroke being drawn has its render's bounds.
-        let (mut min, mut max) = match canvas.bounds.get(&id) {
-            Some(bounds) => *bounds,
-            None => canvas.cache.images.get(&id)?.bounds,
-        };
-        if canvas.drag.is_some_and(|d| d.id == id && d.rotate)
-            && let Some(cached) = canvas.cache.images.get(&id)
-        {
-            return Some(cached.bounds);
-        }
-        match canvas.drag.filter(|d| d.id == id) {
-            Some(LayerDrag {
-                corner: Some(corner),
-                start,
-                now,
-                ..
-            }) => {
-                (min, max, _) = Self::resized(min, max, corner, start, now);
-            }
-            Some(_) => {
-                // Pressed but not moved yet: the layer stays where it is.
-                let (dx, dy) = moved.map_or((0., 0.), |(_, dx, dy)| (dx, dy));
-                min = [min[0] + dx, min[1] + dy];
-                max = [max[0] + dx, max[1] + dy];
-            }
-            None => {}
-        }
-        Some((min, max))
     }
 
     fn canvas_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -314,8 +249,14 @@ impl Workspace {
             self.ensure_pixels(window, cx);
             return cx.notify();
         }
-        if let Some((_, now)) = &mut canvas.creating {
+        if let Some((start, now)) = &mut canvas.creating {
             *now = point;
+            // Boxes and circles stay square unless Shift frees them.
+            if matches!(canvas.tool, Tool::Box | Tool::Circle) && !event.modifiers.shift {
+                let (dx, dy) = (point.0 - start.0, point.1 - start.1);
+                let side = dx.abs().max(dy.abs());
+                *now = (start.0 + side.copysign(dx), start.1 + side.copysign(dy));
+            }
             // Freehand tools keep every point at least a screen pixel apart.
             let freehand = matches!(canvas.tool, Tool::Lasso | Tool::Brush | Tool::Eraser);
             if freehand
@@ -653,7 +594,7 @@ impl Workspace {
                                 ),
                             )
                         };
-                        Some((cached.image.clone(), placed.0, placed.1))
+                        Some((layer.id, cached.image.clone(), placed.0, placed.1))
                     })
                     .collect::<Vec<_>>();
                 let [r, g, b, a] = canvas.doc.background;
@@ -725,10 +666,12 @@ impl Workspace {
                 div()
                     .id("canvas-area")
                     .relative()
-                    .when(
-                        self.canvas.as_ref().is_some_and(|c| c.tool != Tool::Move),
-                        |el| el.cursor_crosshair(),
-                    )
+                    .map(|el| match self.canvas.as_ref().map(|c| c.tool) {
+                        // The brush draws its own pointer, in step with its outline.
+                        Some(Tool::Brush | Tool::Eraser) => el.cursor(CursorStyle::None),
+                        Some(Tool::Move) | None => el,
+                        Some(_) => el.cursor_crosshair(),
+                    })
                     .map(
                         |el| match self.canvas.as_ref().and_then(|c| c.hover_guide) {
                             Some(prism_core::GuideOrientation::Vertical) => el.cursor_col_resize(),
@@ -765,15 +708,7 @@ impl Workspace {
                             .h(rect.size.height)
                             .overflow_hidden()
                             .bg(background)
-                            .children(layers.into_iter().map(|(image, at, shown)| {
-                                img(image)
-                                    .absolute()
-                                    .left(at.x)
-                                    .top(at.y)
-                                    .w(shown.width)
-                                    .h(shown.height)
-                                    .object_fit(ObjectFit::Fill)
-                            }))
+                            .children(self.stacked_layers(layers, rect.size, scale))
                     }))
                     .children(image.map(|image| {
                         let shown = fit(&image);

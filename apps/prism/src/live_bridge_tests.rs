@@ -167,7 +167,8 @@ impl HostHarness {
     ) -> spectrum_live_bridge::ResponseEnvelope {
         let server = Arc::clone(&self.server);
         let worker = thread::spawn(move || server.handle_request(request).unwrap());
-        let deadline = Instant::now() + Duration::from_secs(1);
+        // Generous: the whole library's tests share every core with this one.
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut received = false;
         while Instant::now() < deadline {
             if self.drain.drain(workspace, interaction).received > 0 {
@@ -176,7 +177,7 @@ impl HostHarness {
             }
             thread::sleep(Duration::from_micros(100));
         }
-        assert!(received, "live host did not enqueue within one second");
+        assert!(received, "live host did not enqueue within five seconds");
         worker.join().unwrap()
     }
 
