@@ -77,6 +77,18 @@ pub struct CanvasState {
     /// The part of a Paint layer under the stroke being drawn, rendered as
     /// it goes and drawn over the layer's image.
     pub stroke_patch: Option<StrokePatch>,
+    /// The layer the Eraser started on, for layers other than Paint.
+    pub erase_target: Option<u64>,
+    /// The canvas's scale on screen, or `None` to fit it, and how far it is
+    /// moved from the middle of the view, in screen pixels.
+    pub zoom: Option<f32>,
+    pub pan: (f32, f32),
+    /// When the zoom last changed; it renders sharp once it settles.
+    pub zoomed_at: Option<std::time::Instant>,
+    /// A pan drag: where it started and the pan then.
+    pub panning: Option<(gpui::Point<gpui::Pixels>, (f32, f32))>,
+    /// Space is held: drags pan.
+    pub space_held: bool,
     /// The flattened canvas at one pixel per unit, for the Eyedropper, and
     /// the look it was rendered from.
     pub pixels: Option<(u64, std::sync::Arc<image::RgbaImage>)>,
@@ -283,6 +295,12 @@ impl Workspace {
             live_doc: None,
             drag_preview: None,
             stroke_patch: None,
+            erase_target: None,
+            zoom: None,
+            pan: (0., 0.),
+            zoomed_at: None,
+            panning: None,
+            space_held: false,
             pixels: None,
             pixels_busy: false,
             edits: 0,
@@ -380,6 +398,7 @@ impl Workspace {
     /// again when the window or canvas size changes it.
     pub fn fit_canvas_resolution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (_, scale) = self.canvas_rect();
+        let fit = self.fit_scale() * window.scale_factor();
         let Some(canvas) = &mut self.canvas else {
             return;
         };
@@ -390,8 +409,19 @@ impl Workspace {
         {
             return;
         }
+        // Not while the zoom is still changing; layers stretch meanwhile.
+        if canvas
+            .zoomed_at
+            .is_some_and(|at| at.elapsed() < crate::zoom::SETTLE)
+        {
+            return;
+        }
         let long = canvas.doc.width.max(canvas.doc.height).max(1) as f32;
-        let wanted = (scale * window.scale_factor()).clamp(0.05, 8192. / long);
+        // Zoomed in far, renders stop growing past four device pixels per
+        // canvas pixel (or the fit, if larger) and are shown magnified.
+        let wanted = (scale * window.scale_factor())
+            .min(fit.max(4.))
+            .clamp(0.05, 8192. / long);
         if (wanted - canvas.density).abs() <= canvas.density * 0.002 {
             return;
         }

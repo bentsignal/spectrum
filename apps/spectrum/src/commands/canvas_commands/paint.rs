@@ -31,6 +31,9 @@ pub(super) enum PaintCommand {
         #[arg(long)]
         no_selection: bool,
     },
+    /// Erase one BrushStroke JSON value, drawn in canvas coordinates, from a
+    /// layer of any kind; text and shapes stay editable.
+    Erase { id: u64, stroke: PathBuf },
     /// Capture an immutable Clone Stamp source from a Raster layer.
     CloneSource {
         id: u64,
@@ -70,6 +73,10 @@ pub(super) fn paint_command(arguments: PaintArgs) -> Result<Command> {
             } else {
                 PaintSelection::Current
             },
+        },
+        PaintCommand::Erase { id, stroke } => Command::EraseLayer {
+            id,
+            stroke: read_stroke(&stroke)?,
         },
         PaintCommand::CloneSource {
             id,

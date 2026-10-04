@@ -248,9 +248,8 @@ impl<'a> SourceDescriptor<'a> {
             let mut image = self.stage_base(adjusted_region, stats)?;
             let dimensions = self.base_dimensions();
             self.apply_raster_pixel_mask(&mut image, dimensions, dimensions, adjusted_region)?;
-            crate::paths::apply_vector_mask_to_image(
+            self.apply_vector_mask(
                 &mut image,
-                self.vector_mask(),
                 dimensions.0,
                 dimensions.1,
                 adjusted_region.x,
@@ -286,9 +285,8 @@ impl<'a> SourceDescriptor<'a> {
         };
         let dimensions = self.dimensions()?;
         self.apply_raster_pixel_mask(&mut image, base_dimensions, dimensions, adjusted_region)?;
-        crate::paths::apply_vector_mask_to_image(
+        self.apply_vector_mask(
             &mut image,
-            self.vector_mask(),
             dimensions.0,
             dimensions.1,
             adjusted_region.x,
@@ -333,7 +331,8 @@ impl<'a> SourceDescriptor<'a> {
         let content = source.content_sha256()?;
         let adjustments = serde_json::to_string(adjustments).ok()?;
         let mask = pixel_mask.map(|m| m.content_hash);
-        let vector = vector_mask.map(|m| (m.identity(), m.enabled, m.invert));
+        // The painted alpha is applied after the cache.
+        let vector = vector_mask.map(|m| (m.path.identity(), m.enabled, m.invert));
         Some(format!(
             "{content}|{dimensions:?}|{adjustments}|{mask:?}|{vector:?}|{region:?}"
         ))
@@ -347,6 +346,33 @@ impl<'a> SourceDescriptor<'a> {
             | Self::Shape { adjustments, .. }
             | Self::Path { adjustments, .. }
             | Self::Paint { adjustments, .. } => adjustments,
+        }
+    }
+
+    /// A raster whose staged pixels are cached leaves its painted alpha
+    /// for after the cache, so erasing it does not stage it again.
+    pub(super) fn deferred_painted(&self) -> Option<&'a crate::PixelMask> {
+        match self {
+            Self::RasterProvider {
+                vector_mask: Some(mask),
+                ..
+            } if mask.enabled => mask.alpha.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn apply_vector_mask(
+        &self,
+        image: &mut RgbaImage,
+        width: u32,
+        height: u32,
+        x: u32,
+        y: u32,
+    ) -> Result<()> {
+        if matches!(self, Self::RasterProvider { .. }) {
+            crate::paths::apply_vector_path_to_image(image, self.vector_mask(), width, height, x, y)
+        } else {
+            crate::paths::apply_vector_mask_to_image(image, self.vector_mask(), width, height, x, y)
         }
     }
 

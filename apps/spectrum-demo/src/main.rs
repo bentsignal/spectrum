@@ -50,6 +50,7 @@ mod tool_panel;
 mod tools;
 mod trash;
 mod workspace;
+mod zoom;
 
 use gpui::{
     App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, prelude::*,
@@ -97,7 +98,11 @@ gpui::actions!(
         ToggleGuides,
         ToggleSnapping,
         Deselect,
-        InvertSelection
+        InvertSelection,
+        ZoomIn,
+        ZoomOut,
+        ZoomFit,
+        ZoomActual
     ]
 );
 
@@ -140,6 +145,11 @@ fn main() {
             KeyBinding::new("secondary-d", Deselect, None),
             KeyBinding::new("secondary-shift-i", InvertSelection, None),
             KeyBinding::new("secondary-shift-;", ToggleSnapping, None),
+            KeyBinding::new("secondary-=", ZoomIn, None),
+            KeyBinding::new("secondary-shift-=", ZoomIn, None),
+            KeyBinding::new("secondary--", ZoomOut, None),
+            KeyBinding::new("secondary-0", ZoomFit, None),
+            KeyBinding::new("secondary-alt-0", ZoomActual, None),
             // Text fields bind these in their own context, which wins while typing.
             KeyBinding::new("backspace", DeleteSelection, None),
             KeyBinding::new("delete", DeleteSelection, None),

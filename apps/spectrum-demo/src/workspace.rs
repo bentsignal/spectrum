@@ -797,7 +797,7 @@ impl Render for Workspace {
                 this.import_paths(paths.paths().to_vec(), window, cx)
             }));
         let sidebar = self.sidebar(window, cx).into_any_element();
-        div()
+        self.zoom_actions(div(), cx)
             .size_full()
             .flex()
             .bg(rgb(BACKGROUND))
@@ -858,8 +858,15 @@ impl Render for Workspace {
             }))
             // Enter closes a shape being drawn with the Pen; fields and
             // lists that use Enter handle it before it gets here.
+            .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, cx| {
+                if event.keystroke.key == "space" {
+                    this.hold_space(false, cx);
+                }
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "enter"
+                if event.keystroke.key == "space" && this.focus_handle.is_focused(window) {
+                    this.hold_space(true, cx);
+                } else if event.keystroke.key == "enter"
                     && this.canvas.as_ref().is_some_and(|c| !c.pen.is_empty())
                 {
                     this.finish_pen(window, cx);

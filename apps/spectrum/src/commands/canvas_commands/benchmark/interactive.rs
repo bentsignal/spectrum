@@ -1,5 +1,6 @@
 //! What the canvas does on every frame of a drag: rotating a large image,
-//! dragging a style slider on it, drawing a brush stroke, and rotating text.
+//! dragging a style slider on it, erasing it or text, drawing a brush
+//! stroke, and rotating text.
 //! Each must stay inside a frame budget, the way the preview renders them:
 //! large layers as drafts within a pixel budget, images from the
 //! interactive source cache, and strokes as a patch under the brush.
@@ -7,8 +8,8 @@ use std::{hint::black_box, time::Instant};
 
 use anyhow::Result;
 use prism_core::{
-    BrushSample, BrushStroke, BrushStyle, Command, Document, GradientOverlay, Layer, LayerKind,
-    PaintSelection, Transform, Workspace, prepare_export_raster_sources,
+    BrushMode, BrushSample, BrushStroke, BrushStyle, Command, Document, GradientOverlay, Layer,
+    LayerKind, PaintSelection, Transform, Workspace, prepare_export_raster_sources,
     render_document_scaled_with_sources, render_paint_layer_region,
 };
 
@@ -117,6 +118,37 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
         overlay.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
 
+    // Erasing across the photo: the stroke so far taken out of its mask.
+    document.layers[0].style.gradient_overlay = None;
+    let erase_style = BrushStyle {
+        mode: BrushMode::Erase,
+        size: 40.0,
+        hardness: 0.8,
+        ..BrushStyle::default()
+    };
+    let path: Vec<BrushSample> = (0..48)
+        .map(|i| BrushSample {
+            x: 300.0 + i as f32 * 20.0,
+            y: 400.0 + (i as f32 * 0.3).sin() * 120.0,
+            pressure: 1.0,
+        })
+        .collect();
+    let mut erase_image = Vec::with_capacity(frames);
+    for end in (2..path.len()).step_by(2) {
+        let started = Instant::now();
+        let mut local = Workspace::new(document.clone(), None);
+        local.execute(Command::EraseLayer {
+            id: 1,
+            stroke: BrushStroke::new(erase_style, path[..end].to_vec())?,
+        })?;
+        black_box(render_document_scaled_with_sources(
+            &local.document,
+            density,
+            &sources,
+        )?);
+        erase_image.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
+
     // Drawing a stroke over a Paint layer that already has thirty.
     let mut workspace = Workspace::new(Document::new("Interactive paint", 1920, 1080), None);
     let style = BrushStyle {
@@ -222,6 +254,37 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
         )?);
         text.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    // Erasing across the text, at full sharpness.
+    text_document.layers[0].transform.rotation = 0.0;
+    let geometry = prism_core::document_layer_geometry(&text_document, &text_document.layers[0])?;
+    let region = prism_core::RenderRegion {
+        x: (geometry.min[0] * 2.0).max(0.0) as u32,
+        y: (geometry.min[1] * 2.0).max(0.0) as u32,
+        width: (geometry.width() * 2.0).ceil() as u32,
+        height: (geometry.height() * 2.0).ceil() as u32,
+    };
+    let across: Vec<BrushSample> = (0..48)
+        .map(|i| BrushSample {
+            x: geometry.min[0] + i as f32 * geometry.width() / 47.0,
+            y: geometry.center[1] + (i as f32 * 0.4).sin() * 40.0,
+            pressure: 1.0,
+        })
+        .collect();
+    let mut erase_text = Vec::with_capacity(frames);
+    for end in (2..across.len()).step_by(2) {
+        let started = Instant::now();
+        let mut local = Workspace::new(text_document.clone(), None);
+        local.execute(Command::EraseLayer {
+            id: 1,
+            stroke: BrushStroke::new(erase_style, across[..end].to_vec())?,
+        })?;
+        black_box(prism_core::render_document_region_scaled(
+            &local.document,
+            2.0,
+            region,
+        )?);
+        erase_text.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     std::fs::remove_dir_all(&directory).ok();
     Ok(vec![
         metric(
@@ -232,6 +295,16 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
         metric(
             "interactive_gradient_overlay_on_image_draft_frame",
             &mut overlay,
+            frame_budget(hosted, 33.0),
+        ),
+        metric(
+            "interactive_erase_image_draft_frame",
+            &mut erase_image,
+            frame_budget(hosted, 33.0),
+        ),
+        metric(
+            "interactive_erase_text_full_density_frame",
+            &mut erase_text,
             frame_budget(hosted, 33.0),
         ),
         metric(

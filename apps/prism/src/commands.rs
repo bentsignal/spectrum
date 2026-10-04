@@ -202,6 +202,15 @@ pub enum Command {
     DeleteSelectedPixels {
         id: u64,
     },
+    /// Hides what the selection covers on any layer, keeping it editable.
+    HideSelection {
+        id: u64,
+    },
+    /// Erases a stroke drawn in canvas coordinates from any layer.
+    EraseLayer {
+        id: u64,
+        stroke: BrushStroke,
+    },
     MoveLayer {
         id: u64,
         index: usize,

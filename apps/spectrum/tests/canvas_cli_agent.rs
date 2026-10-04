@@ -296,7 +296,7 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
         "delete",
         "1",
     ]);
-    assert_eq!(deleted["results"][0]["action"], "delete_selected_pixels");
+    assert_eq!(deleted["results"][0]["action"], "hide_selection");
     assert_eq!(std::fs::read(&source).unwrap(), original);
 
     let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);

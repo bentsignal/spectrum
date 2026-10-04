@@ -116,7 +116,10 @@ pub fn vector_mask_from_selection(document: &Document, id: u64) -> Result<Vector
         PathFillRule::EvenOdd,
         anchors,
     )?;
-    VectorMask::new(path, false)
+    // What was hidden or erased by hand stays hidden.
+    let mut mask = VectorMask::new(path, false)?;
+    mask.alpha = layer.vector_mask.as_ref().and_then(|m| m.alpha.clone());
+    Ok(mask)
 }
 
 /// The most anchors a path holds.

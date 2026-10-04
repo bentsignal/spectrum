@@ -122,13 +122,6 @@ impl Workspace {
                 let name = layer.name.clone();
                 let clipped = layer.clip_to_below;
                 let masked = layer.vector_mask.as_ref().is_some_and(|m| m.enabled);
-                // The layer this one shows inside, if it is clipped.
-                let holder = clipped
-                    .then(|| {
-                        let index = canvas.doc.layers.iter().position(|l| l.id == id)?;
-                        Some(canvas.doc.layers.get(index.checked_sub(1)?)?.name.clone())
-                    })
-                    .flatten();
                 div()
                     .id(("layer-row", id))
                     .h(px(36.))
@@ -144,19 +137,8 @@ impl Workspace {
                     .on_drag(LayerRow(id, name.clone()), |row, _, _, cx| {
                         cx.new(|_| LayerRow(row.0, row.1.clone()))
                     })
-                    // A layer inside another sits indented above it, joined to
-                    // it by a line.
-                    .when(clipped, |el| {
-                        el.pl(px(22.)).child(
-                            div()
-                                .absolute()
-                                .left(px(12.))
-                                .top(px(6.))
-                                .bottom(px(-8.))
-                                .w(px(1.))
-                                .bg(rgb(0x4a5568)),
-                        )
-                    })
+                    // A layer inside another sits indented in its box.
+                    .when(clipped, |el| el.pl(px(24.)))
                     .relative()
                     .child(
                         Icon::new(kind_icon(&layer.kind))
@@ -172,15 +154,6 @@ impl Workspace {
                             .text_color(rgb(if visible { TEXT } else { FAINT }))
                             .child(name.clone()),
                     )
-                    .children(holder.map(|holder| {
-                        div()
-                            .flex_none()
-                            .max_w(px(96.))
-                            .truncate()
-                            .text_xs()
-                            .text_color(rgb(FAINT))
-                            .child(format!("inside {holder}"))
-                    }))
                     .when(masked, |el| {
                         el.child(
                             div()

@@ -746,6 +746,10 @@ fn apply_command_inner(
         Command::DeleteSelectedPixels { id } => {
             crate::selection_commands::delete_selected_pixels(document, id)
         }
+        Command::HideSelection { id } => crate::layer_erase::hide_selection(document, id),
+        Command::EraseLayer { id, stroke } => {
+            crate::layer_erase::erase_stroke(document, id, &stroke)
+        }
         Command::MoveLayer { id, index } => {
             let current = document
                 .layers

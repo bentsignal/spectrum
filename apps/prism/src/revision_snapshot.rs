@@ -129,6 +129,7 @@ impl PreparedSnapshot {
                 .shape_fill
                 .as_ref()
                 .is_some_and(crate::ShapeFill::requires_modern_encoding)
+                || crate::layer_erase::has_painted_mask(layer)
         });
         let snapshot_version = if modern_gradient_schema {
             MODERN_GRADIENT_SNAPSHOT_VERSION

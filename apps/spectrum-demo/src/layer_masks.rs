@@ -38,6 +38,11 @@ impl Workspace {
         let id = layer.id;
         let clipped = layer.clip_to_below;
         let mask = layer.vector_mask.as_ref().map(|m| (m.enabled, m.invert));
+        let painted_only = layer.vector_mask.as_ref().is_some_and(|m| m.painted_only());
+        let erased = layer
+            .vector_mask
+            .as_ref()
+            .is_some_and(|m| m.alpha.is_some());
         let selection = self.has_canvas_selection();
         let layers = self.canvas.as_ref().map_or(&[][..], |c| &c.doc.layers[..]);
         let index = layers.iter().position(|l| l.id == id);
@@ -90,26 +95,52 @@ impl Workspace {
                 }
             })
         };
-        if let Some((enabled, invert)) = mask {
+        if let Some((enabled, _)) = mask {
+            section = section.child(toggle("mask-enabled", "Show mask", enabled).on_click(
+                edit_mask(|m| {
+                    m.enabled = !m.enabled;
+                    true
+                }),
+            ));
+        }
+        if erased {
             section = section
+                .child(note(
+                    "Parts are hidden or erased; the layer is still whole underneath.".into(),
+                ))
                 .child(
-                    toggle("mask-enabled", "Show mask", enabled).on_click(edit_mask(|m| {
-                        m.enabled = !m.enabled;
-                        true
-                    })),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap_1p5()
-                        .child(
-                            chip("mask-invert", "Invert", invert).on_click(edit_mask(|m| {
-                                m.invert = !m.invert;
-                                true
-                            })),
-                        )
-                        .child(chip("mask-remove", "Remove", false).on_click(edit_mask(|_| false))),
+                    chip("mask-restore", "Bring back erased parts", false).on_click(cx.listener(
+                        |this, _, window, cx| {
+                            let Some(layer) = this.selected_layer().cloned() else {
+                                return;
+                            };
+                            let Some(mask) = &layer.vector_mask else {
+                                return;
+                            };
+                            let id = layer.id;
+                            let mask = mask.without_painted();
+                            this.canvas_commands(
+                                vec![Command::SetVectorMask { id, mask }],
+                                window,
+                                cx,
+                            );
+                        },
+                    )),
                 );
+        }
+        if let Some((_, invert)) = mask.filter(|_| !painted_only) {
+            section = section.child(
+                div()
+                    .flex()
+                    .gap_1p5()
+                    .child(
+                        chip("mask-invert", "Invert", invert).on_click(edit_mask(|m| {
+                            m.invert = !m.invert;
+                            true
+                        })),
+                    )
+                    .child(chip("mask-remove", "Remove", false).on_click(edit_mask(|_| false))),
+            );
         }
         if selection {
             section =

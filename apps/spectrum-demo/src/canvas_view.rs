@@ -24,12 +24,13 @@ impl Workspace {
             canvas.doc.width.max(1) as f32,
             canvas.doc.height.max(1) as f32,
         );
-        let scale = (f32::from(area.size.width) / w).min(f32::from(area.size.height) / h);
+        let fit = (f32::from(area.size.width) / w).min(f32::from(area.size.height) / h);
+        let scale = canvas.zoom.unwrap_or(fit);
         let size = size(px(w * scale), px(h * scale));
         let origin = area.origin
             + point(
-                (area.size.width - size.width) / 2.,
-                (area.size.height - size.height) / 2.,
+                (area.size.width - size.width) / 2. + px(canvas.pan.0),
+                (area.size.height - size.height) / 2. + px(canvas.pan.1),
             );
         (Bounds::new(origin, size), scale)
     }
@@ -131,20 +132,21 @@ impl Workspace {
     }
 
     fn canvas_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.start_pan(event.position, false) {
+            return cx.notify();
+        }
         let point = self.to_canvas(event.position);
         // Keys go to the canvas after a click on it (tool keys, Delete).
         if self.canvas.as_ref().is_some_and(|c| c.editing.is_none()) {
             self.focus_handle.focus(window);
         }
-        // Selection tools act on the layer under the pointer when none is
-        // chosen; the wand always takes the layer it was clicked on.
+        // The wand takes the layer it was clicked on. Other selection tools
+        // leave the layer alone: Delete finds the one the selection covers.
         let under = self.layer_at(point);
         if let Some(canvas) = self.canvas.as_mut().filter(|c| c.tool != Tool::Move) {
             canvas.select_mode = crate::selection_view::combine_mode(event.modifiers);
-            if canvas.tool == Tool::Wand && under.is_some()
-                || canvas.tool.selects() && canvas.selected.is_none()
-            {
-                canvas.selected = under.or(canvas.selected);
+            if canvas.tool == Tool::Wand && under.is_some() {
+                canvas.selected = under;
             }
             match canvas.tool {
                 Tool::Pen => return self.pen_down(point, event.modifiers.shift, window, cx),
@@ -155,7 +157,7 @@ impl Workspace {
                 _ => {}
             }
             let tool = canvas.tool;
-            if matches!(tool, Tool::Brush | Tool::Eraser) && !self.can_stroke(tool, window, cx) {
+            if matches!(tool, Tool::Brush | Tool::Eraser) && !self.can_stroke(tool, point, cx) {
                 return;
             }
             if let Some(canvas) = &mut self.canvas {
@@ -215,6 +217,9 @@ impl Workspace {
     }
 
     fn canvas_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pan_move(event.position, window, cx) {
+            return;
+        }
         if self.canvas.as_ref().is_some_and(|c| c.guide_drag.is_some()) {
             return self.move_guide(event.position, cx);
         }
@@ -329,6 +334,9 @@ impl Workspace {
     }
 
     fn canvas_up(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.end_pan(cx) {
+            return;
+        }
         if self.canvas.as_ref().is_some_and(|c| c.tool == Tool::Pen) {
             return self.pen_up();
         }
@@ -672,6 +680,20 @@ impl Workspace {
                         Some(Tool::Move) | None => el,
                         Some(_) => el.cursor_crosshair(),
                     })
+                    .when(
+                        self.canvas
+                            .as_ref()
+                            .is_some_and(|c| c.space_held || c.panning.is_some()),
+                        |el| {
+                            let grabbing =
+                                self.canvas.as_ref().is_some_and(|c| c.panning.is_some());
+                            el.cursor(if grabbing {
+                                CursorStyle::ClosedHand
+                            } else {
+                                CursorStyle::OpenHand
+                            })
+                        },
+                    )
                     .map(
                         |el| match self.canvas.as_ref().and_then(|c| c.hover_guide) {
                             Some(prism_core::GuideOrientation::Vertical) => el.cursor_col_resize(),
@@ -839,6 +861,24 @@ impl Workspace {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event, window, cx| this.canvas_down(event, window, cx)),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Middle,
+                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                            this.start_pan(event.position, true);
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(|this, _, _, cx| {
+                            this.end_pan(cx);
+                        }),
+                    )
+                    .on_scroll_wheel(
+                        cx.listener(|this, event, window, cx| {
+                            this.canvas_scroll(event, window, cx)
+                        }),
                     )
                     .on_mouse_move(
                         cx.listener(|this, event, window, cx| this.canvas_move(event, window, cx)),

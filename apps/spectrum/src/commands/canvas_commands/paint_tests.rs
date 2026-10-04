@@ -209,3 +209,44 @@ fn paint_cli_rejects_invalid_and_oversized_stroke_files_without_mutation() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+#[test]
+fn erase_and_hide_cli_work_on_shapes_without_rasterizing() {
+    let project = temporary_path("erase-any", "prism");
+    let stroke = temporary_path("erase-any-stroke", "json");
+    std::fs::write(&stroke, stroke_json("erase", 10.0, 10.0)).unwrap();
+    invoke(
+        &project,
+        &["init", "Erase", "--width", "40", "--height", "30"],
+    )
+    .unwrap();
+    invoke(
+        &project,
+        &["add-rectangle", "--width", "40", "--height", "30"],
+    )
+    .unwrap();
+    let erased = invoke(&project, &["paint", "erase", "1", stroke.to_str().unwrap()]).unwrap();
+    assert_eq!(erased["results"][0]["action"], "erase_layer");
+    invoke(&project, &["selection", "rectangle", "30", "0", "10", "30"]).unwrap();
+    let hidden = invoke(&project, &["selection", "delete", "1"]).unwrap();
+    assert_eq!(hidden["results"][0]["action"], "hide_selection");
+    let workspace = prism_core::Workspace::open(&project).unwrap();
+    let layer = workspace.document.layer(1).unwrap();
+    assert!(matches!(
+        layer.kind,
+        prism_core::LayerKind::Rectangle { .. }
+    ));
+    let alpha = layer.vector_mask.as_ref().unwrap().alpha.as_ref().unwrap();
+    assert!(alpha.alpha.contains(&0));
+    let rendered = prism_core::render_document_scaled(&workspace.document, 1.0)
+        .unwrap()
+        .to_rgba8();
+    // Erased and hidden pixels show the background; the rest, the shape.
+    let background = workspace.document.background;
+    assert_eq!(rendered[(10, 10)].0, background);
+    assert_eq!(rendered[(35, 15)].0, background);
+    assert_ne!(rendered[(20, 25)].0, background);
+    drop(workspace);
+    std::fs::remove_file(&project).ok();
+    std::fs::remove_file(&stroke).ok();
+}

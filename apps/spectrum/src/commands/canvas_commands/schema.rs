@@ -102,7 +102,7 @@ pub(super) fn schema() -> Value {
         "layer_types": ["raster", "text", "rectangle", "ellipse", "path", "paint"],
         "paint": {
             "program_version": prism_core::BRUSH_PROGRAM_VERSION,
-            "cli": "paint add-layer --width <px> --height <px>; paint stroke <layer> <stroke.json> [--no-selection]; paint clone-source <raster-layer> <document-x> <document-y>; paint clone-stroke <paint-layer> <stroke.json> [--no-selection]",
+            "cli": "paint add-layer --width <px> --height <px>; paint stroke <layer> <stroke.json> [--no-selection]; paint clone-source <raster-layer> <document-x> <document-y>; paint clone-stroke <paint-layer> <stroke.json> [--no-selection]; paint erase <any-layer> <canvas-space-stroke.json>",
             "modes": ["paint", "erase", "clone_stamp"],
             "clone_stamp": "clone-source inverse-maps one document point into a Raster layer and interns its exact embedded bytes, identity, dimensions, transform, non-geometric Develop adjustments, pixel mask, and vector mask once in the document registry; every clone-stroke references that stable source identity with a frozen destination-to-source affine mapping, samples transparent outside it, and clips only its destination against the current selection",
             "pressure_v1": "pressure multiplies both dab diameter and coverage; mouse input records 1.0",
@@ -132,7 +132,8 @@ pub(super) fn schema() -> Value {
             "cli": "vector-mask <layer> <closed-geometry.json> [--invert] or vector-mask <layer> --clear",
             "fitting": "the path viewport is normalized and independently stretched to the complete target layer source width and height",
             "rendering": "closed nondegenerate fill alpha is applied after source adjustments and before layer transform, shadow, rectangular mask, and clipping",
-            "reuse": "the same immutable PathGeometry value can back a path layer and any number of vector masks"
+            "reuse": "the same immutable PathGeometry value can back a path layer and any number of vector masks",
+            "painted": "selection delete <layer> and paint erase <layer> keep an alpha on non-image layers' vector masks, stretched over the layer and multiplied after the path, so text and shapes stay editable; image layers hide selections in source pixels"
         },
         "layer_styles": {
             "drop_shadow": "shadow <layer> [--x <px>] [--y <px>] [--blur <px>] [--color <RRGGBBAA>] [--clear]",
@@ -156,7 +157,7 @@ pub(super) fn schema() -> Value {
             "clear": "selection clear removes the persistent pixel selection",
             "crop": "selection crop atomically crops the canvas to the current selection and clears it in one revision",
             "fill": "selection fill [--color <RRGGBBAA>] [--name <label>] creates one new editable solid layer honoring rectangular or soft color-selection alpha without changing source pixels",
-            "delete": "selection delete <layer> multiplies the active document-space selection into one raster layer pixel mask; originals remain immutable, the selection stays active, and empty, locked, non-raster, already-deleted, or non-overlapping targets fail without a revision",
+            "delete": "selection delete <layer> hides what the active selection covers on any layer: raster layers multiply it into their pixel mask, other kinds into a painted vector-mask alpha; originals remain immutable, the selection stays active, and empty, locked, already-deleted, or non-overlapping targets fail without a revision",
             "combination": "replace uses the new lasso; add uses a+b-round(ab/255); subtract uses round(a*(255-b)/255); intersect uses round(ab/255)",
             "history": "each completed Selection-tool drag, lasso drag, magic wand click, clear, fill, delete, or crop is one command and one durable revision"
         },

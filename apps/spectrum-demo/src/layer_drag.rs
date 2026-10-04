@@ -34,12 +34,39 @@ impl Workspace {
                 .map(|l| (l.id, l.name.clone()))
                 .collect()
         });
+        // Each layer holding others, and those inside it, share a box: the
+        // ones inside are listed above it, indented, as they draw over it.
+        let boxes: Vec<(usize, usize)> = self.canvas.as_ref().map_or(Vec::new(), |c| {
+            let layers = &c.doc.layers;
+            (0..layers.len())
+                .filter(|&i| !layers[i].clip_to_below)
+                .filter_map(|i| {
+                    let inside = layers[i + 1..]
+                        .iter()
+                        .take_while(|l| l.clip_to_below)
+                        .count();
+                    (inside > 0).then(|| (layers.len() - 1 - i - inside, inside + 1))
+                })
+                .collect()
+        });
         div()
             .id("layer-list")
             .relative()
             .flex()
             .flex_col()
             .gap_0p5()
+            .children(boxes.into_iter().map(|(first, rows)| {
+                div()
+                    .absolute()
+                    .left(px(-4.))
+                    .right(px(-4.))
+                    .top(px(first as f32 * PITCH - 4.))
+                    .h(px(rows as f32 * PITCH + 6.))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(0x333333))
+                    .bg(rgb(0x1c1c1c))
+            }))
             .children(rows)
             .on_drag_move::<LayerRow>(cx.listener(
                 move |this, event: &DragMoveEvent<LayerRow>, _, cx| {

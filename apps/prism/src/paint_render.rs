@@ -362,6 +362,20 @@ fn accumulate_dab(
     }
 }
 
+/// How much `stroke` covers each pixel of `region` (`x`, `y`, `width`,
+/// `height`), its opacity included: row-major, one byte per pixel.
+pub(crate) fn stroke_coverage(stroke: &BrushStroke, region: (u32, u32, u32, u32)) -> Vec<u8> {
+    let mut coverage = vec![0; (region.2 * region.3) as usize];
+    for_each_dab(stroke, |dab| {
+        accumulate_dab(&mut coverage, region, stroke, dab)
+    });
+    let opacity = (stroke.style.opacity * 255.0).round() as u32;
+    for value in &mut coverage {
+        *value = ((u32::from(*value) * opacity + 127) / 255) as u8;
+    }
+    coverage
+}
+
 fn source_over(destination: &mut Rgba<u8>, color: [u8; 4], source_alpha: u8) {
     let source_alpha = u32::from(source_alpha);
     let destination_alpha = u32::from(destination[3]);

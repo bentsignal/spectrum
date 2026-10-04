@@ -70,7 +70,7 @@ enum SelectionAction {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Nondestructively hide selected pixels on one raster image layer.
+    /// Nondestructively hide what the selection covers on any layer.
     Delete { layer: u64 },
 }
 
@@ -167,7 +167,7 @@ pub(super) fn command(arguments: SelectionArgs, document: &Document) -> Result<C
             color: parse_color(&color)?,
             name,
         },
-        SelectionAction::Delete { layer } => Command::DeleteSelectedPixels { id: layer },
+        SelectionAction::Delete { layer } => Command::HideSelection { id: layer },
     })
 }
 
@@ -221,7 +221,7 @@ mod tests {
                 &Document::new("Test", 40, 40),
             )
             .unwrap(),
-            Command::DeleteSelectedPixels { id: 7 }
+            Command::HideSelection { id: 7 }
         );
 
         assert_eq!(

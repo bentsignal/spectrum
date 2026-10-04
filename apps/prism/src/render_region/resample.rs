@@ -102,6 +102,24 @@ pub(super) fn presample<'a>(
     (resized, geometry)
 }
 
+/// Multiplies a deferred painted alpha into a staged (and maybe resized)
+/// source, stretched over the whole of it as the geometry sizes it.
+pub(super) fn apply_painted(
+    source: &mut SampleSource<'_>,
+    painted: Option<&crate::PixelMask>,
+    geometry: SamplingGeometry,
+) {
+    let (Some(painted), SampleSource::Pixels { image, region }) = (painted, source) else {
+        return;
+    };
+    crate::layer_erase::apply_painted_alpha(
+        image,
+        painted,
+        (geometry.source_width, geometry.source_height),
+        (region.x, region.y),
+    );
+}
+
 /// Interactive clients turn this on: renders of the same authenticated
 /// raster at the same scale reuse its staged, resized pixels, so dragging,
 /// rotating, or restyling an image re-renders without reading it again.

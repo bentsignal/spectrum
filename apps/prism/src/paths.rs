@@ -331,6 +331,11 @@ pub struct VectorMask {
     pub enabled: bool,
     pub invert: bool,
     pub path: PathGeometry,
+    /// What was hidden or erased by hand, stretched over the same box as
+    /// the path and multiplied in after it: any layer can lose part of
+    /// itself without becoming pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<crate::PixelMask>,
 }
 
 impl VectorMask {
@@ -342,6 +347,7 @@ impl VectorMask {
             enabled: true,
             invert,
             path,
+            alpha: None,
         })
     }
 
@@ -349,12 +355,18 @@ impl VectorMask {
         let mut digest = Sha256::new();
         digest.update(self.path.identity());
         digest.update([self.enabled as u8, self.invert as u8]);
+        if let Some(alpha) = &self.alpha {
+            digest.update(alpha.identity());
+        }
         digest.finalize().into()
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
         if self.path.is_fill_degenerate() {
             bail!("vector masks require a nondegenerate closed path");
+        }
+        if let Some(alpha) = &self.alpha {
+            crate::layer_erase::validate_painted_alpha(alpha)?;
         }
         Ok(())
     }
@@ -541,6 +553,37 @@ fn render_path_tile(
 }
 
 pub fn apply_vector_mask_to_image(
+    image: &mut RgbaImage,
+    vector_mask: Option<&VectorMask>,
+    full_width: u32,
+    full_height: u32,
+    region_x: u32,
+    region_y: u32,
+) -> Result<()> {
+    apply_vector_path_to_image(
+        image,
+        vector_mask,
+        full_width,
+        full_height,
+        region_x,
+        region_y,
+    )?;
+    if let Some(painted) = vector_mask
+        .filter(|mask| mask.enabled)
+        .and_then(|mask| mask.alpha.as_ref())
+    {
+        crate::layer_erase::apply_painted_alpha(
+            image,
+            painted,
+            (full_width, full_height),
+            (region_x, region_y),
+        );
+    }
+    Ok(())
+}
+
+/// Only the path of a vector mask; its painted alpha is left for later.
+pub(crate) fn apply_vector_path_to_image(
     image: &mut RgbaImage,
     vector_mask: Option<&VectorMask>,
     full_width: u32,

@@ -6,7 +6,7 @@ priority: high
 # Address the 2026-09-28 preview reviews
 
 Review of `aee56f0` ([rules](../docs/design/workflow.md)); the per-layer canvas is approved.
-Every feature gets its engine command and CLI surface with its control. Done: 1–8; third review: options bar, tool keys, typed values, brush rebuild, pen curves, loupe, effects list, put-inside clipping.
+Every feature gets its engine command and CLI surface with its control. Done: 1–8; third review: tool keys, typed values, brush rebuild, pen curves, loupe, effects list, clipping; fourth: Tool tab, layer menu, interactive benchmarks, hide and erase on any layer, zoom and pan, inside boxes.
 
 1. Command+C and Command+V copy and paste layers.
 2. Layer list drags: show where the layer lands; above or below the list means top or bottom.

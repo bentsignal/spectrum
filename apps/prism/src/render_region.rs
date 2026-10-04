@@ -196,7 +196,11 @@ pub(crate) fn composite_bounded_source_region(
     let key = staged_key
         .as_ref()
         .map(|key| format!("{key}|{}x{}", geometry.scaled_width, geometry.scaled_height));
-    if let Some((source, presampled)) = key.as_deref().and_then(|k| resample::cached(k, geometry)) {
+    let painted = descriptor.deferred_painted();
+    if let Some((mut source, presampled)) =
+        key.as_deref().and_then(|k| resample::cached(k, geometry))
+    {
+        resample::apply_painted(&mut source, painted, presampled);
         return composite_staged(
             canvas,
             coverage,
@@ -227,10 +231,11 @@ pub(crate) fn composite_bounded_source_region(
         .full_source_pixels
         .saturating_add(u64::from(geometry.source_width) * u64::from(geometry.source_height));
     // Resize once to the layer's scale; every sample below is then a lookup.
-    let (source, geometry) = resample::presample(source, geometry);
+    let (mut source, geometry) = resample::presample(source, geometry);
     if let Some(key) = key {
         resample::remember(key, &source, geometry);
     }
+    resample::apply_painted(&mut source, painted, geometry);
     composite_staged(
         canvas,
         coverage,

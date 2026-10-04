@@ -135,6 +135,9 @@ fn look(layer: &Layer) -> String {
         hashes += &format!("|mask:{:?}", mask.content_hash);
         mask.alpha = std::sync::Arc::from([]);
     }
+    if let Some(painted) = layer.vector_mask.as_mut().and_then(|m| m.alpha.take()) {
+        hashes += &format!("|painted:{:?}", painted.content_hash);
+    }
     serde_json::to_string(&layer).unwrap_or_default() + &hashes
 }
 

@@ -93,6 +93,7 @@ impl LayerTransfer {
             .shape_fill
             .as_ref()
             .is_some_and(crate::ShapeFill::requires_modern_encoding)
+            || crate::layer_erase::has_painted_mask(&layer)
         {
             MODERN_GRADIENT_LAYER_TRANSFER_VERSION
         } else if matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
@@ -275,6 +276,11 @@ impl LayerTransfer {
                 .is_some_and(crate::ShapeFill::requires_modern_encoding)
         {
             bail!("Prism layer transfers before 10 cannot contain modern gradients");
+        }
+        if self.version < MODERN_GRADIENT_LAYER_TRANSFER_VERSION
+            && crate::layer_erase::has_painted_mask(&self.layer)
+        {
+            bail!("Prism layer transfers before 10 cannot contain painted masks");
         }
         let mut referenced = std::collections::BTreeSet::new();
         if let LayerKind::Paint { program } = &self.layer.kind {

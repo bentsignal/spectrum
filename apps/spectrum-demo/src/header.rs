@@ -76,26 +76,27 @@ impl Workspace {
                 matches!(self.open, Open::Canvas(_)) && self.canvas.is_some(),
                 |el| {
                     let snapping = self.canvas.as_ref().is_some_and(|c| c.doc.snapping_enabled);
-                    el.child(
-                        Button::new("snapping")
-                            .ghost()
-                            .small()
-                            .label("Snap")
-                            .selected(snapping)
-                            .tooltip("Snapping (⌘⇧;)")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_snapping(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("guides")
-                            .ghost()
-                            .small()
-                            .label("Guides")
-                            .selected(self.guides_visible)
-                            .tooltip("Show guides (⌘;)")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_guides(cx))),
-                    )
+                    el.child(self.zoom_control(cx))
+                        .child(
+                            Button::new("snapping")
+                                .ghost()
+                                .small()
+                                .label("Snap")
+                                .selected(snapping)
+                                .tooltip("Snapping (⌘⇧;)")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_snapping(window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("guides")
+                                .ghost()
+                                .small()
+                                .label("Guides")
+                                .selected(self.guides_visible)
+                                .tooltip("Show guides (⌘;)")
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_guides(cx))),
+                        )
                 },
             )
             .children(match self.open {

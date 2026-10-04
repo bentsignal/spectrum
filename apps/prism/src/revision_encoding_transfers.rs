@@ -6,8 +6,13 @@ pub(super) fn requires_modern_encoding(command: &Command) -> bool {
             fill: Some(fill), ..
         } => fill.requires_modern_encoding(),
         Command::SetLayerStyle { style, .. } => style_requires_modern_encoding(style),
+        Command::HideSelection { .. } | Command::EraseLayer { .. } => true,
+        Command::SetVectorMask {
+            mask: Some(mask), ..
+        } => mask.alpha.is_some(),
         Command::InsertLayer { transfer, .. } => {
             transfer.version >= crate::MODERN_GRADIENT_LAYER_TRANSFER_VERSION
+                || crate::layer_erase::has_painted_mask(&transfer.layer)
                 || transfer
                     .layer
                     .shape_fill

@@ -1,30 +1,93 @@
-//! The Brush and Eraser. A stroke shows at once as round dabs along the
-//! pointer's path (only inside the selection), while its Paint layer
-//! re-renders with the stroke applied, so the canvas shows exactly what the
-//! stroke will leave, erasing included. Lifting the pointer sends the same
-//! command the preview used, as `spectrum canvas paint`.
-use crate::{tools::Tool, workspace::Workspace};
+//! The Brush and Eraser. A stroke on a Paint layer shows at once as a patch
+//! rendered under the brush; the Eraser works on any layer it starts on,
+//! and other kinds re-render with the stroke taken out of their mask. Either
+//! way the canvas shows exactly what the stroke will leave, and lifting the
+//! pointer sends the same command the preview used, as `spectrum canvas
+//! paint`.
+use crate::{canvas_state::CanvasState, tools::Tool, workspace::Workspace};
 use gpui::{prelude::*, *};
 use prism_core::{
     BrushMode, BrushSample, BrushStroke, BrushStyle, Command, LayerKind, PaintSelection,
 };
 
+/// Whether a layer's image on screen shows anything within `reach` of a
+/// canvas point; layers without their own image (drawn inside another, or
+/// on canvases drawn as one render) count wherever their bounds are.
+fn shows_near(canvas: &CanvasState, id: u64, (x, y): (f32, f32), reach: f32) -> bool {
+    let Some(cached) = canvas.cache.images.get(&id) else {
+        return true;
+    };
+    let Some(bytes) = cached.image.as_bytes(0) else {
+        return true;
+    };
+    let size = cached.image.size(0);
+    let (width, height) = (size.width.0 as i64, size.height.0 as i64);
+    let alpha = |dx: f32, dy: f32| {
+        let px = ((x + dx) * cached.density - cached.pixel[0]).floor() as i64;
+        let py = ((y + dy) * cached.density - cached.pixel[1]).floor() as i64;
+        (0..width).contains(&px)
+            && (0..height).contains(&py)
+            && bytes[((py * width + px) * 4 + 3) as usize] > 0
+    };
+    // The center and two rings of points across the brush.
+    let mut points = vec![(0., 0.)];
+    for ring in [0.5, 1.] {
+        for step in 0..8 {
+            let angle = step as f32 * std::f32::consts::FRAC_PI_4;
+            points.push((angle.cos() * reach * ring, angle.sin() * reach * ring));
+        }
+    }
+    points.into_iter().any(|(dx, dy)| alpha(dx, dy))
+}
+
 impl Workspace {
-    /// The selected Paint layer, if one is selected.
-    fn paint_layer(&self) -> Option<(u64, prism_core::Transform)> {
+    /// The Paint layer a stroke works on natively: the selected one for the
+    /// Brush, the one it started on for the Eraser.
+    fn paint_target(&self, tool: Tool) -> Option<(u64, prism_core::Transform)> {
         let canvas = self.canvas.as_ref()?;
-        let layer = canvas.doc.layer(canvas.selected?).ok()?;
+        let id = match tool {
+            Tool::Eraser => canvas.erase_target?,
+            _ => canvas.selected?,
+        };
+        let layer = canvas.doc.layer(id).ok()?;
         matches!(layer.kind, LayerKind::Paint { .. }).then_some((layer.id, layer.transform))
     }
 
-    /// Whether a stroke can start; the Eraser needs a Paint layer to erase.
-    pub fn can_stroke(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if tool == Tool::Eraser && self.paint_layer().is_none() {
-            self.notify_error(
-                anyhow::anyhow!("Select a Paint layer to erase. The Brush paints on a new one."),
-                window,
-                cx,
-            );
+    /// Whether a stroke can start at `point`. The Eraser works on the
+    /// selected layer if it starts on it, or else the topmost layer there,
+    /// of any kind; with nothing there, there is nothing to erase.
+    pub fn can_stroke(&mut self, tool: Tool, point: (f32, f32), cx: &mut Context<Self>) -> bool {
+        let (size, ..) = self.tool_options.brush(cx);
+        let target = (tool == Tool::Eraser)
+            .then(|| {
+                let canvas = self.canvas.as_ref()?;
+                // Layers under the brush with something showing there.
+                let on = |id: &u64| {
+                    let Ok(layer) = canvas.doc.layer(*id) else {
+                        return false;
+                    };
+                    let reach = size / 2.;
+                    let inside = canvas.bounds.get(id).is_some_and(|(min, max)| {
+                        (min[0] - reach..=max[0] + reach).contains(&point.0)
+                            && (min[1] - reach..=max[1] + reach).contains(&point.1)
+                    });
+                    layer.visible
+                        && !layer.locked
+                        && inside
+                        && shows_near(canvas, *id, point, size / 2.)
+                };
+                canvas
+                    .selected
+                    .filter(on)
+                    .or_else(|| canvas.doc.layers.iter().rev().map(|l| l.id).find(on))
+            })
+            .flatten();
+        let Some(canvas) = &mut self.canvas else {
+            return false;
+        };
+        canvas.erase_target = target;
+        if tool == Tool::Eraser && target.is_none() {
+            cx.notify();
             return false;
         }
         true
@@ -36,10 +99,7 @@ impl Workspace {
         let canvas = self.canvas.as_ref()?;
         let (size, hardness, opacity) = self.tool_options.brush(cx);
         let (width, height) = (canvas.doc.width, canvas.doc.height);
-        let paint = self.paint_layer();
-        if tool == Tool::Eraser && paint.is_none() {
-            return None;
-        }
+        let paint = self.paint_target(tool);
         // Samples in the Paint layer's own pixels.
         let local = |(x, y): (f32, f32)| match paint {
             Some((_, t)) => (
@@ -74,6 +134,21 @@ impl Workspace {
             opacity,
             ..BrushStyle::default()
         };
+        // Other layers keep what is erased in their mask, in canvas units.
+        if tool == Tool::Eraser && paint.is_none() {
+            let mut samples: Vec<BrushSample> = canvas
+                .points
+                .iter()
+                .map(|&(x, y)| BrushSample { x, y, pressure: 1. })
+                .collect();
+            if samples.len() == 1 {
+                samples.push(samples[0]);
+            }
+            return Some(Command::EraseLayer {
+                id: canvas.erase_target?,
+                stroke: BrushStroke::new(style, samples).ok()?,
+            });
+        }
         let stroke = BrushStroke::new(style, samples).ok()?;
         Some(match paint {
             Some((id, _)) => Command::AddBrushStroke {
@@ -101,6 +176,20 @@ impl Workspace {
         let Some(canvas) = &mut self.canvas else {
             return;
         };
+        // Erasing a layer of another kind re-renders it with the stroke.
+        if matches!(command, Command::EraseLayer { .. }) {
+            let mut local = prism_core::Workspace::new(canvas.doc.clone(), None);
+            if local.execute(command).is_ok() {
+                canvas.live_doc = Some(local.document);
+                canvas.bump_version();
+                if crate::layer_cache::stackable(&canvas.doc) {
+                    self.refresh_layers(window, cx);
+                } else {
+                    self.render_canvas(window, cx);
+                }
+            }
+            return;
+        }
         // The layer the stroke lands on: the selected Paint layer, or the
         // one the command adds.
         let target = match &command {
@@ -173,10 +262,15 @@ impl Workspace {
 
     /// Ends a stroke: the same command the preview showed is applied and saved.
     pub fn finish_stroke(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
-        let command = self.stroke_command(tool, cx);
+        let mut command = self.stroke_command(tool, cx);
         if let Some(canvas) = &mut self.canvas {
+            // An erase that never touched its layer leaves nothing to save.
+            if matches!(command, Some(Command::EraseLayer { .. })) && canvas.live_doc.is_none() {
+                command = None;
+            }
             canvas.points.clear();
             canvas.live_doc = None;
+            canvas.erase_target = None;
             // The patch stays until the layer's new render arrives.
             if let Some(patch) = &mut canvas.stroke_patch {
                 patch.committed = true;

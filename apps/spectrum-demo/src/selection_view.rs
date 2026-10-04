@@ -5,9 +5,8 @@
 use crate::{tools::Tool, workspace::Workspace};
 use gpui::{prelude::*, *};
 use prism_core::{
-    Command, LayerKind, Selection, SelectionCombineMode, SelectionMaskOutline,
-    SelectionOutlinePath, SelectionOutlinePoint, SelectionOutlineRect, SelectionOutlineTransform,
-    SelectionOutlineView,
+    Command, Selection, SelectionCombineMode, SelectionMaskOutline, SelectionOutlinePath,
+    SelectionOutlinePoint, SelectionOutlineRect, SelectionOutlineTransform, SelectionOutlineView,
 };
 use spectrum::library::Service;
 use std::{
@@ -250,9 +249,10 @@ impl Workspace {
         }
     }
 
-    /// Delete or Backspace with a selection: hide the selected part of the
-    /// selected layer. Images hide those pixels; other layers get a mask of
-    /// everything else.
+    /// Delete or Backspace with a selection: hide what it covers on the
+    /// selected layer, or else the topmost layer under it, of any kind.
+    /// Images hide those pixels; other layers keep it in their mask and
+    /// stay editable.
     pub fn delete_in_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(canvas) = &self.canvas else {
             return;
@@ -270,14 +270,20 @@ impl Workspace {
                     && max[1] > sy as f32
             })
         };
-        let target = canvas.selected.filter(|id| covers(*id)).or_else(|| {
+        // The first, the selected layer before the rest from the top, with
+        // something showing under the selection.
+        let candidates = canvas.selected.filter(|id| covers(*id)).into_iter().chain(
             canvas
                 .doc
                 .layers
                 .iter()
                 .rev()
-                .find(|l| l.visible && !l.locked && covers(l.id))
-                .map(|l| l.id)
+                .filter(|l| l.visible && !l.locked && covers(l.id))
+                .map(|l| l.id),
+        );
+        let target = candidates.into_iter().find(|&id| {
+            let mut trial = prism_core::Workspace::new(canvas.doc.clone(), None);
+            trial.execute(Command::HideSelection { id }).is_ok()
         });
         let Some(layer) = target.and_then(|id| canvas.doc.layer(id).ok()) else {
             return self.notify_error(
@@ -287,25 +293,7 @@ impl Workspace {
             );
         };
         let id = layer.id;
-        if matches!(layer.kind, LayerKind::Raster { .. }) {
-            return self.canvas_commands(vec![Command::DeleteSelectedPixels { id }], window, cx);
-        }
-        let mut inverse = canvas.doc.clone();
-        let mask = prism_core::inverted_selection(&canvas.doc).and_then(|selection| {
-            inverse.selection = Some(selection);
-            prism_core::vector_mask_from_selection(&inverse, id)
-        });
-        match mask {
-            Ok(mask) => self.canvas_commands(
-                vec![Command::SetVectorMask {
-                    id,
-                    mask: Some(mask),
-                }],
-                window,
-                cx,
-            ),
-            Err(error) => self.notify_error(error, window, cx),
-        }
+        self.canvas_commands(vec![Command::HideSelection { id }], window, cx);
     }
 
     /// Crops the canvas to the selection's bounds.

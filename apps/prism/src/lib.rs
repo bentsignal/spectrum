@@ -175,6 +175,7 @@ pub use alignment::{
 mod selection;
 pub use selection::{MAX_COLOR_SELECTION_PIXELS, Selection, magic_wand_selection};
 
+mod layer_erase;
 mod pixel_masks;
 mod render_preview;
 mod selection_commands;
@@ -487,6 +488,15 @@ impl Document {
                 total
                     .checked_add(layer.pixel_mask.as_ref().map_or(0, |mask| mask.alpha.len()))
                     .and_then(|total| {
+                        total.checked_add(
+                            layer
+                                .vector_mask
+                                .as_ref()
+                                .and_then(|mask| mask.alpha.as_ref())
+                                .map_or(0, |alpha| alpha.alpha.len()),
+                        )
+                    })
+                    .and_then(|total| {
                         total.checked_add(match &layer.kind {
                             LayerKind::Paint { program } => program.clip_bytes(),
                             _ => 0,
@@ -619,6 +629,11 @@ impl Document {
             }
             if let Some(mask) = &layer.vector_mask {
                 mask.validate()?;
+                if source_version < revisions::MODERN_GRADIENT_SNAPSHOT_VERSION
+                    && mask.alpha.is_some()
+                {
+                    bail!("Prism snapshot version {source_version} cannot contain painted masks");
+                }
             }
             effects::validate_layer_style(&layer.style)?;
             validate_shape_stroke(layer.stroke)?;
@@ -811,6 +826,10 @@ mod tests;
 #[cfg(test)]
 #[path = "shape_tests.rs"]
 mod shape_tests;
+
+#[cfg(test)]
+#[path = "layer_erase_tests.rs"]
+mod layer_erase_tests;
 
 #[cfg(test)]
 #[path = "render_region_tests.rs"]
