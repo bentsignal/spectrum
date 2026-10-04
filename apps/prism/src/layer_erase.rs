@@ -78,7 +78,7 @@ pub(crate) fn apply_painted_alpha(
             let y0 = fy.floor().clamp(0.0, (ph - 1) as f32) as usize;
             let y1 = (y0 + 1).min(ph - 1);
             let ty = (fy - y0 as f32).clamp(0.0, 1.0);
-            for (column, pixel) in line.chunks_exact_mut(4).enumerate() {
+            for (column, pixel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let fx = ((origin.0 as usize + column) as f32 + 0.5) * step_x - 0.5;
                 let x0 = fx.floor().clamp(0.0, (pw - 1) as f32) as usize;
                 let x1 = (x0 + 1).min(pw - 1);

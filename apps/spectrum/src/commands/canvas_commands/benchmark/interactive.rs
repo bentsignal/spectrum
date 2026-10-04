@@ -210,7 +210,7 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
         let patch = render_paint_layer_region(&local.document, id, region)?;
         // The preview uploads it as BGRA.
         let mut bgra = patch.into_raw();
-        for pixel in bgra.chunks_exact_mut(4) {
+        for pixel in bgra.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         black_box(bgra);
