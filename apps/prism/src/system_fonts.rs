@@ -56,16 +56,26 @@ pub fn system_fonts() -> Vec<SystemFont> {
             let family = face.families.first()?.0.clone();
             let italic = face.style != fontdb::Style::Normal;
             let weight = face.weight.0;
-            let latin = database
+            // Whether it has Latin letters, and its own style name, such as
+            // "Display Black", which tells apart faces of the same weight.
+            let (latin, named) = database
                 .with_face_data(face.id, |data, index| {
-                    ttf_parser::Face::parse(data, index).is_ok_and(|parsed| {
-                        "AZaz09".chars().all(|c| parsed.glyph_index(c).is_some())
+                    ttf_parser::Face::parse(data, index).map_or((false, None), |parsed| {
+                        let latin = "AZaz09".chars().all(|c| parsed.glyph_index(c).is_some());
+                        let named = crate::font_source::font_name(
+                            &parsed,
+                            &[
+                                ttf_parser::name_id::TYPOGRAPHIC_SUBFAMILY,
+                                ttf_parser::name_id::SUBFAMILY,
+                            ],
+                        );
+                        (latin, named)
                     })
                 })
-                .unwrap_or(false);
+                .unwrap_or((false, None));
             Some(SystemFont {
                 latin,
-                style: style_name(weight, italic),
+                style: named.unwrap_or_else(|| style_name(weight, italic)),
                 family,
                 weight,
                 italic,
@@ -87,9 +97,16 @@ pub fn system_fonts() -> Vec<SystemFont> {
 /// The face to use for a family by default: its upright face nearest to
 /// regular weight.
 pub fn regular_face<'a>(faces: impl IntoIterator<Item = &'a SystemFont>) -> Option<&'a SystemFont> {
-    faces
-        .into_iter()
-        .min_by_key(|font| (font.italic, font.weight.abs_diff(400)))
+    // A face named Regular wins; then upright, nearest regular weight, and
+    // shortest name (plain "Regular" before "Display Regular").
+    faces.into_iter().min_by_key(|font| {
+        (
+            !font.style.eq_ignore_ascii_case("regular"),
+            font.italic,
+            font.weight.abs_diff(400),
+            font.style.len(),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -102,5 +119,25 @@ mod tests {
         assert_eq!(style_name(400, true), "Italic");
         assert_eq!(style_name(700, true), "Bold Italic");
         assert_eq!(style_name(300, false), "Light");
+    }
+
+    #[test]
+    fn a_family_opens_in_its_regular_face() {
+        let face = |style: &str, weight, italic| SystemFont {
+            family: "SF Compact".into(),
+            style: style.into(),
+            weight,
+            italic,
+            path: format!("{style}.otf").into(),
+            latin: true,
+        };
+        let faces = [
+            face("Display Black", 900, false),
+            face("Display Regular", 400, false),
+            face("Italic", 400, true),
+            face("Regular", 400, false),
+        ];
+        assert_eq!(regular_face(&faces).unwrap().style, "Regular");
+        assert_eq!(regular_face(&faces[..2]).unwrap().style, "Display Regular");
     }
 }

@@ -49,6 +49,17 @@ impl FontEmbeddingPermission {
     }
 }
 
+/// Verified font files kept for interactive clients, by content hash.
+static FONT_BYTES: std::sync::Mutex<Vec<(String, std::sync::Arc<[u8]>)>> =
+    std::sync::Mutex::new(Vec::new());
+const KEPT_FONTS: usize = 4;
+
+/// Drops every font kept for interactive clients.
+pub(crate) fn clear_font_caches() {
+    FONT_BYTES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    crate::text_render::clear_parsed_fonts();
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FontAsset {
     pub id: u64,
@@ -110,6 +121,29 @@ impl FontAsset {
 
     pub fn bytes(&self) -> Result<Vec<u8>> {
         Ok(self.source_snapshot()?.bytes().to_vec())
+    }
+
+    /// The verified font file, kept by its content hash for interactive
+    /// clients so text re-renders without reading and hashing it again.
+    pub(crate) fn shared_bytes(&self) -> Result<std::sync::Arc<[u8]>> {
+        let interactive = crate::render_region::interactive_caches();
+        if interactive {
+            let cache = FONT_BYTES.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((_, bytes)) = cache.iter().find(|(hash, _)| *hash == self.content_hash) {
+                return Ok(bytes.clone());
+            }
+        }
+        let bytes: std::sync::Arc<[u8]> = self.bytes()?.into();
+        if interactive {
+            let mut cache = FONT_BYTES.lock().unwrap_or_else(|e| e.into_inner());
+            cache.retain(|(hash, _)| *hash != self.content_hash);
+            cache.push((self.content_hash.clone(), bytes.clone()));
+            // A few fonts at a time: the ones on the canvas being edited.
+            while cache.len() > KEPT_FONTS {
+                cache.remove(0);
+            }
+        }
+        Ok(bytes)
     }
 
     pub(crate) fn from_embedded_bytes(

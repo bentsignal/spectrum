@@ -641,7 +641,7 @@ fn embedding_permission(permissions: Option<Permissions>) -> Result<FontEmbeddin
     }
 }
 
-fn font_name(face: &Face<'_>, ids: &[u16]) -> Option<String> {
+pub(crate) fn font_name(face: &Face<'_>, ids: &[u16]) -> Option<String> {
     ids.iter().find_map(|wanted| {
         face.names()
             .into_iter()

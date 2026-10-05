@@ -90,7 +90,7 @@ for all of them, with copy and paste buttons. Canvas renders match the canvas's
 size on screen, so layers stay sharp while they move.
 
 The Font field lists the fonts installed on this computer, each in its own
-typeface. Hovering a font, or moving to it with the arrow keys, shows it on the
+typeface, and the field below it picks among a family's weights and styles. Hovering a font, or moving to it with the arrow keys, shows it on the
 canvas at once; a click or Enter applies it (embedding the font in the canvas)
 and Escape puts the old one back; scrolling previews whatever comes under the
 pointer. Star a font to list it first (Favorites shows only those), hide it to clear

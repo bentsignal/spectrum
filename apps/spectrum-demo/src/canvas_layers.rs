@@ -61,6 +61,8 @@ impl Workspace {
             return;
         };
         let opacity = layer.opacity * 100.;
+        // Text shows its family's weights, so find the installed fonts.
+        let text_layer = matches!(layer.kind, LayerKind::Text { .. });
         let (text, size, radius) = match &layer.kind {
             LayerKind::Text {
                 text, font_size, ..
@@ -89,6 +91,9 @@ impl Workspace {
         };
         self.rotation
             .update(cx, |s, cx| s.set_value(rotation, window, cx));
+        if text_layer {
+            self.ensure_fonts(cx);
+        }
         self.sync_style_controls(window, cx);
         // Leave the field alone while it is being typed in.
         let typing = self.text_input.focus_handle(cx).is_focused(window);

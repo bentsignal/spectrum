@@ -13,12 +13,14 @@ use gpui_component::{
 use prism_core::{Command, Document, FontAsset, LayerKind};
 use std::{path::Path, path::PathBuf, sync::Arc};
 
-/// An installed family and the file of its regular face.
+/// An installed family, the file of its regular face, and all its faces.
 pub struct Family {
     pub name: SharedString,
     pub path: PathBuf,
     /// Has Latin letters; other fonts show boxes for English text.
     pub latin: bool,
+    /// Each weight and style, lightest first, upright before italic.
+    pub faces: Vec<(SharedString, PathBuf)>,
 }
 
 const ROW: f32 = 34.;
@@ -63,14 +65,30 @@ pub fn with_font(doc: &Document, layer: u64, path: &Path) -> anyhow::Result<Docu
     Ok(local.document)
 }
 
-/// The family a text layer uses now.
-pub fn current_family(doc: &Document, typography: &prism_core::TextTypography) -> SharedString {
+/// The font a text layer uses now: its family, style, and file name.
+#[derive(Default)]
+pub struct CurrentFont {
+    pub family: SharedString,
+    pub style: SharedString,
+    pub file: String,
+}
+
+pub fn current_family(doc: &Document, typography: &prism_core::TextTypography) -> CurrentFont {
     typography
         .font_id
         .and_then(|id| doc.font_assets.iter().find(|f| f.id == id))
-        .map_or("Ubuntu Light".into(), |font| {
-            format!("{} {}", font.family, font.style).into()
-        })
+        .map_or(
+            CurrentFont {
+                family: "Ubuntu".into(),
+                style: "Light".into(),
+                file: String::new(),
+            },
+            |font| CurrentFont {
+                family: font.family.clone().into(),
+                style: font.style.clone().into(),
+                file: font.source_name.clone(),
+            },
+        )
 }
 
 impl Workspace {
@@ -84,42 +102,57 @@ impl Workspace {
         self.font_query
             .update(cx, |state, cx| state.focus(window, cx));
         if self.fonts.is_none() {
-            let task = cx.background_executor().spawn(async {
-                let fonts = prism_core::system_fonts();
-                let mut families: Vec<Family> = Vec::new();
-                for font in &fonts {
-                    if families.last().is_some_and(|f| f.name == font.family) {
-                        continue;
-                    }
-                    let faces = fonts.iter().filter(|f| f.family == font.family);
-                    if let Some(face) = prism_core::regular_face(faces) {
-                        families.push(Family {
-                            name: face.family.clone().into(),
-                            path: face.path.clone(),
-                            latin: face.latin,
-                        });
-                    }
-                }
-                families
-            });
-            cx.spawn(async move |this, cx| {
-                let families = task.await;
-                this.update(cx, |this, cx| {
-                    this.fonts = Some(Arc::new(families));
-                    this.font_highlight = this.current_font_position(cx);
-                    this.font_scroll
-                        .scroll_to_item(this.font_highlight, ScrollStrategy::Center);
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
+            self.ensure_fonts(cx);
         } else {
             self.font_highlight = self.current_font_position(cx);
             self.font_scroll
                 .scroll_to_item(self.font_highlight, ScrollStrategy::Center);
         }
         cx.notify();
+    }
+
+    /// Finds the installed fonts in the background, once.
+    pub fn ensure_fonts(&mut self, cx: &mut Context<Self>) {
+        if self.fonts.is_some() || self.fonts_requested {
+            return;
+        }
+        self.fonts_requested = true;
+        let task = cx.background_executor().spawn(async {
+            let fonts = prism_core::system_fonts();
+            let mut families: Vec<Family> = Vec::new();
+            for font in &fonts {
+                if families.last().is_some_and(|f| f.name == font.family) {
+                    continue;
+                }
+                let faces: Vec<_> = fonts.iter().filter(|f| f.family == font.family).collect();
+                if let Some(face) = prism_core::regular_face(faces.iter().copied()) {
+                    families.push(Family {
+                        name: face.family.clone().into(),
+                        path: face.path.clone(),
+                        latin: face.latin,
+                        faces: faces
+                            .iter()
+                            .map(|f| (f.style.clone().into(), f.path.clone()))
+                            .collect(),
+                    });
+                }
+            }
+            families
+        });
+        cx.spawn(async move |this, cx| {
+            let families = task.await;
+            this.update(cx, |this, cx| {
+                this.fonts = Some(Arc::new(families));
+                if this.font_open {
+                    this.font_highlight = this.current_font_position(cx);
+                    this.font_scroll
+                        .scroll_to_item(this.font_highlight, ScrollStrategy::Center);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Families matching the search, as indexes into the full list.
@@ -245,13 +278,20 @@ impl Workspace {
             .and_then(|f| f.get(index))
             .map(|f| f.path.clone());
         self.close_fonts(window, cx);
-        let (Some(path), Some(canvas)) = (path, &self.canvas) else {
+        if let Some(path) = path {
+            self.apply_font_file(&path, window, cx);
+        }
+    }
+
+    /// Gives the selected text layer the font in `path`.
+    fn apply_font_file(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(canvas) = &self.canvas else {
             return;
         };
         let Some(layer) = canvas.selected else {
             return;
         };
-        match font_commands(&canvas.doc, layer, &path) {
+        match font_commands(&canvas.doc, layer, path) {
             Ok(commands) => self.canvas_commands(commands, window, cx),
             Err(error) => self.notify_error(error, window, cx),
         }
@@ -290,7 +330,44 @@ impl Workspace {
     }
 
     /// The Font row, and the browser below it while open.
-    pub fn font_field(&self, family: SharedString, cx: &mut Context<Self>) -> Div {
+    pub fn font_field(&self, current: CurrentFont, cx: &mut Context<Self>) -> Div {
+        let CurrentFont {
+            family,
+            style,
+            file,
+        } = current;
+        // The family's weights and styles, to pick among: found by name, or
+        // by the file the canvas embedded.
+        let is_file = |path: &PathBuf| path.file_name().is_some_and(|name| *name == *file);
+        let faces = self
+            .fonts
+            .as_ref()
+            .and_then(|fonts| {
+                fonts.iter().find(|f| f.name == family).or_else(|| {
+                    fonts
+                        .iter()
+                        .find(|f| f.faces.iter().any(|(_, p)| is_file(p)))
+                })
+            })
+            .map(|f| f.faces.clone())
+            .filter(|faces| faces.len() > 1);
+        let weight = faces.map(|faces| {
+            let view = cx.entity();
+            let names: Vec<SharedString> = faces.iter().map(|(name, _)| name.clone()).collect();
+            let current = faces
+                .iter()
+                .position(|(_, path)| is_file(path))
+                .or_else(|| names.iter().position(|name| *name == style))
+                .unwrap_or(0);
+            crate::controls::Field::new("font-weight", style.clone()).options(
+                names,
+                move |_| current,
+                move |index, window, cx| {
+                    let path = faces[index].1.clone();
+                    view.update(cx, |this, cx| this.apply_font_file(&path, window, cx));
+                },
+            )
+        });
         let field = div()
             .id("font-field")
             .h(px(34.))
@@ -332,6 +409,7 @@ impl Workspace {
             .gap_2()
             .child(field)
             .when(self.font_open, |el| el.child(self.font_list(cx)))
+            .children(weight)
     }
 
     fn font_list(&self, cx: &mut Context<Self>) -> impl IntoElement {

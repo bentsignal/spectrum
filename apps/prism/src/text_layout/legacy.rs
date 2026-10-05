@@ -13,6 +13,7 @@ const MAX_GLYPH_PIXELS: u64 = 4_096 * 4_096;
 
 #[path = "../text_render/font_loader.rs"]
 mod font_loader;
+pub(crate) use font_loader::clear_parsed_fonts;
 #[cfg(test)]
 pub(crate) use font_loader::font_outline_scale;
 use font_loader::load_font;

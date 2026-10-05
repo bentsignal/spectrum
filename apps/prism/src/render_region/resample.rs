@@ -128,7 +128,13 @@ pub fn set_interactive_source_cache(enabled: bool) {
     CACHE_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
     if !enabled {
         CACHE.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        crate::typography::clear_font_caches();
     }
+}
+
+/// Whether interactive clients asked to keep sources between renders.
+pub(crate) fn interactive_caches() -> bool {
+    CACHE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The most entries and bytes kept.

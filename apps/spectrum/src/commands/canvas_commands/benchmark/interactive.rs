@@ -1,6 +1,6 @@
 //! What the canvas does on every frame of a drag: rotating a large image,
 //! dragging a style slider on it, erasing it or text, drawing a brush
-//! stroke, and rotating text.
+//! stroke, rotating text, and sizing text in an imported font.
 //! Each must stay inside a frame budget, the way the preview renders them:
 //! large layers as drafts within a pixel budget, images from the
 //! interactive source cache, and strokes as a patch under the brush.
@@ -285,6 +285,48 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
         )?);
         erase_text.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
+    // Dragging the size of text in an imported font, a step a frame.
+    let font_path = directory.join("imported.ttf");
+    std::fs::write(&font_path, epaint_default_fonts::HACK_REGULAR)?;
+    text_document.layers[0].transform.rotation = 0.0;
+    let mut sized = Workspace::new(text_document.clone(), None);
+    sized.execute(Command::ImportFont {
+        path: font_path,
+        source_name: None,
+    })?;
+    let LayerKind::Text { typography, .. } = &sized.document.layers[0].kind else {
+        anyhow::bail!("the benchmark text layer is not text");
+    };
+    let typography = prism_core::TextTypography {
+        font_id: sized.document.font_assets.first().map(|font| font.id),
+        ..typography.clone()
+    };
+    sized.execute(Command::SetTextTypography { id: 1, typography })?;
+    let mut text_size = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let started = Instant::now();
+        let mut local = Workspace::new(sized.document.clone(), None);
+        local.execute(Command::UpdateText {
+            id: 1,
+            text: "Spring sale!".into(),
+            font_size: 160.0 + frame as f32 * 2.0,
+            color: [255, 255, 255, 255],
+        })?;
+        let geometry =
+            prism_core::document_layer_geometry(&local.document, &local.document.layers[0])?;
+        let region = prism_core::RenderRegion {
+            x: (geometry.min[0] * 2.0).max(0.0) as u32,
+            y: (geometry.min[1] * 2.0).max(0.0) as u32,
+            width: (geometry.width() * 2.0).ceil() as u32,
+            height: (geometry.height() * 2.0).ceil() as u32,
+        };
+        black_box(prism_core::render_document_region_scaled(
+            &local.document,
+            2.0,
+            region,
+        )?);
+        text_size.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
     std::fs::remove_dir_all(&directory).ok();
     Ok(vec![
         metric(
@@ -310,6 +352,11 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
         metric(
             "interactive_brush_stroke_patch_frame",
             &mut stroke,
+            frame_budget(hosted, 16.0),
+        ),
+        metric(
+            "interactive_text_size_imported_font_frame",
+            &mut text_size,
             frame_budget(hosted, 16.0),
         ),
         metric(

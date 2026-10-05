@@ -17,23 +17,54 @@ pub(crate) fn font_outline_scale(font_size: f32) -> u32 {
         .next_power_of_two()
 }
 
-/// Constructs one caller-owned fontdue object and retains no parsed font state.
-///
-/// fontdue keeps scale-dependent outline vectors private, so their owned
-/// capacities cannot be measured or safely admitted to a process-wide cache.
-pub(super) fn load_font(font_asset: Option<&FontAsset>, font_size: f32) -> Result<Font> {
+/// Parsed fonts kept for interactive clients: the last few font and outline
+/// scale pairs, so dragging a text slider does not re-parse every glyph.
+/// Off by default (exports and tests retain nothing), and dropped when the
+/// interactive caches are turned off.
+type ParsedFont = (String, u32, std::sync::Arc<Font>);
+static PARSED: std::sync::Mutex<Vec<ParsedFont>> = std::sync::Mutex::new(Vec::new());
+const KEPT_PARSED_FONTS: usize = 3;
+
+pub(crate) fn clear_parsed_fonts() {
+    PARSED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// The font to lay out and draw text with. Outside interactive clients
+/// every call constructs a caller-owned fontdue object and keeps nothing.
+pub(super) fn load_font(
+    font_asset: Option<&FontAsset>,
+    font_size: f32,
+) -> Result<std::sync::Arc<Font>> {
     debug_assert_eq!(RETAINED_FONTDUE_CACHE_BYTES, 0);
+    let scale = font_outline_scale(font_size);
+    let key = font_asset.map_or("bundled", |asset| asset.content_hash.as_str());
+    let interactive = crate::render_region::interactive_caches();
+    if interactive {
+        let parsed = PARSED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, _, font)) = parsed.iter().find(|(k, s, _)| k == key && *s == scale) {
+            return Ok(font.clone());
+        }
+    }
     let settings = fontdue::FontSettings {
-        scale: font_outline_scale(font_size) as f32,
+        scale: scale as f32,
         ..fontdue::FontSettings::default()
     };
-    if let Some(asset) = font_asset {
-        Font::from_bytes(asset.bytes()?, settings)
-            .map_err(|error| anyhow::anyhow!("could not load imported font: {error}"))
+    let font = std::sync::Arc::new(if let Some(asset) = font_asset {
+        Font::from_bytes(&*asset.shared_bytes()?, settings)
+            .map_err(|error| anyhow::anyhow!("could not load imported font: {error}"))?
     } else {
         Font::from_bytes(epaint_default_fonts::UBUNTU_LIGHT, settings)
-            .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))
+            .map_err(|error| anyhow::anyhow!("could not load bundled font: {error}"))?
+    });
+    if interactive {
+        let mut parsed = PARSED.lock().unwrap_or_else(|e| e.into_inner());
+        parsed.retain(|(k, s, _)| !(k == key && *s == scale));
+        parsed.push((key.to_owned(), scale, font.clone()));
+        while parsed.len() > KEPT_PARSED_FONTS {
+            parsed.remove(0);
+        }
     }
+    Ok(font)
 }
 
 #[cfg(test)]

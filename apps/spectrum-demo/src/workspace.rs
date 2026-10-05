@@ -122,6 +122,8 @@ pub struct Workspace {
     pub font_hover: Option<usize>,
     pub font_scroll: UniformListScrollHandle,
     pub font_lists: crate::font_lists::FontLists,
+    /// The installed fonts are being found.
+    pub fonts_requested: bool,
     /// Assets the palette is adding to a project; empty when it navigates.
     pub palette_adding: Vec<AssetId>,
     /// Edits copied from an image, ready to paste onto others.
@@ -364,6 +366,7 @@ impl Workspace {
             font_hover: None,
             font_scroll: UniformListScrollHandle::new(),
             font_lists: crate::font_lists::FontLists::load(),
+            fonts_requested: false,
             palette_adding: Vec::new(),
             copied_edits: None,
             pending_add: Vec::new(),

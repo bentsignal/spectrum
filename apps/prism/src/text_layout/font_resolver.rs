@@ -13,7 +13,7 @@ pub(super) enum FaceChoice {
 }
 
 pub(super) struct ResolvedFonts {
-    primary: Vec<u8>,
+    primary: std::sync::Arc<[u8]>,
     primary_is_bundled: bool,
 }
 
@@ -22,11 +22,11 @@ impl ResolvedFonts {
         let (primary, primary_is_bundled) = match font_asset {
             Some(asset) => (
                 asset
-                    .bytes()
+                    .shared_bytes()
                     .context("could not load the exact imported font snapshot")?,
                 false,
             ),
-            None => (BUNDLED_UBUNTU.to_vec(), true),
+            None => (std::sync::Arc::from(BUNDLED_UBUNTU), true),
         };
         Face::parse(&primary, 0).context("primary text font is malformed")?;
         Face::parse(BUNDLED_UBUNTU, 0).context("bundled Ubuntu fallback is malformed")?;
@@ -40,7 +40,7 @@ impl ResolvedFonts {
         Face::parse(primary, 0).context("primary text font is malformed")?;
         Face::parse(BUNDLED_UBUNTU, 0).context("bundled Ubuntu fallback is malformed")?;
         Ok(Self {
-            primary: primary.to_vec(),
+            primary: std::sync::Arc::from(primary),
             primary_is_bundled: false,
         })
     }
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn fallback_is_whole_grapheme_and_never_uses_os_fonts() {
         let fonts = ResolvedFonts {
-            primary: epaint_default_fonts::HACK_REGULAR.to_vec(),
+            primary: epaint_default_fonts::HACK_REGULAR.to_vec().into(),
             primary_is_bundled: false,
         };
         let (primary, bundled) = fonts.faces().unwrap();
