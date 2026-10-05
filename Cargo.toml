@@ -4,6 +4,7 @@ members = [
     "apps/spectrum-desktop",
     "crates/spectrum-assets",
     "crates/spectrum-canvas",
+    "crates/spectrum-document",
     "crates/spectrum-image",
     "crates/spectrum-imaging",
     "crates/spectrum-library",

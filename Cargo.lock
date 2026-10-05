@@ -6244,6 +6244,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "spectrum-document"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "fs2",
+ "serde",
+ "serde_json",
+ "spectrum-library",
+ "spectrum-revisions",
+ "tempfile",
+]
+
+[[package]]
 name = "spectrum-fonts"
 version = "0.1.0"
 dependencies = [
