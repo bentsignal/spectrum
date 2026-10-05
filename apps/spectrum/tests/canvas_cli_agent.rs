@@ -1,7 +1,7 @@
 use std::{path::Path, process::Command as ProcessCommand, str::FromStr};
 
-use prism_core::{Command, Document, Workspace};
 use serde_json::Value;
+use spectrum_canvas::{Command, Document, Workspace};
 use spectrum_revisions::{
     Actor, ActorKind, CollaborationMode, CollaborationStatus, CollaborationSync, SessionId,
 };

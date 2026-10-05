@@ -35,14 +35,14 @@ fn legacy_and_modern_gradient_cli_share_the_set_shape_fill_command() {
     )
     .unwrap();
     let legacy = Workspace::load_read_only(&project).unwrap();
-    let Some(prism_core::ShapeFill::Gradient(gradient)) = &legacy.layer(1).unwrap().shape_fill
+    let Some(spectrum_canvas::ShapeFill::Gradient(gradient)) = &legacy.layer(1).unwrap().shape_fill
     else {
         panic!("legacy CLI did not set a gradient")
     };
-    assert_eq!(gradient.kind, prism_core::GradientKind::Linear);
+    assert_eq!(gradient.kind, spectrum_canvas::GradientKind::Linear);
     assert_eq!(gradient.stops.len(), 2);
     assert_eq!(
-        prism_core::required_command_operations_version(&[Command::SetShapeFill {
+        spectrum_canvas::required_command_operations_version(&[Command::SetShapeFill {
             id: 1,
             fill: legacy.layer(1).unwrap().shape_fill.clone(),
         }]),
@@ -74,12 +74,12 @@ fn legacy_and_modern_gradient_cli_share_the_set_shape_fill_command() {
     )
     .unwrap();
     let modern = Workspace::load_read_only(&project).unwrap();
-    let Some(prism_core::ShapeFill::Gradient(gradient)) = &modern.layer(1).unwrap().shape_fill
+    let Some(spectrum_canvas::ShapeFill::Gradient(gradient)) = &modern.layer(1).unwrap().shape_fill
     else {
         panic!("modern CLI did not set a gradient")
     };
-    assert_eq!(gradient.kind, prism_core::GradientKind::Radial);
-    assert_eq!(gradient.spread, prism_core::GradientSpread::Reflect);
+    assert_eq!(gradient.kind, spectrum_canvas::GradientKind::Radial);
+    assert_eq!(gradient.spread, spectrum_canvas::GradientSpread::Reflect);
     assert_eq!(gradient.center, [0.4, 0.6]);
     assert_eq!(gradient.radius, 0.75);
     assert_eq!(gradient.stops.len(), 3);
@@ -167,14 +167,15 @@ fn structured_gradient_json_is_bounded_strict_and_exclusive() {
     let valid = r#"{"kind":"angle","angle":45,"stops":[{"position":0,"color":[255,0,0,255]},{"position":0.5,"color":[0,255,0,128]},{"position":1,"color":[0,0,255,0]}],"center":[0.4,0.6],"spread":"reflect","interpolation":"premultiplied_srgb_v1","offset":0.125,"extent":0.75}"#;
     invoke(&project, &["gradient", "1", "--gradient-json", valid]).unwrap();
     let current = Workspace::load_read_only(&project).unwrap();
-    let Some(prism_core::ShapeFill::Gradient(gradient)) = &current.layer(1).unwrap().shape_fill
+    let Some(spectrum_canvas::ShapeFill::Gradient(gradient)) =
+        &current.layer(1).unwrap().shape_fill
     else {
         panic!("structured JSON did not set a gradient")
     };
-    assert_eq!(gradient.kind, prism_core::GradientKind::Angle);
+    assert_eq!(gradient.kind, spectrum_canvas::GradientKind::Angle);
     assert_eq!(
         gradient.interpolation,
-        prism_core::GradientInterpolation::PremultipliedSrgbV1
+        spectrum_canvas::GradientInterpolation::PremultipliedSrgbV1
     );
     assert_eq!(gradient.offset, 0.125);
     assert_eq!(gradient.extent, 0.75);
@@ -220,7 +221,7 @@ fn required_live_structured_gradient_never_falls_back_to_direct_mutation() {
     let project = temporary_project("structured-required-live");
     let human_session = spectrum_revisions::SessionId::new();
     let mut human = Workspace::create_durable(
-        prism_core::Document::new("Required structured", 200, 100),
+        spectrum_canvas::Document::new("Required structured", 200, 100),
         &project,
         spectrum_revisions::Actor {
             id: "human:structured-gradient".into(),

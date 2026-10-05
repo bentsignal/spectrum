@@ -7,7 +7,9 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use image::{DynamicImage, Rgb, RgbImage};
-use lumen_core::{
+use serde::Serialize;
+use serde_json::json;
+use spectrum_image::{
     AdjustmentPatch, Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo,
     PickState, Project, SpotRemoval, ToneCurve, ToneCurves, Workspace,
     engine::{RenderOptions, render_image},
@@ -16,8 +18,6 @@ use lumen_core::{
         PreviewWorker,
     },
 };
-use serde::Serialize;
-use serde_json::json;
 use spectrum_revisions::{CollaborationMode, SessionId};
 
 #[path = "image_commands/benchmark.rs"]
@@ -892,7 +892,7 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
 fn workspace_command(
     workspace: &mut Workspace,
     command: Command,
-) -> Result<lumen_core::CommandOutput> {
+) -> Result<spectrum_image::CommandOutput> {
     workspace.execute(command)
 }
 

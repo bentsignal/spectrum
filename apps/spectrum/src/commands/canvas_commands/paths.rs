@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
-use prism_core::{Command, PathGeometry, VectorMask};
+use spectrum_canvas::{Command, PathGeometry, VectorMask};
 
 const MAX_PATH_JSON_BYTES: u64 = 512 * 1024;
 

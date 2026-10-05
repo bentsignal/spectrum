@@ -2,8 +2,8 @@ use std::{io::Write, path::Path, process::Command as ProcessCommand, str::FromSt
 
 use flate2::{Compression, write::ZlibEncoder};
 use image::{Rgba, RgbaImage};
-use lumen_core::{AdjustmentPatch, Command, Project, Workspace};
 use serde_json::Value;
+use spectrum_image::{AdjustmentPatch, Command, Project, Workspace};
 use spectrum_revisions::{
     Actor, ActorKind, Asset, CollaborationMode, CollaborationStatus, CollaborationSync, Encoding,
     NewProject, Payload, RevisionStore, SessionId,

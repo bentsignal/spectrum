@@ -28,7 +28,7 @@ pub(super) fn schema() -> Value {
             "encoding": "serde tagged JSON",
             "tag": "command",
             "operations_family": "spectrum.spectrum.commands",
-            "supported_operation_versions": (1..=prism_core::PRISM_COMMAND_OPERATIONS_VERSION).collect::<Vec<_>>(),
+            "supported_operation_versions": (1..=spectrum_canvas::PRISM_COMMAND_OPERATIONS_VERSION).collect::<Vec<_>>(),
             "selection_operations_version": 4,
             "crop_to_selection_operations_version": 5,
             "color_selection_operations_version": 6,
@@ -40,7 +40,7 @@ pub(super) fn schema() -> Value {
             "raster_pixel_mask_operations_version": 12,
             "shaped_text_operations_version": 13,
             "clone_stamp_operations_version": 14,
-            "modern_gradient_operations_version": prism_core::PRISM_COMMAND_OPERATIONS_VERSION,
+            "modern_gradient_operations_version": spectrum_canvas::PRISM_COMMAND_OPERATIONS_VERSION,
             "examples": command_examples
         },
         "live_bridge": {
@@ -53,9 +53,9 @@ pub(super) fn schema() -> Value {
             "read_only_and_export_policy": "immutable inspection, layer-copy, and export remain direct read-only operations; they never mutate the project",
             "standalone_artifact_policy": "init, optimized-copy, and from-lumen are refused in required mode because they cannot target an existing live binding",
             "agent_policy": "agent start/status manage collaboration sessions directly; document mutations for that session use the live GUI",
-            "application": prism_core::PRISM_LIVE_APPLICATION,
-            "action_family": prism_core::PRISM_LIVE_ACTION_FAMILY,
-            "action_version": prism_core::PRISM_LIVE_ACTION_VERSION,
+            "application": spectrum_canvas::PRISM_LIVE_APPLICATION,
+            "action_family": spectrum_canvas::PRISM_LIVE_ACTION_FAMILY,
+            "action_version": spectrum_canvas::PRISM_LIVE_ACTION_VERSION,
             "actions": ["state", "execute_batch", "undo", "redo", "move_agent_cursor"],
             "terminal_handoff": ["SPECTRUM_CANVAS_DOCUMENT", "SPECTRUM_SESSION", "SPECTRUM_LIVE_MODE", "SPECTRUM_LIVE_BINDING_ID"],
             "capability_in_environment": false,
@@ -101,7 +101,7 @@ pub(super) fn schema() -> Value {
         },
         "layer_types": ["raster", "text", "rectangle", "ellipse", "path", "paint"],
         "paint": {
-            "program_version": prism_core::BRUSH_PROGRAM_VERSION,
+            "program_version": spectrum_canvas::BRUSH_PROGRAM_VERSION,
             "cli": "paint add-layer --width <px> --height <px>; paint stroke <layer> <stroke.json> [--no-selection]; paint clone-source <raster-layer> <document-x> <document-y>; paint clone-stroke <paint-layer> <stroke.json> [--no-selection]; paint erase <any-layer> <canvas-space-stroke.json>",
             "modes": ["paint", "erase", "clone_stamp"],
             "clone_stamp": "clone-source inverse-maps one document point into a Raster layer and interns its exact embedded bytes, identity, dimensions, transform, non-geometric Develop adjustments, pixel mask, and vector mask once in the document registry; every clone-stroke references that stable source identity with a frozen destination-to-source affine mapping, samples transparent outside it, and clips only its destination against the current selection",
@@ -111,19 +111,19 @@ pub(super) fn schema() -> Value {
             "geometric_adjustments_v1": "Brush and Eraser fail closed on Paint layers with rotation, flips, straighten, or crop adjustments; reset those adjustments before painting and reapply them afterward",
             "mask_order": "stroke clip, Paint pixel mask, adjustments, vector mask, then outer rectangular mask/clipping/shadow",
             "limits": {
-                "samples_per_stroke": prism_core::MAX_BRUSH_SAMPLES_PER_STROKE,
-                "strokes_per_layer": prism_core::MAX_BRUSH_STROKES_PER_LAYER,
-                "samples_per_document": prism_core::MAX_BRUSH_SAMPLES_PER_DOCUMENT,
-                "dabs_per_stroke": prism_core::MAX_BRUSH_DABS_PER_STROKE,
-                "dabs_per_program_and_document": prism_core::MAX_BRUSH_DABS_PER_PROGRAM,
-                "clip_bytes_per_program": prism_core::MAX_BRUSH_CLIP_BYTES_PER_PROGRAM,
-                "requested_region_pixels": prism_core::MAX_PAINT_REGION_PIXELS
+                "samples_per_stroke": spectrum_canvas::MAX_BRUSH_SAMPLES_PER_STROKE,
+                "strokes_per_layer": spectrum_canvas::MAX_BRUSH_STROKES_PER_LAYER,
+                "samples_per_document": spectrum_canvas::MAX_BRUSH_SAMPLES_PER_DOCUMENT,
+                "dabs_per_stroke": spectrum_canvas::MAX_BRUSH_DABS_PER_STROKE,
+                "dabs_per_program_and_document": spectrum_canvas::MAX_BRUSH_DABS_PER_PROGRAM,
+                "clip_bytes_per_program": spectrum_canvas::MAX_BRUSH_CLIP_BYTES_PER_PROGRAM,
+                "requested_region_pixels": spectrum_canvas::MAX_PAINT_REGION_PIXELS
             },
             "history": "one completed pointer drag is one AddBrushStroke revision; a first drag uses atomic AddPaintLayerWithStroke"
         },
         "paths": {
-            "geometry_version": prism_core::PATH_GEOMETRY_VERSION,
-            "anchor_limit": prism_core::MAX_PATH_ANCHORS,
+            "geometry_version": spectrum_canvas::PATH_GEOMETRY_VERSION,
+            "anchor_limit": spectrum_canvas::MAX_PATH_ANCHORS,
             "geometry": "explicit local viewport with bounded cubic anchors and relative incoming/outgoing control handles; closed paths use even-odd fill",
             "cli": "path add <geometry.json> [--name <label>] [--color <RRGGBBAA>] [--x <px>] [--y <px>]; path replace <id> <geometry.json>",
             "history": "a finished creation or completed anchor/control-point drag is one durable command and revision"
@@ -153,7 +153,7 @@ pub(super) fn schema() -> Value {
             "rectangle": "selection rectangle <x> <y> <width> <height> uses integer document pixels and clips at canvas edges",
             "magic_wand": "selection magic-wand <x> <y> [--tolerance <0..255>] [--noncontiguous] [--no-antialias] defaults tolerance to 20 and samples the exact CPU composite; tolerance is deterministic max-channel distance over premultiplied RGBA (hidden RGB at alpha 0 is ignored, alpha differences remain visible), and anti-aliasing adds one soft boundary pixel",
             "lasso": "selection lasso --point <x,y> --point <x,y> --point <x,y> [--mode <replace|add|subtract|intersect>] [--no-antialias] quantizes coordinates to 1/256 pixel and applies a deterministic even-odd polygon selection",
-            "lasso_limits": {"input_points": prism_core::MAX_LASSO_INPUT_POINTS, "simplified_vertices": prism_core::MAX_LASSO_VERTICES, "raster_edge_tests": prism_core::MAX_LASSO_RASTER_EDGE_TESTS, "mask_pixels": prism_core::MAX_COLOR_SELECTION_PIXELS},
+            "lasso_limits": {"input_points": spectrum_canvas::MAX_LASSO_INPUT_POINTS, "simplified_vertices": spectrum_canvas::MAX_LASSO_VERTICES, "raster_edge_tests": spectrum_canvas::MAX_LASSO_RASTER_EDGE_TESTS, "mask_pixels": spectrum_canvas::MAX_COLOR_SELECTION_PIXELS},
             "clear": "selection clear removes the persistent pixel selection",
             "crop": "selection crop atomically crops the canvas to the current selection and clears it in one revision",
             "fill": "selection fill [--color <RRGGBBAA>] [--name <label>] creates one new editable solid layer honoring rectangular or soft color-selection alpha without changing source pixels",
@@ -187,7 +187,7 @@ pub(super) fn schema() -> Value {
         },
         "layer_transfer": {
             "format": "spectrum.spectrum.layer",
-            "version": prism_core::LAYER_TRANSFER_VERSION,
+            "version": spectrum_canvas::LAYER_TRANSFER_VERSION,
             "scope": "exactly one layer; document-local layer and embedded-font IDs are remapped on insertion",
             "copy": "spectrum canvas --document <source> layer-copy [<id>] --output <new-transfer.json>",
             "paste": "spectrum canvas --document <destination> layer-paste <transfer.json> [--index <bottom-to-top-index>]",

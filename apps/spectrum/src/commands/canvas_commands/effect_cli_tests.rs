@@ -51,7 +51,7 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
         .clone();
     let stroke = style.stroke.unwrap();
     assert_eq!(stroke.size, 2.0, "later edits change only what they name");
-    assert_eq!(stroke.position, prism_core::StrokePosition::Center);
+    assert_eq!(stroke.position, spectrum_canvas::StrokePosition::Center);
     assert_eq!(stroke.color, [255, 0, 0, 255]);
     assert_eq!(style.outer_glow.unwrap().spread, 0.5);
     assert_eq!(style.inner_shadow.unwrap().offset_x, -3.0);
@@ -114,15 +114,15 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
         .style
         .clone();
     let bevel = style.bevel.unwrap();
-    assert_eq!(bevel.style, prism_core::BevelStyle::Emboss);
+    assert_eq!(bevel.style, spectrum_canvas::BevelStyle::Emboss);
     assert!(!bevel.up && bevel.angle == 45.0);
     assert_eq!(
         style.satin.unwrap().blend_mode,
-        prism_core::BlendMode::Screen
+        spectrum_canvas::BlendMode::Screen
     );
     let overlay = style.gradient_overlay.unwrap();
     assert_eq!(overlay.gradient.stops.len(), 3);
-    assert_eq!(overlay.gradient.kind, prism_core::GradientKind::Radial);
+    assert_eq!(overlay.gradient.kind, spectrum_canvas::GradientKind::Radial);
     assert_eq!(overlay.gradient.center[0], 0.25);
     assert_eq!(overlay.gradient.radius, 0.8);
     assert!(
@@ -203,10 +203,10 @@ fn sample_cli_reads_the_composited_color() {
     .unwrap();
     let document = Workspace::load_read_only(&project).unwrap();
     assert_eq!(
-        prism_core::sample_document_color(&document, 5, 5).unwrap(),
+        spectrum_canvas::sample_document_color(&document, 5, 5).unwrap(),
         [255, 0, 0, 255]
     );
-    assert!(prism_core::sample_document_color(&document, 50, 5).is_err());
+    assert!(spectrum_canvas::sample_document_color(&document, 50, 5).is_err());
     let sampled = run(Cli::try_parse_from([
         "prism",
         "--document",

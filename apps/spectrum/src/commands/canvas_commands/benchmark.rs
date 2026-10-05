@@ -1,7 +1,8 @@
 use std::time::Instant;
 
 use anyhow::{Result, bail};
-use prism_core::{
+use serde_json::{Value, json};
+use spectrum_canvas::{
     BlendMode, Command, Document, DropShadow, FontAsset, GradientStop, Layer, LayerKind, LayerMask,
     LayerStyle, RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, TextAlignment, TextEffects,
     TextShaping, TextTypography, Transform, Workspace, render_document,
@@ -9,7 +10,6 @@ use prism_core::{
     render_document_region_scaled_with_stats, render_layer_base_scaled,
     render_layer_base_scaled_with_font, render_solid_color,
 };
-use serde_json::{Value, json};
 use spectrum_imaging::Adjustments;
 
 #[path = "benchmark/raster_fixture.rs"]

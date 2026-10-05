@@ -26,9 +26,9 @@ pub(super) fn schema() -> serde_json::Value {
             "protocol": {
                 "family": spectrum_live_bridge::PROTOCOL_FAMILY,
                 "version": spectrum_live_bridge::PROTOCOL_VERSION,
-                "application": lumen_core::LUMEN_LIVE_APPLICATION,
-                "action_family": lumen_core::LUMEN_LIVE_ACTION_FAMILY,
-                "action_version": lumen_core::LUMEN_LIVE_ACTION_VERSION
+                "application": spectrum_image::LUMEN_LIVE_APPLICATION,
+                "action_family": spectrum_image::LUMEN_LIVE_ACTION_FAMILY,
+                "action_version": spectrum_image::LUMEN_LIVE_ACTION_VERSION
             },
             "mode": {
                 "argument": "--live <off|required>",

@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::{Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     MAX_SELECTION_OUTLINE_EDGES, SelectionMaskOutline, SelectionOutlinePoint, SelectionOutlineRect,
     SelectionOutlineTransform, SelectionOutlineView, complex_selection_mask_outline,
     marching_ants_frame, selection_mask_outline,

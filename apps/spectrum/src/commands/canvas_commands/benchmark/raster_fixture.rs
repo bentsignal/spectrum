@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     DerivedBackingCache, DerivedBackingLimits, DerivedBackingReadError, DerivedRasterBacking,
     PrepareDerivedBacking, RasterSourceEpoch, RasterSourceResolver, ResolvedRasterSource,
 };

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use prism_core::{Document, Layer, RenderRegion, region_source_scales};
+use spectrum_canvas::{Document, Layer, RenderRegion, region_source_scales};
 
 // spectrum-imaging expands adjusted regions by four source pixels for denoise
 // and two more for sharpening.

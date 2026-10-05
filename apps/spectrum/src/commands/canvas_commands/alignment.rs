@@ -1,5 +1,5 @@
 use clap::{Subcommand, ValueEnum};
-use prism_core::{Alignment, GuideOrientation};
+use spectrum_canvas::{Alignment, GuideOrientation};
 
 #[derive(Subcommand)]
 pub(super) enum GuideCommand {

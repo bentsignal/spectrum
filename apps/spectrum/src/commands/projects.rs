@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Subcommand;
 use serde_json::json;
-use spectrum::library::Service;
+use spectrum_assets::Service;
 use spectrum_library::{AssetId, ProjectId};
 
 /// Projects group library assets. Removing an asset from a project keeps it in

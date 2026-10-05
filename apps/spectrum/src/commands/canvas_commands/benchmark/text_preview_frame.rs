@@ -1,7 +1,7 @@
 use std::{collections::HashSet, hint::black_box, time::Instant};
 
 use anyhow::{Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     Document, FontAsset, Layer, LayerKind, LayerPreviewSchedule, TextGeometry,
     TextPreviewFrameCache, TextShaping, TextTypography, measure_text_geometry_with_typography,
 };

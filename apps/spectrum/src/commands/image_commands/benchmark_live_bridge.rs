@@ -5,14 +5,14 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use lumen_core::{
+use serde_json::json;
+use spectrum_image::{
     AdjustmentPatch, Command, LUMEN_COMMAND_OPERATIONS_VERSION, LUMEN_LIVE_ACTION_FAMILY,
     LUMEN_LIVE_ACTION_VERSION, LUMEN_LIVE_APPLICATION, LUMEN_LIVE_DEFERRED_TTL,
     LUMEN_LIVE_DRAIN_COUNT_BUDGET, LUMEN_LIVE_DRAIN_TIME_BUDGET, LUMEN_LIVE_INGRESS_CAPACITY,
     LUMEN_LIVE_MAX_DEFERRED, LumenLiveAction, LumenLiveActionExpectation, LumenLiveHost,
     LumenLiveInteractionState, LumenLiveResult, LumenLiveSessions, Project, Workspace,
 };
-use serde_json::json;
 use spectrum_live_bridge::{
     ActionEnvelope, BindingId, BridgeError, BridgeHost, BridgeResult, EventLog, HostApplyOutcome,
     InteractionPolicy, PROTOCOL_FAMILY, PROTOCOL_VERSION, RequestEnvelope, RequestId, ResponseBody,
@@ -363,7 +363,7 @@ fn join_request(worker: RequestWorker) -> Result<BridgeResult<HostApplyOutcome>>
         .map_err(|_| anyhow::anyhow!("live host benchmark request worker panicked"))
 }
 
-fn wait_for_ingress(drain: &lumen_core::LumenLiveDrain, expected: usize) -> Result<()> {
+fn wait_for_ingress(drain: &spectrum_image::LumenLiveDrain, expected: usize) -> Result<()> {
     let started = Instant::now();
     while drain.pending_ingress_count() < expected {
         if started.elapsed() >= Duration::from_secs(2) {
@@ -378,7 +378,7 @@ fn wait_for_ingress(drain: &lumen_core::LumenLiveDrain, expected: usize) -> Resu
 }
 
 fn wait_for_saturated_ingress(
-    drain: &lumen_core::LumenLiveDrain,
+    drain: &spectrum_image::LumenLiveDrain,
     workers: &[RequestWorker],
 ) -> Result<()> {
     let started = Instant::now();
@@ -397,10 +397,10 @@ fn wait_for_saturated_ingress(
 }
 
 fn drain_until_received(
-    drain: &mut lumen_core::LumenLiveDrain,
+    drain: &mut spectrum_image::LumenLiveDrain,
     workspace: &mut Workspace,
     interaction: LumenLiveInteractionState,
-) -> Result<lumen_core::LumenLiveDrainReport> {
+) -> Result<spectrum_image::LumenLiveDrainReport> {
     let started = Instant::now();
     loop {
         let report = drain.drain(workspace, interaction);

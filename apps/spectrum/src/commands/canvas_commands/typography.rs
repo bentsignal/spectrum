@@ -2,12 +2,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use prism_core::{
+use serde_json::{Value, json};
+use spectrum_canvas::{
     Document, DurableProject, FontAsset, TextAlignment, TextShaping, TextShapingEngine,
     TextTypography, VerifiedFontSource, Workspace, inspect_font_source_read_only,
     inspect_font_subset_read_only,
 };
-use serde_json::{Value, json};
 use spectrum_revisions::SessionId;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -105,7 +105,7 @@ pub(super) fn updated_typography(
     arguments: &TypographyArgs,
 ) -> Result<TextTypography> {
     let layer = document.layer(arguments.id)?;
-    let prism_core::LayerKind::Text { typography, .. } = &layer.kind else {
+    let spectrum_canvas::LayerKind::Text { typography, .. } = &layer.kind else {
         bail!("layer {} is not a text layer", arguments.id);
     };
     let mut updated = typography.clone();
@@ -173,7 +173,7 @@ pub(super) fn font_list(document: &Document, query: Option<String>, system: bool
         })
         .collect();
     let installed: Vec<_> = if system {
-        prism_core::system_fonts()
+        spectrum_canvas::system_fonts()
             .into_iter()
             .filter(|font| {
                 query.is_empty()
@@ -187,7 +187,7 @@ pub(super) fn font_list(document: &Document, query: Option<String>, system: bool
     let mut value = json!({
         "ok": true,
         "action": "font_list",
-        "bundled": prism_core::bundled_font_provenance(),
+        "bundled": spectrum_canvas::bundled_font_provenance(),
         "fonts": fonts,
     });
     if system {
@@ -198,8 +198,8 @@ pub(super) fn font_list(document: &Document, query: Option<String>, system: bool
 
 pub(super) fn font_usage(document: &Document, font_id: Option<u64>) -> Result<Value> {
     let fonts = match font_id {
-        Some(font_id) => vec![prism_core::analyze_font_usage(document, font_id)?],
-        None => prism_core::analyze_all_font_usage(document)?,
+        Some(font_id) => vec![spectrum_canvas::analyze_font_usage(document, font_id)?],
+        None => spectrum_canvas::analyze_all_font_usage(document)?,
     };
     Ok(json!({
         "ok": true,
@@ -253,7 +253,7 @@ pub(super) fn verified_font_source(font: &FontAsset, source: &VerifiedFontSource
 }
 
 pub(super) fn font_subset_plan(document: &Document, font_id: u64) -> Result<Value> {
-    subset_plan_value(prism_core::plan_font_subset(document, font_id)?)
+    subset_plan_value(spectrum_canvas::plan_font_subset(document, font_id)?)
 }
 
 pub(super) fn font_subset_plan_command(
@@ -277,12 +277,12 @@ pub(super) fn verified_font_subset_plan(
     font_id: u64,
     source: &VerifiedFontSource,
 ) -> Result<Value> {
-    subset_plan_value(prism_core::plan_font_subset_with_verified_source(
+    subset_plan_value(spectrum_canvas::plan_font_subset_with_verified_source(
         document, font_id, source,
     )?)
 }
 
-fn subset_plan_value(plan: prism_core::FontSubsetPlan) -> Result<Value> {
+fn subset_plan_value(plan: spectrum_canvas::FontSubsetPlan) -> Result<Value> {
     Ok(json!({
         "ok": true,
         "action": "font_subset_plan",
@@ -328,9 +328,9 @@ fn resolve_face(
     style: Option<&str>,
 ) -> Result<Option<u64>> {
     let family = family.trim();
-    if prism_core::is_bundled_font_family(family)
-        && style.is_none_or(|style| style.eq_ignore_ascii_case(prism_core::BUNDLED_FONT.style))
-        && weight.is_none_or(|weight| weight == prism_core::BUNDLED_FONT.weight)
+    if spectrum_canvas::is_bundled_font_family(family)
+        && style.is_none_or(|style| style.eq_ignore_ascii_case(spectrum_canvas::BUNDLED_FONT.style))
+        && weight.is_none_or(|weight| weight == spectrum_canvas::BUNDLED_FONT.weight)
     {
         return Ok(None);
     }

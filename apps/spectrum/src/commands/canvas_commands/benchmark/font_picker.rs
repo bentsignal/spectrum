@@ -1,6 +1,6 @@
 use std::{hint::black_box, time::Instant};
 
-use prism_core::font_metadata_matches_query;
+use spectrum_canvas::font_metadata_matches_query;
 
 use super::sample_summary;
 

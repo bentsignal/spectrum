@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
-use prism_core::{Command, Document, LassoPath, LassoPoint, Selection, SelectionCombineMode};
+use spectrum_canvas::{Command, Document, LassoPath, LassoPoint, Selection, SelectionCombineMode};
 
 use super::parse_color;
 
@@ -150,16 +150,18 @@ pub(super) fn command(arguments: SelectionArgs, document: &Document) -> Result<C
             mode,
             no_antialias,
         } => Command::LassoSelection {
-            points: prism_core::ellipse_lasso((x, y), (x + width, y + height))?,
+            points: spectrum_canvas::ellipse_lasso((x, y), (x + width, y + height))?,
             mode: mode.into(),
             antialias: !no_antialias,
         },
         SelectionAction::Invert => Command::SetSelection {
-            selection: Some(prism_core::inverted_selection(document)?),
+            selection: Some(spectrum_canvas::inverted_selection(document)?),
         },
         SelectionAction::Mask { layer } => Command::SetVectorMask {
             id: layer,
-            mask: Some(prism_core::vector_mask_from_selection(document, layer)?),
+            mask: Some(spectrum_canvas::vector_mask_from_selection(
+                document, layer,
+            )?),
         },
         SelectionAction::Clear => Command::SetSelection { selection: None },
         SelectionAction::Crop => Command::CropToSelection,

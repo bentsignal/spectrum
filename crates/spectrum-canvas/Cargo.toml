@@ -1,0 +1,47 @@
+[package]
+name = "spectrum-canvas"
+version = "0.1.0"
+edition.workspace = true
+description = "Spectrum's canvas assets: layered composition of images, text, shapes, and paint"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rayon.workspace = true
+spectrum-library = { path = "../spectrum-library" }
+anyhow.workspace = true
+base64.workspace = true
+epaint_default_fonts.workspace = true
+flate2.workspace = true
+fontdue.workspace = true
+fs2.workspace = true
+image.workspace = true
+icu_locale.workspace = true
+icu_locale_core.workspace = true
+png.workspace = true
+same-file.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+spectrum-imaging = { path = "../spectrum-imaging" }
+spectrum-live-bridge = { path = "../spectrum-live-bridge" }
+spectrum-revisions = { path = "../spectrum-revisions" }
+spectrum-fonts = { path = "../spectrum-fonts" }
+sha2.workspace = true
+ttf-parser.workspace = true
+fontdb.workspace = true
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
+unicode-bidi.workspace = true
+unicode-linebreak.workspace = true
+unicode-script.workspace = true
+unicode-segmentation.workspace = true
+tiff = "0.11.3"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile = "3.27"

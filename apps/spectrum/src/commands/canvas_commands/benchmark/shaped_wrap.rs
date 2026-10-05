@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::{Result, bail};
-use prism_core::{TextShaping, TextTypography, measure_text_geometry_with_typography};
+use spectrum_canvas::{TextShaping, TextTypography, measure_text_geometry_with_typography};
 
 pub(super) struct ShapedWrapMeasurement {
     pub(super) samples: Vec<f64>,

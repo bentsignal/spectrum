@@ -12,31 +12,31 @@ fn path_and_vector_mask_cli_surfaces_mutate_durable_projects_end_to_end() {
     let project = temporary_project("path-vector-mask");
     let open_path = project.with_extension("open-path.json");
     let closed_path = project.with_extension("closed-path.json");
-    let open = prism_core::PathGeometry::new(
+    let open = spectrum_canvas::PathGeometry::new(
         80,
         60,
         false,
-        prism_core::PathFillRule::EvenOdd,
+        spectrum_canvas::PathFillRule::EvenOdd,
         vec![
-            prism_core::PathAnchor::corner(2.0, 55.0),
-            prism_core::PathAnchor {
+            spectrum_canvas::PathAnchor::corner(2.0, 55.0),
+            spectrum_canvas::PathAnchor {
                 point: [40.0, 3.0],
                 handle_in: [-18.0, 0.0],
                 handle_out: [18.0, 0.0],
             },
-            prism_core::PathAnchor::corner(78.0, 55.0),
+            spectrum_canvas::PathAnchor::corner(78.0, 55.0),
         ],
     )
     .unwrap();
-    let closed = prism_core::PathGeometry::new(
+    let closed = spectrum_canvas::PathGeometry::new(
         100,
         100,
         true,
-        prism_core::PathFillRule::EvenOdd,
+        spectrum_canvas::PathFillRule::EvenOdd,
         vec![
-            prism_core::PathAnchor::corner(50.0, 0.0),
-            prism_core::PathAnchor::corner(100.0, 100.0),
-            prism_core::PathAnchor::corner(0.0, 100.0),
+            spectrum_canvas::PathAnchor::corner(50.0, 0.0),
+            spectrum_canvas::PathAnchor::corner(100.0, 100.0),
+            spectrum_canvas::PathAnchor::corner(0.0, 100.0),
         ],
     )
     .unwrap();
@@ -69,7 +69,8 @@ fn path_and_vector_mask_cli_surfaces_mutate_durable_projects_end_to_end() {
         run(Cli::try_parse_from(cli).unwrap()).unwrap();
     }
     let document = Workspace::load_read_only(&project).unwrap();
-    let prism_core::LayerKind::Path { geometry, color } = &document.layer(1).unwrap().kind else {
+    let spectrum_canvas::LayerKind::Path { geometry, color } = &document.layer(1).unwrap().kind
+    else {
         panic!("path CLI did not create a path layer")
     };
     assert_eq!(geometry, &closed);
@@ -134,7 +135,7 @@ fn selection_cli_persists_and_fills_without_touching_existing_layers() {
     let document = Workspace::load_read_only(&project).unwrap();
     assert_eq!(
         document.selection,
-        Some(prism_core::Selection::rectangle(4, 5, 20, 10))
+        Some(spectrum_canvas::Selection::rectangle(4, 5, 20, 10))
     );
     assert_eq!(document.layers.len(), 2);
     assert_eq!(document.layers[0].name, "Rectangle");
@@ -148,7 +149,7 @@ fn selection_cli_persists_and_fills_without_touching_existing_layers() {
     );
     assert!(matches!(
         document.layers[1].kind,
-        prism_core::LayerKind::Rectangle {
+        spectrum_canvas::LayerKind::Rectangle {
             width: 20,
             height: 10,
             color: [0x12, 0x34, 0x56, 0x78],
@@ -295,12 +296,13 @@ fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_d
         run(Cli::try_parse_from(cli).unwrap()).unwrap();
     }
     let document = Workspace::load_read_only(&project).unwrap();
-    let prism_core::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind else {
+    let spectrum_canvas::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind
+    else {
         panic!("CLI did not create text");
     };
     assert_eq!(
         typography.shaping.engine,
-        prism_core::TextShapingEngine::HarfBuzzV1
+        spectrum_canvas::TextShapingEngine::HarfBuzzV1
     );
     assert_eq!(typography.shaping.language.as_deref(), Some("he-IL"));
 
@@ -316,12 +318,13 @@ fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_d
     .unwrap())
     .unwrap();
     let document = Workspace::load_read_only(&project).unwrap();
-    let prism_core::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind else {
+    let spectrum_canvas::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind
+    else {
         panic!("CLI text disappeared");
     };
     assert_eq!(
         typography.shaping.engine,
-        prism_core::TextShapingEngine::LegacyCharV1
+        spectrum_canvas::TextShapingEngine::LegacyCharV1
     );
     assert_eq!(typography.shaping.language, None);
     std::fs::remove_file(project).unwrap();
@@ -470,7 +473,7 @@ fn durable_font_subset_plan_replays_tail_text_without_writes() {
     workspace
         .execute(Command::SetTextTypography {
             id: layer_id,
-            typography: prism_core::TextTypography {
+            typography: spectrum_canvas::TextTypography {
                 font_id: Some(font_id),
                 ..Default::default()
             },
@@ -525,7 +528,7 @@ fn font_source_output_proves_identity_without_mutating_the_document() {
     let mut document = Document::new("Source proof", 320, 200);
     document
         .font_assets
-        .push(prism_core::FontAsset::import(1, &source).unwrap());
+        .push(spectrum_canvas::FontAsset::import(1, &source).unwrap());
     let before = document.clone();
 
     let output = typography::font_source(&document, 1).unwrap();
@@ -555,7 +558,7 @@ fn restricted_font_source_output_is_contextual_and_never_subset_eligible() {
     let mut document = Document::new("Restricted source proof", 320, 200);
     document
         .font_assets
-        .push(prism_core::FontAsset::import(1, &source).unwrap());
+        .push(spectrum_canvas::FontAsset::import(1, &source).unwrap());
 
     let output = typography::font_source(&document, 1).unwrap();
 
@@ -754,13 +757,14 @@ fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
     source_workspace
         .execute(Command::SetTextTypography {
             id: layer_id,
-            typography: prism_core::TextTypography {
+            typography: spectrum_canvas::TextTypography {
                 font_id: Some(font_id),
                 ..Default::default()
             },
         })
         .unwrap();
-    let transfer = prism_core::LayerTransfer::from_selected(&source_workspace.document).unwrap();
+    let transfer =
+        spectrum_canvas::LayerTransfer::from_selected(&source_workspace.document).unwrap();
     std::fs::write(&transfer_path, transfer.to_json().unwrap()).unwrap();
     run(Cli {
         project: project.clone(),
@@ -795,7 +799,7 @@ fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
         command: CliCommand::FontSource { font_id: 1 },
     })
     .unwrap();
-    let inspected = prism_core::inspect_font_source_read_only(&project, 1).unwrap();
+    let inspected = spectrum_canvas::inspect_font_source_read_only(&project, 1).unwrap();
 
     assert_eq!(output["family"], "Hack");
     assert_eq!(output["style"], "Regular");
@@ -936,7 +940,7 @@ fn guide_snapping_and_alignment_cli_persist_semantic_commands() {
     let document = Workspace::load_read_only(&project).unwrap();
     assert!(!document.snapping_enabled);
     assert_eq!(document.guides[0].position, 125.5);
-    let geometry = prism_core::layer_geometry(document.layer(1).unwrap()).unwrap();
+    let geometry = spectrum_canvas::layer_geometry(document.layer(1).unwrap()).unwrap();
     assert!((geometry.center[0] - 200.0).abs() < 0.001);
     std::fs::remove_file(project).unwrap();
 }

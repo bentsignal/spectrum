@@ -2,11 +2,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use lumen_core::{
+use serde_json::{Value, json};
+use spectrum_canvas::{Command, Document, Workspace, export_document};
+use spectrum_image::{
     DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
 };
-use prism_core::{Command, Document, Workspace, export_document};
-use serde_json::{Value, json};
 use spectrum_imaging::RenderOptions;
 use spectrum_revisions::{Actor, ActorKind, SessionId};
 
@@ -508,7 +508,7 @@ fn run(cli: Cli) -> Result<Value> {
             if cli.session.is_some() {
                 bail!("optimized-copy does not accept --session");
             }
-            let report = prism_core::create_optimized_font_copy(&cli.project, &output)?;
+            let report = spectrum_canvas::create_optimized_font_copy(&cli.project, &output)?;
             Ok(json!({"ok": true, "action": "optimized_copy", "report": report}))
         }
         CliCommand::LayerCopy(arguments) => {
@@ -516,7 +516,7 @@ fn run(cli: Cli) -> Result<Value> {
         }
         CliCommand::Sample { x, y } => {
             let document = session_document(&cli.project, cli.session)?;
-            let [r, g, b, a] = prism_core::sample_document_color(&document, x, y)?;
+            let [r, g, b, a] = spectrum_canvas::sample_document_color(&document, x, y)?;
             Ok(
                 json!({"ok": true, "x": x, "y": y, "color": format!("{r:02x}{g:02x}{b:02x}{a:02x}")}),
             )

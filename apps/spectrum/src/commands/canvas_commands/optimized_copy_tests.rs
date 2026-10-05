@@ -74,7 +74,7 @@ fn optimized_copy_cli_dispatches_end_to_end_without_mutating_the_source() {
     workspace
         .execute(Command::SetTextTypography {
             id: workspace.document.selected.unwrap(),
-            typography: prism_core::TextTypography {
+            typography: spectrum_canvas::TextTypography {
                 font_id: Some(font_id),
                 ..Default::default()
             },

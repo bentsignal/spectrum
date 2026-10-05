@@ -57,7 +57,7 @@ jobs:
       - name: Ensure Metal compiler is available
         if: runner.os == 'macOS'
         run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
-      - run: cargo build --release -p spectrum-demo --locked
+      - run: cargo build --release -p spectrum-desktop -p spectrum --locked
       - name: Install Developer ID certificate
         if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.SPECTRUM_MACOS_SIGNING_ENABLED == 'true'
         shell: bash
@@ -84,9 +84,9 @@ jobs:
           [[ "$identity" =~ ^[[:xdigit:]]{40}$ ]] || { echo "expected one Developer ID Application identity for team $TEAM_ID" >&2; exit 1; }
           echo "SPECTRUM_CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           echo "SPECTRUM_APPLE_TEAM_ID=$TEAM_ID" >> "$GITHUB_ENV"
-      - name: Package controls preview
+      - name: Package Spectrum
         shell: bash
-        run: bash scripts/package-spectrum-demo.sh
+        run: bash scripts/package-spectrum.sh
       - name: Notarize Spectrum.app
         if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.SPECTRUM_MACOS_SIGNING_ENABLED == 'true'
         env:
@@ -95,7 +95,7 @@ jobs:
         run: bash scripts/notarize-spectrum-macos.sh
       - uses: actions/upload-artifact@v7
         with:
-          name: spectrum-preview-${{ matrix.label }}
+          name: spectrum-${{ matrix.label }}
           path: target/dist/
           if-no-files-found: error
       # A fixed download link for reviewing main: releases/download/preview/<zip>.

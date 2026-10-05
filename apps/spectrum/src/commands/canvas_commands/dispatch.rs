@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     AlignmentReference, BlendMode, Command, Document, LayerMask, ShapeStroke, Transform,
 };
 use spectrum_imaging::AdjustmentPatch;
@@ -176,8 +176,8 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
             let layer = document.layer(id)?;
             let scale = scale
                 .map(Ok)
-                .unwrap_or_else(|| prism_core::recommended_rasterization_scale(layer))?;
-            let asset = prism_core::rasterize_shape_asset(document, id, scale)?;
+                .unwrap_or_else(|| spectrum_canvas::recommended_rasterization_scale(layer))?;
+            let asset = spectrum_canvas::rasterize_shape_asset(document, id, scale)?;
             vec![Command::RasterizeShape {
                 id,
                 path: asset.path,

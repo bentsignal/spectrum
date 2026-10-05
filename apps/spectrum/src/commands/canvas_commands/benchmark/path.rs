@@ -1,7 +1,7 @@
 use std::{f32::consts::TAU, time::Instant};
 
 use anyhow::{Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     Command, Document, GradientStop, Layer, LayerKind, PathAnchor, PathFillRule, PathGeometry,
     RenderRegion, ShapeFill, ShapeGradient, ShapeStroke, Workspace, path_preview_requires_region,
     render_document_region_scaled_with_stats,
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn benchmark_path_is_maximally_bounded() {
         let geometry = benchmark_geometry().unwrap();
-        assert_eq!(geometry.anchors().len(), prism_core::MAX_PATH_ANCHORS);
+        assert_eq!(geometry.anchors().len(), spectrum_canvas::MAX_PATH_ANCHORS);
         assert_eq!((geometry.width(), geometry.height()), (2_048, 2_048));
         assert!(geometry.closed());
     }

@@ -1,0 +1,23 @@
+[package]
+name = "spectrum-assets"
+version = "0.1.0"
+edition.workspace = true
+description = "The library service: what Spectrum does with each kind of asset"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+spectrum-canvas = { path = "../spectrum-canvas" }
+spectrum-image = { path = "../spectrum-image" }
+spectrum-imaging = { path = "../spectrum-imaging" }
+spectrum-library = { path = "../spectrum-library" }
+spectrum-live-bridge = { path = "../spectrum-live-bridge" }
+spectrum-revisions = { path = "../spectrum-revisions" }
+
+[dev-dependencies]
+tempfile = "3.27"

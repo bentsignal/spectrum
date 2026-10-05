@@ -1,0 +1,146 @@
+use spectrum_assets::{Service, actor};
+use spectrum_revisions::SessionId;
+
+#[test]
+fn shared_images_survive_restart_and_deep_copies_are_independent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("graphic.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([64, 64, 64, 255]))
+        .save(&source)
+        .unwrap();
+    let root = tmp.path().join("library");
+    let mut service = Service::open(&root).unwrap();
+    let image = service.import(vec![source.clone()]).unwrap().pop().unwrap();
+    std::fs::remove_file(source).unwrap(); // Originals are owned by the app.
+    let a = service.create_canvas("A".into(), 8, 8).unwrap();
+    let b = service.create_canvas("B".into(), 8, 8).unwrap();
+    service.place(a.id, image.id).unwrap();
+    service.place(a.id, image.id).unwrap();
+    service.place(b.id, image.id).unwrap();
+    let copy = service.copy(a.id).unwrap();
+    let mut copy_doc =
+        spectrum_canvas::Workspace::load_read_only(&service.library.path(&copy).unwrap()).unwrap();
+    let copied_image = copy_doc.layers[0].image_asset.unwrap();
+    assert_ne!(copied_image, image.id);
+    assert_eq!(copy_doc.layers[1].image_asset, Some(copied_image));
+    let before = service.preview(image.id).unwrap();
+    let mut workspace = spectrum_image::Workspace::open_as(
+        &service.library.path(&image).unwrap(),
+        actor(),
+        SessionId::new(),
+    )
+    .unwrap();
+    workspace
+        .execute(spectrum_image::Command::Adjust {
+            id: image.item.unwrap(),
+            patch: serde_json::from_str("{\"exposure\":1.0}").unwrap(),
+        })
+        .unwrap();
+    drop(workspace);
+    drop(service);
+    let mut service = Service::open(&root).unwrap();
+    service.scan().unwrap();
+    let after = service.preview(image.id).unwrap();
+    assert_ne!(before, after);
+    for canvas in [&a, &b] {
+        let mut doc =
+            spectrum_canvas::Workspace::load_read_only(&service.library.path(canvas).unwrap())
+                .unwrap();
+        service.resolve(&mut doc).unwrap();
+        let rendered = spectrum_canvas::render_document(&doc, None)
+            .unwrap()
+            .to_rgba8();
+        assert!(rendered.get_pixel(0, 0)[0] > 64);
+    }
+    service.resolve(&mut copy_doc).unwrap();
+    let rendered = spectrum_canvas::render_document(&copy_doc, None)
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(rendered.get_pixel(0, 0)[0], 64);
+    assert_eq!(
+        service.image(copied_image).unwrap().adjustments.exposure,
+        0.0
+    );
+    assert_eq!(service.library.dependents(image.id).unwrap().len(), 2);
+}
+
+#[test]
+fn cli_adapter_undo_targets_the_requested_image_and_canvas() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([64, 64, 64, 255]))
+        .save(&source)
+        .unwrap();
+    let mut service = Service::open(&tmp.path().join("library")).unwrap();
+    let mut assets = service.import(vec![source.clone()]).unwrap();
+    // Add another image to the same internal document to exercise selection.
+    let path = service.library.path(&assets[0]).unwrap();
+    let mut workspace =
+        spectrum_image::Workspace::open_as(&path, actor(), SessionId::new()).unwrap();
+    let source2 = tmp.path().join("second.png");
+    std::fs::copy(&source, &source2).unwrap();
+    workspace
+        .execute(spectrum_image::Command::Import {
+            paths: vec![source2],
+        })
+        .unwrap();
+    drop(workspace);
+    assets = service.index_catalog(&path).unwrap();
+    let second = assets.iter().find(|a| a.item == Some(2)).unwrap();
+    spectrum_assets::live::image(
+        &path,
+        2,
+        spectrum_image::Command::Adjust {
+            id: 2,
+            patch: serde_json::from_str("{\"exposure\":1.0}").unwrap(),
+        },
+    )
+    .unwrap();
+    spectrum_assets::live::image(&path, 2, spectrum_image::Command::Undo).unwrap();
+    assert_eq!(service.image(second.id).unwrap().adjustments.exposure, 0.0);
+    let canvas = service.create_canvas("Canvas".into(), 8, 8).unwrap();
+    let path = service.library.path(&canvas).unwrap();
+    spectrum_assets::live::canvas(
+        &path,
+        vec![spectrum_canvas::Command::RenameDocument {
+            name: "Renamed".into(),
+        }],
+    )
+    .unwrap();
+    spectrum_assets::live::canvas(&path, vec![spectrum_canvas::Command::Undo]).unwrap();
+    assert_eq!(
+        spectrum_canvas::Workspace::load_read_only(&path)
+            .unwrap()
+            .name,
+        "Canvas"
+    );
+}
+
+#[test]
+fn export_writes_images_and_canvases_outside_the_library() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.png");
+    image::RgbaImage::from_pixel(12, 8, image::Rgba([10, 200, 30, 255]))
+        .save(&source)
+        .unwrap();
+    let mut service = Service::open(&tmp.path().join("library")).unwrap();
+    let image = service.import(vec![source]).unwrap().pop().unwrap();
+    let canvas = service.create_canvas("Poster".into(), 16, 16).unwrap();
+    service.place(canvas.id, image.id).unwrap();
+    let out = tmp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    assert_eq!(service.export_size(image.id).unwrap(), (12, 8));
+    assert_eq!(service.export_size(canvas.id).unwrap(), (16, 16));
+    service.export(image.id, &out.join("image.jpg")).unwrap();
+    service.export(canvas.id, &out.join("canvas.png")).unwrap();
+    assert_eq!(
+        image::image_dimensions(out.join("image.jpg")).unwrap(),
+        (12, 8)
+    );
+    assert_eq!(
+        image::image_dimensions(out.join("canvas.png")).unwrap(),
+        (16, 16)
+    );
+    let inside = service.library.root().join("sneaky.png");
+    assert!(service.export(image.id, &inside).is_err());
+}

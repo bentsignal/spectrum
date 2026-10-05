@@ -6,8 +6,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use prism_core::{Command, Document, LAYER_TRANSFER_FORMAT, LayerTransfer};
 use serde_json::{Value, json};
+use spectrum_canvas::{Command, Document, LAYER_TRANSFER_FORMAT, LayerTransfer};
 
 #[derive(Clone, Debug, Args)]
 pub(super) struct LayerCopyArgs {

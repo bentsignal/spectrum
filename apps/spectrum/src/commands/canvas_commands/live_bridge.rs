@@ -2,12 +2,12 @@ use std::{path::Path, str::FromStr};
 
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
-use prism_core::{
+use serde_json::{Value, json};
+use spectrum_canvas::{
     Command, PRISM_COMMAND_OPERATIONS_VERSION, PRISM_LIVE_ACTION_FAMILY, PRISM_LIVE_ACTION_VERSION,
     PRISM_LIVE_APPLICATION, PrismLiveAction, PrismLiveActionExpectation, Workspace,
     prism_live_discovery_root,
 };
-use serde_json::{Value, json};
 use spectrum_live_bridge::{
     ActionEnvelope, BindingId, BridgeClient, ClientConfig, DiscoveryDirectory, DiscoveryRecord,
     ExpectedCursor, InteractionPolicy, PROTOCOL_FAMILY, PROTOCOL_VERSION, RequestEnvelope,
@@ -140,7 +140,7 @@ pub(super) fn live_command(
 }
 
 pub(super) struct PreparedLiveSemantic {
-    pub(super) document: prism_core::Document,
+    pub(super) document: spectrum_canvas::Document,
     session: SessionId,
     binding: DiscoveredBinding,
     expectation: PrismLiveActionExpectation,

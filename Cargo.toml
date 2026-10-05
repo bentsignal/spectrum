@@ -1,9 +1,10 @@
 [workspace]
 members = [
     "apps/spectrum",
-    "apps/spectrum-demo",
-    "apps/lumen",
-    "apps/prism",
+    "apps/spectrum-desktop",
+    "crates/spectrum-assets",
+    "crates/spectrum-canvas",
+    "crates/spectrum-image",
     "crates/spectrum-imaging",
     "crates/spectrum-library",
     "crates/spectrum-fonts",

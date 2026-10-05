@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf, time::Instant};
 
 use anyhow::{Context, Result, bail};
-use prism_core::{Command, Document, TextTypography, Workspace, create_optimized_font_copy};
+use spectrum_canvas::{Command, Document, TextTypography, Workspace, create_optimized_font_copy};
 use spectrum_revisions::{Actor, ActorKind, SessionId};
 
 const STATIC_FONT: &[u8] = include_bytes!(

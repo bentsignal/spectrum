@@ -1,7 +1,7 @@
 use std::{hint::black_box, time::Instant};
 
 use anyhow::{Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     BlendMode, Document, Layer, LayerKind, RenderRegion, Transform,
     render_direct_preview_region_scaled,
 };

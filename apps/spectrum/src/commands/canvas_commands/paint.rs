@@ -2,7 +2,7 @@ use std::{fs::File, io::Read, path::PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use prism_core::{BrushStroke, Command, PaintSelection};
+use spectrum_canvas::{BrushStroke, Command, PaintSelection};
 
 pub(super) const MAX_BRUSH_STROKE_JSON_BYTES: usize = 32 * 1024 * 1024;
 

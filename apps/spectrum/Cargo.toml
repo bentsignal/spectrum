@@ -16,9 +16,10 @@ epaint_default_fonts.workspace = true
 flate2.workspace = true
 fs2.workspace = true
 image.workspace = true
-lumen-photo = { path = "../lumen" }
+spectrum-image = { path = "../../crates/spectrum-image" }
 png.workspace = true
-prism = { path = "../prism" }
+spectrum-canvas = { path = "../../crates/spectrum-canvas" }
+spectrum-assets = { path = "../../crates/spectrum-assets" }
 rayon.workspace = true
 same-file.workspace = true
 serde.workspace = true

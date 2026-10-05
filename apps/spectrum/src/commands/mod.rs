@@ -5,7 +5,7 @@ mod projects;
 
 use anyhow::{Context, Result, bail};
 use clap::{Arg, Command, CommandFactory, FromArgMatches};
-use spectrum::library::{Service, default_root};
+use spectrum_assets::{Service, default_root};
 use spectrum_library::AssetId;
 use std::path::PathBuf;
 

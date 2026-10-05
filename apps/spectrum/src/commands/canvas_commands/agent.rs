@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
-use prism_core::Workspace;
 use serde_json::{Value, json};
+use spectrum_canvas::Workspace;
 use spectrum_revisions::{Actor, ActorKind, CollaborationMode, SessionId};
 
 #[derive(Subcommand)]

@@ -1,10 +1,10 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
-use prism_core::{
+use serde::Deserialize;
+use spectrum_canvas::{
     Command, DropShadow, GradientInterpolation, GradientKind, GradientSpread, GradientStop,
     LayerStyle, ShapeFill, ShapeGradient,
 };
-use serde::Deserialize;
 
 const MAX_STRUCTURED_GRADIENT_BYTES: usize = 16 * 1024;
 

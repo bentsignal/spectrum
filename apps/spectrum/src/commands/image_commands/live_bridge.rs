@@ -2,12 +2,12 @@ use std::{path::Path, str::FromStr};
 
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
-use lumen_core::{
+use serde_json::{Value, json};
+use spectrum_image::{
     Command, LUMEN_COMMAND_OPERATIONS_VERSION, LUMEN_LIVE_ACTION_FAMILY, LUMEN_LIVE_ACTION_VERSION,
     LUMEN_LIVE_APPLICATION, LumenLiveAction, LumenLiveActionExpectation, Project, Workspace,
     lumen_live_discovery_root,
 };
-use serde_json::{Value, json};
 use spectrum_live_bridge::{
     ActionEnvelope, BindingId, BridgeClient, ClientConfig, DiscoveryDirectory, DiscoveryRecord,
     ExpectedCursor, InteractionPolicy, PROTOCOL_FAMILY, PROTOCOL_VERSION, RequestEnvelope,
@@ -486,7 +486,7 @@ fn subscribe(binding: &DiscoveredBinding, after: u64, count: usize) -> Result<Va
 
 fn ensure_catalog_snapshot_matches(
     snapshot: &spectrum_live_bridge::StateSnapshot,
-    state: &lumen_core::LiveWorkspaceState,
+    state: &spectrum_image::LiveWorkspaceState,
 ) -> Result<()> {
     let cursor = snapshot
         .cursors

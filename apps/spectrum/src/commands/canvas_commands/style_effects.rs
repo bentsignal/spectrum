@@ -2,7 +2,7 @@
 //! layer's current values for that style, and the layer's other styles stay.
 use anyhow::{Result, bail};
 use clap::{Args, ValueEnum};
-use prism_core::{
+use spectrum_canvas::{
     BevelEmboss, BevelStyle, ColorOverlay, Command, DropShadow, Glow, GradientOverlay, LayerStroke,
     LayerStyle, Satin, ShapeGradient, StrokePosition,
 };

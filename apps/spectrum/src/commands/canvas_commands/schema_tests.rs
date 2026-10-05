@@ -67,7 +67,7 @@ fn schema_keeps_guides_typography_and_pixel_deletion_commands_together() {
     assert_eq!(schema["paths"]["geometry_version"], 1);
     assert_eq!(
         schema["layer_transfer"]["version"],
-        prism_core::LAYER_TRANSFER_VERSION
+        spectrum_canvas::LAYER_TRANSFER_VERSION
     );
     assert!(
         schema["layer_transfer"]["assets"]

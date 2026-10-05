@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use spectrum::library::{Service, default_root};
+use spectrum_assets::{Service, default_root};
 use spectrum_library::{AssetId, ProjectId};
 use std::path::PathBuf;
 
@@ -165,7 +165,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
         Domain::Imports => serde_json::to_value(service.library.imports()?)?,
         Domain::Copy { asset } => serde_json::to_value(service.copy(asset)?)?,
         Domain::Schema => {
-            serde_json::json!({"images":{"adjust":{"exposure":1.0},"command":{"command":"set-adjustments","id":1,"adjustments":lumen_core::Adjustments::default()}},"canvas":{"command":{"command":"add_text","text":"Hello","name":null,"font_size":48,"color":[255,255,255,255],"x":0,"y":0}},"asset_types":["image","canvas"],"references":"live","copy":"independent, recursively copies referenced content"})
+            serde_json::json!({"images":{"adjust":{"exposure":1.0},"command":{"command":"set-adjustments","id":1,"adjustments":spectrum_image::Adjustments::default()}},"canvas":{"command":{"command":"add_text","text":"Hello","name":null,"font_size":48,"color":[255,255,255,255],"x":0,"y":0}},"asset_types":["image","canvas"],"references":"live","copy":"independent, recursively copies referenced content"})
         }
         Domain::Images {
             command: Images::List,
@@ -211,7 +211,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
                 },
         } => {
             service.check_export(&path)?;
-            lumen_core::engine::export_photo(
+            spectrum_image::engine::export_photo(
                 &service.image(asset)?,
                 &path,
                 spectrum_imaging::RenderOptions { max_size },
@@ -238,20 +238,20 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
             let command = if let Some(raw) = raw {
                 serde_json::from_str(&raw)?
             } else {
-                lumen_core::Command::Adjust {
+                spectrum_image::Command::Adjust {
                     id: asset.item.context("missing image item")?,
                     patch: serde_json::from_str(&patch.unwrap())?,
                 }
             };
             if matches!(
                 command,
-                lumen_core::Command::New { .. }
-                    | lumen_core::Command::Open { .. }
-                    | lumen_core::Command::Save { .. }
+                spectrum_image::Command::New { .. }
+                    | spectrum_image::Command::Open { .. }
+                    | spectrum_image::Command::Save { .. }
             ) {
                 bail!("library owns document locations");
             }
-            spectrum::library::live::image(
+            spectrum_assets::live::image(
                 &service.library.path(&asset)?,
                 asset.item.context("missing image item")?,
                 command,
@@ -301,10 +301,11 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
             if asset.kind != "canvas" {
                 bail!("expected canvas");
             }
-            let mut doc = prism_core::Workspace::load_read_only(&service.library.path(&asset)?)?;
+            let mut doc =
+                spectrum_canvas::Workspace::load_read_only(&service.library.path(&asset)?)?;
             service.check_export(&path)?;
             service.resolve(&mut doc)?;
-            prism_core::export_document_sized(&doc, &path, quality, max_size)?;
+            spectrum_canvas::export_document_sized(&doc, &path, quality, max_size)?;
             serde_json::json!({"exported":path})
         }
         Domain::Canvas {
@@ -314,7 +315,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
             if asset.kind != "canvas" {
                 bail!("expected canvas");
             }
-            spectrum::library::live::canvas(
+            spectrum_assets::live::canvas(
                 &service.library.path(&asset)?,
                 vec![serde_json::from_str(&json)?],
             )?

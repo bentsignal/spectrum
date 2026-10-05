@@ -113,7 +113,7 @@ pub(super) fn cli_actor() -> Actor {
 pub(super) fn run_commands(
     workspace: &mut Workspace,
     value: &str,
-) -> Result<Vec<lumen_core::CommandOutput>> {
+) -> Result<Vec<spectrum_image::CommandOutput>> {
     if value.trim_start().starts_with('[') {
         workspace.execute_batch(serde_json::from_str::<Vec<Command>>(value)?)
     } else {

@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Result, bail};
 use image::{DynamicImage, RgbImage, Rgba, RgbaImage};
-use prism_core::{
+use spectrum_canvas::{
     BlendMode, DerivedBackingCache, DerivedBackingLimits, Document, Layer, LayerKind, LayerMask,
     PixelMask, PrepareDerivedBacking, RasterSourceEpoch, RasterSourceResolver, RenderRegion,
     ResolvedRasterSource, SequentialPngLimits, SequentialPngSource, Transform,

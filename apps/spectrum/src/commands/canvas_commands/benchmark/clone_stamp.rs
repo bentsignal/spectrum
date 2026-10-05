@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::{Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     BrushMode, BrushSample, BrushStroke, BrushStyle, Command, Document, Layer, LayerKind,
     PaintSelection, RenderRegion, Workspace, export_document_with_sources, preview_paint_command,
     render_document_region_scaled_with_sources_and_stats, render_document_with_sources,

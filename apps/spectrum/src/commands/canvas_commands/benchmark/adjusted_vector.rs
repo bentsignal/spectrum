@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::{Result, bail};
-use prism_core::{Document, RenderRegion, render_document_region_scaled_with_stats};
+use spectrum_canvas::{Document, RenderRegion, render_document_region_scaled_with_stats};
 use spectrum_imaging::Adjustments;
 
 use super::bounded_staging_budget;

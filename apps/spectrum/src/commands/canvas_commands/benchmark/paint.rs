@@ -1,7 +1,7 @@
 use std::{hint::black_box, sync::mpsc, time::Instant};
 
 use anyhow::{Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     BrushMode, BrushProgram, BrushSample, BrushStroke, BrushStyle, Command, Document, Layer,
     LayerKind, MAX_BRUSH_SAMPLES_PER_STROKE, MAX_PAINT_REGION_PIXELS, PaintSelection, RenderRegion,
     Workspace, preview_paint_command, render_document_region_scaled_with_stats,

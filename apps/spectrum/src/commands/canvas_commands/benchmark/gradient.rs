@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::{Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     Document, GradientKind, GradientSpread, GradientStop, Layer, LayerKind, RenderRegion,
     ShapeFill, ShapeGradient, render_document_region_scaled_with_stats,
 };

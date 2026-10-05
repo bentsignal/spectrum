@@ -76,19 +76,19 @@ fn clone_cli_captures_one_raster_source_and_commits_resolved_stroke() {
     .unwrap();
 
     let document = Workspace::load_read_only(&project).unwrap();
-    let prism_core::LayerKind::Paint { program } = &document.layer(2).unwrap().kind else {
+    let spectrum_canvas::LayerKind::Paint { program } = &document.layer(2).unwrap().kind else {
         panic!("clone CLI did not retain a Paint layer")
     };
-    assert_eq!(program.version, prism_core::BRUSH_PROGRAM_VERSION);
+    assert_eq!(program.version, spectrum_canvas::BRUSH_PROGRAM_VERSION);
     assert_eq!(program.strokes.len(), 1);
     assert_eq!(
         program.strokes[0].style.mode,
-        prism_core::BrushMode::CloneStamp
+        spectrum_canvas::BrushMode::CloneStamp
     );
     assert!(program.strokes[0].sampled_source_identity().is_some());
     let mut rendered_document = document.clone();
     rendered_document.layer_mut(1).unwrap().visible = false;
-    let rendered = prism_core::render_document(&rendered_document, None)
+    let rendered = spectrum_canvas::render_document(&rendered_document, None)
         .unwrap()
         .to_rgba8();
     assert_eq!(rendered.get_pixel(4, 4).0, [210, 40, 90, 255]);
@@ -147,7 +147,7 @@ fn paint_cli_persists_each_stroke_and_honors_no_selection() {
     .unwrap();
 
     let document = Workspace::load_read_only(&project).unwrap();
-    let prism_core::LayerKind::Paint { program } = &document.layer(1).unwrap().kind else {
+    let spectrum_canvas::LayerKind::Paint { program } = &document.layer(1).unwrap().kind else {
         panic!("paint CLI did not create a Paint layer")
     };
     assert_eq!(program.strokes.len(), 2);
@@ -156,7 +156,7 @@ fn paint_cli_persists_each_stroke_and_honors_no_selection() {
 
     invoke(&project, &["run", r#"{"command":"undo"}"#]).unwrap();
     let document = Workspace::load_read_only(&project).unwrap();
-    let prism_core::LayerKind::Paint { program } = &document.layer(1).unwrap().kind else {
+    let spectrum_canvas::LayerKind::Paint { program } = &document.layer(1).unwrap().kind else {
         panic!("undo removed the Paint layer instead of one stroke")
     };
     assert_eq!(program.strokes.len(), 1);
@@ -201,7 +201,7 @@ fn paint_cli_rejects_invalid_and_oversized_stroke_files_without_mutation() {
     assert!(format!("{error:#}").contains("32 MiB input limit"));
 
     let document = Workspace::load_read_only(&project).unwrap();
-    let prism_core::LayerKind::Paint { program } = &document.layer(1).unwrap().kind else {
+    let spectrum_canvas::LayerKind::Paint { program } = &document.layer(1).unwrap().kind else {
         panic!("expected Paint layer")
     };
     assert!(program.strokes.is_empty());
@@ -230,15 +230,15 @@ fn erase_and_hide_cli_work_on_shapes_without_rasterizing() {
     invoke(&project, &["selection", "rectangle", "30", "0", "10", "30"]).unwrap();
     let hidden = invoke(&project, &["selection", "delete", "1"]).unwrap();
     assert_eq!(hidden["results"][0]["action"], "hide_selection");
-    let workspace = prism_core::Workspace::open(&project).unwrap();
+    let workspace = spectrum_canvas::Workspace::open(&project).unwrap();
     let layer = workspace.document.layer(1).unwrap();
     assert!(matches!(
         layer.kind,
-        prism_core::LayerKind::Rectangle { .. }
+        spectrum_canvas::LayerKind::Rectangle { .. }
     ));
     let alpha = layer.vector_mask.as_ref().unwrap().alpha.as_ref().unwrap();
     assert!(alpha.alpha.contains(&0));
-    let rendered = prism_core::render_document_scaled(&workspace.document, 1.0)
+    let rendered = spectrum_canvas::render_document_scaled(&workspace.document, 1.0)
         .unwrap()
         .to_rgba8();
     // Erased and hidden pixels show the background; the rest, the shape.

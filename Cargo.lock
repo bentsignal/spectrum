@@ -3838,26 +3838,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumen-photo"
-version = "0.5.0"
-dependencies = [
- "anyhow",
- "chrono",
- "flate2",
- "image",
- "rawler",
- "rayon",
- "same-file",
- "serde",
- "serde_json",
- "spectrum-imaging",
- "spectrum-library",
- "spectrum-live-bridge",
- "spectrum-revisions",
- "tempfile",
-]
-
-[[package]]
 name = "lyon"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4880,44 +4860,6 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "prism"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "epaint_default_fonts",
- "flate2",
- "fontdb 0.23.0",
- "fontdue",
- "fs2",
- "icu_locale",
- "icu_locale_core",
- "image",
- "libc",
- "png 0.18.1",
- "rayon",
- "rusqlite",
- "same-file",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "spectrum-fonts",
- "spectrum-imaging",
- "spectrum-library",
- "spectrum-live-bridge",
- "spectrum-revisions",
- "tempfile",
- "tiff",
- "tiny-skia",
- "ttf-parser 0.21.1",
- "unicode-bidi",
- "unicode-linebreak",
- "unicode-script",
- "unicode-segmentation",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6207,15 +6149,16 @@ dependencies = [
  "fs2",
  "image",
  "libc",
- "lumen-photo",
  "png 0.18.1",
- "prism",
  "rayon",
  "rusqlite",
  "same-file",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "spectrum-assets",
+ "spectrum-canvas",
+ "spectrum-image",
  "spectrum-imaging",
  "spectrum-library",
  "spectrum-live-bridge",
@@ -6227,7 +6170,63 @@ dependencies = [
 ]
 
 [[package]]
-name = "spectrum-demo"
+name = "spectrum-assets"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "spectrum-canvas",
+ "spectrum-image",
+ "spectrum-imaging",
+ "spectrum-library",
+ "spectrum-live-bridge",
+ "spectrum-revisions",
+ "tempfile",
+]
+
+[[package]]
+name = "spectrum-canvas"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "epaint_default_fonts",
+ "flate2",
+ "fontdb 0.23.0",
+ "fontdue",
+ "fs2",
+ "icu_locale",
+ "icu_locale_core",
+ "image",
+ "libc",
+ "png 0.18.1",
+ "rayon",
+ "rusqlite",
+ "same-file",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "spectrum-fonts",
+ "spectrum-imaging",
+ "spectrum-library",
+ "spectrum-live-bridge",
+ "spectrum-revisions",
+ "tempfile",
+ "tiff",
+ "tiny-skia",
+ "ttf-parser 0.21.1",
+ "unicode-bidi",
+ "unicode-linebreak",
+ "unicode-script",
+ "unicode-segmentation",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spectrum-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6235,12 +6234,12 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "image",
- "lumen-photo",
  "objc",
- "prism",
  "raw-window-handle",
  "serde_json",
- "spectrum",
+ "spectrum-assets",
+ "spectrum-canvas",
+ "spectrum-image",
  "spectrum-library",
 ]
 
@@ -6252,6 +6251,26 @@ dependencies = [
  "hb-subset",
  "sha2 0.11.0",
  "ttf-parser 0.21.1",
+]
+
+[[package]]
+name = "spectrum-image"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "flate2",
+ "image",
+ "rawler",
+ "rayon",
+ "same-file",
+ "serde",
+ "serde_json",
+ "spectrum-imaging",
+ "spectrum-library",
+ "spectrum-live-bridge",
+ "spectrum-revisions",
+ "tempfile",
 ]
 
 [[package]]

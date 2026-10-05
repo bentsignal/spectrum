@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use prism_core::{
+use spectrum_canvas::{
     Command, Document, LassoPath, LassoPoint, LayerKind, Selection, SelectionCombineMode, Workspace,
 };
 use spectrum_imaging::AdjustmentPatch;

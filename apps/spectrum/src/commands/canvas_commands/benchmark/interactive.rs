@@ -7,7 +7,7 @@
 use std::{hint::black_box, time::Instant};
 
 use anyhow::Result;
-use prism_core::{
+use spectrum_canvas::{
     BrushMode, BrushSample, BrushStroke, BrushStyle, Command, Document, GradientOverlay, Layer,
     LayerKind, PaintSelection, Transform, Workspace, prepare_export_raster_sources,
     render_document_scaled_with_sources, render_paint_layer_region,
@@ -71,9 +71,9 @@ fn draft_density(area: f32) -> f32 {
 }
 
 pub(super) fn metrics(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
-    prism_core::set_interactive_source_cache(true);
+    spectrum_canvas::set_interactive_source_cache(true);
     let result = measure(hosted);
-    prism_core::set_interactive_source_cache(false);
+    spectrum_canvas::set_interactive_source_cache(false);
     result
 }
 
@@ -239,15 +239,15 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
     for frame in 0..frames {
         text_document.layers[0].transform.rotation = frame as f32 * 4.0;
         let geometry =
-            prism_core::document_layer_geometry(&text_document, &text_document.layers[0])?;
-        let region = prism_core::RenderRegion {
+            spectrum_canvas::document_layer_geometry(&text_document, &text_document.layers[0])?;
+        let region = spectrum_canvas::RenderRegion {
             x: (geometry.min[0] * 2.0).max(0.0) as u32,
             y: (geometry.min[1] * 2.0).max(0.0) as u32,
             width: (geometry.width() * 2.0).ceil() as u32,
             height: (geometry.height() * 2.0).ceil() as u32,
         };
         let started = Instant::now();
-        black_box(prism_core::render_document_region_scaled(
+        black_box(spectrum_canvas::render_document_region_scaled(
             &text_document,
             2.0,
             region,
@@ -256,8 +256,9 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
     }
     // Erasing across the text, at full sharpness.
     text_document.layers[0].transform.rotation = 0.0;
-    let geometry = prism_core::document_layer_geometry(&text_document, &text_document.layers[0])?;
-    let region = prism_core::RenderRegion {
+    let geometry =
+        spectrum_canvas::document_layer_geometry(&text_document, &text_document.layers[0])?;
+    let region = spectrum_canvas::RenderRegion {
         x: (geometry.min[0] * 2.0).max(0.0) as u32,
         y: (geometry.min[1] * 2.0).max(0.0) as u32,
         width: (geometry.width() * 2.0).ceil() as u32,
@@ -278,7 +279,7 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
             id: 1,
             stroke: BrushStroke::new(erase_style, across[..end].to_vec())?,
         })?;
-        black_box(prism_core::render_document_region_scaled(
+        black_box(spectrum_canvas::render_document_region_scaled(
             &local.document,
             2.0,
             region,
@@ -297,7 +298,7 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
     let LayerKind::Text { typography, .. } = &sized.document.layers[0].kind else {
         anyhow::bail!("the benchmark text layer is not text");
     };
-    let typography = prism_core::TextTypography {
+    let typography = spectrum_canvas::TextTypography {
         font_id: sized.document.font_assets.first().map(|font| font.id),
         ..typography.clone()
     };
@@ -313,14 +314,14 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
             color: [255, 255, 255, 255],
         })?;
         let geometry =
-            prism_core::document_layer_geometry(&local.document, &local.document.layers[0])?;
-        let region = prism_core::RenderRegion {
+            spectrum_canvas::document_layer_geometry(&local.document, &local.document.layers[0])?;
+        let region = spectrum_canvas::RenderRegion {
             x: (geometry.min[0] * 2.0).max(0.0) as u32,
             y: (geometry.min[1] * 2.0).max(0.0) as u32,
             width: (geometry.width() * 2.0).ceil() as u32,
             height: (geometry.height() * 2.0).ceil() as u32,
         };
-        black_box(prism_core::render_document_region_scaled(
+        black_box(spectrum_canvas::render_document_region_scaled(
             &local.document,
             2.0,
             region,

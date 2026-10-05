@@ -1,5 +1,5 @@
 use clap::ValueEnum;
-use prism_core::BlendMode;
+use spectrum_canvas::BlendMode;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(super) enum CliBlend {
