@@ -1,7 +1,6 @@
 use std::{hint::black_box, time::Instant};
 
 use anyhow::{Result, bail};
-use eframe::egui;
 use prism_core::{
     BlendMode, Document, Layer, LayerKind, RenderRegion, Transform,
     render_direct_preview_region_scaled,
@@ -63,10 +62,7 @@ pub(super) fn measure() -> Result<Measurement> {
             bail!("direct Dissolve compositor returned the wrong physical dimensions");
         }
         let rgba = rendered.into_rgba8();
-        let upload = egui::ColorImage::from_rgba_unmultiplied(
-            [rgba.width() as usize, rgba.height() as usize],
-            rgba.as_raw(),
-        );
+        let upload = super::support::gpu_upload(&rgba);
         black_box((request_document, upload));
         samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }

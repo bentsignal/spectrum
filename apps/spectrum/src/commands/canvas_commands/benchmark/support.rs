@@ -175,3 +175,12 @@ pub(super) fn sample_summary(samples: &mut [f64]) -> (f64, f64) {
     let p95_index = ((samples.len() as f64 * 0.95).ceil() as usize).saturating_sub(1);
     (median, samples[p95_index.min(samples.len() - 1)])
 }
+
+/// What the desktop app uploads to the GPU for a render: BGRA bytes.
+pub(super) fn gpu_upload(rgba: &image::RgbaImage) -> Vec<u8> {
+    let mut bgra = rgba.as_raw().clone();
+    for pixel in bgra.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    bgra
+}

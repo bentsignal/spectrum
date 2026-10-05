@@ -6,8 +6,8 @@
     {
       "layers" : [
         {
-          "image-name" : "cropped-prism.png",
-          "name" : "cropped-prism",
+          "image-name" : "spectrum-mark.png",
+          "name" : "spectrum-mark",
           "opacity-specializations" : [
             {
               "appearance" : "tinted",
@@ -32,8 +32,8 @@
             }
           ],
           "glass" : false,
-          "image-name" : "prism-mono.png",
-          "name" : "prism-mono",
+          "image-name" : "spectrum-mark-mono.png",
+          "name" : "spectrum-mark-mono",
           "opacity-specializations" : [
             {
               "value" : 0

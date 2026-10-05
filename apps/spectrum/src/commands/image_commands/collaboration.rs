@@ -98,7 +98,7 @@ pub(super) fn agent_command(
 }
 
 fn local_gui_session_id() -> Option<SessionId> {
-    let directory = eframe::storage_dir("Spectrum")?;
+    let directory = spectrum_library::data_root().ok()?;
     spectrum_revisions::local_session_id(&directory).ok()
 }
 

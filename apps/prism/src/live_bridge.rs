@@ -18,7 +18,7 @@ pub const PRISM_LIVE_APPLICATION: &str = "spectrum.prism";
 
 pub fn prism_live_discovery_root() -> Result<PathBuf> {
     Ok(prism_live_discovery_root_in(
-        &eframe::storage_dir("Spectrum")
+        &spectrum_library::data_root()
             .context("Spectrum could not locate its per-user application directory")?,
     ))
 }

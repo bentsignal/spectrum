@@ -7,10 +7,6 @@ description = "A lean, cross-platform, CLI-first photo editor written in Rust"
 license.workspace = true
 repository.workspace = true
 
-[features]
-default = []
-ghostty-terminal = ["spectrum-terminal/ghostty-terminal"]
-
 [lib]
 name = "lumen_core"
 
@@ -18,28 +14,16 @@ name = "lumen_core"
 spectrum-library = { path = "../../crates/spectrum-library" }
 anyhow.workspace = true
 chrono.workspace = true
-clap.workspace = true
-eframe.workspace = true
 flate2.workspace = true
 image.workspace = true
 rawler.workspace = true
 rayon.workspace = true
-rfd.workspace = true
 same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 spectrum-imaging = { path = "../../crates/spectrum-imaging" }
-spectrum-history-ui = { path = "../../crates/spectrum-history-ui" }
 spectrum-live-bridge = { path = "../../crates/spectrum-live-bridge" }
 spectrum-revisions = { path = "../../crates/spectrum-revisions" }
-spectrum-terminal = { path = "../../crates/spectrum-terminal" }
-vt100.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSObject", "NSString", "NSURL"] }
-winit.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27"

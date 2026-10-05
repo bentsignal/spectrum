@@ -16,7 +16,7 @@ pub const LUMEN_COMMAND_OPERATIONS_VERSION: u32 = 1;
 
 pub fn lumen_live_discovery_root() -> Result<PathBuf> {
     Ok(lumen_live_discovery_root_in(
-        &eframe::storage_dir("Spectrum")
+        &spectrum_library::data_root()
             .context("Spectrum could not locate its per-user application directory")?,
     ))
 }

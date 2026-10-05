@@ -1,8 +1,7 @@
 # Project documents
 
 Resume UI work from the [handoff](design/handoff.md). These documents and tests are authoritative.
-Git and pull requests explain completed work. [Migration disposition](MIGRATION.md)
-records how the former UAV material was curated.
+Git and pull requests explain completed work.
 
 | Read | Purpose |
 | --- | --- |

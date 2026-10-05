@@ -126,6 +126,5 @@ and retention work is tracked in [revision lifecycle](../tasks/revision-lifecycl
 
 ## Current product work
 
-Canvas editing remains in progress. The [toolbar overflow prototype](../tasks/toolbar-overflow.md)
-was closed without selecting a design because a broader interface overhaul is
-planned. Other unfinished work is in the [task directory](../tasks/README.md).
+The codebase is being reshaped around one app ([overhaul](../tasks/codebase-overhaul.md)).
+Other unfinished work is in the [task directory](../tasks/README.md).

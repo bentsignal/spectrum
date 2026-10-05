@@ -213,10 +213,9 @@ pub fn accepts(owner: &str, target: &str) -> bool {
 }
 
 /// Shared app-managed location used by the CLI and both editor adapters.
-pub fn default_root() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("SPECTRUM_LIBRARY") {
-        return Ok(path.into());
-    }
+/// Spectrum's per-user data directory: the library, caches, and live-bridge
+/// discovery live under it.
+pub fn data_root() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     let base = PathBuf::from(std::env::var_os("APPDATA").context("APPDATA is unavailable")?)
         .join("Spectrum/data");
@@ -230,7 +229,20 @@ pub fn default_root() -> Result<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
         .context("data directory is unavailable")?
         .join("spectrum");
-    Ok(base.join("Library"))
+    Ok(base)
+}
+
+/// The library: `SPECTRUM_LIBRARY` if set, or `Library` in the data root.
+pub fn default_root() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("SPECTRUM_LIBRARY") {
+        return Ok(path.into());
+    }
+    Ok(data_root()?.join("Library"))
+}
+
+/// Rebuildable caches, such as revision snapshots and derived rasters.
+pub fn cache_root() -> Result<PathBuf> {
+    Ok(data_root()?.join("Caches"))
 }
 
 #[cfg(test)]

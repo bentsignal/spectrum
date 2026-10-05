@@ -7,12 +7,6 @@ description = "A fast, agent-first layered image editor"
 license.workspace = true
 repository.workspace = true
 
-[features]
-default = []
-# Builds the shared macOS host for a separately packaged Ghostty bridge. The
-# portable terminal remains the default unless PRISM_EXPERIMENTAL_GHOSTTY=1.
-ghostty-terminal = ["spectrum-terminal/ghostty-terminal"]
-
 [lib]
 name = "prism_core"
 
@@ -21,8 +15,6 @@ rayon.workspace = true
 spectrum-library = { path = "../../crates/spectrum-library" }
 anyhow.workspace = true
 base64.workspace = true
-clap.workspace = true
-eframe.workspace = true
 epaint_default_fonts.workspace = true
 flate2.workspace = true
 fontdue.workspace = true
@@ -31,17 +23,13 @@ image.workspace = true
 icu_locale.workspace = true
 icu_locale_core.workspace = true
 png.workspace = true
-lumen-photo = { path = "../lumen" }
-rfd.workspace = true
 same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 spectrum-imaging = { path = "../../crates/spectrum-imaging" }
-spectrum-history-ui = { path = "../../crates/spectrum-history-ui" }
 spectrum-live-bridge = { path = "../../crates/spectrum-live-bridge" }
 spectrum-revisions = { path = "../../crates/spectrum-revisions" }
 spectrum-fonts = { path = "../../crates/spectrum-fonts" }
-spectrum-terminal = { path = "../../crates/spectrum-terminal" }
 sha2.workspace = true
 ttf-parser.workspace = true
 fontdb.workspace = true
@@ -50,14 +38,7 @@ unicode-bidi.workspace = true
 unicode-linebreak.workspace = true
 unicode-script.workspace = true
 unicode-segmentation.workspace = true
-vt100.workspace = true
 tiff = "0.11.3"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSObject", "NSString", "NSURL"] }
-winit.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

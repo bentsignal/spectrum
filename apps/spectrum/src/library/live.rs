@@ -63,7 +63,7 @@ fn send(
 }
 fn human_session() -> Result<SessionId> {
     Ok(spectrum_revisions::local_session_id(
-        &eframe::storage_dir("Spectrum").context("missing Spectrum data directory")?,
+        &spectrum_library::data_root().context("missing Spectrum data directory")?,
     )?)
 }
 pub fn image(path: &Path, id: u64, command: lumen_core::Command) -> Result<serde_json::Value> {

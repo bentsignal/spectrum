@@ -910,9 +910,9 @@ fn checked_project_info(store: &LiveRevisionStore, path: &Path) -> Result<Projec
 
 #[cfg(not(test))]
 fn live_cache_root(_project_path: &Path) -> Result<PathBuf> {
-    eframe::storage_dir("Lumen")
-        .map(|directory| directory.join("Revision Cache"))
-        .context("Lumen could not locate its local revision cache")
+    spectrum_library::cache_root()
+        .map(|directory| directory.join("Revisions"))
+        .context("Spectrum could not locate its local revision cache")
 }
 
 #[cfg(test)]

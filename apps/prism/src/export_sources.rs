@@ -51,9 +51,9 @@ pub fn raster_backing_cache_root(storage_directory: &Path, app_version: &str) ->
 }
 
 pub fn default_raster_backing_cache_root() -> Result<PathBuf> {
-    eframe::storage_dir("Prism")
+    spectrum_library::cache_root()
         .map(|directory| raster_backing_cache_root(&directory, env!("CARGO_PKG_VERSION")))
-        .context("Prism could not locate its local raster backing cache")
+        .context("Spectrum could not locate its local raster backing cache")
 }
 
 pub fn prepare_export_raster_sources(

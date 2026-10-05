@@ -1,7 +1,6 @@
 use std::{hint::black_box, sync::mpsc, time::Instant};
 
 use anyhow::{Result, bail};
-use eframe::egui;
 use prism_core::{
     BrushMode, BrushProgram, BrushSample, BrushStroke, BrushStyle, Command, Document, Layer,
     LayerKind, MAX_BRUSH_SAMPLES_PER_STROKE, MAX_PAINT_REGION_PIXELS, PaintSelection, RenderRegion,
@@ -257,10 +256,7 @@ fn measure_drag_preview() -> Result<LiveBrushMeasurement> {
                 max_source_staging_pixels.max(result.max_source_staging_pixels);
             let rgba = result.rendered.into_rgba8();
             let visible = rgba.pixels().filter(|pixel| pixel[3] != 0).count() as u64;
-            let upload = egui::ColorImage::from_rgba_unmultiplied(
-                [rgba.width() as usize, rgba.height() as usize],
-                rgba.as_raw(),
-            );
+            let upload = super::support::gpu_upload(&rgba);
             timings.push(result.started.elapsed().as_secs_f64() * 1_000.0);
             visible_prefixes.push((result.sample_count, visible));
             if result.sample_count == LIVE_BRUSH_FRAMES * LIVE_BRUSH_SAMPLES_PER_FRAME {
@@ -297,13 +293,7 @@ fn measure_drag_preview() -> Result<LiveBrushMeasurement> {
     let (settled, settled_stats) =
         render_document_region_scaled_with_stats(&workspace.document, 1.0, region)?;
     let settled_rgba = settled.into_rgba8();
-    let settled_upload = egui::ColorImage::from_rgba_unmultiplied(
-        [
-            settled_rgba.width() as usize,
-            settled_rgba.height() as usize,
-        ],
-        settled_rgba.as_raw(),
-    );
+    let settled_upload = super::support::gpu_upload(&settled_rgba);
     timings.push(settle_started.elapsed().as_secs_f64() * 1_000.0);
     max_source_staging_pixels =
         max_source_staging_pixels.max(settled_stats.max_source_staging_pixels);
