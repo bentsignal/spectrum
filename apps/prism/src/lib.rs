@@ -832,6 +832,10 @@ mod shape_tests;
 mod layer_erase_tests;
 
 #[cfg(test)]
+#[path = "text_edge_tests.rs"]
+mod text_edge_tests;
+
+#[cfg(test)]
 #[path = "render_region_tests.rs"]
 mod render_region_tests;
 

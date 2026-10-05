@@ -1,7 +1,8 @@
 //! The sidebar's mode switcher: a dropdown naming the current mode. Its
-//! list shows each mode's Command+number shortcut, and holding Command for
-//! a moment opens it, so the shortcuts are there when you need them and out
-//! of the way when you already know them.
+//! list opens beside the sidebar, so the mode's content stays in view, and
+//! shows each mode's Command+number shortcut; holding Command for a moment
+//! opens it, so the shortcuts are there when you need them and out of the
+//! way when you already know them.
 use crate::{
     theme::*,
     workspace::{SIDEBAR_WIDTH, Workspace},
@@ -11,7 +12,7 @@ use gpui_component::{Icon, IconName, Sizable};
 use std::time::Duration;
 
 /// How long Command is held before the list opens.
-const HOLD: Duration = Duration::from_millis(1500);
+const HOLD: Duration = Duration::from_millis(500);
 
 /// "⌘1" on a Mac, "Ctrl+1" elsewhere.
 fn shortcut(index: usize) -> String {
@@ -59,29 +60,39 @@ impl Workspace {
                         this.set_mode(mode, window, cx);
                     }))
             });
+            // Beside the sidebar, level with the switcher.
+            let at = *self.mode_switcher_bounds.borrow();
+            let (x, corner) = if self.sidebar_right {
+                (at.left() - px(20.), Corner::TopRight)
+            } else {
+                (at.right() + px(20.), Corner::TopLeft)
+            };
             deferred(
-                anchored().snap_to_window().child(
-                    div()
-                        .id("mode-list")
-                        .occlude()
-                        .mt_1()
-                        .w(px(SIDEBAR_WIDTH - 24.))
-                        .p_1()
-                        .flex()
-                        .flex_col()
-                        .gap_0p5()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(rgb(0x333333))
-                        .bg(rgb(SURFACE))
-                        .shadow_lg()
-                        .children(items)
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.mode_menu = false;
-                            this.mode_menu_held = false;
-                            cx.notify();
-                        })),
-                ),
+                anchored()
+                    .position(point(x, at.top()))
+                    .anchor(corner)
+                    .snap_to_window()
+                    .child(
+                        div()
+                            .id("mode-list")
+                            .occlude()
+                            .w(px(SIDEBAR_WIDTH - 24.))
+                            .p_1()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(rgb(0x333333))
+                            .bg(rgb(SURFACE))
+                            .shadow_lg()
+                            .children(items)
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.mode_menu = false;
+                                this.mode_menu_held = false;
+                                cx.notify();
+                            })),
+                    ),
             )
             .with_priority(1)
         });
@@ -98,6 +109,16 @@ impl Workspace {
                     .bg(rgb(SURFACE))
                     .text_sm()
                     .hover(|el| el.bg(rgb(HOVER)))
+                    .child({
+                        let slot = self.mode_switcher_bounds.clone();
+                        canvas(
+                            move |bounds, _, _| *slot.borrow_mut() = bounds,
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full()
+                    })
+                    .relative()
                     .child(Icon::new(current.icon()).small())
                     .child(div().flex_1().child(current.label()))
                     .child(

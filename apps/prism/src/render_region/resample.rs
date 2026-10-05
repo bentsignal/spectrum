@@ -9,7 +9,10 @@ use rayon::prelude::*;
 
 use super::{
     SamplingGeometry,
-    source::{SampleSource, SourceRegion, source_sample_bounds, triangle_weight_parts},
+    source::{
+        SUMS, SampleSource, SourceRegion, accumulate_premultiplied, source_sample_bounds,
+        triangle_weight_parts, unpremultiplied,
+    },
 };
 
 /// The scaled coordinates along one axis whose triangle windows lie inside
@@ -55,16 +58,13 @@ pub(super) fn presample<'a>(
             let scaled_y = y0 + row as u32;
             let (ys, y_weight) = triangle_weight_parts(sh, dh, scaled_y);
             // Each staged column filtered down this scaled row.
-            let columns: Vec<[f32; 4]> = staged
+            let columns: Vec<[f32; SUMS]> = staged
                 .clone()
                 .map(|source_x| {
-                    let mut vertical = [0.0_f32; 4];
+                    let mut vertical = [0.0_f32; SUMS];
                     for source_y in ys.clone() {
                         let pixel = image.get_pixel(source_x - region.x, source_y - region.y).0;
-                        let weight = y_weight(source_y);
-                        for channel in 0..4 {
-                            vertical[channel] += f32::from(pixel[channel]) * weight;
-                        }
+                        accumulate_premultiplied(&mut vertical, pixel, y_weight(source_y));
                     }
                     vertical
                 })
@@ -72,17 +72,15 @@ pub(super) fn presample<'a>(
             for (column, slot) in line.chunks_mut(4).enumerate() {
                 let scaled_x = x0 + column as u32;
                 let (xs, x_weight) = triangle_weight_parts(sw, dw, scaled_x);
-                let mut horizontal = [0.0_f32; 4];
+                let mut horizontal = [0.0_f32; SUMS];
                 for source_x in xs {
                     let vertical = columns[(source_x - region.x) as usize];
                     let weight = x_weight(source_x);
-                    for channel in 0..4 {
+                    for channel in 0..SUMS {
                         horizontal[channel] += vertical[channel] * weight;
                     }
                 }
-                for (byte, value) in slot.iter_mut().zip(horizontal) {
-                    *byte = value.round().clamp(0.0, 255.0) as u8;
-                }
+                slot.copy_from_slice(&unpremultiplied(horizontal));
             }
         });
     let resized = SampleSource::Pixels {
@@ -193,4 +191,39 @@ pub(super) fn remember(key: String, source: &SampleSource<'_>, geometry: Samplin
     while cache.len() > ENTRIES || (cache.len() > 1 && bytes(&cache) > BYTES) {
         cache.remove(0);
     }
+}
+
+/// A whole image resized to `width` × `height` with the same weights and
+/// alpha weighing as region samples, so full renders and regions agree.
+pub(crate) fn resize_whole(image: &RgbaImage, width: u32, height: u32) -> RgbaImage {
+    let (sw, sh) = image.dimensions();
+    let mut out = RgbaImage::new(width, height);
+    out.par_chunks_mut(width as usize * 4)
+        .enumerate()
+        .for_each(|(row, line)| {
+            let (ys, y_weight) = triangle_weight_parts(sh, height, row as u32);
+            let columns: Vec<[f32; SUMS]> = (0..sw)
+                .map(|source_x| {
+                    let mut vertical = [0.0_f32; SUMS];
+                    for source_y in ys.clone() {
+                        let pixel = image.get_pixel(source_x, source_y).0;
+                        accumulate_premultiplied(&mut vertical, pixel, y_weight(source_y));
+                    }
+                    vertical
+                })
+                .collect();
+            for (column, slot) in line.chunks_mut(4).enumerate() {
+                let (xs, x_weight) = triangle_weight_parts(sw, width, column as u32);
+                let mut horizontal = [0.0_f32; SUMS];
+                for source_x in xs {
+                    let vertical = columns[source_x as usize];
+                    let weight = x_weight(source_x);
+                    for channel in 0..SUMS {
+                        horizontal[channel] += vertical[channel] * weight;
+                    }
+                }
+                slot.copy_from_slice(&unpremultiplied(horizontal));
+            }
+        });
+    out
 }

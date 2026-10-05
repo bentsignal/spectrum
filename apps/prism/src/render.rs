@@ -764,9 +764,7 @@ pub fn render_solid_color(color: [u8; 4], adjustments: &spectrum_imaging::Adjust
 fn transform_layer(image: DynamicImage, transform: Transform) -> (RgbaImage, (f32, f32)) {
     let width = (image.width() as f32 * transform.scale_x).round().max(1.0) as u32;
     let height = (image.height() as f32 * transform.scale_y).round().max(1.0) as u32;
-    let scaled = image
-        .resize_exact(width, height, FilterType::Triangle)
-        .to_rgba8();
+    let scaled = crate::render_pixels::resize_triangle(&image, width, height);
     if transform.rotation.abs() < 0.01 {
         return (scaled, (0.0, 0.0));
     }

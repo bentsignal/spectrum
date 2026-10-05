@@ -82,7 +82,7 @@ impl Workspace {
             .and_then(|c| c.pixels.as_ref())
             .and_then(|(_, pixels)| pixel(pixels, at.0.floor() as i64, at.1.floor() as i64));
         if let Some(color) = cached {
-            return self.set_default_color(color, background, window, cx);
+            return self.apply_picked(color, background, window, cx);
         }
         let (Some(canvas), Ok(store)) = (&self.canvas, &self.store) else {
             return;
@@ -100,12 +100,56 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| match result {
-                Ok(color) => this.set_default_color(color, background, window, cx),
+                Ok(color) => this.apply_picked(color, background, window, cx),
                 Err(error) => this.notify_error(error, window, cx),
             })
             .ok();
         })
         .detach();
+    }
+
+    /// A color picker asked for a color from the canvas: the Eyedropper
+    /// takes it, then the tool goes back to what it was.
+    pub fn start_sampling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(canvas) = &mut self.canvas else {
+            crate::color_picker::cancel_sampling();
+            return;
+        };
+        if canvas.sample_return.is_none() {
+            canvas.sample_return = Some(canvas.tool);
+        }
+        canvas.tool = Tool::Eyedropper;
+        self.ensure_pixels(window, cx);
+        cx.notify();
+    }
+
+    /// Escape while sampling: back to the tool before. Returns whether it was.
+    pub fn stop_sampling(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(tool) = self.canvas.as_mut().and_then(|c| c.sample_return.take()) else {
+            return false;
+        };
+        crate::color_picker::cancel_sampling();
+        if let Some(canvas) = &mut self.canvas {
+            canvas.tool = tool;
+        }
+        cx.notify();
+        true
+    }
+
+    /// A color taken from the canvas goes to the picker that asked for it,
+    /// or else becomes the foreground (or background) color.
+    fn apply_picked(
+        &mut self,
+        color: [u8; 4],
+        background: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(picker) = crate::color_picker::take_sampling() else {
+            return self.set_default_color(color, background, window, cx);
+        };
+        picker.update(cx, |picker, cx| picker.take(color, window, cx));
+        self.stop_sampling(cx);
     }
 
     /// Command+C with the Eyedropper: copies the code of the color under

@@ -578,23 +578,56 @@ pub(super) fn sample_triangle_resize(
     }
     let x_weights = triangle_weights(source.0, output.0, coordinate.0);
     let y_weights = triangle_weights(source.1, output.1, coordinate.1);
-    let mut horizontal = [0.0_f32; 4];
+    let mut horizontal = [0.0_f32; SUMS];
     for source_x in x_weights.start..x_weights.end {
-        let mut vertical = [0.0_f32; 4];
+        let mut vertical = [0.0_f32; SUMS];
         for source_y in y_weights.start..y_weights.end {
             let pixel = source_pixels.pixel(source_x, source_y);
             let weight =
                 triangle_weight(source_y, y_weights.center, y_weights.scale) / y_weights.sum;
-            for channel in 0..4 {
-                vertical[channel] += f32::from(pixel[channel]) * weight;
-            }
+            accumulate_premultiplied(&mut vertical, pixel, weight);
         }
         let weight = triangle_weight(source_x, x_weights.center, x_weights.scale) / x_weights.sum;
-        for channel in 0..4 {
+        for channel in 0..SUMS {
             horizontal[channel] += vertical[channel] * weight;
         }
     }
-    horizontal.map(|channel| channel.round().clamp(0.0, 255.0) as u8)
+    unpremultiplied(horizontal)
+}
+
+/// How many sums a resampled pixel keeps: its colors weighed by coverage,
+/// its alpha, the coverage weight, and the plain weight.
+pub(crate) const SUMS: usize = 6;
+
+/// Adds a straight-alpha `pixel` to a resampled pixel's sums. Colors weigh
+/// by their alpha, so transparent pixels' colors never darken an edge; where
+/// every pixel is opaque the sums are exactly the plain weighted average.
+pub(crate) fn accumulate_premultiplied(sum: &mut [f32; SUMS], pixel: [u8; 4], weight: f32) {
+    // Transparent pixels add nothing but their weight.
+    if pixel[3] == 0 {
+        sum[5] += weight;
+        return;
+    }
+    let coverage = f32::from(pixel[3]) / 255.0 * weight;
+    for channel in 0..3 {
+        sum[channel] += f32::from(pixel[channel]) * coverage;
+    }
+    sum[3] += f32::from(pixel[3]) * weight;
+    sum[4] += coverage;
+    sum[5] += weight;
+}
+
+/// A resampled pixel's sums back to a straight-alpha pixel.
+pub(crate) fn unpremultiplied(sum: [f32; SUMS]) -> [u8; 4] {
+    let byte = |value: f32| value.round().clamp(0.0, 255.0) as u8;
+    let alpha = byte(sum[3]);
+    if sum[4] <= 0.0 || alpha == 0 {
+        return [0; 4];
+    }
+    // All opaque: the plain average, exactly as before weighing by alpha.
+    let divide = sum[4] != sum[5];
+    let color = |channel: f32| byte(if divide { channel / sum[4] } else { channel });
+    [color(sum[0]), color(sum[1]), color(sum[2]), alpha]
 }
 
 #[derive(Clone, Copy)]

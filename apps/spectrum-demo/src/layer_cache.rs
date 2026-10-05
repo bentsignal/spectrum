@@ -175,9 +175,10 @@ impl Workspace {
             Some(layer)
         });
         // A move inside a unit changes how the unit looks, so it renders
-        // with the layer where the drag has it.
+        // with the layer where the drag has it. Moving the holder moves the
+        // whole unit, whose image just follows.
         let moving = canvas.drag.and_then(|drag| {
-            let unit = holder_of(&canvas.doc, drag.id)?;
+            let unit = holder_of(&canvas.doc, drag.id).filter(|unit| *unit != drag.id)?;
             let index = canvas.doc.layers.iter().position(|l| l.id == unit)?;
             let members = unit_members(&canvas.doc, index);
             (members > 1 && drag.corner.is_none() && !drag.rotate).then_some(drag.id)

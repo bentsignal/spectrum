@@ -62,27 +62,29 @@ impl Colors {
     }
 }
 
-/// A small arrow pointing up and down, drawn in the current text color.
+/// A curved arrow with a head at each end, pointing back at both colors,
+/// drawn in the current text color.
 fn swap_arrow() -> impl IntoElement {
     canvas(
         |_, _, _| {},
         |bounds, _, window, _| {
             let c = bounds.center();
             let color = window.text_style().color;
-            let mut path = PathBuilder::stroke(px(1.25));
-            path.move_to(c + point(px(0.), px(-6.)));
-            path.line_to(c + point(px(0.), px(6.)));
-            for side in [-1., 1.] {
-                path.move_to(c + point(px(-3.), px(side * 3.)));
-                path.line_to(c + point(px(0.), px(side * 6.)));
-                path.line_to(c + point(px(3.), px(side * 3.)));
+            let (top, bottom) = (c + point(px(-4.), px(-8.)), c + point(px(-4.), px(8.)));
+            let mut path = PathBuilder::stroke(px(1.5));
+            path.move_to(top);
+            path.arc_to(point(px(8.2), px(8.2)), px(0.), false, true, bottom);
+            for tip in [top, bottom] {
+                path.move_to(tip + point(px(3.5), px(-3.5)));
+                path.line_to(tip);
+                path.line_to(tip + point(px(3.5), px(3.5)));
             }
             if let Ok(path) = path.build() {
                 window.paint_path(path, color);
             }
         },
     )
-    .size(px(14.))
+    .size(px(24.))
 }
 
 /// A label with a color well at the right.
@@ -140,8 +142,8 @@ impl Workspace {
         }
     }
 
-    /// Foreground and background, each labeled with its code, and an arrow
-    /// at the left that swaps them (X; D resets them).
+    /// Foreground and background, each labeled with its code, and a curved
+    /// arrow at the right that swaps them (X; D resets them).
     pub fn color_pair(&self, cx: &mut Context<Self>) -> Div {
         let row = |id: &'static str, label: &'static str, color: [u8; 4], picker| {
             let [r, g, b, _] = color;
@@ -164,8 +166,27 @@ impl Workspace {
             .gap_1()
             .child(
                 div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(row(
+                        "fore",
+                        "Foreground",
+                        self.colors.fore,
+                        &self.colors.fore_picker,
+                    ))
+                    .child(row(
+                        "back",
+                        "Background",
+                        self.colors.back,
+                        &self.colors.back_picker,
+                    )),
+            )
+            .child(
+                div()
                     .id("swap-colors")
-                    .w(px(22.))
+                    .w(px(30.))
                     .h(px(56.))
                     .flex()
                     .items_center()
@@ -183,25 +204,6 @@ impl Workspace {
                         this.set_default_color(back, false, window, cx);
                         this.set_default_color(fore, true, window, cx);
                     })),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(row(
-                        "fore",
-                        "Foreground",
-                        self.colors.fore,
-                        &self.colors.fore_picker,
-                    ))
-                    .child(row(
-                        "back",
-                        "Background",
-                        self.colors.back,
-                        &self.colors.back_picker,
-                    )),
             )
     }
 

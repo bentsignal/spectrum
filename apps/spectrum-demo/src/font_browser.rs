@@ -6,7 +6,8 @@
 use crate::{theme::*, workspace::Workspace};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Icon, IconName, Sizable,
+    Icon, IconName, Selectable, Sizable,
+    button::{Button, ButtonVariants},
     input::{self, Input},
 };
 use prism_core::{Command, Document, FontAsset, LayerKind};
@@ -105,7 +106,7 @@ impl Workspace {
                 let families = task.await;
                 this.update(cx, |this, cx| {
                     this.fonts = Some(Arc::new(families));
-                    this.font_highlight = this.current_font_index().unwrap_or(0);
+                    this.font_highlight = this.current_font_position(cx);
                     this.font_scroll
                         .scroll_to_item(this.font_highlight, ScrollStrategy::Center);
                     cx.notify();
@@ -114,7 +115,7 @@ impl Workspace {
             })
             .detach();
         } else {
-            self.font_highlight = self.current_font_index().unwrap_or(0);
+            self.font_highlight = self.current_font_position(cx);
             self.font_scroll
                 .scroll_to_item(self.font_highlight, ScrollStrategy::Center);
         }
@@ -127,12 +128,52 @@ impl Workspace {
             return Vec::new();
         };
         let query = self.font_query.read(cx).value().trim().to_lowercase();
-        fonts
+        let lists = &self.font_lists;
+        let shown = |family: &Family| {
+            let hidden = lists.hidden.contains(family.name.as_ref());
+            let matching = query.is_empty() || family.name.to_lowercase().contains(&query);
+            // Showing hidden fonts lists only them, to bring them back.
+            let listed = if lists.show_hidden {
+                hidden
+            } else {
+                !hidden && (family.latin || !lists.latin_only)
+            };
+            matching && listed
+        };
+        // Favorites first, each part in name order.
+        let (mut favorites, mut rest): (Vec<usize>, Vec<usize>) = fonts
             .iter()
             .enumerate()
-            .filter(|(_, f)| query.is_empty() || f.name.to_lowercase().contains(&query))
+            .filter(|(_, f)| shown(f))
             .map(|(index, _)| index)
-            .collect()
+            .partition(|index| lists.favorites.contains(fonts[*index].name.as_ref()));
+        favorites.append(&mut rest);
+        favorites
+    }
+
+    /// Where the layer's current family is in the list shown.
+    fn current_font_position(&self, cx: &App) -> usize {
+        let current = self.current_font_index();
+        self.font_matches(cx)
+            .iter()
+            .position(|index| Some(*index) == current)
+            .unwrap_or(0)
+    }
+
+    /// Favorites or hides a family, or takes it back out.
+    fn mark_font(&mut self, name: SharedString, favorite: bool, cx: &mut Context<Self>) {
+        let lists = &mut self.font_lists;
+        let set = if favorite {
+            &mut lists.favorites
+        } else {
+            &mut lists.hidden
+        };
+        crate::font_lists::FontLists::toggle(set, &name);
+        if lists.hidden.is_empty() {
+            lists.show_hidden = false;
+        }
+        lists.save();
+        cx.notify();
     }
 
     fn current_font_index(&self) -> Option<usize> {
@@ -293,6 +334,8 @@ impl Workspace {
         let fonts = self.fonts.clone();
         let (highlight, hover) = (self.font_highlight, self.font_hover);
         let blocked = self.font_blocked.clone();
+        let favorites = Arc::new(self.font_lists.favorites.clone());
+        let hidden = Arc::new(self.font_lists.hidden.clone());
         let view = cx.entity();
         let count = matches.len();
         let list = uniform_list("font-list", count, move |range, _, _| {
@@ -305,6 +348,60 @@ impl Workspace {
                     let family = &fonts[index];
                     let active = hover == Some(index) || (hover.is_none() && position == highlight);
                     let (enter, pick) = (view.clone(), view.clone());
+                    let (star, hide) = (view.clone(), view.clone());
+                    let favorite = favorites.contains(family.name.as_ref());
+                    let is_hidden = hidden.contains(family.name.as_ref());
+                    let (star_name, hide_name) = (family.name.clone(), family.name.clone());
+                    // Favorite and hide, shown on the row under the pointer.
+                    let marks =
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .when(active || favorite, |el| {
+                                el.child(
+                                    Button::new(("font-star", index))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Icon::new(IconName::Star).text_color(rgb(
+                                            if favorite { 0xe5c34b } else { MUTED },
+                                        )))
+                                        .tooltip(if favorite {
+                                            "Remove from favorites"
+                                        } else {
+                                            "Favorite: list it first"
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            star.update(cx, |this, cx| {
+                                                this.mark_font(star_name.clone(), true, cx)
+                                            })
+                                        }),
+                                )
+                            })
+                            .when(active || is_hidden, |el| {
+                                el.child(
+                                    Button::new(("font-hide", index))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(if is_hidden {
+                                            IconName::Eye
+                                        } else {
+                                            IconName::EyeOff
+                                        })
+                                        .tooltip(if is_hidden {
+                                            "Show in the list"
+                                        } else {
+                                            "Hide"
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            hide.update(cx, |this, cx| {
+                                                this.mark_font(hide_name.clone(), false, cx)
+                                            })
+                                        }),
+                                )
+                            });
                     div()
                         .id(("font", index))
                         .w_full()
@@ -336,7 +433,7 @@ impl Workspace {
                             } else {
                                 None
                             };
-                            el.children(note.map(|note| {
+                            el.children(note.filter(|_| !active).map(|note| {
                                 div()
                                     .flex_none()
                                     .text_xs()
@@ -344,6 +441,7 @@ impl Workspace {
                                     .child(note)
                             }))
                         })
+                        .child(marks)
                         .on_hover(move |hovered, window, cx| {
                             enter.update(cx, |this, cx| {
                                 if *hovered {
@@ -415,6 +513,47 @@ impl Workspace {
                 )
             })
             .when(count > 0, |el| el.child(list))
+            .child(self.font_filters(cx))
+    }
+
+    /// Below the list: leave out fonts without Latin letters, and show the
+    /// hidden ones to bring them back.
+    fn font_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let lists = &self.font_lists;
+        let hidden = lists.hidden.len();
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .pt_1()
+            .border_t_1()
+            .border_color(rgb(BORDER))
+            .child(
+                Button::new("font-latin")
+                    .ghost()
+                    .xsmall()
+                    .label("Latin only")
+                    .selected(lists.latin_only)
+                    .tooltip("Leave out fonts without English letters")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.font_lists.latin_only = !this.font_lists.latin_only;
+                        this.font_lists.save();
+                        cx.notify();
+                    })),
+            )
+            .when(hidden > 0, |el| {
+                el.child(
+                    Button::new("font-show-hidden")
+                        .ghost()
+                        .xsmall()
+                        .label(format!("Hidden ({hidden})"))
+                        .selected(lists.show_hidden)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.font_lists.show_hidden = !this.font_lists.show_hidden;
+                            cx.notify();
+                        })),
+                )
+            })
     }
 
     /// The search field changed or was submitted.

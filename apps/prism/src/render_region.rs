@@ -19,6 +19,7 @@ use source::sample_triangle_resize;
 mod effects_tile;
 mod resample;
 use composite::composite_staged;
+pub(crate) use resample::resize_whole;
 pub use resample::set_interactive_source_cache;
 mod shadow_tile;
 use effects_tile::effects_tile_bounds;

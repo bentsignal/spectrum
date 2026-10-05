@@ -1,5 +1,5 @@
 //! Preview preferences kept between launches, beside the library: the color
-//! format every color picker shows.
+//! format every color picker shows, and favorite and hidden fonts.
 use crate::color_text;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
@@ -36,6 +36,23 @@ pub fn save_color_format() {
     let mut prefs = read();
     let name = color_text::name(color_text::preferred());
     prefs.insert("color_format".into(), Value::from(name));
+    if let Ok(json) = serde_json::to_vec_pretty(&prefs) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// A saved preference by name.
+pub fn get(key: &str) -> Option<Value> {
+    read().remove(key)
+}
+
+/// Saves one preference; a failed write only loses it.
+pub fn set(key: &str, value: Value) {
+    let Some(path) = path() else {
+        return;
+    };
+    let mut prefs = read();
+    prefs.insert(key.into(), value);
     if let Ok(json) = serde_json::to_vec_pretty(&prefs) {
         let _ = std::fs::write(path, json);
     }

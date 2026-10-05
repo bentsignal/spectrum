@@ -93,94 +93,17 @@ impl Workspace {
             .on_click(cx.listener(|this, _, window, cx| {
                 this.set_mode(crate::workspace::Mode::Layers, window, cx)
             }));
-        let mut panel = div()
-            .flex()
-            .flex_col()
-            .gap_6()
+        let mut panel = div().flex().flex_col().gap_6().child(
+            group("Tool", None)
+                .gap_3()
+                .child(self.tool_button(cx))
+                .child(div().text_xs().text_color(rgb(FAINT)).child(hint(tool))),
+        );
+        let settings = self.tool_settings(tool, cx);
+        panel = panel
+            .children(settings)
             .child(group("Selected layer", None).child(current))
-            .child(group("Colors", None).child(self.color_pair(cx)))
-            .child(
-                group("Tool", None)
-                    .gap_3()
-                    .child(self.tool_button(cx))
-                    .child(div().text_xs().text_color(rgb(FAINT)).child(hint(tool))),
-            );
-        match tool {
-            Tool::Brush | Tool::Eraser => {
-                let (size, hardness, opacity) = self.tool_options.brush(cx);
-                let options = &self.tool_options;
-                panel = panel.child(
-                    group(
-                        if tool == Tool::Brush {
-                            "Brush"
-                        } else {
-                            "Eraser"
-                        },
-                        None,
-                    )
-                    .gap_3()
-                    .child(slider_row(
-                        "Size",
-                        format!("{size:.0}"),
-                        &options.brush_size,
-                    ))
-                    .child(slider_row(
-                        "Hardness",
-                        format!("{:.0}%", hardness * 100.),
-                        &options.brush_hardness,
-                    ))
-                    .child(slider_row(
-                        "Opacity",
-                        format!("{:.0}%", opacity * 100.),
-                        &options.brush_opacity,
-                    )),
-                );
-            }
-            Tool::Wand => {
-                let tolerance = self.tool_options.tolerance(cx);
-                panel = panel.child(
-                    group("Magic wand", None)
-                        .gap_3()
-                        .child(slider_row(
-                            "Tolerance",
-                            tolerance.to_string(),
-                            &self.tool_options.wand_tolerance,
-                        ))
-                        .child(
-                            toggle(
-                                "wand-contiguous",
-                                "Contiguous",
-                                self.tool_options.contiguous,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.tool_options.contiguous = !this.tool_options.contiguous;
-                                cx.notify();
-                            })),
-                        ),
-                );
-            }
-            Tool::Move => {
-                panel = panel.child(
-                    group("Move", None)
-                        .gap_2()
-                        .child(
-                            toggle("auto-select", "Auto-select", self.tool_options.auto_select)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.tool_options.auto_select = !this.tool_options.auto_select;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(div().text_xs().text_color(rgb(FAINT)).child(
-                            if self.tool_options.auto_select {
-                                "A click picks a layer's box first and what is inside it on a second click; ⌘-click picks what is under the pointer at once."
-                            } else {
-                                "Drags move the selected layer wherever they start; ⌘-click picks what is under the pointer."
-                            },
-                        )),
-                );
-            }
-            _ => {}
-        }
+            .child(group("Colors", None).child(self.color_pair(cx)));
         if selected || tool.selects() {
             let action =
                 |id: &'static str,
@@ -214,5 +137,87 @@ impl Workspace {
             panel = panel.child(actions);
         }
         panel
+    }
+
+    /// The current tool's own settings, if it has any.
+    fn tool_settings(&self, tool: Tool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        match tool {
+            Tool::Brush | Tool::Eraser => {
+                let (size, hardness, opacity) = self.tool_options.brush(cx);
+                let options = &self.tool_options;
+                Some(
+                    group(
+                        if tool == Tool::Brush {
+                            "Brush"
+                        } else {
+                            "Eraser"
+                        },
+                        None,
+                    )
+                    .gap_3()
+                    .child(slider_row(
+                        "Size",
+                        format!("{size:.0}"),
+                        &options.brush_size,
+                    ))
+                    .child(slider_row(
+                        "Hardness",
+                        format!("{:.0}%", hardness * 100.),
+                        &options.brush_hardness,
+                    ))
+                    .child(slider_row(
+                        "Opacity",
+                        format!("{:.0}%", opacity * 100.),
+                        &options.brush_opacity,
+                    ))
+                    .into_any_element(),
+                )
+            }
+            Tool::Wand => {
+                let tolerance = self.tool_options.tolerance(cx);
+                Some(
+                    group("Magic wand", None)
+                        .gap_3()
+                        .child(slider_row(
+                            "Tolerance",
+                            tolerance.to_string(),
+                            &self.tool_options.wand_tolerance,
+                        ))
+                        .child(
+                            toggle(
+                                "wand-contiguous",
+                                "Contiguous",
+                                self.tool_options.contiguous,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.tool_options.contiguous = !this.tool_options.contiguous;
+                                cx.notify();
+                            })),
+                        )
+                        .into_any_element(),
+                )
+            }
+            Tool::Move => {
+                Some(
+                    group("Move", None)
+                        .gap_2()
+                        .child(
+                            toggle("auto-select", "Auto-select", self.tool_options.auto_select)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.tool_options.auto_select = !this.tool_options.auto_select;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(div().text_xs().text_color(rgb(FAINT)).child(
+                            if self.tool_options.auto_select {
+                                "A click picks a layer's box first and what is inside it on a second click; ⌘-click picks what is under the pointer at once."
+                            } else {
+                                "Drags move the selected layer wherever they start; ⌘-click picks what is under the pointer."
+                            },
+                        ))
+                .into_any_element())
+            }
+            _ => None,
+        }
     }
 }

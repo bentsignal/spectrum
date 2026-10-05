@@ -206,6 +206,10 @@ impl Workspace {
         }
         if let Some(canvas) = &mut self.canvas {
             canvas.tool = tool;
+            // Choosing a tool ends taking a color for a picker.
+            if canvas.sample_return.take().is_some() {
+                crate::color_picker::cancel_sampling();
+            }
         }
         self.ensure_pixels(window, cx);
         self.stop_editing_text(window, cx);

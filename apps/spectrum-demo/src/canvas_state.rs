@@ -89,6 +89,9 @@ pub struct CanvasState {
     pub panning: Option<(gpui::Point<gpui::Pixels>, (f32, f32))>,
     /// Space is held: drags pan.
     pub space_held: bool,
+    /// A color picker is taking a color with the Eyedropper; the tool to go
+    /// back to after.
+    pub sample_return: Option<crate::tools::Tool>,
     /// The flattened canvas at one pixel per unit, for the Eyedropper, and
     /// the look it was rendered from.
     pub pixels: Option<(u64, std::sync::Arc<image::RgbaImage>)>,
@@ -301,6 +304,7 @@ impl Workspace {
             zoomed_at: None,
             panning: None,
             space_held: false,
+            sample_return: None,
             pixels: None,
             pixels_busy: false,
             edits: 0,

@@ -20,6 +20,7 @@ mod edits;
 mod export;
 mod eyedropper;
 mod font_browser;
+mod font_lists;
 mod gradient_editor;
 mod grid;
 mod guides;
@@ -43,6 +44,7 @@ mod preview;
 mod project;
 mod rotate;
 mod selection_view;
+mod sidebar;
 mod store;
 mod theme;
 mod titlebar;
@@ -103,7 +105,8 @@ gpui::actions!(
         ZoomIn,
         ZoomOut,
         ZoomFit,
-        ZoomActual
+        ZoomActual,
+        SampleColor
     ]
 );
 

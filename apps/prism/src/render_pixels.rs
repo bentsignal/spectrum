@@ -48,3 +48,19 @@ pub(crate) fn blend_pixel(
 pub(crate) fn round_byte(value: f32) -> u8 {
     (value.clamp(0.0, 255.0) + 0.5) as u8
 }
+
+/// `image` resized to `width` × `height` with a triangle filter. Images
+/// with transparency resize weighing colors by alpha, as region renders do,
+/// so the color of transparent pixels never bleeds into an edge (white text
+/// keeps white edges).
+pub(crate) fn resize_triangle(image: &image::DynamicImage, width: u32, height: u32) -> RgbaImage {
+    let opaque = image
+        .as_rgba8()
+        .is_some_and(|rgba| rgba.pixels().all(|pixel| pixel[3] == 255));
+    if opaque || !image.color().has_alpha() {
+        return image
+            .resize_exact(width, height, image::imageops::FilterType::Triangle)
+            .to_rgba8();
+    }
+    crate::render_region::resize_whole(&image.to_rgba8(), width, height)
+}

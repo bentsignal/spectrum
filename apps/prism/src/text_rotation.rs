@@ -1,4 +1,4 @@
-use image::{DynamicImage, RgbaImage, imageops::FilterType};
+use image::{DynamicImage, RgbaImage};
 
 use crate::Transform;
 
@@ -11,9 +11,7 @@ pub(crate) fn transform_text_layer(
     let source_height = image.height().max(1) as f32;
     let width = (source_width * transform.scale_x).round().max(1.0) as u32;
     let height = (source_height * transform.scale_y).round().max(1.0) as u32;
-    let scaled = image
-        .resize_exact(width, height, FilterType::Triangle)
-        .to_rgba8();
+    let scaled = crate::render_pixels::resize_triangle(&image, width, height);
     if transform.rotation.abs() < 0.01 {
         return (scaled, (0.0, 0.0));
     }
