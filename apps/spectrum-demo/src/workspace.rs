@@ -779,8 +779,22 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &NudgeLeft, w, cx| this.nudge(-1., 0., w, cx)))
             .on_action(cx.listener(|this, _: &NudgeRight, w, cx| this.nudge(1., 0., w, cx)))
-            .on_action(cx.listener(|this, _: &NudgeUp, w, cx| this.nudge(0., -1., w, cx)))
-            .on_action(cx.listener(|this, _: &NudgeDown, w, cx| this.nudge(0., 1., w, cx)))
+            .on_action(cx.listener(|this, _: &NudgeUp, w, cx| {
+                if this.mode_menu {
+                    this.step_mode(-1, w, cx)
+                } else {
+                    this.nudge(0., -1., w, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NudgeDown, w, cx| {
+                if this.mode_menu {
+                    this.step_mode(1, w, cx)
+                } else {
+                    this.nudge(0., 1., w, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &crate::ModeUp, w, cx| this.step_mode(-1, w, cx)))
+            .on_action(cx.listener(|this, _: &crate::ModeDown, w, cx| this.step_mode(1, w, cx)))
             .on_action(cx.listener(|this, _: &NudgeLeftFar, w, cx| this.nudge(-10., 0., w, cx)))
             .on_action(cx.listener(|this, _: &NudgeRightFar, w, cx| this.nudge(10., 0., w, cx)))
             .on_action(cx.listener(|this, _: &NudgeUpFar, w, cx| this.nudge(0., -10., w, cx)))

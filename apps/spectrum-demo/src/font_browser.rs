@@ -135,6 +135,8 @@ impl Workspace {
             // Showing hidden fonts lists only them, to bring them back.
             let listed = if lists.show_hidden {
                 hidden
+            } else if lists.favorites_only {
+                lists.favorites.contains(family.name.as_ref())
             } else {
                 !hidden && (family.latin || !lists.latin_only)
             };
@@ -171,6 +173,9 @@ impl Workspace {
         crate::font_lists::FontLists::toggle(set, &name);
         if lists.hidden.is_empty() {
             lists.show_hidden = false;
+        }
+        if lists.favorites.is_empty() {
+            lists.favorites_only = false;
         }
         lists.save();
         cx.notify();
@@ -528,6 +533,22 @@ impl Workspace {
             .pt_1()
             .border_t_1()
             .border_color(rgb(BORDER))
+            .when(!lists.favorites.is_empty(), |el| {
+                el.child(
+                    Button::new("font-favorites")
+                        .ghost()
+                        .xsmall()
+                        .label("Favorites")
+                        .selected(lists.favorites_only)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let lists = &mut this.font_lists;
+                            lists.favorites_only = !lists.favorites_only;
+                            lists.show_hidden = false;
+                            lists.save();
+                            cx.notify();
+                        })),
+                )
+            })
             .child(
                 Button::new("font-latin")
                     .ghost()
@@ -549,7 +570,9 @@ impl Workspace {
                         .label(format!("Hidden ({hidden})"))
                         .selected(lists.show_hidden)
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.font_lists.show_hidden = !this.font_lists.show_hidden;
+                            let lists = &mut this.font_lists;
+                            lists.show_hidden = !lists.show_hidden;
+                            lists.favorites_only = false;
                             cx.notify();
                         })),
                 )

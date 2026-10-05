@@ -158,6 +158,11 @@ impl Workspace {
         if self.canvas.as_ref().is_some_and(|c| c.editing.is_none()) {
             self.focus_handle.focus(window);
         }
+        // A color picker waiting for a color takes this click, whatever the
+        // tool.
+        if crate::color_picker::sampling_active() {
+            return self.pick_canvas_color(point, false, window, cx);
+        }
         // The wand takes the layer it was clicked on. Other selection tools
         // leave the layer alone: Delete finds the one the selection covers.
         let under = self.layer_at(point);
@@ -271,7 +276,7 @@ impl Workspace {
             // The brush outline follows the pointer.
             cx.notify();
         }
-        if canvas.tool == Tool::Eyedropper {
+        if crate::eyedropper::eyedropping(canvas) {
             self.ensure_pixels(window, cx);
             return cx.notify();
         }
@@ -713,6 +718,9 @@ impl Workspace {
                         Some(Tool::Brush | Tool::Eraser) => el.cursor(CursorStyle::None),
                         Some(Tool::Move) | None => el,
                         Some(_) => el.cursor_crosshair(),
+                    })
+                    .when(crate::color_picker::sampling_active(), |el| {
+                        el.cursor_crosshair()
                     })
                     .when(
                         self.canvas

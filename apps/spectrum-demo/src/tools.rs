@@ -120,17 +120,15 @@ pub fn tool_name(tool: Tool) -> &'static str {
         .map_or("Move", |(_, name, ..)| name)
 }
 
-fn glyph_text(mark: &'static str) -> AnyElement {
-    div()
-        .text_sm()
-        .text_color(rgb(MUTED))
-        .child(mark)
-        .into_any_element()
-}
-
 /// A small mark for each tool, in the muted text color.
 pub fn tool_glyph(tool: Tool) -> AnyElement {
     let outline = || div().size(px(11.)).border_1().border_color(rgb(MUTED));
+    let icon = |name| {
+        crate::icons::icon(name)
+            .size(px(14.))
+            .text_color(rgb(MUTED))
+            .into_any_element()
+    };
     let mark = match tool {
         Tool::Box => outline().rounded_xs().into_any_element(),
         Tool::Circle => outline().rounded_full().into_any_element(),
@@ -150,16 +148,16 @@ pub fn tool_glyph(tool: Tool) -> AnyElement {
             .into_any_element(),
         Tool::Marquee => outline().border_dashed().into_any_element(),
         Tool::EllipseSelect => outline().rounded_full().border_dashed().into_any_element(),
-        Tool::Lasso => glyph_text("ʘ"),
-        Tool::Wand => glyph_text("✦"),
-        Tool::Brush => glyph_text("✎"),
-        Tool::Eraser => outline().rounded_xs().bg(rgb(MUTED)).into_any_element(),
+        Tool::Lasso => icon("lasso"),
+        Tool::Wand => icon("wand"),
+        Tool::Brush => icon("brush"),
+        Tool::Eraser => icon("eraser"),
         Tool::Crop => Icon::new(IconName::Maximize)
             .small()
             .text_color(rgb(MUTED))
             .into_any_element(),
-        Tool::Pen => glyph_text("✒"),
-        Tool::Eyedropper => glyph_text("◉"),
+        Tool::Pen => icon("pen"),
+        Tool::Eyedropper => icon("pipette"),
         Tool::Image => Icon::new(IconName::Frame)
             .small()
             .text_color(rgb(MUTED))
@@ -206,10 +204,6 @@ impl Workspace {
         }
         if let Some(canvas) = &mut self.canvas {
             canvas.tool = tool;
-            // Choosing a tool ends taking a color for a picker.
-            if canvas.sample_return.take().is_some() {
-                crate::color_picker::cancel_sampling();
-            }
         }
         self.ensure_pixels(window, cx);
         self.stop_editing_text(window, cx);

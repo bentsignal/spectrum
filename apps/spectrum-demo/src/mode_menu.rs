@@ -54,6 +54,12 @@ impl Workspace {
                             .text_color(rgb(FAINT))
                             .child(shortcut(index)),
                     )
+                    // Hovering shows the mode at once; a click keeps it.
+                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                        if *hovered && this.mode != mode {
+                            this.set_mode(mode, window, cx);
+                        }
+                    }))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.mode_menu = false;
                         this.mode_menu_held = false;
@@ -122,9 +128,14 @@ impl Workspace {
                     .child(Icon::new(current.icon()).small())
                     .child(div().flex_1().child(current.label()))
                     .child(
-                        Icon::new(IconName::ChevronDown)
-                            .small()
-                            .text_color(rgb(MUTED)),
+                        // The list opens to the side.
+                        Icon::new(if self.sidebar_right {
+                            IconName::ChevronLeft
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .small()
+                        .text_color(rgb(MUTED)),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.mode_menu = !this.mode_menu;
@@ -133,6 +144,22 @@ impl Workspace {
                     })),
             )
             .children(list)
+    }
+
+    /// Command+Up and Command+Down, or the arrows with the list open: the
+    /// mode before or after, shown at once, with the list open while
+    /// Command is held.
+    pub fn step_mode(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let modes = self.modes();
+        let Some(index) = modes.iter().position(|m| *m == self.mode) else {
+            return;
+        };
+        let next = (index as isize + step).clamp(0, modes.len() as isize - 1) as usize;
+        if !self.mode_menu && window.modifiers().secondary() {
+            self.mode_menu = true;
+            self.mode_menu_held = true;
+        }
+        self.set_mode(modes[next], window, cx);
     }
 
     /// Command pressed alone starts the hold; letting go closes a list the

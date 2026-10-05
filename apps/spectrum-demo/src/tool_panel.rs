@@ -1,6 +1,6 @@
-//! A canvas's Overview, where its sidebar starts: the selected layer (a
-//! click opens Layers), the foreground and background colors, the current
-//! tool with its settings and how to use it, and what a selection can do.
+//! A canvas's Overview, where its sidebar starts: the current tool and its
+//! settings, the selected layer (a click opens Layers), the foreground and
+//! background colors, and what a selection can do.
 use crate::{
     controls::{chip, group, slider_row, toggle},
     theme::*,
@@ -9,38 +9,6 @@ use crate::{
 };
 use gpui::{prelude::*, *};
 use gpui_component::{Icon, IconName, Sizable};
-
-/// How to use each tool, in a line.
-fn hint(tool: Tool) -> &'static str {
-    match tool {
-        Tool::Move => {
-            "Drag to move. Corners resize; the handle on top rotates (Shift turns in 15° steps). A layer's box moves what is inside it."
-        }
-        Tool::Marquee | Tool::EllipseSelect | Tool::Lasso => {
-            "Drag to select. Shift-drag adds, Option-drag subtracts, both intersect. Click off the canvas or press Esc to deselect."
-        }
-        Tool::Wand => {
-            "Click a color to select it. Shift-click adds, Option-click subtracts. Click off the canvas or press Esc to deselect."
-        }
-        Tool::Brush => {
-            "Paints the foreground color on a Paint layer. A selection limits where paint goes. [ and ] change the size."
-        }
-        Tool::Eraser => "Erases whatever layer you start on, of any kind. [ and ] change the size.",
-        Tool::Text => "Click to place text.",
-        Tool::Box | Tool::Circle => {
-            "Drag to draw in the foreground color; it stays square. Shift-drag for any proportions."
-        }
-        Tool::Gradient => "Drag from where the gradient starts to where it ends.",
-        Tool::Pen => {
-            "Click for corners, drag for curves. Shift keeps 45°. Enter or the first point closes; Esc cancels."
-        }
-        Tool::Crop => "Drag the area to keep.",
-        Tool::Eyedropper => {
-            "Click to take a color as the foreground; Option-click for the background. ⌘C copies the code under the pointer."
-        }
-        Tool::Image => "Place an image from the project.",
-    }
-}
 
 impl Workspace {
     pub fn tool_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -93,12 +61,8 @@ impl Workspace {
             .on_click(cx.listener(|this, _, window, cx| {
                 this.set_mode(crate::workspace::Mode::Layers, window, cx)
             }));
-        let mut panel = div().flex().flex_col().gap_6().child(
-            group("Tool", None)
-                .gap_3()
-                .child(self.tool_button(cx))
-                .child(div().text_xs().text_color(rgb(FAINT)).child(hint(tool))),
-        );
+        // The tool first, where every mode has it.
+        let mut panel = div().flex().flex_col().gap_6().child(self.tool_button(cx));
         let settings = self.tool_settings(tool, cx);
         panel = panel
             .children(settings)
@@ -197,26 +161,18 @@ impl Workspace {
                         .into_any_element(),
                 )
             }
-            Tool::Move => {
-                Some(
-                    group("Move", None)
-                        .gap_2()
-                        .child(
-                            toggle("auto-select", "Auto-select", self.tool_options.auto_select)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.tool_options.auto_select = !this.tool_options.auto_select;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(div().text_xs().text_color(rgb(FAINT)).child(
-                            if self.tool_options.auto_select {
-                                "A click picks a layer's box first and what is inside it on a second click; ⌘-click picks what is under the pointer at once."
-                            } else {
-                                "Drags move the selected layer wherever they start; ⌘-click picks what is under the pointer."
-                            },
-                        ))
-                .into_any_element())
-            }
+            Tool::Move => Some(
+                toggle(
+                    "auto-select",
+                    "Select layer on click",
+                    self.tool_options.auto_select,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.tool_options.auto_select = !this.tool_options.auto_select;
+                    cx.notify();
+                }))
+                .into_any_element(),
+            ),
             _ => None,
         }
     }

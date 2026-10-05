@@ -62,29 +62,9 @@ impl Colors {
     }
 }
 
-/// A curved arrow with a head at each end, pointing back at both colors,
-/// drawn in the current text color.
+/// A curved arrow with a head at each end, pointing back at both colors.
 fn swap_arrow() -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        |bounds, _, window, _| {
-            let c = bounds.center();
-            let color = window.text_style().color;
-            let (top, bottom) = (c + point(px(-4.), px(-8.)), c + point(px(-4.), px(8.)));
-            let mut path = PathBuilder::stroke(px(1.5));
-            path.move_to(top);
-            path.arc_to(point(px(8.2), px(8.2)), px(0.), false, true, bottom);
-            for tip in [top, bottom] {
-                path.move_to(tip + point(px(3.5), px(-3.5)));
-                path.line_to(tip);
-                path.line_to(tip + point(px(3.5), px(3.5)));
-            }
-            if let Ok(path) = path.build() {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .size(px(24.))
+    crate::icons::icon("swap").size(px(22.))
 }
 
 /// A label with a color well at the right.

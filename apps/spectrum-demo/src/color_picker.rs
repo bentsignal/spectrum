@@ -9,7 +9,7 @@ use gpui_component::{
     IconName, Selectable, Sizable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
-    popover::{Popover, PopoverState},
+    popover::Popover,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -54,9 +54,6 @@ pub struct ColorPicker {
     drag: Option<Part>,
     /// Text field changes we made ourselves, which must not re-pick.
     echoes: u8,
-    /// The popover showing this picker, closed while taking a color from
-    /// the canvas.
-    popover: Option<WeakEntity<PopoverState>>,
     _subscription: Subscription,
 }
 
@@ -75,6 +72,24 @@ pub fn take_sampling() -> Option<Entity<ColorPicker>> {
 /// Stops waiting for a color from the canvas.
 pub fn cancel_sampling() {
     SAMPLING.with(|slot| slot.borrow_mut().take());
+}
+
+/// Whether some picker is waiting for a color from the canvas.
+pub fn sampling_active() -> bool {
+    SAMPLING.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|p| p.upgrade().is_some())
+    })
+}
+
+/// Whether `picker` is the one waiting for a color from the canvas.
+pub fn is_sampling(picker: &Entity<ColorPicker>) -> bool {
+    SAMPLING.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|waiting| waiting.entity_id() == picker.entity_id())
+    })
 }
 
 pub fn to_hsv([r, g, b, _]: [u8; 4]) -> (f32, f32, f32) {
@@ -151,7 +166,6 @@ impl ColorPicker {
                 strip: Default::default(),
                 drag: None,
                 echoes: 0,
-                popover: None,
                 _subscription,
             };
             picker.show_hex(window, cx);
@@ -344,18 +358,24 @@ impl Render for ColorPicker {
                 })
                 .detach();
             }));
+        // Click, then click the canvas: the color lands here, and the
+        // picker stays open.
+        let waiting = is_sampling(&cx.entity());
         let sample = Button::new("sample-color")
             .ghost()
             .xsmall()
-            .child(crate::tools::tool_glyph(crate::tools::Tool::Eyedropper))
+            .selected(waiting)
+            .icon(crate::icons::icon("pipette"))
             .tooltip("Take a color from the canvas")
-            .on_click(cx.listener(|this, _, window, cx| {
-                let me = cx.entity().downgrade();
-                SAMPLING.with(|slot| *slot.borrow_mut() = Some(me));
-                if let Some(popover) = this.popover.as_ref().and_then(|p| p.upgrade()) {
-                    popover.update(cx, |_, cx| cx.emit(DismissEvent));
+            .on_click(cx.listener(move |_, _, window, cx| {
+                if waiting {
+                    cancel_sampling();
+                } else {
+                    let me = cx.entity().downgrade();
+                    SAMPLING.with(|slot| *slot.borrow_mut() = Some(me));
+                    window.dispatch_action(Box::new(crate::SampleColor), cx);
                 }
-                window.dispatch_action(Box::new(crate::SampleColor), cx);
+                cx.notify();
             }));
         let paste = Button::new("paste-color")
             .ghost()
@@ -559,10 +579,12 @@ pub fn color_well(id: &'static str, color: [u8; 4], picker: &Entity<ColorPicker>
                 )
                 .selected(false),
         )
-        .content(move |_, _, cx| {
-            // The picker closes its popover to take a color from the canvas.
-            let popover = cx.entity().downgrade();
-            picker.update(cx, |picker, _| picker.popover = Some(popover));
-            picker.clone()
+        // Stays open while it takes a color from the canvas.
+        .overlay_closable(!is_sampling(&picker))
+        .on_open_change(|open, _, _| {
+            if !open {
+                cancel_sampling();
+            }
         })
+        .content(move |_, _, _| picker.clone())
 }

@@ -11,6 +11,8 @@ pub struct FontLists {
     pub latin_only: bool,
     /// Show hidden fonts, to bring them back.
     pub show_hidden: bool,
+    /// Show only favorites.
+    pub favorites_only: bool,
 }
 
 fn names(key: &str) -> BTreeSet<String> {
@@ -28,6 +30,9 @@ impl FontLists {
                 .and_then(|value| value.as_bool())
                 .unwrap_or(true),
             show_hidden: false,
+            favorites_only: crate::prefs::get("font_favorites_only")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
         }
     }
 
@@ -38,6 +43,7 @@ impl FontLists {
         );
         crate::prefs::set("font_hidden", Value::from_iter(self.hidden.iter().cloned()));
         crate::prefs::set("font_latin_only", Value::from(self.latin_only));
+        crate::prefs::set("font_favorites_only", Value::from(self.favorites_only));
     }
 
     /// Adds `name` to `set`, or takes it out.

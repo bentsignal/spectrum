@@ -13,6 +13,11 @@ use std::sync::Arc;
 const SPAN: i64 = 11;
 const CELL: f32 = 14.;
 
+/// The Eyedropper is in use: as the tool, or for a color picker.
+pub fn eyedropping(canvas: &crate::canvas_state::CanvasState) -> bool {
+    canvas.tool == Tool::Eyedropper || crate::color_picker::sampling_active()
+}
+
 impl Workspace {
     /// Renders the flattened canvas for the loupe when it is missing or out
     /// of date.
@@ -22,7 +27,7 @@ impl Workspace {
         };
         let version = canvas.look_version();
         let fresh = canvas.pixels.as_ref().is_some_and(|(v, _)| *v == version);
-        if canvas.tool != Tool::Eyedropper || fresh || canvas.pixels_busy {
+        if !eyedropping(canvas) || fresh || canvas.pixels_busy {
             return;
         }
         canvas.pixels_busy = true;
@@ -108,30 +113,23 @@ impl Workspace {
         .detach();
     }
 
-    /// A color picker asked for a color from the canvas: the Eyedropper
-    /// takes it, then the tool goes back to what it was.
+    /// A color picker asked for a color from the canvas: the next click
+    /// takes it, whatever the tool.
     pub fn start_sampling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(canvas) = &mut self.canvas else {
+        if self.canvas.is_none() {
             crate::color_picker::cancel_sampling();
             return;
-        };
-        if canvas.sample_return.is_none() {
-            canvas.sample_return = Some(canvas.tool);
         }
-        canvas.tool = Tool::Eyedropper;
         self.ensure_pixels(window, cx);
         cx.notify();
     }
 
-    /// Escape while sampling: back to the tool before. Returns whether it was.
+    /// Escape while a picker waits for a color. Returns whether one was.
     pub fn stop_sampling(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(tool) = self.canvas.as_mut().and_then(|c| c.sample_return.take()) else {
+        if !crate::color_picker::sampling_active() {
             return false;
-        };
-        crate::color_picker::cancel_sampling();
-        if let Some(canvas) = &mut self.canvas {
-            canvas.tool = tool;
         }
+        crate::color_picker::cancel_sampling();
         cx.notify();
         true
     }
@@ -149,7 +147,7 @@ impl Workspace {
             return self.set_default_color(color, background, window, cx);
         };
         picker.update(cx, |picker, cx| picker.take(color, window, cx));
-        self.stop_sampling(cx);
+        cx.notify();
     }
 
     /// Command+C with the Eyedropper: copies the code of the color under
@@ -173,7 +171,7 @@ impl Workspace {
     /// The loupe beside the pointer.
     pub fn eyedropper_overlay(&self, offset: Point<Pixels>, scale: f32) -> Option<AnyElement> {
         let canvas = self.canvas.as_ref()?;
-        if canvas.tool != Tool::Eyedropper {
+        if !eyedropping(canvas) {
             return None;
         }
         let (x, y) = canvas.pointer?;
