@@ -3,7 +3,7 @@ status: todo
 priority: high
 ---
 
-# Build a native GPU Prism blend compositor
+# Build a native GPU canvas blend compositor
 
 The current CPU exact region path is the pixel oracle. Design a viewport and
 tile-aware native GPU path for deterministic blend modes, clipping, and inverted

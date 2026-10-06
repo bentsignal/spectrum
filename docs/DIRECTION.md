@@ -1,37 +1,30 @@
 # Spectrum direction
 
-Spectrum is intended to become one native Rust creative app. It should bring
-photo development, layered composition, video editing, audio editing, and music
-making into one workspace while keeping the editing views focused on their
-respective work. The current Lumen photo/catalog and Prism canvas applications
-are the starting point, not permanent separate products. A user should be able
-to find all their photos and creative work in Spectrum and use work from one
-editor in another without repeated export and import steps. The exact
-navigation remains to be designed; asset behavior is defined below.
+Spectrum is one native Rust creative app. It should bring photo editing,
+layered composition, video editing, audio editing, and music making into one
+workspace while keeping each editor focused on its work. Spectrum began as two
+apps, Lumen (photos) and Prism (canvases); that split is gone. A user should
+find all their photos and creative work in Spectrum and use work from one
+editor in another without export and import steps.
 
 ## App-managed creative library
 
-Spectrum is a greenfield product. It has not shipped to users, and the current
-work has not been used for projects that require preserving old formats or
-workflows. Backward compatibility with `.lumen`, `.prism`, `.lumencatalog`, or
-`.mica` is not a product requirement. Those files and the Lumen and Prism names
-describe the current implementation, not the destination. Do not let migration
-support dictate the new architecture.
+Spectrum is greenfield. It has not shipped, and there is no backward
+compatibility: it reads one storage format, and a library may be wiped when that
+format changes. Do not add migrations or version ladders for unreleased formats.
 
-The target experience is to open Spectrum and start working. Imported photos,
-canvases, and future video and audio work should be discoverable from one
-app-managed creative library without choosing project-file names and locations.
-Spectrum may organize its internal data as needed; users should not have to
-manage that layout. The app should provide deliberate ways to export or share
-work when needed. The library's storage, identity, backup, portability, and
-export model remain design questions. Avoid assuming that a traditional
-project-file workflow is the answer.
+Open Spectrum and start working. Imported photos, canvases, and future video and
+audio work live in one app-managed library; users never choose file names or
+locations. Each asset is one document in the library, and the library index is
+authoritative for identity, names, projects, and references. Export and sharing
+are deliberate actions that write outside the library. Library-level backup and
+restore UI remain to be designed; copying the library directory works today.
 
-Spectrum has one CLI with images and canvas commands; video, audio, and music
-commands will follow. Both the CLI and GUI must expose all creative operations. Add commands before or alongside
-GUI controls; keep validation, persistence, history, and asset behavior shared.
-Full existing-feature parity still needs an audit. GUI presentation state can
-remain specific to the interface.
+Spectrum has one CLI; video, audio, and music commands will follow images and
+canvases. The CLI and the GUI must both expose every creative operation. Add
+commands before or alongside GUI controls, and keep validation, persistence,
+history, and asset behavior below both. GUI presentation state can stay in the
+interface.
 
 ### Organization across media
 
@@ -44,87 +37,67 @@ deleted image draw a same-sized placeholder so it can be restored or replaced. E
 import is recorded as a batch for later "imported together" views. Images are the
 only importable kind today. See [workflow design](design/workflow.md).
 
-### Color correction and ordered effects
+### Images, canvases, and video
 
-The current Photos view mainly provides color correction, plus crop and
-transforms. Treat color correction as a capability for compatible visual assets,
-including images used in canvases and future video. A permanent top-level
-Photos/Canvas split is not decided. A dedicated color workspace is a proposal;
-its name, placement, and relationship to other editing tools remain open.
+Decided 2026-10-05: an image is its own asset, not a canvas with one photo
+layer. The image editor does color correction, crop, and geometry. For more,
+place the image on a canvas, which composes images with text, shapes, paint,
+masks, and effects. Video will compose images, canvases, audio, and video.
 
-Support repeated color correction operations interleaved with other effects.
-A required example applies color correction, then an effect, then another color
-correction for a smaller change. Processing order must affect the result. Do not
-hard-code a single color stage followed by a separate effects stage. Layers and
-effects must support this editing approach, including future animation of their
-editable properties. Compatible operations should be available where the asset
-is being edited, without export/import detours or artificial editor boundaries.
-
-The user sometimes edits still photos in After Effects because Lightroom cannot
-express the desired layered treatments. Spectrum should support that workflow
-without making still-image work depend on a video workflow. Define which edits
-belong to the shared asset, a particular use of it, a layer, or a composition.
-The user accepts shared-asset edits versus placement-only edits, with an explicit
-scope choice when editing from a placement. Defaults and controls remain open,
-as do adjustment layers, masks, and group/composition effects.
-
-### Typed assets and connected editors
-
-Every library asset has a type that determines compatible editors and uses.
-Types must accommodate images, canvases, audio, video, and future editable music
-compositions from a full DAW; the music type's name remains undecided. Any image,
-including graphics imported while composing a canvas, can use the image editor.
-Images can be referenced by canvases; canvases and audio can be used in video.
-Audio does not belong in the image or static canvas editor.
+Every asset has a type that decides its editors and uses. Types cover images,
+canvases, audio, video, and music compositions from a future full DAW; the music
+type's final name is open. Canvases use images; video uses everything. Audio
+does not belong in the image or canvas editors.
 
 References follow asset edits by default, transitively: editing an image updates
-every referencing canvas and every video using those canvases. Moving between
-editors must preserve those connections without export/import. Explicit deep
-copy creates independently editable content whose changes do not propagate to
-or from the original. Current copy and history behavior is in [Suite](SUITE.md).
+every canvas that uses it, and every video using those canvases. Explicit deep
+copy creates independent content whose changes do not propagate. Local versus
+global editing of an image placed on a canvas needs a deliberate scope choice
+("Edit locally", "Edit globally"); defaults and controls remain open.
 
-Future animation should address every editable creative property, including
-image adjustments and toggles, while retaining editable canvas structure.
-Continuous values and discrete switches need appropriate animation semantics.
-Keep this possible in the model; implementing animation or the DAW is later work.
+### Ordered effects
 
-Desktop/CLI consolidation and initial asset links are complete. Next, agree on
-behavior and review layout mockups and a dummy component page before a gradual
-GPUI redesign. Prepare engine/CLI behavior before connecting production UI.
-The user wants a switchable left/right sidebar and content using the screen
-height, without horizontal top toolbars. Existing layouts are not constraints.
-[Workflow design](design/workflow.md) records preferences and unsettled choices.
-Video, audio, and music follow the current workflow; Bloom is not a separate app.
+Canvases and video need repeated color correction interleaved with other
+effects: for example color correction, then an effect, then a smaller color
+correction. Order must affect the result; do not hard-code one color stage
+followed by one effects stage. The user sometimes edits stills in After Effects
+because Lightroom cannot express layered treatments; Spectrum should support
+that through canvases without making still work depend on video.
 
-Interaction latency is a product priority. Before the GPUI rebuild, keep
-performance work focused on measured regressions and costs that will survive
-the rewrite. Avoid a broad optimization or polish pass on disposable egui UI
-code. Changing UI libraries alone does not establish that image development,
-storage, or preview scheduling will meet the intended responsiveness.
+Future animation should address every editable property, including image
+adjustments and toggles, with suitable semantics for continuous values and
+switches. Keep this possible in the model; animation and the DAW are later work.
+
+### Interface
+
+The desktop app is native GPUI. The user wants a switchable left or right
+sidebar holding the current mode's controls, content using the full window
+height, and no horizontal toolbars. [Workflow design](design/workflow.md)
+records preferences, review history, and unsettled choices. Interaction latency
+is a product priority: measure regressions with the strict benchmarks rather
+than polishing speculatively.
 
 ## Creative history and collaboration
 
 Completed semantic actions persist automatically. A drag, brushstroke, or
-committed text edit should become one revision; transient pointer samples should
-not. Human and agent sessions have separate cursors in an immutable revision
-tree. Navigating history does not rewrite it, and editing from an older node
-creates another future. Do not require users to manage branches manually or
-silently discard later work. [The shared revision crate](../crates/spectrum-revisions/src/lib.rs)
-owns storage; app adapters own document meaning.
+committed text edit becomes one revision; transient pointer samples do not.
+People and agents have separate sessions with their own cursors in an
+immutable revision tree. Navigating history never rewrites it, and editing from
+an older revision keeps the later work as another branch. Users should not
+manage branches manually or lose later work silently.
 
-History should be easy to inspect as a visual timeline with previews,
-checkpoints, and clear actor attribution. Keep all history by default. Any
-future pruning needs an explicit, reviewable user decision. Authoritative
-history and assets should belong to Spectrum's managed library, with rebuildable
-private caches. Users should not have to track visible project files.
+History should be easy to inspect as a visual tree or timeline with previews,
+checkpoints, and clear attribution of who did what. Keep all history by default;
+any pruning needs an explicit, reviewable user decision. History and embedded
+files belong to the library, with rebuildable private caches.
 
-Live collaboration is vendor-neutral and CLI-first. Agents should inspect an
-open app, submit attributed semantic commands to its authenticated host, and
-receive coherent results without silently overwriting human edits. Together
-and separate sessions support different creative workflows. The remaining UX
-and retention work is tracked in [revision lifecycle](../tasks/revision-lifecycle.md).
+Collaboration is vendor-neutral and CLI-first. An agent edits through the CLI in
+its own attributed session; its edits and the person's build on each other's
+newest saved revision. The desktop should next show agent edits to an open
+asset as they land. Remaining work is in
+[revision lifecycle](../tasks/revision-lifecycle.md).
 
 ## Current product work
 
-The codebase is being reshaped around one app ([overhaul](../tasks/codebase-overhaul.md)).
-Other unfinished work is in the [task directory](../tasks/README.md).
+Unfinished work is in the [task directory](../tasks/README.md); start with the
+[overhaul follow-ups](../tasks/overhaul-follow-ups.md).

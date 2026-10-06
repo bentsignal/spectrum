@@ -57,7 +57,7 @@ impl Workspace {
     /// selected layer if it starts on it, or else the topmost layer there,
     /// of any kind; with nothing there, there is nothing to erase.
     pub fn can_stroke(&mut self, tool: Tool, point: (f32, f32), cx: &mut Context<Self>) -> bool {
-        let (size, ..) = self.tool_options.brush(cx);
+        let (size, ..) = self.canvas_ui.tool_options.brush(cx);
         let target = (tool == Tool::Eraser)
             .then(|| {
                 let canvas = self.canvas.as_ref()?;
@@ -97,7 +97,7 @@ impl Workspace {
     /// layer, or a new Paint layer covering the canvas.
     fn stroke_command(&self, tool: Tool, cx: &App) -> Option<Command> {
         let canvas = self.canvas.as_ref()?;
-        let (size, hardness, opacity) = self.tool_options.brush(cx);
+        let (size, hardness, opacity) = self.canvas_ui.tool_options.brush(cx);
         let (width, height) = (canvas.doc.width, canvas.doc.height);
         let paint = self.paint_target(tool);
         // Samples in the Paint layer's own pixels.
@@ -169,7 +169,7 @@ impl Workspace {
     /// Applies the stroke so far to a copy of the document, so its layer
     /// renders with it while the pointer is still down.
     pub fn update_live_stroke(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
-        let (size, ..) = self.tool_options.brush(cx);
+        let (size, ..) = self.canvas_ui.tool_options.brush(cx);
         let Some(command) = self.stroke_command(tool, cx) else {
             return;
         };
@@ -289,7 +289,7 @@ impl Workspace {
         if !matches!(canvas.tool, Tool::Brush | Tool::Eraser) {
             return None;
         }
-        let (brush, ..) = self.tool_options.brush(cx);
+        let (brush, ..) = self.canvas_ui.tool_options.brush(cx);
         let pointer = canvas.pointer?;
         Some(
             gpui::canvas(

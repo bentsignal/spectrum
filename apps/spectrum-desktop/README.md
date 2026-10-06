@@ -1,12 +1,11 @@
-# Spectrum preview
+# Spectrum desktop
 
-The GPUI application that will become Spectrum. The current editors remain in
-`apps/spectrum`. Home and projects read and change the real Spectrum library through
-the same engine as the `spectrum` CLI. Set `SPECTRUM_LIBRARY` to use a separate
-library. Browser support is not a requirement.
+Spectrum's GPUI desktop app. It reads and changes the Spectrum library through
+the same service and engines as the `spectrum` CLI. Set `SPECTRUM_LIBRARY` to use
+a separate library.
 
 ```sh
-nix develop -c cargo run --release -p spectrum-demo --locked
+nix develop -c cargo run --release -p spectrum-desktop --locked
 ```
 
 The app opens to Home, with Projects (covers and New project) and Assets (the
@@ -75,12 +74,8 @@ this is not a commitment to its default styling or every component it offers.
 Custom canvas interaction, image processing, history, and project/import behavior
 remain in the shared engines and are not part of this visual review.
 
-CI builds only this desktop preview for distribution. Workspace lint/tests still
-cover the existing engines and CLI. `scripts/package-spectrum-demo.sh` creates a
-local package. On Mac it retains the existing signing/notarization flow, uses a
-separate `com.bentsignal.spectrum.preview` bundle identity, and ships no old GUI
-or CLI binaries. The outer bundle remains `Spectrum.app`; keep it in a separate
-folder from the existing application while reviewing.
+`scripts/package-spectrum.sh` packages this app with the `spectrum` CLI. On Mac
+it signs and notarizes `Spectrum.app` (`com.bentsignal.spectrum`).
 
 Colors open a full picker (a saturation and brightness field, a hue strip, hex
 entry, and common colors). Beside Add in Layers, the foreground and background

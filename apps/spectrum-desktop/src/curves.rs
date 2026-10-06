@@ -20,8 +20,8 @@ fn curve_color(channel: usize) -> Hsla {
 
 impl Workspace {
     pub fn curve_mut(&mut self) -> &mut ToneCurve {
-        let curves = &mut self.adjust.curves;
-        match self.curve_channel {
+        let curves = &mut self.image.adjust.curves;
+        match self.image.curve_channel {
             1 => &mut curves.red,
             2 => &mut curves.green,
             3 => &mut curves.blue,
@@ -30,8 +30,8 @@ impl Workspace {
     }
 
     fn curve(&self) -> &ToneCurve {
-        let curves = &self.adjust.curves;
-        match self.curve_channel {
+        let curves = &self.image.adjust.curves;
+        match self.image.curve_channel {
             1 => &curves.red,
             2 => &curves.green,
             3 => &curves.blue,
@@ -41,7 +41,7 @@ impl Workspace {
 
     /// The plot area inside the editor's padding.
     fn curve_plot(&self) -> Bounds<Pixels> {
-        let bounds = *self.curve_bounds.borrow();
+        let bounds = *self.image.curve_bounds.borrow();
         Bounds::new(
             bounds.origin + point(px(PAD), px(PAD)),
             size(
@@ -87,13 +87,13 @@ impl Workspace {
         if remove {
             if let Some(index) = hit.filter(|i| *i != 0 && *i != last) {
                 self.curve_mut().points.remove(index);
-                self.curve_drag = None;
+                self.image.curve_drag = None;
                 self.schedule_color_edit(window, cx);
             }
             return;
         }
         if let Some(index) = hit {
-            self.curve_drag = Some(index);
+            self.image.curve_drag = Some(index);
             cx.notify();
             return;
         }
@@ -104,16 +104,16 @@ impl Workspace {
         }
         let index = points.iter().position(|p| p.x > x).unwrap_or(points.len());
         points.insert(index, CurvePoint { x, y });
-        self.curve_drag = Some(index);
+        self.image.curve_drag = Some(index);
         self.schedule_color_edit(window, cx);
     }
 
     fn curve_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.curve_drag else {
+        let Some(index) = self.image.curve_drag else {
             return;
         };
         if event.pressed_button != Some(MouseButton::Left) {
-            self.curve_drag = None;
+            self.image.curve_drag = None;
             return;
         }
         let (x, y) = self.curve_point(event.position);
@@ -130,9 +130,9 @@ impl Workspace {
 
     pub fn curve_editor(&self, edge: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let points: Vec<(f32, f32)> = self.curve().points.iter().map(|p| (p.x, p.y)).collect();
-        let color = curve_color(self.curve_channel);
-        let bounds_slot = self.curve_bounds.clone();
-        let dragging = self.curve_drag;
+        let color = curve_color(self.image.curve_channel);
+        let bounds_slot = self.image.curve_bounds.clone();
+        let dragging = self.image.curve_drag;
         let view = cx.entity();
         div()
             .id("curve-editor")
@@ -159,7 +159,7 @@ impl Workspace {
                             window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
                                 if phase == DispatchPhase::Bubble {
                                     released.update(cx, |this, cx| {
-                                        this.curve_drag = None;
+                                        this.image.curve_drag = None;
                                         cx.notify();
                                     });
                                 }

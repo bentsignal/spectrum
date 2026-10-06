@@ -112,18 +112,6 @@ pub struct Workspace {
     pub palette_scroll: ScrollHandle,
     /// The palette lists canvas tools instead of places.
     pub palette_tools: bool,
-    /// Installed font families, loaded when the font browser first opens.
-    pub fonts: Option<std::sync::Arc<Vec<crate::font_browser::Family>>>,
-    pub font_open: bool,
-    /// Font files that Spectrum will not embed, found while previewing.
-    pub font_blocked: std::collections::HashSet<std::path::PathBuf>,
-    pub font_query: Entity<InputState>,
-    pub font_highlight: usize,
-    pub font_hover: Option<usize>,
-    pub font_scroll: UniformListScrollHandle,
-    pub font_lists: crate::font_lists::FontLists,
-    /// The installed fonts are being found.
-    pub fonts_requested: bool,
     /// Assets the palette is adding to a project; empty when it navigates.
     pub palette_adding: Vec<AssetId>,
     /// Edits copied from an image, ready to paste onto others.
@@ -149,21 +137,10 @@ pub struct Workspace {
     pub show_images: bool,
     pub show_canvases: bool,
     pub sort: usize,
-    /// Real color correction sliders, in `color_fields::FIELDS` order.
-    pub color: Vec<Entity<SliderState>>,
-    /// The open image's adjustments, sent whole to the engine on each change.
-    pub adjust: spectrum_image::Adjustments,
-    pub color_section: usize,
-    pub mix_band: usize,
-    pub grade_range: usize,
-    pub curve_channel: usize,
-    pub curve_drag: Option<usize>,
-    pub curve_bounds: Rc<RefCell<Bounds<Pixels>>>,
-    pub straighten: Entity<SliderState>,
-    /// The open image, rendered in memory as it is edited.
-    pub preview: Option<crate::preview::Preview>,
-    /// The open image's saves and history.
-    pub edits: crate::preview::ImageEdits,
+    /// The image editor: color, crop, and the open image.
+    pub image: crate::editors::ImageEditor,
+    /// The canvas editor's controls for the selected layer and fonts.
+    pub canvas_ui: crate::editors::CanvasControls,
     pub export: Entity<crate::export::ExportSettings>,
     pub canvas_size: Entity<crate::canvas_size::CanvasSize>,
     /// The sidebar's mode list is open, and whether holding Command opened it.
@@ -174,33 +151,8 @@ pub struct Workspace {
     /// is still the same one.
     pub hold_token: u64,
     pub colors: crate::colors::Colors,
-    pub crop_drag: Option<crate::crop::CropDrag>,
-    pub crop_aspect: usize,
-    pub image_bounds: Rc<RefCell<Bounds<Pixels>>>,
-    /// A color edit is running; `color_dirty` asks for another when it ends.
-    pub color_busy: bool,
-    pub color_dirty: bool,
     /// The open canvas, when one fills the main area.
     pub canvas: Option<crate::canvas_state::CanvasState>,
-    /// Style controls for the selected layer.
-    pub opacity: Entity<SliderState>,
-    pub text_input: Entity<InputState>,
-    pub text_size: Entity<SliderState>,
-    pub corner: Entity<SliderState>,
-    pub rotation: Entity<SliderState>,
-    pub line_height: Entity<SliderState>,
-    pub tracking: Entity<SliderState>,
-    pub styles: crate::layer_styles::StyleControls,
-    pub tool_options: crate::tool_options::ToolOptions,
-    pub fill_gradient: crate::gradient_editor::GradientEditor,
-    pub overlay_gradient: crate::gradient_editor::GradientEditor,
-    pub style_section: usize,
-    /// The open image's record, for Info mode.
-    pub photo_info: Option<spectrum_image::Image>,
-    /// Shows the unedited image beside the edited one.
-    pub compare: bool,
-    /// Guides show on canvases; hiding them also stops dragging them.
-    pub guides_visible: bool,
     /// Keeps keyboard shortcuts working when no field has focus.
     pub focus_handle: FocusHandle,
     /// The title strip a window drag started in, if any.
@@ -323,8 +275,8 @@ impl Workspace {
             &straighten,
             window,
             |this, state, _: &SliderEvent, window, cx| {
-                this.adjust.straighten = state.read(cx).value().start();
-                this.adjust.crop = None;
+                this.image.adjust.straighten = state.read(cx).value().start();
+                this.image.adjust.crop = None;
                 this.schedule_color_edit(window, cx);
             },
         ));
@@ -358,15 +310,6 @@ impl Workspace {
             palette_index: 0,
             palette_scroll: ScrollHandle::new(),
             palette_tools: false,
-            fonts: None,
-            font_open: false,
-            font_blocked: Default::default(),
-            font_query,
-            font_highlight: 0,
-            font_hover: None,
-            font_scroll: UniformListScrollHandle::new(),
-            font_lists: crate::font_lists::FontLists::load(),
-            fonts_requested: false,
             palette_adding: Vec::new(),
             copied_edits: None,
             pending_add: Vec::new(),
@@ -387,17 +330,58 @@ impl Workspace {
             show_images: true,
             show_canvases: true,
             sort: 0,
-            color,
-            adjust: Default::default(),
-            color_section: 0,
-            mix_band: 0,
-            grade_range: 0,
-            curve_channel: 0,
-            curve_drag: None,
-            curve_bounds: Default::default(),
-            straighten,
-            preview: None,
-            edits: Default::default(),
+            image: crate::editors::ImageEditor {
+                color,
+                adjust: Default::default(),
+                color_section: 0,
+                mix_band: 0,
+                grade_range: 0,
+                curve_channel: 0,
+                curve_drag: None,
+                curve_bounds: Default::default(),
+                straighten,
+                preview: None,
+                edits: Default::default(),
+                crop_drag: None,
+                crop_aspect: 0,
+                image_bounds: Default::default(),
+                color_busy: false,
+                color_dirty: false,
+                photo_info: None,
+                compare: false,
+            },
+            canvas_ui: crate::editors::CanvasControls {
+                fonts: None,
+                font_open: false,
+                font_blocked: Default::default(),
+                font_query,
+                font_highlight: 0,
+                font_hover: None,
+                font_scroll: UniformListScrollHandle::new(),
+                font_lists: crate::font_lists::FontLists::load(),
+                fonts_requested: false,
+                opacity,
+                text_input,
+                text_size,
+                corner,
+                rotation,
+                line_height,
+                tracking,
+                styles: crate::layer_styles::StyleControls::new(window, cx),
+                tool_options: crate::tool_options::ToolOptions::new(cx),
+                fill_gradient: crate::gradient_editor::GradientEditor::new(
+                    crate::gradient_editor::GradientTarget::Fill,
+                    window,
+                    cx,
+                ),
+                overlay_gradient: crate::gradient_editor::GradientEditor::new(
+                    crate::gradient_editor::GradientTarget::Overlay,
+                    window,
+                    cx,
+                ),
+                style_section: 0,
+                guides_visible: true,
+            },
             export: crate::export::ExportSettings::new(window, cx),
             canvas_size: crate::canvas_size::CanvasSize::new(window, cx),
             mode_menu: false,
@@ -405,35 +389,7 @@ impl Workspace {
             mode_menu_held: false,
             hold_token: 0,
             colors: crate::colors::Colors::new(window, cx),
-            crop_drag: None,
-            crop_aspect: 0,
-            image_bounds: Default::default(),
-            color_busy: false,
-            color_dirty: false,
             canvas: None,
-            opacity,
-            text_input,
-            text_size,
-            corner,
-            rotation,
-            line_height,
-            tracking,
-            styles: crate::layer_styles::StyleControls::new(window, cx),
-            tool_options: crate::tool_options::ToolOptions::new(cx),
-            fill_gradient: crate::gradient_editor::GradientEditor::new(
-                crate::gradient_editor::GradientTarget::Fill,
-                window,
-                cx,
-            ),
-            overlay_gradient: crate::gradient_editor::GradientEditor::new(
-                crate::gradient_editor::GradientTarget::Overlay,
-                window,
-                cx,
-            ),
-            style_section: 0,
-            photo_info: None,
-            compare: false,
-            guides_visible: true,
             focus_handle: cx.focus_handle(),
             dragging: None,
             settle: 1,
@@ -516,8 +472,14 @@ impl Workspace {
     /// Option+1 to 6: the nth section of a mode split into sections.
     pub fn nth_section(&mut self, index: usize, cx: &mut Context<Self>) {
         let (slot, count) = match self.mode {
-            Mode::Color => (&mut self.color_section, crate::color_fields::SECTIONS.len()),
-            Mode::Style => (&mut self.style_section, crate::canvas_style::SECTIONS.len()),
+            Mode::Color => (
+                &mut self.image.color_section,
+                crate::color_fields::SECTIONS.len(),
+            ),
+            Mode::Style => (
+                &mut self.canvas_ui.style_section,
+                crate::canvas_style::SECTIONS.len(),
+            ),
             _ => return,
         };
         if index < count {

@@ -65,9 +65,9 @@ impl Workspace {
                         .ghost()
                         .small()
                         .label("Compare")
-                        .selected(self.compare)
+                        .selected(self.image.compare)
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.compare = !this.compare;
+                            this.image.compare = !this.image.compare;
                             cx.notify();
                         })),
                 )
@@ -93,7 +93,7 @@ impl Workspace {
                                 .ghost()
                                 .small()
                                 .label("Guides")
-                                .selected(self.guides_visible)
+                                .selected(self.canvas_ui.guides_visible)
                                 .tooltip("Show guides (⌘;)")
                                 .on_click(cx.listener(|this, _, _, cx| this.toggle_guides(cx))),
                         )

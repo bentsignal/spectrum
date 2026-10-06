@@ -276,7 +276,7 @@ impl Workspace {
         if !was_on {
             // A style turned on starts from its defaults.
             for &(param, .., default) in effect.params() {
-                if let Some(slider) = self.styles.slider(effect, param).cloned() {
+                if let Some(slider) = self.canvas_ui.styles.slider(effect, param).cloned() {
                     slider.update(cx, |s, cx| s.set_value(default, window, cx));
                 }
             }
@@ -287,7 +287,8 @@ impl Workspace {
         };
         let value = |param: Param| {
             let spec = effect.params().iter().find(|(p, ..)| *p == param);
-            self.styles
+            self.canvas_ui
+                .styles
                 .slider(effect, param)
                 .map(|s| s.read(cx).value().start())
                 .or(spec.map(|s| s.4))
@@ -405,7 +406,8 @@ impl Workspace {
         };
         for effect in Effect::ALL {
             let (on, color, values) = effect.read(&style);
-            self.styles
+            self.canvas_ui
+                .styles
                 .picker(effect)
                 .clone()
                 .update(cx, |picker, cx| picker.set(color, window, cx));
@@ -413,13 +415,14 @@ impl Workspace {
                 continue;
             }
             for (&(param, ..), value) in effect.params().iter().zip(values) {
-                if let Some(slider) = self.styles.slider(effect, param).cloned() {
+                if let Some(slider) = self.canvas_ui.styles.slider(effect, param).cloned() {
                     slider.update(cx, |s, cx| s.set_value(value, window, cx));
                 }
             }
         }
         let shadow = style.bevel.unwrap_or_default().shadow;
-        self.styles
+        self.canvas_ui
+            .styles
             .bevel_shadow
             .clone()
             .update(cx, |picker, cx| picker.set(shadow, window, cx));
@@ -452,7 +455,7 @@ impl Workspace {
         let Some(style) = self.selected_layer().map(|l| l.style.clone()) else {
             return div();
         };
-        let chosen = self.styles.chosen;
+        let chosen = self.canvas_ui.styles.chosen;
         let rows =
             Effect::ALL.map(|effect| {
                 let (on, color, _) = effect.read(&style);
@@ -493,7 +496,7 @@ impl Workspace {
                     })
                     // Choosing a style shows its settings, and turns it on.
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.styles.chosen = effect;
+                        this.canvas_ui.styles.chosen = effect;
                         if !on {
                             this.set_effect(effect, Change::Toggle(true), window, cx);
                         }
@@ -524,7 +527,11 @@ impl Workspace {
                     .child(effect.label()),
             )
             .when(on && effect != Effect::GradientOverlay, |el| {
-                el.child(color_well(effect.id(), color, self.styles.picker(effect)))
+                el.child(color_well(
+                    effect.id(),
+                    color,
+                    self.canvas_ui.styles.picker(effect),
+                ))
             });
         let mut body = div().flex().flex_col().gap_3().child(header);
         if !on {
@@ -547,7 +554,7 @@ impl Workspace {
             );
         }
         for &(param, label, ..) in effect.params() {
-            if let Some(state) = self.styles.slider(effect, param) {
+            if let Some(state) = self.canvas_ui.styles.slider(effect, param) {
                 let value = state.read(cx).value().start();
                 let text = match param {
                     Param::Angle | Param::Altitude => format!("{value:.0}°"),
@@ -603,7 +610,7 @@ impl Workspace {
                             .child(color_well(
                                 "bevel-shadow",
                                 bevel.shadow,
-                                &self.styles.bevel_shadow,
+                                &self.canvas_ui.styles.bevel_shadow,
                             )),
                     );
             }

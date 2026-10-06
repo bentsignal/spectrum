@@ -16,6 +16,7 @@ mod controls;
 mod crop;
 mod crop_tool;
 mod curves;
+mod editors;
 mod edits;
 mod export;
 mod eyedropper;

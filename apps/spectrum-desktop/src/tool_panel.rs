@@ -107,8 +107,8 @@ impl Workspace {
     fn tool_settings(&self, tool: Tool, cx: &mut Context<Self>) -> Option<AnyElement> {
         match tool {
             Tool::Brush | Tool::Eraser => {
-                let (size, hardness, opacity) = self.tool_options.brush(cx);
-                let options = &self.tool_options;
+                let (size, hardness, opacity) = self.canvas_ui.tool_options.brush(cx);
+                let options = &self.canvas_ui.tool_options;
                 Some(
                     group(
                         if tool == Tool::Brush {
@@ -138,23 +138,24 @@ impl Workspace {
                 )
             }
             Tool::Wand => {
-                let tolerance = self.tool_options.tolerance(cx);
+                let tolerance = self.canvas_ui.tool_options.tolerance(cx);
                 Some(
                     group("Magic wand", None)
                         .gap_3()
                         .child(slider_row(
                             "Tolerance",
                             tolerance.to_string(),
-                            &self.tool_options.wand_tolerance,
+                            &self.canvas_ui.tool_options.wand_tolerance,
                         ))
                         .child(
                             toggle(
                                 "wand-contiguous",
                                 "Contiguous",
-                                self.tool_options.contiguous,
+                                self.canvas_ui.tool_options.contiguous,
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.tool_options.contiguous = !this.tool_options.contiguous;
+                                this.canvas_ui.tool_options.contiguous =
+                                    !this.canvas_ui.tool_options.contiguous;
                                 cx.notify();
                             })),
                         )
@@ -165,10 +166,11 @@ impl Workspace {
                 toggle(
                     "auto-select",
                     "Select layer on click",
-                    self.tool_options.auto_select,
+                    self.canvas_ui.tool_options.auto_select,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.tool_options.auto_select = !this.tool_options.auto_select;
+                    this.canvas_ui.tool_options.auto_select =
+                        !this.canvas_ui.tool_options.auto_select;
                     cx.notify();
                 }))
                 .into_any_element(),

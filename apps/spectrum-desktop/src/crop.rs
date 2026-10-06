@@ -38,7 +38,8 @@ pub struct CropDrag {
 impl Workspace {
     /// Pixel size of the uncropped frame the preview shows while cropping.
     fn frame_size(&self) -> (u32, u32) {
-        self.preview
+        self.image
+            .preview
             .as_ref()
             .and_then(|p| p.image.as_ref())
             .map_or((1, 1), |image| {
@@ -49,7 +50,7 @@ impl Workspace {
 
     /// Where the frame is drawn: fitted and centered in the main area.
     fn frame_rect(&self) -> Bounds<Pixels> {
-        let area = *self.image_bounds.borrow();
+        let area = *self.image.image_bounds.borrow();
         let (w, h) = self.frame_size();
         let scale =
             (f32::from(area.size.width) / w as f32).min(f32::from(area.size.height) / h as f32);
@@ -72,7 +73,7 @@ impl Workspace {
     }
 
     fn crop_rect(&self) -> CropRect {
-        self.adjust.crop.unwrap_or_default()
+        self.image.adjust.crop.unwrap_or_default()
     }
 
     /// Height over width of the frame in pixels, to hold aspect ratios.
@@ -100,7 +101,7 @@ impl Workspace {
             })
             .map(|(r, b)| Grip::Corner(r, b))
             .unwrap_or(Grip::Move);
-        self.crop_drag = Some(CropDrag {
+        self.image.crop_drag = Some(CropDrag {
             grip,
             start: (x, y),
             rect,
@@ -109,11 +110,11 @@ impl Workspace {
     }
 
     fn crop_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let Some(drag) = self.crop_drag else {
+        let Some(drag) = self.image.crop_drag else {
             return;
         };
         if event.pressed_button != Some(MouseButton::Left) {
-            self.crop_drag = None;
+            self.image.crop_drag = None;
             return;
         }
         let (x, y) = self.to_frame(event.position);
@@ -146,7 +147,9 @@ impl Workspace {
                 }
             }
         };
-        if let (Some(aspect), Grip::Corner(_, bottom)) = (ASPECTS[self.crop_aspect].1, drag.grip) {
+        if let (Some(aspect), Grip::Corner(_, bottom)) =
+            (ASPECTS[self.image.crop_aspect].1, drag.grip)
+        {
             // Width drives height; in normalized units the frame's own shape matters.
             let height = (next.width / aspect / self.frame_ratio()).min(1.);
             if !bottom {
@@ -154,19 +157,19 @@ impl Workspace {
             }
             next.height = height.min(1. - next.y);
         }
-        self.adjust.crop = Some(next.sanitized());
+        self.image.adjust.crop = Some(next.sanitized());
         cx.notify();
     }
 
     fn crop_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.crop_drag.take().is_some() {
+        if self.image.crop_drag.take().is_some() {
             self.schedule_color_edit(window, cx);
         }
     }
 
     /// Applies an aspect preset as the largest centered box of that shape.
     fn set_aspect(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.crop_aspect = index;
+        self.image.crop_aspect = index;
         if let Some(aspect) = ASPECTS[index].1 {
             let ratio = self.frame_ratio();
             let (mut w, mut h) = (1., 1. / aspect / ratio);
@@ -174,7 +177,7 @@ impl Workspace {
                 w /= h;
                 h = 1.;
             }
-            self.adjust.crop = Some(CropRect {
+            self.image.adjust.crop = Some(CropRect {
                 x: (1. - w) / 2.,
                 y: (1. - h) / 2.,
                 width: w,
@@ -191,16 +194,16 @@ impl Workspace {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Adjustments),
     ) {
-        f(&mut self.adjust);
+        f(&mut self.image.adjust);
         // A new frame shape invalidates the box.
-        self.adjust.crop = None;
+        self.image.adjust.crop = None;
         self.sync_color_sliders(window, cx);
         self.schedule_color_edit(window, cx);
     }
 
     pub fn crop_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let aspects = ASPECTS.iter().enumerate().map(|(index, (name, _))| {
-            chip(name, name, index == self.crop_aspect).on_click(
+            chip(name, name, index == self.image.crop_aspect).on_click(
                 cx.listener(move |this, _, window, cx| this.set_aspect(index, window, cx)),
             )
         });
@@ -213,7 +216,7 @@ impl Workspace {
             .label("Reset")
             .text_color(rgb(MUTED))
             .on_click(cx.listener(|this, _, window, cx| {
-                this.crop_aspect = 0;
+                this.image.crop_aspect = 0;
                 this.geometry(window, cx, |a| {
                     a.rotation = 0;
                     a.flip_horizontal = false;
@@ -271,8 +274,8 @@ impl Workspace {
                     )
                     .child(slider_row(
                         "Straighten",
-                        format!("{:.1}°", self.straighten.read(cx).value().start()),
-                        &self.straighten,
+                        format!("{:.1}°", self.image.straighten.read(cx).value().start()),
+                        &self.image.straighten,
                     )),
             )
             .child(
@@ -285,10 +288,10 @@ impl Workspace {
 
     /// The whole frame with the crop box over it.
     pub fn crop_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let bounds_slot = self.image_bounds.clone();
-        let image = self.preview.as_ref().and_then(|p| p.image.clone());
+        let bounds_slot = self.image.image_bounds.clone();
+        let image = self.image.preview.as_ref().and_then(|p| p.image.clone());
         let frame = self.frame_rect();
-        let area = *self.image_bounds.borrow();
+        let area = *self.image.image_bounds.borrow();
         let r = self.crop_rect();
         let (fx, fy) = (
             frame.origin.x - area.origin.x,

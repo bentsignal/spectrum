@@ -399,7 +399,7 @@ impl Workspace {
         // The placeholder before loading has no real size to fit.
         if !canvas.loaded
             || canvas.drag.is_some()
-            || self.image_bounds.borrow().size.width <= px(1.)
+            || self.image.image_bounds.borrow().size.width <= px(1.)
         {
             return;
         }

@@ -28,7 +28,7 @@ const KEEP: f32 = 80.;
 impl Workspace {
     /// The scale that fits the whole canvas in its area.
     pub fn fit_scale(&self) -> f32 {
-        let area = *self.image_bounds.borrow();
+        let area = *self.image.image_bounds.borrow();
         let Some(canvas) = &self.canvas else {
             return 1.;
         };
@@ -46,7 +46,7 @@ impl Workspace {
 
     /// The pan that keeps part of a canvas `size` wide on screen.
     fn clamp_pan(&self, pan: (f32, f32), size: (f32, f32)) -> (f32, f32) {
-        let area = self.image_bounds.borrow().size;
+        let area = self.image.image_bounds.borrow().size;
         let reach = |area: Pixels, size: f32| ((f32::from(area) + size) / 2. - KEEP).max(0.);
         let (rx, ry) = (reach(area.width, size.0), reach(area.height, size.1));
         (pan.0.clamp(-rx, rx), pan.1.clamp(-ry, ry))
@@ -61,7 +61,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let area = *self.image_bounds.borrow();
+        let area = *self.image.image_bounds.borrow();
         let (rect, scale) = self.canvas_rect();
         let Some(canvas) = &self.canvas else {
             return;

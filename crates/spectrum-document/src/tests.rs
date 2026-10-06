@@ -260,3 +260,39 @@ fn removing_a_document_removes_its_caches() {
         .collect::<Vec<_>>();
     assert!(leftover.is_empty(), "{leftover:?}");
 }
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_copied_library_opens_and_keeps_saving() {
+    let root = tempfile::tempdir().unwrap();
+    let original = root.path().join("original");
+    let path = original.join("notes.spectrum");
+    let session = SessionId::new();
+    let mut notes = Notebook::create(&path, Notes::default(), person(), session).unwrap();
+    for line in ["a", "b", "c"] {
+        notes.execute(Edit::Write(line.into())).unwrap();
+    }
+    drop(notes);
+    // A backup restored elsewhere carries its caches along.
+    let copy = root.path().join("copy");
+    copy_tree(&original, &copy);
+    let path = copy.join("notes.spectrum");
+    let mut notes = Notebook::open_newest(&path, person(), session).unwrap();
+    assert_eq!(notes.document.lines, ["a", "b", "c"]);
+    notes.execute(Edit::Write("d".into())).unwrap();
+    drop(notes);
+    std::fs::remove_dir_all(copy.join(".cache")).unwrap();
+    assert_eq!(Notebook::read(&path).unwrap().lines, ["a", "b", "c", "d"]);
+}

@@ -31,21 +31,23 @@ artifact. Remove only verified generated directories; moving them to Trash
 does not reclaim space until they are deleted there. Confirm the reclaimed
 space afterward.
 
-This repository is the Spectrum creative-suite monorepo. The unified desktop
-app lives in `apps/spectrum`; the consolidated CLI lives there too; photo and canvas engines live in
-`apps/lumen` and `apps/prism`. App-neutral imaging behavior lives in
-`crates/spectrum-imaging`; repository policy checks live in
-`tools/workspace-guardrails`. Preserve each workspace's focused UI. Do not make one
-app depend on another for behavior that belongs in a neutral Spectrum crate.
-The product is greenfield: current Lumen/Prism names, project files, and
-compatibility paths are implementation details, not long-term requirements.
-Follow [Spectrum direction](docs/DIRECTION.md) when designing new storage or
-public commands.
+This repository is the Spectrum monorepo. The GPUI desktop app lives in
+`apps/spectrum-desktop` and the `spectrum` CLI in `apps/spectrum`. The library
+service is `crates/spectrum-assets`; engines are `crates/spectrum-image` and
+`crates/spectrum-canvas` over the durable document layer `crates/spectrum-document`.
+Shared pixel behavior lives in `crates/spectrum-imaging`; repository policy
+checks live in `tools/workspace-guardrails`. See
+[Architecture](docs/ARCHITECTURE.md). Keep each editor's UI focused, and put
+behavior shared by editors in a neutral crate rather than one app or engine.
+The product is greenfield: one storage format, no migrations or compatibility
+paths. Follow [Spectrum direction](docs/DIRECTION.md) when designing storage
+or public commands.
 
-Use `spectrum images` and `spectrum canvas` for all automation. Do not edit
-managed document storage manually; the CLI applies validation and transactional
-mutation. Library commands take asset UUIDs. Advanced editor commands select
-`--asset <UUID>` or `--document <path>`; image item and canvas layer IDs are local.
+Use `spectrum` for all automation. Do not edit library storage manually; the
+CLI and the service apply validation and durable history. Library commands
+take asset UUIDs; editor commands select `--asset <UUID>`, and canvas layer IDs
+are local to the canvas. Use `--library <dir>` or `SPECTRUM_LIBRARY` for a test
+library; never touch the user's real library.
 
 Start with:
 
@@ -56,11 +58,11 @@ cargo run --release -p spectrum --bin spectrum -- images --help
 cargo run --release -p spectrum --bin spectrum -- canvas --help
 ```
 
-Every GUI mutation maps to `lumen_core::Command`. When adding a new user-facing
-feature, add its core command and CLI surface before or alongside its GUI control.
-Keep originals immutable and export only to user-selected destination paths.
-Apply the same rule to `prism_core::Command`: its native GUI is a visual client of
-the same command engine used by agents.
+Every GUI mutation is a `spectrum_image::Command` or `spectrum_canvas::Command`
+saved through `spectrum_assets::Service`; the desktop app is a visual client of
+the same engines agents use. When adding a user-facing feature, add its engine
+command and CLI surface before or alongside its GUI control. Keep originals
+immutable and export only to user-selected paths outside the library.
 
 All Rust source files under `apps/`, `crates/`, and `tools/` must stay at or
 below 1,000 lines. `workspace-guardrails` enforces this automatically. Treat

@@ -87,7 +87,7 @@ impl Workspace {
     /// The handle: a dot above the top edge on a short stem.
     pub fn rotate_handle_element(&self) -> Option<AnyElement> {
         let (_, handle, top) = self.rotate_handle()?;
-        let origin = self.image_bounds.borrow().origin;
+        let origin = self.image.image_bounds.borrow().origin;
         // While turning: how far it has turned and the angle it is at.
         let readout = self.canvas.as_ref().and_then(|canvas| {
             let drag = canvas.drag.filter(|d| d.rotate)?;

@@ -329,7 +329,7 @@ impl Workspace {
                             // A font that cannot be embedded is marked in the
                             // browser instead of interrupting with an error.
                             if let Some(path) = previewed {
-                                this.font_blocked.insert(path);
+                                this.canvas_ui.font_blocked.insert(path);
                                 return cx.notify();
                             }
                             return this.notify_error(error, window, cx);

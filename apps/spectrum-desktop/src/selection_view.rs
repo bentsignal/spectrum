@@ -136,8 +136,8 @@ impl Workspace {
             canvas.id,
             canvas.select_mode,
         );
-        let tolerance = self.tool_options.tolerance(cx);
-        let contiguous = self.tool_options.contiguous;
+        let tolerance = self.canvas_ui.tool_options.tolerance(cx);
+        let contiguous = self.canvas_ui.tool_options.contiguous;
         let task = cx.background_executor().spawn(async move {
             let mut resolved = doc.clone();
             Service::open(&root)?.resolve(&mut resolved)?;

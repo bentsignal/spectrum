@@ -56,7 +56,7 @@ impl Workspace {
         match self.color_target() {
             Some(Target::Shared(asset)) => self.load_color(asset, window, cx),
             Some(Target::Layer(_)) => {
-                self.adjust = self
+                self.image.adjust = self
                     .selected_layer()
                     .map(|l| l.adjustments.clone())
                     .unwrap_or_default();
@@ -80,10 +80,10 @@ impl Workspace {
         };
         match store.service.image(id) {
             Ok(photo) => {
-                self.adjust = photo.adjustments.clone();
+                self.image.adjust = photo.adjustments.clone();
                 if self.open == Open::Image(id) {
-                    self.edits.reset(photo.adjustments.clone());
-                    self.photo_info = Some(photo);
+                    self.image.edits.reset(photo.adjustments.clone());
+                    self.image.photo_info = Some(photo);
                 }
             }
             Err(error) => return self.notify_error(error, window, cx),
@@ -93,12 +93,18 @@ impl Workspace {
 
     /// Moves every slider to the model's value for the chosen band and range.
     pub fn sync_color_sliders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for (field, state) in FIELDS.iter().zip(&self.color) {
-            let value = fields::get(&self.adjust, field.key, self.mix_band, self.grade_range);
+        for (field, state) in FIELDS.iter().zip(&self.image.color) {
+            let value = fields::get(
+                &self.image.adjust,
+                field.key,
+                self.image.mix_band,
+                self.image.grade_range,
+            );
             state.update(cx, |state, cx| state.set_value(value, window, cx));
         }
-        let straighten = self.adjust.straighten;
-        self.straighten
+        let straighten = self.image.adjust.straighten;
+        self.image
+            .straighten
             .update(cx, |state, cx| state.set_value(straighten, window, cx));
         cx.notify();
     }
@@ -110,9 +116,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let value = self.color[index].read(cx).value().start();
-        let (band, range) = (self.mix_band, self.grade_range);
-        fields::set(&mut self.adjust, FIELDS[index].key, band, range, value);
+        let value = self.image.color[index].read(cx).value().start();
+        let (band, range) = (self.image.mix_band, self.image.grade_range);
+        fields::set(
+            &mut self.image.adjust,
+            FIELDS[index].key,
+            band,
+            range,
+            value,
+        );
         self.schedule_color_edit(window, cx);
     }
 
@@ -122,7 +134,7 @@ impl Workspace {
         cx.notify();
         match self.color_target() {
             Some(Target::Layer(id)) => {
-                let adjustments = self.adjust.clone();
+                let adjustments = self.image.adjust.clone();
                 return self.canvas_commands(
                     vec![spectrum_canvas::Command::SetLayerAdjustments { id, adjustments }],
                     window,
@@ -139,14 +151,14 @@ impl Workspace {
 
     /// Edits the image behind a layer; every canvas using it picks up the change.
     fn edit_shared(&mut self, asset: AssetId, window: &mut Window, cx: &mut Context<Self>) {
-        if self.color_busy {
-            self.color_dirty = true;
+        if self.image.color_busy {
+            self.image.color_dirty = true;
             return;
         }
         let Ok(store) = &self.store else {
             return;
         };
-        let (root, adjustments) = (store.root.clone(), self.adjust.clone());
+        let (root, adjustments) = (store.root.clone(), self.image.adjust.clone());
         // Show the edit now from the original image; the save follows.
         let original = store
             .service
@@ -158,22 +170,22 @@ impl Workspace {
             self.render_canvas(window, cx);
             self.refresh_layers(window, cx);
         }
-        self.color_busy = true;
-        self.color_dirty = false;
+        self.image.color_busy = true;
+        self.image.color_dirty = false;
         let edit = cx
             .background_executor()
             .spawn(async move { Service::open(&root)?.set_adjustments(asset, adjustments) });
         cx.spawn_in(window, async move |this, cx| {
             let result = edit.await;
             this.update_in(cx, |this, window, cx| {
-                this.color_busy = false;
+                this.image.color_busy = false;
                 if let Err(error) = result {
                     this.notify_error(error, window, cx);
                 }
                 if let Ok(store) = &mut this.store {
                     store.thumbs.remove(&asset);
                 }
-                if this.color_dirty {
+                if this.image.color_dirty {
                     return this.schedule_color_edit(window, cx);
                 }
                 // Saved: render from the image's new look again.
@@ -221,8 +233,12 @@ impl Workspace {
             .label("Reset")
             .text_color(rgb(MUTED))
             .on_click(cx.listener(|this, _, window, cx| {
-                let (section, band, range) = (this.color_section, this.mix_band, this.grade_range);
-                fields::reset_section(&mut this.adjust, section, band, range);
+                let (section, band, range) = (
+                    this.image.color_section,
+                    this.image.mix_band,
+                    this.image.grade_range,
+                );
+                fields::reset_section(&mut this.image.adjust, section, band, range);
                 this.sync_color_sliders(window, cx);
                 this.schedule_color_edit(window, cx);
             }))
@@ -232,7 +248,7 @@ impl Workspace {
     fn sliders(&self, section: usize, cx: &App) -> Vec<Div> {
         FIELDS
             .iter()
-            .zip(&self.color)
+            .zip(&self.image.color)
             .filter(|(field, _)| field.section == section)
             .map(|(field, state)| {
                 let value = state.read(cx).value().start();
@@ -242,7 +258,7 @@ impl Workspace {
     }
 
     fn section_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        let section = self.color_section;
+        let section = self.image.color_section;
         let title = fields::SECTIONS[section];
         let reset = self.reset_button(cx);
         let view = cx.entity();
@@ -251,10 +267,10 @@ impl Workspace {
                 .child(segmented(
                     "curve-channel",
                     CHANNELS.iter().map(|c| (None, *c)),
-                    self.curve_channel,
+                    self.image.curve_channel,
                     move |index, _, cx| {
                         view.update(cx, |this, cx| {
-                            this.curve_channel = index;
+                            this.image.curve_channel = index;
                             cx.notify();
                         })
                     },
@@ -272,7 +288,7 @@ impl Workspace {
                     .gap_4()
                     .child(div().flex().justify_between().children(
                         BAND_COLORS.iter().enumerate().map(|(index, color)| {
-                            let selected = index == self.mix_band;
+                            let selected = index == self.image.mix_band;
                             div()
                                 .id(("band", index))
                                 .size(px(26.))
@@ -288,7 +304,7 @@ impl Workspace {
                                 })
                                 .child(div().size(px(16.)).rounded_full().bg(rgb(*color)))
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.mix_band = index;
+                                    this.image.mix_band = index;
                                     this.sync_color_sliders(window, cx);
                                 }))
                         }),
@@ -297,7 +313,7 @@ impl Workspace {
                         div()
                             .text_sm()
                             .text_color(rgb(MUTED))
-                            .child(BANDS[self.mix_band]),
+                            .child(BANDS[self.image.mix_band]),
                     )
                     .children(self.sliders(MIXER, cx))
                     .into_any_element()
@@ -307,10 +323,10 @@ impl Workspace {
                 .child(segmented(
                     "grade-range",
                     RANGES.iter().map(|r| (None, *r)),
-                    self.grade_range,
+                    self.image.grade_range,
                     move |index, window, cx| {
                         view.update(cx, |this, cx| {
-                            this.grade_range = index;
+                            this.image.grade_range = index;
                             this.sync_color_sliders(window, cx);
                         })
                     },
@@ -389,17 +405,21 @@ impl Workspace {
                 .child("Select a layer to adjust its color.");
         }
         let scope = self.layer_scope(cx);
-        let histogram = self.preview.as_ref().and_then(|p| p.histogram.clone());
+        let histogram = self
+            .image
+            .preview
+            .as_ref()
+            .and_then(|p| p.histogram.clone());
         let body = self.section_body(cx);
         let chips: Vec<_> = fields::SECTIONS
             .iter()
             .enumerate()
             .map(|(index, name)| {
-                chip(name, name, index == self.color_section)
+                chip(name, name, index == self.image.color_section)
                     .flex_none()
                     .px_2p5()
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.color_section = index;
+                        this.image.color_section = index;
                         this.settle_next_frame();
                         cx.notify();
                     }))
@@ -423,9 +443,9 @@ impl Workspace {
 
     /// The open image, fitted to the main area.
     pub fn image_view(&self, _: &mut Context<Self>) -> impl IntoElement {
-        let preview = self.preview.as_ref();
+        let preview = self.image.preview.as_ref();
         let image = preview.and_then(|p| p.image.clone());
-        if self.compare {
+        if self.image.compare {
             return div()
                 .size_full()
                 .p_8()

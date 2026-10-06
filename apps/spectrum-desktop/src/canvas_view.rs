@@ -16,7 +16,7 @@ pub fn whole_pixels(delta: f32, density: f32) -> f32 {
 impl Workspace {
     /// Where the canvas is drawn: fitted and centered, and its scale.
     pub fn canvas_rect(&self) -> (Bounds<Pixels>, f32) {
-        let area = *self.image_bounds.borrow();
+        let area = *self.image.image_bounds.borrow();
         let Some(canvas) = &self.canvas else {
             return (area, 1.);
         };
@@ -62,7 +62,7 @@ impl Workspace {
     /// auto-select off, the selected layer moves wherever the drag starts.
     fn pick_layer(&self, point: (f32, f32), deep: bool) -> Option<u64> {
         let canvas = self.canvas.as_ref()?;
-        if !self.tool_options.auto_select && !deep && canvas.selected.is_some() {
+        if !self.canvas_ui.tool_options.auto_select && !deep && canvas.selected.is_some() {
             return canvas.selected;
         }
         let under = self.layer_at(point)?;
@@ -472,7 +472,8 @@ impl Workspace {
         self.sync_layer_controls(window, cx);
         // After the click that started editing has focused the canvas.
         cx.defer_in(window, |this, window, cx| {
-            this.text_input
+            this.canvas_ui
+                .text_input
                 .update(cx, |state, cx| state.focus(window, cx));
         });
         cx.notify();
@@ -506,8 +507,8 @@ impl Workspace {
         // Whole device pixels, so a dragged layer stays as sharp as the canvas.
         let pixel = window.scale_factor();
         let snap = move |value: f32| px((value * pixel).round() / pixel);
-        let bounds_slot = self.image_bounds.clone();
-        let area = *self.image_bounds.borrow();
+        let bounds_slot = self.image.image_bounds.clone();
+        let area = *self.image.image_bounds.borrow();
         let (rect, scale) = self.canvas_rect();
         let offset = rect.origin - area.origin;
         let offset = point(snap(f32::from(offset.x)), snap(f32::from(offset.y)));
@@ -687,7 +688,7 @@ impl Workspace {
                     .w(b.size.width.max(px(260.)))
                     .rounded_md()
                     .shadow_lg()
-                    .child(Input::new(&self.text_input))
+                    .child(Input::new(&self.canvas_ui.text_input))
                     .on_action(cx.listener(|this, _: &input::Escape, window, cx| {
                         this.stop_editing_text(window, cx)
                     }))
@@ -702,7 +703,7 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    let area = *this.image_bounds.borrow();
+                    let area = *this.image.image_bounds.borrow();
                     let selecting = this.canvas.as_ref().is_some_and(|c| c.tool.selects());
                     if selecting && !area.contains(&event.position) && !event.modifiers.shift {
                         this.deselect(window, cx);

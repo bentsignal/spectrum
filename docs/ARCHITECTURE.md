@@ -1,121 +1,115 @@
 # Architecture
 
-Lumen has one behavior path and two interfaces:
+Spectrum is one native Rust app. Every creative asset lives in an
+app-managed library, and one command engine per asset kind serves both the
+desktop app and the `spectrum` CLI.
 
 ```text
-Spectrum photo workspace ─┐
-                          ├─> Command -> Workspace -> Project / Render engine
-CLI (lumen) ───────────────┘
+apps/spectrum-desktop (GPUI) ─┐
+                              ├─> spectrum-assets (library service)
+apps/spectrum (CLI) ──────────┘      ├─ spectrum-library  index: identity, kind, name, projects, references, trash
+                                     ├─ spectrum-image    image asset: source photo + adjustments
+                                     ├─ spectrum-canvas   canvas asset: layers, compositing, text, paint
+                                     └─ spectrum-document durable documents: history, files, sessions
+                                            └─ spectrum-revisions  revision store (SQLite)
+shared pixels: spectrum-imaging · shaping/fonts: spectrum-fonts
 ```
 
-The desktop app does not own a second editing model. Buttons and committed
-slider changes produce values from `lumen_core::Command`. The CLI produces those
-same values directly or deserializes them through `lumen run '<json>'`.
+Rust sources stay at or under 1,000 lines; `tools/workspace-guardrails` checks
+this, task files, and the documentation budget.
 
-## Crate layout
+## Assets and the library
 
-- `crates/spectrum-imaging`: app-neutral adjustments and pixel rendering shared
-  by Spectrum tools
-- `apps/lumen/src/project.rs`: catalog model, persistent edit history, and atomic
-  sidecar persistence
-- `apps/lumen/src/engine.rs`: Lumen-specific RAW decoding and export adapters
-- `apps/lumen/src/command.rs`: the complete mutation boundary, clipboard, and
-  undo/redo
-- `apps/spectrum/src/commands/image_commands/`: structured automation interface modules
-- `apps/lumen/src/bin/lumen_gui/`: focused native GUI modules for state, library,
-  toolbar, inspector, canvas, dialogs, and drawing helpers
+`spectrum-library` is authoritative. It records each asset's UUID, kind
+(`AssetKind`: image, canvas, video, audio, music), name, and document; projects
+that group assets without owning them; import batches; typed references (a
+canvas uses images; video will use everything); and a 30-day trash. Canvases
+that use a trashed or purged image draw a same-sized placeholder.
 
-The Lumen library remains named `lumen_core`; Spectrum and the CLI link it in-process.
-`lumen_core` re-exports the shared Spectrum adjustment types for catalog API
-compatibility. The apps do not require a remote service or browser runtime.
-Optional authenticated local live bridges let CLI agents collaborate with an
-open GUI; see [Spectrum direction](DIRECTION.md).
+Every asset is one `.spectrum` document inside the library: `images/<uuid>.spectrum`
+and `canvases/<uuid>.spectrum`. `previews/` and each folder's `.cache/` are
+disposable. `SPECTRUM_LIBRARY` or `--library` selects another library; the
+default is `Library` in Spectrum's application-data directory. Back up by
+copying the whole library directory while Spectrum is closed.
 
-## Catalog guarantees
+`spectrum-assets::Service` is the only way apps change the library. It imports
+(one image document per file), creates canvases, edits, renames, copies (a
+canvas copy gets its own copies of its images), places images on canvases,
+renders previews and thumbnails, exports outside the library, and trashes,
+restores, and purges. Names live only in the index.
 
-- Imported photos are referenced by canonical path and never overwritten.
-- Every edit is stored as settings in a readable versioned JSON document.
-- Saving writes a temporary sibling before replacing the catalog.
-- A multi-file import is transactional in memory: if one file is invalid, none
-  of that command's files are added.
-- Adjustment values are sanitized inside the core, not only in the UI.
-- Every committed edit stores a complete snapshot and cursor in catalog v5.
-- Camera/lens metadata and the unmarked/keep/reject culling state live beside each
-  immutable source reference. Older RAW catalogs populate missing metadata lazily.
-- Imports form lightweight chronological shoot batches. Existing catalogs migrate
-  into batches using capture dates, and the Library renders them left-to-right.
-  Batches retain their first/last capture dates plus the local catalog-import date,
-  which provides a stable timeline label when camera metadata is unavailable.
-- Sources underneath the catalog directory serialize as relative paths, allowing an
-  iCloud/shared library folder to move between devices without path repair.
-- Catalog-level presets store development settings while intentionally excluding crop,
-  rotation, flips, and straighten so one look can be reused across different framing.
-- Reset is an ordinary history event, so stepping backward restores prior work.
+## Durable documents
 
-## Rendering
+`spectrum-document` turns any `Model` (a document type plus its commands) into
+a durable document. Each edit is a revision with its actor and session; undo and
+redo move a session's cursor through an immutable tree, so editing from the
+past keeps the old future as a branch. Snapshots are stored every 100 commands
+or 64 KiB of commands, so opening replays a bounded tail. Files a document uses
+(source photos, fonts, Clone Stamp sources) are embedded by content hash as
+`spectrum-asset:<sha256>.<ext>` and staged into the cache on demand.
 
-Settled preview and export use the same authoritative renderer.
-`render_settled_preview` supplies a long-edge limit while `render_photo` defaults
-to source resolution. Both develop immutable RAW pixels and apply the size limit
-after geometry. The current pipeline performs, in order:
+The desktop opens a library as the person ("You"); the CLI opens it as an agent.
+Each has one lasting session per library. Edits open the document at its newest
+revision, so a CLI edit builds on what the desktop saved and the reverse.
+There is one storage format; files from other formats are refused.
 
-1. Sony ARW demosaic, white balance, camera calibration, and sRGB conversion
+`Model` hooks let an engine resolve state-dependent commands before storing them
+(a Clone Stamp source, a magic wand's selection, the selection a stroke paints
+within) so replay is exact, and validate documents after loading.
+
+## Image engine
+
+`spectrum-image` holds the image document (`Image`: source, size, camera
+metadata, `Adjustments`) and its commands: `Adjust`, `SetAdjustments`, `Reset`,
+`Undo`, `Redo`. Crop, rotation, flips, straighten, curves, HSL, grading, and
+spot repair are all adjustments. `engine` decodes JPEG, PNG, TIFF, WebP, and
+Sony ARW (via rawler) and renders previews and exports through one path:
+
+1. RAW demosaic, white balance, camera calibration, and sRGB conversion
 2. rotation, flips, filled straighten, and normalized crop
-3. optional post-geometry long-edge downsample (never upscale)
-4. optional chroma-preserving noise reduction
-5. temperature, tint, exposure, and tonal shaping
-6. contrast, texture, clarity, and dehaze
-7. eight-band HSL mixing, global saturation/vibrance, and three-way color grading
-8. master and per-channel point curves, vignette, sharpening, and repair-brush dabs
+3. optional long-edge downsample after geometry (never upscale)
+4. noise reduction; temperature, tint, exposure, and tonal shaping
+5. contrast, texture, clarity, and dehaze
+6. HSL mixing, saturation and vibrance, and three-way color grading
+7. point curves, vignette, sharpening, and repair dabs
 
-RAW development uses rawler's floating-point intermediate, then converts directly
-to the 8-bit sRGB working raster consumed by the adjustment pipeline. Avoiding
-rawler's additional flattened floating-point and 16-bit conversion buffers keeps
-the authoritative path bounded to a conservative modeled 48 bytes per sensor
-pixel. Lumen enforces a 25,000,000-pixel RAW limit before and after decode for
-settled previews, yielding a 1,200,000,000-byte development working budget
-without limiting explicit full-resolution exports. A future high-bit-depth
-working buffer can keep the command and catalog APIs stable while replacing that
-explicit budget.
+RAW development is bounded to 25 megapixels for previews; exports develop at
+full resolution. The adjustment pipeline itself lives in `spectrum-imaging`,
+which canvases also use for per-layer adjustments.
 
-Import preparation is parallel and reads RAW dimensions and EXIF metadata without
-demosaicing the full sensor image. Camera-embedded RAW previews are explicitly
-non-authoritative and are used only for display-only thumbnail surfaces in the
-catalog library and filmstrip; if an embedded proxy is unavailable, Lumen omits
-that thumbnail instead of starting an authoritative fallback development.
-Settled previews and every export develop the RAW sensor data; a lossless export
-with the same adjustments and long-edge limit is an exact raster oracle before
-texture upload or encoding. While a pointer drag is active, the GUI may render a
-960px transient working preview, but it must replace that approximation with the
-authoritative 1800px result after interaction.
-Authoritative RAW work runs only in the selected-preview lane: adjacent RAWs are
-not speculatively developed, so the independent raster-prefetch lane cannot
-multiply the modeled RAW working set. Pixel rows are processed in parallel, and
-identity color, HSL, and curve stages are skipped.
+## Canvas engine
 
-A full-resolution export viewed through a separately downsampling application is
-outside the exact same-size oracle: resolution-dependent detail and spot radii,
-viewer interpolation, JPEG loss, and OS/GPU color management can all introduce
-display differences.
+`spectrum-canvas` owns the layered document: raster, text, rectangle, ellipse,
+path, and paint layers; transforms; pixel and vector masks; clipping; 27 blend
+modes including Dissolve; layer styles and gradient fills; selections (rectangle,
+ellipse, lasso, magic wand); brush, eraser, and Clone Stamp strokes; guides,
+snapping, and alignment; and layer copy and paste. Every change is a
+`spectrum_canvas::Command`. Shapes stay parametric and re-render at the current
+zoom and export scale. Text shapes with HarfBuzz (`spectrum-fonts`) or the
+older character layout; fonts are embedded in the document.
 
-The repeatable release benchmark for this path is:
+Interactive previews and exports share one CPU compositor, which renders only
+the visible region and keeps decoded rasters in a bounded cache. A linked image
+layer carries its image's asset ID; the service points it at the image's current
+render, so image edits show on every canvas that uses it.
+
+## Desktop app
+
+`apps/spectrum-desktop` is a GPUI app. `Workspace` holds the library shell
+(Home, projects, grid, palette, picker) plus one state struct per editor:
+`ImageEditor` (color and crop controls, the open image's preview and saves) and
+`CanvasControls` with the open `CanvasState`. The canvas editor applies commands
+to its document immediately and saves them in batches after a 300 ms pause;
+the image editor renders in memory and saves the whole adjustment set when
+edits pause. Both save through the service, off the main thread.
+
+## Performance checks
 
 ```sh
+spectrum images benchmark --strict
+spectrum canvas benchmark --strict
 cargo test --release -p spectrum-imaging interactive_preview_benchmark -- --ignored --nocapture
 ```
 
-For end-to-end budgets, `lumen benchmark --strict` also measures tone-curve
-command persistence, a deterministic 12-photo JPEG import, and a deterministic
-24 MP JPEG export. An optional `--raw-import PATH` sample measures real RAW
-metadata import on a machine with an accessible camera file. Linux CI runs that
-command against the optimized binary so material regressions block the build.
-The CI invocation uses the documented `hosted-ci` budget profile because shared
-two-core runners are not representative of an editing workstation.
-
-## Cross-platform choices
-
-- egui/eframe with the lightweight OpenGL backend for native composition
-- `image` with only JPEG, PNG, TIFF, and WebP codecs enabled
-- `rfd` for operating-system file dialogs
-- no application database, async runtime, telemetry, or update service
-- thin LTO, one codegen unit, symbol stripping, and abort-on-panic in release
+`--profile hosted-ci` relaxes budgets for shared CI runners. Run the matching
+strict benchmark for rendering or interaction changes.

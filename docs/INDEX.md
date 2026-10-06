@@ -5,12 +5,10 @@ Git and pull requests explain completed work.
 
 | Read | Purpose |
 | --- | --- |
-| [Direction](DIRECTION.md) | Product intent and decisions that remain open |
-| [Development](DEVELOPMENT.md) | Reproducible NixOS setup and daily commands |
-| [Suite](SUITE.md) | App boundaries and shared engineering principles |
-| [Prism](PRISM.md) | Prism workflow and command model |
-| [Architecture](ARCHITECTURE.md) | Lumen architecture and rendering contracts |
+| [Direction](DIRECTION.md) | Product intent, decisions, and open questions |
+| [Architecture](ARCHITECTURE.md) | Crates, the library, durable documents, and engines |
 | [CLI](CLI.md) | Spectrum automation reference |
+| [Development](DEVELOPMENT.md) | Reproducible NixOS setup and daily commands |
 | [Agent guide](../AGENTS.md) | Working rules and required validation |
 | [Tasks](../tasks/README.md) | Remaining work; one file per task |
 

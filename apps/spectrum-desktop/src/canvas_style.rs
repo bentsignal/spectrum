@@ -60,7 +60,7 @@ impl Workspace {
                 })
             }))
         });
-        let rotation = self.rotation.read(cx).value().start();
+        let rotation = self.canvas_ui.rotation.read(cx).value().start();
         div()
             .flex()
             .flex_col()
@@ -72,7 +72,7 @@ impl Workspace {
                     .child(slider_row(
                         "Rotation",
                         format!("{rotation:.0}°"),
-                        &self.rotation,
+                        &self.canvas_ui.rotation,
                     )),
             )
             .child(self.guides_section(cx))
@@ -88,17 +88,17 @@ impl Workspace {
             .iter()
             .enumerate()
             .map(|(index, name)| {
-                chip(name, name, index == self.style_section)
+                chip(name, name, index == self.canvas_ui.style_section)
                     .flex_none()
                     .px_2p5()
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.style_section = index;
+                        this.canvas_ui.style_section = index;
                         this.settle_next_frame();
                         cx.notify();
                     }))
             })
             .collect();
-        let body = match self.style_section {
+        let body = match self.canvas_ui.style_section {
             1 => self.arrange_section(cx),
             2 => self.effects_section(cx),
             _ => self.look_section(cx),

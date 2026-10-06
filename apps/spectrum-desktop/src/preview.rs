@@ -75,10 +75,10 @@ impl Workspace {
         if self.mode == Mode::Crop {
             Adjustments {
                 crop: None,
-                ..self.adjust.clone()
+                ..self.image.adjust.clone()
             }
         } else {
-            self.adjust.clone()
+            self.image.adjust.clone()
         }
     }
 
@@ -87,15 +87,15 @@ impl Workspace {
         let (Open::Image(id), Ok(store)) = (self.open, &self.store) else {
             return;
         };
-        if self.preview.as_ref().is_some_and(|p| p.id == id) {
+        if self.image.preview.as_ref().is_some_and(|p| p.id == id) {
             return;
         }
-        if let Some(old) = self.preview.take() {
+        if let Some(old) = self.image.preview.take() {
             for image in old.image.into_iter().chain(old.original) {
                 window.drop_image(image).ok();
             }
         }
-        self.preview = Some(Preview {
+        self.image.preview = Some(Preview {
             id,
             source: None,
             image: None,
@@ -112,7 +112,7 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
-                let Some(preview) = this.preview.as_mut().filter(|p| p.id == id) else {
+                let Some(preview) = this.image.preview.as_mut().filter(|p| p.id == id) else {
                     return;
                 };
                 match result {
@@ -134,7 +134,7 @@ impl Workspace {
     /// running one picks up the newest adjustments when it finishes.
     pub fn render_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wanted = self.view_adjustments();
-        let Some(preview) = &mut self.preview else {
+        let Some(preview) = &mut self.image.preview else {
             return;
         };
         let Some(source) = preview.source.clone() else {
@@ -152,7 +152,7 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let rendered = task.await;
             this.update_in(cx, |this, window, cx| {
-                let Some(preview) = this.preview.as_mut().filter(|p| p.id == id) else {
+                let Some(preview) = this.image.preview.as_mut().filter(|p| p.id == id) else {
                     window.drop_image(rendered.image).ok();
                     return;
                 };
@@ -174,7 +174,7 @@ impl Workspace {
         let Some(id) = self.open_image() else {
             return;
         };
-        let edits = &mut self.edits;
+        let edits = &mut self.image.edits;
         if edits
             .pending
             .as_ref()
@@ -182,13 +182,13 @@ impl Workspace {
         {
             edits.checkpoint();
         }
-        edits.pending = Some((id, self.adjust.clone()));
+        edits.pending = Some((id, self.image.adjust.clone()));
         edits.generation += 1;
         let generation = edits.generation;
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SAVE_AFTER).await;
             this.update_in(cx, |this, window, cx| {
-                if this.edits.generation == generation {
+                if this.image.edits.generation == generation {
                     this.save_now(window, cx);
                 }
             })
@@ -199,20 +199,20 @@ impl Workspace {
 
     /// Queues any waiting adjustments now, before navigation or history steps.
     pub fn save_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.edits.checkpoint();
+        self.image.edits.checkpoint();
         self.run_durable(window, cx);
     }
 
     /// Runs queued saves and history steps in order, one at a time, off the
     /// main thread. The view never waits for them.
     fn run_durable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Ok(store), false) = (&self.store, self.edits.busy) else {
+        let (Ok(store), false) = (&self.store, self.image.edits.busy) else {
             return;
         };
-        let Some(op) = self.edits.queue.pop_front() else {
+        let Some(op) = self.image.edits.queue.pop_front() else {
             return;
         };
-        self.edits.busy = true;
+        self.image.edits.busy = true;
         let root = store.root.clone();
         let task = cx.background_executor().spawn({
             let op = op.clone();
@@ -227,7 +227,7 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
-                this.edits.busy = false;
+                this.image.edits.busy = false;
                 let id = match op {
                     Durable::Save(id, _) | Durable::Step(id, _, _) => id,
                 };
@@ -263,7 +263,7 @@ impl Workspace {
         let Some(id) = self.open_image() else {
             return;
         };
-        let edits = &mut self.edits;
+        let edits = &mut self.image.edits;
         edits.checkpoint();
         let shown = if forward {
             edits
@@ -277,14 +277,13 @@ impl Workspace {
         } else {
             None
         };
-        // Redo does not survive between engine sessions, so a redone state is
-        // saved again; stepping back works across sessions.
-        edits.queue.push_back(match &shown {
-            Some(next) if forward => Durable::Save(id, Box::new(next.clone())),
-            _ => Durable::Step(id, forward, shown.is_none()),
-        });
+        // The library's history steps the same way; with nothing local to
+        // show, the step reloads what the library holds.
+        edits
+            .queue
+            .push_back(Durable::Step(id, forward, shown.is_none()));
         if let Some(adjustments) = shown {
-            self.adjust = adjustments;
+            self.image.adjust = adjustments;
             self.sync_color_sliders(window, cx);
             self.render_preview(window, cx);
         }

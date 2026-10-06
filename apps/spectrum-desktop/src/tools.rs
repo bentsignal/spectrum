@@ -285,7 +285,8 @@ impl Workspace {
             self.edit_text(window, cx);
             // Start empty so typing replaces the placeholder text; empty text
             // is never sent, so the layer keeps "Text" until something is typed.
-            self.text_input
+            self.canvas_ui
+                .text_input
                 .update(cx, |state, cx| state.set_value("", window, cx));
         }
     }
@@ -324,13 +325,13 @@ impl Workspace {
             "i" => Tool::Eyedropper,
             "[" | "]" => {
                 // Ten percent smaller or larger, at least a pixel.
-                let size = self.tool_options.brush(cx).0;
+                let size = self.canvas_ui.tool_options.brush(cx).0;
                 let next = if key.key == "]" {
                     (size * 1.1).max(size + 1.)
                 } else {
                     (size / 1.1).min(size - 1.)
                 };
-                let state = self.tool_options.brush_size.clone();
+                let state = self.canvas_ui.tool_options.brush_size.clone();
                 state.update(cx, |s, cx| s.set_value(next.clamp(1., 400.), window, cx));
                 return cx.notify();
             }

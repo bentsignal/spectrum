@@ -14,7 +14,7 @@ fn row(label: &'static str, value: String) -> Div {
 
 impl Workspace {
     pub fn info_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(photo) = &self.photo_info else {
+        let Some(photo) = &self.image.photo_info else {
             return div();
         };
         let meta = &photo.metadata;

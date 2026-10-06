@@ -1,7 +1,23 @@
 use super::*;
 
 impl LiveRevisionStore {
+    /// Opens a document through its live cache. A cache that cannot be used
+    /// and holds nothing newer than the document, such as one copied along
+    /// with a restored or moved library, is rebuilt from the document.
     pub fn open(canonical_path: &Path, cache_root: &Path) -> RevisionResult<Self> {
+        match Self::open_cached(canonical_path, cache_root) {
+            Ok(store) => Ok(store),
+            Err(error) => {
+                if discard_stale_cache(canonical_path, cache_root)? {
+                    Self::open_cached(canonical_path, cache_root)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    fn open_cached(canonical_path: &Path, cache_root: &Path) -> RevisionResult<Self> {
         let canonical_path = absolute_path(canonical_path)?;
         let canonical = if !sidecar_path(&canonical_path, "-wal").exists()
             && !sidecar_path(&canonical_path, "-shm").exists()
@@ -119,7 +135,12 @@ impl LiveRevisionStore {
                             });
                         let equal_generation_conflict = working_generation == canonical.generation
                             && working_state_id != canonical.state_id;
+                        // A cache copied with its document (a restored backup or
+                        // a moved library) loses the inode proof behind its marker.
+                        // When the working copy matches the document exactly, there
+                        // is nothing to recover and the marker is merely stale.
                         if publication_marker.is_some()
+                            && !exact
                             && !publication_matches_working
                             && !publication_matches_canonical
                             && !equal_generation_conflict
@@ -138,10 +159,14 @@ impl LiveRevisionStore {
                                 "live cache has an unresolved working recovery marker".into(),
                             ));
                         }
-                        remove_stale_publication_marker = !exact
-                            && !recoverable
-                            && ((publication_matches_working && !publication_matches_canonical)
-                                || equal_generation_conflict);
+                        remove_stale_publication_marker = (exact
+                            && publication_marker.is_some()
+                            && !publication_matches_canonical)
+                            || (!exact
+                                && !recoverable
+                                && ((publication_matches_working
+                                    && !publication_matches_canonical)
+                                    || equal_generation_conflict));
                         recoverable
                     };
                     #[cfg(not(target_os = "linux"))]
@@ -167,16 +192,16 @@ impl LiveRevisionStore {
                     false
                 }
             };
+            if !keep_working && sidecar_path(&working_path, "-shm").exists() {
+                return Err(RevisionError::Invalid(
+                    "project changed elsewhere while its live cache is in use".into(),
+                ));
+            }
+            #[cfg(target_os = "linux")]
+            if remove_stale_publication_marker {
+                remove_private_file(&private_directory, PUBLISH_CURRENT_FILE)?;
+            }
             if !keep_working {
-                if sidecar_path(&working_path, "-shm").exists() {
-                    return Err(RevisionError::Invalid(
-                        "project changed elsewhere while its live cache is in use".into(),
-                    ));
-                }
-                #[cfg(target_os = "linux")]
-                if remove_stale_publication_marker {
-                    remove_private_file(&private_directory, PUBLISH_CURRENT_FILE)?;
-                }
                 remove_sidecars(&working_path)?;
                 replace_with_copy(&canonical_path, &working_path)?;
             }
@@ -382,4 +407,37 @@ impl LiveRevisionStore {
             }
         }
     }
+}
+
+/// Removes a document's live cache when it holds nothing the document lacks.
+/// Returns whether it was removed.
+fn discard_stale_cache(canonical_path: &Path, cache_root: &Path) -> RevisionResult<bool> {
+    let Ok(canonical) = RevisionStore::inspect(&absolute_path(canonical_path)?) else {
+        return Ok(false);
+    };
+    let directory = cache_root.join(canonical.info.project_id.to_string());
+    if fs::symlink_metadata(&directory).is_err() {
+        return Ok(false);
+    }
+    let working = directory.join(STORE_FILE);
+    if sidecar_path(&working, "-wal").exists() || sidecar_path(&working, "-shm").exists() {
+        // In use, or holding writes not yet checkpointed.
+        return Ok(false);
+    }
+    if working.exists() {
+        match RevisionStore::inspect(&working) {
+            Ok(state) if state.info.project_id != canonical.info.project_id => return Ok(false),
+            Ok(state)
+                if state.generation > canonical.generation
+                    || (state.generation == canonical.generation
+                        && state.state_id != canonical.state_id) =>
+            {
+                return Ok(false);
+            }
+            Ok(_) => {}
+            Err(_) => return Ok(false),
+        }
+    }
+    fs::remove_dir_all(&directory)?;
+    Ok(true)
 }

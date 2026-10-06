@@ -6,8 +6,7 @@ The [agent guide](../AGENTS.md) defines validation; Git retains completed work.
 
 ## Open work
 
-- [One-app codebase overhaul](codebase-overhaul.md)
-- [App-managed library and Spectrum CLI](app-managed-library.md)
+- [Overhaul follow-ups](overhaul-follow-ups.md)
 - [Preview feedback](preview-feedback-2026-09-28.md)
 - [Healing Brush](healing-brush.md)
 - [Layer styles](layer-styles.md)

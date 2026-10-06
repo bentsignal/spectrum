@@ -6,7 +6,7 @@ priority: high
 # Add a nondestructive sampled Healing Brush
 
 Clone Stamp landed in [PR #94](https://github.com/bentsignal/spectrum/pull/94).
-The remaining retouch primitive is a sampled Healing Brush. Build on Prism's
+The remaining retouch primitive is a sampled Healing Brush. Build on the canvas's
 paint command model and freeze authenticated source and destination context at
 the expected parent revision. Later source edits must not change committed
 output; original images stay immutable.

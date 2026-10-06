@@ -1,24 +1,25 @@
 ---
-status: in_progress
+status: done
 priority: high
 ---
 
 # One-app codebase overhaul
 
-Spectrum began as two apps, Lumen (photos) and Prism (canvases). The product
-is now one app; this task removes the split from the code. There is no
-backward compatibility to keep: no user work exists, and libraries may be
-wiped. Images are their own asset (color edits); canvases compose image
-assets; video will compose both.
+Spectrum began as two apps, Lumen (photos) and Prism (canvases). This removed
+the split from the code, with no backward compatibility (libraries may be
+wiped). Done, October 2026:
 
-1. Remove the egui apps, their crates, packaging, scripts, and tests.
-2. Engines become `crates/spectrum-image` and `crates/spectrum-canvas`; the
-   GPUI app becomes `apps/spectrum-desktop`.
-3. Drop old file formats, version ladders, and migrations.
-4. One asset model: a document per asset, owned by the library; one durable
-   document layer for history and the live bridge; a CLI on assets only.
-5. Shared engine crates for imaging, text, and compositing, for video next.
-6. Desktop app: an editor per asset type over one save and history path.
-7. Docs describe the result.
+1. The egui apps, their crates, packaging, and scripts are gone.
+2. Engines are `crates/spectrum-image` and `crates/spectrum-canvas`; the GPUI
+   app is `apps/spectrum-desktop`; the library service is `crates/spectrum-assets`.
+3. One storage format: no file-format migrations, version ladders, or
+   compatibility readers; layer transfers have one version.
+4. One asset model: each asset is one document in the library over the shared
+   `spectrum-document` layer; the CLI works on assets only; the live bridge is gone.
+5. Engines and shared pixel code sit in neutral crates. Text layout, the raster
+   cache, and compositing stay in `spectrum-canvas` until video needs them.
+6. Images and canvases save through one service path with stable sessions;
+   the desktop's editor state is split per editor.
+7. Docs describe the result: [Architecture](../docs/ARCHITECTURE.md).
 
-Later: a history tree view in the desktop app.
+What remains is in [overhaul follow-ups](overhaul-follow-ups.md).

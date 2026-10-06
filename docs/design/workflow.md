@@ -2,7 +2,7 @@
 
 This records the user's preferences from the design discussion. It is not an
 implementation specification. Read [direction](../DIRECTION.md) for the wider
-product requirements and [Suite](../SUITE.md) for what currently exists.
+product requirements and [Architecture](../ARCHITECTURE.md) for what currently exists.
 
 ## Projects and assets
 

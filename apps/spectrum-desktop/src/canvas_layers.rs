@@ -70,18 +70,23 @@ impl Workspace {
             LayerKind::Rectangle { corner_radius, .. } => (None, 0., *corner_radius),
             _ => (None, 0., 0.),
         };
-        self.opacity
+        self.canvas_ui
+            .opacity
             .update(cx, |s, cx| s.set_value(opacity, window, cx));
         if let LayerKind::Text { typography, .. } = &layer.kind {
             let (line, tracking) = (typography.line_height, typography.tracking);
-            self.line_height
+            self.canvas_ui
+                .line_height
                 .update(cx, |s, cx| s.set_value(line, window, cx));
-            self.tracking
+            self.canvas_ui
+                .tracking
                 .update(cx, |s, cx| s.set_value(tracking, window, cx));
         }
-        self.text_size
+        self.canvas_ui
+            .text_size
             .update(cx, |s, cx| s.set_value(size.max(8.), window, cx));
-        self.corner
+        self.canvas_ui
+            .corner
             .update(cx, |s, cx| s.set_value(radius, window, cx));
         let rotation = layer.transform.rotation;
         let rotation = if rotation > 180. {
@@ -89,16 +94,22 @@ impl Workspace {
         } else {
             rotation
         };
-        self.rotation
+        self.canvas_ui
+            .rotation
             .update(cx, |s, cx| s.set_value(rotation, window, cx));
         if text_layer {
             self.ensure_fonts(cx);
         }
         self.sync_style_controls(window, cx);
         // Leave the field alone while it is being typed in.
-        let typing = self.text_input.focus_handle(cx).is_focused(window);
+        let typing = self
+            .canvas_ui
+            .text_input
+            .focus_handle(cx)
+            .is_focused(window);
         if let Some(text) = text.filter(|_| !typing) {
-            self.text_input
+            self.canvas_ui
+                .text_input
                 .update(cx, |s, cx| s.set_value(text, window, cx));
         }
         self.sync_color_pickers(window, cx);
@@ -328,7 +339,7 @@ impl Workspace {
                 })
             },
         );
-        let opacity = self.opacity.read(cx).value().start();
+        let opacity = self.canvas_ui.opacity.read(cx).value().start();
         let mut body = div().flex().flex_col().gap_6().child(
             group("Blending", None)
                 .gap_4()
@@ -336,16 +347,16 @@ impl Workspace {
                 .child(slider_row(
                     "Opacity",
                     format!("{opacity:.0}%"),
-                    &self.opacity,
+                    &self.canvas_ui.opacity,
                 )),
         );
         match &layer.kind {
             LayerKind::Text {
                 color, typography, ..
             } => {
-                let size = self.text_size.read(cx).value().start();
-                let line = self.line_height.read(cx).value().start();
-                let tracking = self.tracking.read(cx).value().start();
+                let size = self.canvas_ui.text_size.read(cx).value().start();
+                let line = self.canvas_ui.line_height.read(cx).value().start();
+                let tracking = self.canvas_ui.tracking.read(cx).value().start();
                 let align = match typography.alignment {
                     TextAlignment::Left => 0,
                     TextAlignment::Center => 1,
@@ -361,7 +372,7 @@ impl Workspace {
                 body = body.child(
                     group("Text", None)
                         .gap_4()
-                        .child(Input::new(&self.text_input))
+                        .child(Input::new(&self.canvas_ui.text_input))
                         .child(font)
                         .child(crate::controls::segmented(
                             "text-align",
@@ -378,23 +389,27 @@ impl Workspace {
                                 })
                             },
                         ))
-                        .child(slider_row("Size", format!("{size:.0}"), &self.text_size))
+                        .child(slider_row(
+                            "Size",
+                            format!("{size:.0}"),
+                            &self.canvas_ui.text_size,
+                        ))
                         .child(slider_row(
                             "Line height",
                             format!("{line:.2}"),
-                            &self.line_height,
+                            &self.canvas_ui.line_height,
                         ))
                         .child(slider_row(
                             "Tracking",
                             format!("{tracking:.0}"),
-                            &self.tracking,
+                            &self.canvas_ui.tracking,
                         ))
                         .child(self.text_color_row(*color)),
                 );
             }
             LayerKind::Rectangle { color, .. } | LayerKind::Ellipse { color, .. } => {
                 let rectangle = matches!(layer.kind, LayerKind::Rectangle { .. });
-                let radius = self.corner.read(cx).value().start();
+                let radius = self.canvas_ui.corner.read(cx).value().start();
                 let gradient = layer.shape_fill.is_some();
                 let color = *color;
                 body = body.child(
@@ -434,7 +449,7 @@ impl Workspace {
                             el.child(slider_row(
                                 "Corner radius",
                                 format!("{radius:.0}"),
-                                &self.corner,
+                                &self.canvas_ui.corner,
                             ))
                         }),
                 );
@@ -489,7 +504,7 @@ impl Workspace {
 
     /// Whether the text field differs from the selected text layer.
     pub fn text_edited(&self, cx: &App) -> bool {
-        let value = self.text_input.read(cx).value();
+        let value = self.canvas_ui.text_input.read(cx).value();
         self.selected_layer().is_some_and(
             |layer| matches!(&layer.kind, LayerKind::Text { text, .. } if *text != value.as_ref()),
         )
@@ -509,8 +524,8 @@ impl Workspace {
             return;
         };
         let (id, color) = (layer.id, color.unwrap_or(*current));
-        let text = self.text_input.read(cx).value().to_string();
-        let font_size = self.text_size.read(cx).value().start();
+        let text = self.canvas_ui.text_input.read(cx).value().to_string();
+        let font_size = self.canvas_ui.text_size.read(cx).value().start();
         if text.trim().is_empty() {
             return;
         }
@@ -541,8 +556,8 @@ impl Workspace {
         };
         let typography = spectrum_canvas::TextTypography {
             alignment: alignment.unwrap_or(typography.alignment),
-            line_height: self.line_height.read(cx).value().start(),
-            tracking: self.tracking.read(cx).value().start(),
+            line_height: self.canvas_ui.line_height.read(cx).value().start(),
+            tracking: self.canvas_ui.tracking.read(cx).value().start(),
             ..typography.clone()
         };
         let id = layer.id;
@@ -575,7 +590,7 @@ impl Workspace {
                 width: *width,
                 height: *height,
                 color: color.unwrap_or(*current),
-                corner_radius: self.corner.read(cx).value().start(),
+                corner_radius: self.canvas_ui.corner.read(cx).value().start(),
             },
             LayerKind::Ellipse {
                 width,

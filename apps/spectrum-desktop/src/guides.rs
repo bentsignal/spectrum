@@ -20,7 +20,7 @@ pub struct GuideDrag {
 
 impl Workspace {
     pub fn toggle_guides(&mut self, cx: &mut Context<Self>) {
-        self.guides_visible = !self.guides_visible;
+        self.canvas_ui.guides_visible = !self.canvas_ui.guides_visible;
         cx.notify();
     }
 
@@ -46,7 +46,7 @@ impl Workspace {
             GuideOrientation::Vertical => canvas.doc.width as f32 / 2.,
             GuideOrientation::Horizontal => canvas.doc.height as f32 / 2.,
         };
-        self.guides_visible = true;
+        self.canvas_ui.guides_visible = true;
         self.canvas_commands(
             vec![Command::AddGuide {
                 orientation,
@@ -59,7 +59,10 @@ impl Workspace {
 
     /// The guide under the pointer, if guides are showing.
     pub fn guide_at(&self, position: Point<Pixels>) -> Option<GuideDrag> {
-        let canvas = self.canvas.as_ref().filter(|_| self.guides_visible)?;
+        let canvas = self
+            .canvas
+            .as_ref()
+            .filter(|_| self.canvas_ui.guides_visible)?;
         let (rect, scale) = self.canvas_rect();
         canvas
             .doc
@@ -176,7 +179,11 @@ impl Workspace {
     /// Guide lines, and the lines a dragged layer snapped to, over the canvas.
     pub fn guide_overlay(&self, offset: Point<Pixels>, scale: f32, size: Size<Pixels>) -> Div {
         let mut lines: Vec<(GuideOrientation, f32, u32)> = Vec::new();
-        if let Some(canvas) = self.canvas.as_ref().filter(|_| self.guides_visible) {
+        if let Some(canvas) = self
+            .canvas
+            .as_ref()
+            .filter(|_| self.canvas_ui.guides_visible)
+        {
             let dragged = canvas.guide_drag;
             for guide in &canvas.doc.guides {
                 let position = dragged
@@ -255,7 +262,7 @@ impl Workspace {
                     .flex()
                     .gap_1p5()
                     .child(
-                        chip("show-guides", "Show guides", self.guides_visible)
+                        chip("show-guides", "Show guides", self.canvas_ui.guides_visible)
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_guides(cx))),
                     )
                     .child(chip("snapping", "Snapping", snapping).on_click(

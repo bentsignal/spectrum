@@ -61,6 +61,7 @@ enum Trash {
 }
 #[derive(Subcommand)]
 enum Images {
+    /// List image assets.
     List,
     /// Import image files as one batch, optionally into a project.
     Import {
@@ -74,10 +75,7 @@ enum Images {
         new_project: Option<String>,
     },
     /// Apply an adjustment patch, e.g. '{"exposure":1.0}'.
-    Adjust {
-        asset: AssetId,
-        patch: String,
-    },
+    Adjust { asset: AssetId, patch: String },
     /// Give images every edit from another image, crop included.
     ApplyEdits {
         from: AssetId,
@@ -85,22 +83,23 @@ enum Images {
         to: Vec<AssetId>,
     },
     /// Execute image Command JSON: one object or an array.
-    Command {
-        asset: AssetId,
-        json: String,
-    },
+    Command { asset: AssetId, json: String },
+    /// Export an image outside the library; the extension picks the format.
     Export {
         asset: AssetId,
         path: PathBuf,
         #[arg(long, default_value_t = 92, value_parser = clap::value_parser!(u8).range(1..=100))]
         quality: u8,
+        /// Longest edge in pixels; full size when omitted.
         #[arg(long)]
         max_size: Option<u32>,
     },
 }
 #[derive(Subcommand)]
 enum Canvas {
+    /// List canvas assets.
     List,
+    /// Create a canvas asset.
     New {
         name: String,
         #[arg(long, default_value_t = 1920)]
@@ -114,15 +113,11 @@ enum Canvas {
         #[arg(long = "project", id = "project_id")]
         project: Option<ProjectId>,
     },
-    Place {
-        canvas: AssetId,
-        image: AssetId,
-    },
+    /// Place an image on a canvas as a linked layer that follows its edits.
+    Place { canvas: AssetId, image: AssetId },
     /// Execute canvas Command JSON: one object, or an array applied as one edit.
-    Command {
-        asset: AssetId,
-        json: String,
-    },
+    Command { asset: AssetId, json: String },
+    /// Export a canvas outside the library; the extension picks the format.
     Export {
         asset: AssetId,
         path: PathBuf,

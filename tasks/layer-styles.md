@@ -3,7 +3,7 @@ status: todo
 priority: high
 ---
 
-# Complete Prism layer styles
+# Complete canvas layer styles
 
 Build on the existing gradient and drop-shadow foundation. Add ordered,
 portable effects in reviewable slices: stroke and color/gradient overlay;

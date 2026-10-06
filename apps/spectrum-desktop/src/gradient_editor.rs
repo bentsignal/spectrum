@@ -103,8 +103,8 @@ impl GradientEditor {
 
     fn editor_mut(this: &mut Workspace, target: GradientTarget) -> &mut GradientEditor {
         match target {
-            GradientTarget::Fill => &mut this.fill_gradient,
-            GradientTarget::Overlay => &mut this.overlay_gradient,
+            GradientTarget::Fill => &mut this.canvas_ui.fill_gradient,
+            GradientTarget::Overlay => &mut this.canvas_ui.overlay_gradient,
         }
     }
 }
@@ -192,7 +192,7 @@ impl Workspace {
             ],
             ..ShapeGradient::default()
         };
-        self.fill_gradient.selected = 0;
+        self.canvas_ui.fill_gradient.selected = 0;
         self.set_gradient(GradientTarget::Fill, Some(gradient), window, cx);
         self.sync_gradient_editors(window, cx);
     }
@@ -337,8 +337,8 @@ impl Workspace {
     /// The editor for the selected layer's gradient `target`.
     pub fn gradient_editor(&self, target: GradientTarget, cx: &mut Context<Self>) -> Div {
         let editor = match target {
-            GradientTarget::Fill => &self.fill_gradient,
-            GradientTarget::Overlay => &self.overlay_gradient,
+            GradientTarget::Fill => &self.canvas_ui.fill_gradient,
+            GradientTarget::Overlay => &self.canvas_ui.overlay_gradient,
         };
         let Some(gradient) = self.current_gradient(target) else {
             return div();

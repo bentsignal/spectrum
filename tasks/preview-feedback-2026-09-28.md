@@ -14,5 +14,5 @@ Every feature gets its engine command and CLI surface with its control. Done: 1â
 4. Photoshop's classic layer styles and blend modes; gradient fills and layers; fix reselect flicker, resize shadows, clipped text, switch contrast, laggy style sliders.
 5. Snapping (on/off), guides, and showing and hiding them.
 6. Fonts: scroll the list and see each font on the canvas at once.
-7. Brush, clipping, masks, and lasso selection: Prism's remaining tools (with marquee, wand, eraser, pen, crop).
+7. Brush, clipping, masks, and lasso selection: the canvas's remaining tools (with marquee, wand, eraser, pen, crop).
 8. Edit globally renders before it saves; an eyedropper; the color format persists; whole-drag undo.
