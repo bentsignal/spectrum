@@ -41,9 +41,9 @@ impl LiveRevisionStore {
             }
             #[cfg(not(target_os = "linux"))]
             {
-                recover_legacy_sidecars(&canonical_path)?;
-                // Container migrations happen against the portable file first. Incremented
-                // storage generation then invalidates an older live cache before it can diverge.
+                recover_sidecars(&canonical_path)?;
+                // Checkpoint the document file first; its storage generation then
+                // invalidates an older live cache before it can diverge.
                 let canonical_store = RevisionStore::open(&canonical_path)?;
                 canonical_store.checkpoint()?;
                 drop(canonical_store);

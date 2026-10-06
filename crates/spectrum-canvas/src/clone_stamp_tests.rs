@@ -11,14 +11,39 @@ use spectrum_imaging::PixelRegion;
 
 use crate::*;
 
-fn test_directory(label: &str) -> PathBuf {
+/// A test's scratch directory, removed when the test ends.
+pub(super) struct TestDirectory(PathBuf);
+
+impl std::ops::Deref for TestDirectory {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TestDirectory {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn test_directory(label: &str) -> TestDirectory {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    fs::canonicalize(std::env::temp_dir())
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join(format!("canvas-clone-{label}-{stamp}"))
+    TestDirectory(
+        fs::canonicalize(std::env::temp_dir())
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(format!("canvas-clone-{label}-{stamp}")),
+    )
 }
 
 fn write_source(path: &Path) {
