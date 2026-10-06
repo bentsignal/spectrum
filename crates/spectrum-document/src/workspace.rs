@@ -57,16 +57,18 @@ impl<M: Model> Workspace<M> {
         Ok(Self::durably(durable, document))
     }
 
-    /// Opens a revision file in `session_id`, first moving the session to
-    /// the newest revision so its edits build on what others last saw.
-    pub fn open_newest(path: &Path, actor: Actor, session_id: SessionId) -> Result<Self> {
+    /// Opens a revision file in `session_id`, at `base` when given: edits
+    /// then continue from that revision, branching if it has later work.
+    pub fn open_at(
+        path: &Path,
+        actor: Actor,
+        session_id: SessionId,
+        base: Option<RevisionId>,
+    ) -> Result<Self> {
         let mut workspace = Self::open(path, actor, session_id)?;
-        let durable = workspace
-            .durable
-            .as_ref()
-            .context("opened without a file")?;
-        let newest = durable.newest()?;
-        workspace.move_to(newest)?;
+        if let Some(base) = base {
+            workspace.move_to(base)?;
+        }
         Ok(workspace)
     }
 
@@ -79,6 +81,41 @@ impl<M: Model> Workspace<M> {
     /// The newest document in a revision file.
     pub fn read(path: &Path) -> Result<M::Document> {
         Durable::<M>::read(path)
+    }
+
+    /// Adds `session` to a document at its newest revision, unless it is there.
+    pub fn join(path: &Path, actor: Actor, session: SessionId) -> Result<()> {
+        Durable::<M>::join(path, actor, session)
+    }
+
+    /// The document as `session` sees it, and the revision it sees.
+    pub fn read_session(path: &Path, session: SessionId) -> Result<(M::Document, RevisionId)> {
+        Durable::<M>::read_session(path, session)
+    }
+
+    /// Where `session` is in a document.
+    pub fn cursor_of(path: &Path, session: SessionId) -> Result<RevisionId> {
+        Durable::<M>::cursor_of(path, session)
+    }
+
+    /// The revision tree, with `session`'s place in it as the current one.
+    pub fn history_of(path: &Path, session: SessionId) -> Result<History> {
+        Durable::<M>::history_of(path, session)
+    }
+
+    /// Moves a person following an agent to the agent's newest revision.
+    pub fn follow(path: &Path, person: SessionId) -> Result<CollaborationSync> {
+        Durable::<M>::follow(path, person)
+    }
+
+    /// The agent a person is following on this document, if any.
+    pub fn following(path: &Path, person: SessionId) -> Result<Option<Collaboration>> {
+        Durable::<M>::following(path, person)
+    }
+
+    /// Where this workspace's session is in its history.
+    pub fn revision(&self) -> Option<RevisionId> {
+        self.durable.as_ref().map(Durable::cursor)
     }
 
     pub fn start_collaboration(

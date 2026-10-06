@@ -214,34 +214,45 @@ impl Workspace {
         };
         self.image.edits.busy = true;
         let root = store.root.clone();
+        let id = match op {
+            Durable::Save(id, _) | Durable::Step(id, _, _) => id,
+        };
+        // Edits continue from the revision on screen, never from somewhere
+        // an agent has moved on to.
+        let base = self.image.edits.revisions.get(&id).copied();
         let task = cx.background_executor().spawn({
             let op = op.clone();
             async move {
-                let service = Service::open(&root)?;
-                match op {
-                    Durable::Save(id, adjustments) => service.set_adjustments(id, *adjustments),
-                    Durable::Step(id, forward, _) => service.step_history(id, forward),
-                }
+                let command = match op {
+                    Durable::Save(_, adjustments) => spectrum_image::Command::SetAdjustments {
+                        adjustments: *adjustments,
+                    },
+                    Durable::Step(_, true, _) => spectrum_image::Command::Redo,
+                    Durable::Step(_, false, _) => spectrum_image::Command::Undo,
+                };
+                Service::open(&root)?
+                    .edit_image_from(id, base, vec![command])
+                    .map(|(_, revision)| revision)
             }
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
                 this.image.edits.busy = false;
-                let id = match op {
-                    Durable::Save(id, _) | Durable::Step(id, _, _) => id,
-                };
+                if let Ok(revision) = &result {
+                    this.image.edits.revisions.insert(id, *revision);
+                }
                 if let Ok(store) = &mut this.store {
                     store.thumbs.remove(&id);
                 }
                 match result {
                     // A step past this session's edits: show what the library holds.
-                    Ok(()) if matches!(op, Durable::Step(_, _, true)) => {
+                    Ok(_) if matches!(op, Durable::Step(_, _, true)) => {
                         if this.open_image() == Some(id) {
                             this.refresh_open_image(id, window, cx);
                         }
                     }
-                    Ok(()) => {}
+                    Ok(_) => {}
                     Err(error) => this.notify_error(error, window, cx),
                 }
                 this.run_durable(window, cx);
@@ -303,6 +314,8 @@ pub struct ImageEdits {
     /// matches one step of the library's history.
     history: Vec<Adjustments>,
     future: Vec<Adjustments>,
+    /// The revision each image's edits continue from: the one on screen.
+    pub revisions: std::collections::HashMap<AssetId, spectrum_document::RevisionId>,
 }
 
 #[derive(Clone)]
@@ -313,6 +326,11 @@ enum Durable {
 }
 
 impl ImageEdits {
+    /// Whether saves and history steps are all done.
+    pub fn idle(&self) -> bool {
+        self.pending.is_none() && self.queue.is_empty() && !self.busy
+    }
+
     /// Starts history at the adjustments just loaded for an image.
     pub fn reset(&mut self, adjustments: Adjustments) {
         self.history = vec![adjustments];

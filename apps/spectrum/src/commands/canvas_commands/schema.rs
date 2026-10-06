@@ -114,10 +114,8 @@ pub(super) fn schema() -> Value {
             "history": "each completed Selection-tool drag, lasso drag, magic wand click, clear, fill, delete, or crop is one command and one durable revision"
         },
         "typography": {
-            "layout_engines": ["legacy-v1", "harfbuzz-v1"],
-            "new_text_default": "harfbuzz-v1; existing text with no shaping field remains legacy-v1 pixel-exact",
-            "cli": "add-text accepts --layout <legacy-v1|harfbuzz-v1> [--language <BCP47>]; typography <layer> upgrades or changes the same durable policy",
-            "harfbuzz_v1_policy": {
+            "layout": "HarfBuzz shaping with default OpenType features; --language <BCP47> sets the shaping language",
+            "shaping": {
                 "engine": "bundled in-process HarfBuzz 8.2.2 with default OpenType features and default variation axes",
                 "unicode_data": {"bidi": "16.0", "line_break": "15.0", "grapheme": "17.0", "script": "17.0"},
                 "language": "canonical BCP-47; omitted or und resolves deterministically to und",

@@ -52,7 +52,6 @@ const KEPT_FONTS: usize = 4;
 /// Drops every font kept for interactive clients.
 pub(crate) fn clear_font_caches() {
     FONT_BYTES.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    crate::text_render::clear_parsed_fonts();
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,32 +144,19 @@ pub enum TextAlignment {
     Right,
 }
 
-/// Permanently versioned text layout engines.
-///
-/// Existing data defaults to `LegacyCharV1`; a future dependency or Unicode
-/// update must introduce another enum variant instead of changing
-/// `HarfBuzzV1` output.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TextShapingEngine {
-    #[default]
-    LegacyCharV1,
-    HarfBuzzV1,
-}
-
-/// Serialized shaping policy for one text layer.
+/// How a text layer is shaped: HarfBuzz with default OpenType features, in
+/// a BCP-47 language (`und` when unset).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextShaping {
-    pub engine: TextShapingEngine,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 }
 
 impl TextShaping {
-    pub fn harfbuzz_v1(language: Option<&str>) -> Result<Self> {
+    /// Shaping in `language`, or `und` when `None`.
+    pub fn new(language: Option<&str>) -> Result<Self> {
         Self {
-            engine: TextShapingEngine::HarfBuzzV1,
             language: language.map(str::to_owned),
         }
         .validated()
@@ -180,34 +166,25 @@ impl TextShaping {
         self.language.as_deref().unwrap_or("und")
     }
 
-    pub(crate) fn is_legacy_default(&self) -> bool {
-        self.engine == TextShapingEngine::LegacyCharV1 && self.language.is_none()
+    pub(crate) fn is_default(&self) -> bool {
+        self.language.is_none()
     }
 
     pub(crate) fn validated(mut self) -> Result<Self> {
-        match self.engine {
-            TextShapingEngine::LegacyCharV1 => {
-                if self.language.is_some() {
-                    bail!("LegacyCharV1 text cannot carry a shaping language");
-                }
+        if let Some(language) = self.language.take() {
+            if language.is_empty() || language.len() > 63 {
+                bail!("text shaping language must contain between 1 and 63 bytes");
             }
-            TextShapingEngine::HarfBuzzV1 => {
-                if let Some(language) = self.language.take() {
-                    if language.is_empty() || language.len() > 63 {
-                        bail!("text shaping language must contain between 1 and 63 bytes");
-                    }
-                    let mut locale = language.parse::<Locale>().map_err(|_| {
-                        anyhow::anyhow!("text shaping language is not valid BCP-47")
-                    })?;
-                    LocaleCanonicalizer::new_extended().canonicalize(&mut locale);
-                    let canonical = locale.to_string();
-                    if canonical.len() > 63 {
-                        bail!("canonical text shaping language exceeds 63 bytes");
-                    }
-                    if canonical != "und" {
-                        self.language = Some(canonical);
-                    }
-                }
+            let mut locale = language
+                .parse::<Locale>()
+                .map_err(|_| anyhow::anyhow!("text shaping language is not valid BCP-47"))?;
+            LocaleCanonicalizer::new_extended().canonicalize(&mut locale);
+            let canonical = locale.to_string();
+            if canonical.len() > 63 {
+                bail!("canonical text shaping language exceeds 63 bytes");
+            }
+            if canonical != "und" {
+                self.language = Some(canonical);
             }
         }
         Ok(self)
@@ -240,7 +217,7 @@ impl Default for TextEffects {
 #[serde(default)]
 pub struct TextTypography {
     pub font_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "TextShaping::is_legacy_default")]
+    #[serde(default, skip_serializing_if = "TextShaping::is_default")]
     pub shaping: TextShaping,
     pub alignment: TextAlignment,
     /// Line-spacing multiplier. `1.25` exactly preserves Spectrum's legacy spacing.

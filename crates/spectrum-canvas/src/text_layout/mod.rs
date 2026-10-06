@@ -1,17 +1,17 @@
-//! Versioned text layout engines.
+//! Text layout: HarfBuzz shaping, line breaking, and glyph rendering.
 
 mod font_resolver;
+mod geometry;
 mod glyph_raster;
-mod legacy;
 mod script;
 mod shaped;
 
 use anyhow::Result;
 use image::RgbaImage;
 
-pub use legacy::TextGeometry;
+pub use geometry::TextGeometry;
 
-use crate::{FontAsset, RenderRegion, TextShapingEngine, TextTypography};
+use crate::{FontAsset, RenderRegion, TextTypography};
 
 pub fn measure_text(text: &str, font_size: f32) -> Result<(u32, u32)> {
     measure_text_with_typography(text, font_size, &TextTypography::default(), None)
@@ -37,12 +37,7 @@ pub fn measure_text_geometry_with_typography(
     typography: &TextTypography,
     font_asset: Option<&FontAsset>,
 ) -> Result<TextGeometry> {
-    match typography.shaping.engine {
-        TextShapingEngine::LegacyCharV1 => {
-            legacy::measure_text_geometry_with_typography(text, font_size, typography, font_asset)
-        }
-        TextShapingEngine::HarfBuzzV1 => shaped::measure(text, font_size, typography, font_asset),
-    }
+    shaped::measure(text, font_size, typography, font_asset)
 }
 
 pub(crate) fn render_text(
@@ -52,14 +47,7 @@ pub(crate) fn render_text(
     typography: &TextTypography,
     font_asset: Option<&FontAsset>,
 ) -> Result<RgbaImage> {
-    match typography.shaping.engine {
-        TextShapingEngine::LegacyCharV1 => {
-            legacy::render_text(text, font_size, color, typography, font_asset)
-        }
-        TextShapingEngine::HarfBuzzV1 => {
-            shaped::render(text, font_size, color, typography, font_asset)
-        }
-    }
+    shaped::render(text, font_size, color, typography, font_asset)
 }
 
 pub(crate) fn render_text_region(
@@ -70,17 +58,5 @@ pub(crate) fn render_text_region(
     font_asset: Option<&FontAsset>,
     region: RenderRegion,
 ) -> Result<RgbaImage> {
-    match typography.shaping.engine {
-        TextShapingEngine::LegacyCharV1 => {
-            legacy::render_text_region(text, font_size, color, typography, font_asset, region)
-        }
-        TextShapingEngine::HarfBuzzV1 => {
-            shaped::render_region(text, font_size, color, typography, font_asset, region)
-        }
-    }
+    shaped::render_region(text, font_size, color, typography, font_asset, region)
 }
-
-pub(crate) use legacy::clear_parsed_fonts;
-
-#[cfg(test)]
-pub(crate) use legacy::font_outline_scale;

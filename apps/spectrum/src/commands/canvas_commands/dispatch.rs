@@ -6,7 +6,7 @@ use spectrum_imaging::AdjustmentPatch;
 
 use super::{
     CliCommand, GuideCommand, PathCommand, effects, paint, parse_color, paths, selection,
-    style_effects, text_shaping, transfer, updated_typography,
+    style_effects, transfer, updated_typography,
 };
 
 pub(super) struct SemanticPlan {
@@ -46,7 +46,6 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
             color,
             x,
             y,
-            layout,
             language,
         } => vec![Command::AddText {
             text,
@@ -55,7 +54,7 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
             color: parse_color(&color)?,
             x,
             y,
-            shaping: text_shaping(layout, language.as_deref())?,
+            shaping: spectrum_canvas::TextShaping::new(language.as_deref())?,
         }],
         CliCommand::AddRectangle {
             name,

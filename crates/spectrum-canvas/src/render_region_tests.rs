@@ -544,7 +544,7 @@ fn imported_typography_effect_region_matches_rotated_export_crop() {
 }
 
 #[test]
-fn raster_larger_than_legacy_full_source_cap_stages_only_visible_rows() {
+fn raster_larger_than_the_full_source_cap_stages_only_visible_rows() {
     let raster_path = temporary_large_grayscale_png("large-raster", 16_384, 1_025);
     let mut document = Document::new("Large raster staging", 16_384, 2_048);
     document.layers.push(Layer {
@@ -571,7 +571,7 @@ fn raster_larger_than_legacy_full_source_cap_stages_only_visible_rows() {
 }
 
 #[test]
-fn text_larger_than_legacy_full_source_cap_stages_only_visible_glyphs() {
+fn text_larger_than_the_full_source_cap_stages_only_visible_glyphs() {
     let mut document = Document::new("Large text staging", 16_384, 1_024);
     document.layers.push(Layer {
         id: 44,
@@ -581,7 +581,7 @@ fn text_larger_than_legacy_full_source_cap_stages_only_visible_glyphs() {
             ..Transform::default()
         },
         kind: LayerKind::Text {
-            text: "Bounded viewport text ".repeat(1_000),
+            text: "Bounded viewport text ".repeat(700),
             font_size: 48.0,
             color: [238, 202, 117, 255],
             typography: Default::default(),

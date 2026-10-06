@@ -450,7 +450,7 @@ fn shaped_text_transfer_round_trips() {
             color: [255; 4],
             x: 12.0,
             y: 18.0,
-            shaping: crate::TextShaping::harfbuzz_v1(Some("ar")).unwrap(),
+            shaping: crate::TextShaping::new(Some("ar")).unwrap(),
         })
         .unwrap();
     let transfer = LayerTransfer::from_selected(&workspace.document).unwrap();

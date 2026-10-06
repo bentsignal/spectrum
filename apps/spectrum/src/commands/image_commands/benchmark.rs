@@ -52,7 +52,7 @@ fn measure(directory: &std::path::Path, profile: BenchmarkProfile) -> Result<Val
     let mut edit_samples = Vec::with_capacity(EDIT_SAMPLES);
     for iteration in 0..EDIT_SAMPLES {
         let started = Instant::now();
-        let mut workspace = Workspace::open_newest(&path, actor.clone(), session)?;
+        let mut workspace = Workspace::open(&path, actor.clone(), session)?;
         let mut adjustments = workspace.document.adjustments.clone();
         adjustments.curves.master = curve(if iteration % 2 == 0 { 0.42 } else { 0.58 });
         workspace.execute(Command::SetAdjustments { adjustments })?;

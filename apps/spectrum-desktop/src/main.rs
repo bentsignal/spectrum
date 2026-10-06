@@ -20,6 +20,7 @@ mod editors;
 mod edits;
 mod export;
 mod eyedropper;
+mod following;
 mod font_browser;
 mod font_lists;
 mod gradient_editor;
@@ -113,10 +114,18 @@ gpui::actions!(
     ]
 );
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    // Started as `spectrum`, this is the command line.
+    let invoked = std::env::args_os()
+        .next()
+        .map(std::path::PathBuf::from)
+        .and_then(|path| path.file_stem().map(|stem| stem.to_os_string()));
+    if invoked.as_deref() == Some(std::ffi::OsStr::new("spectrum")) {
+        return spectrum::main();
+    }
     if std::env::args().any(|arg| arg == "--version") {
         println!("Spectrum {}", env!("CARGO_PKG_VERSION"));
-        return;
+        return std::process::ExitCode::SUCCESS;
     }
     prefs::load();
     // Re-renders of the same image reuse its decoded, resized pixels.
@@ -203,4 +212,5 @@ fn main() {
             .expect("could not open Spectrum");
             cx.activate(true);
         });
+    std::process::ExitCode::SUCCESS
 }

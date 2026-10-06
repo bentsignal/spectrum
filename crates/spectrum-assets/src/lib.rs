@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 pub use spectrum_library::default_root;
 mod export;
+mod sessions;
 pub mod thumbnail;
 pub mod trash;
 pub use export::ExportOptions;
@@ -18,26 +19,26 @@ pub use export::ExportOptions;
 type PreviewCache = std::collections::HashMap<AssetId, ((std::time::SystemTime, u64), PathBuf)>;
 
 /// A library opened by someone: the person at the desktop, or an agent.
-/// Their edits land in one lasting session per library, so history shows
-/// who made each change.
+/// Each asset's history is a tree; the person and each agent move through it
+/// in their own session, so an agent never changes what the person sees
+/// unless the person follows it.
 pub struct Service {
     previews: std::cell::RefCell<PreviewCache>,
     pub library: Library,
     actor: Actor,
+    /// This person's or agent's lasting session in the library.
     session: SessionId,
+    /// The person's session, which agents start from.
+    person: SessionId,
+    /// The agent session chosen for this service's edits, if any; otherwise
+    /// an agent works together with the person.
+    chosen: Option<SessionId>,
 }
 
 impl Service {
     /// Opens a library as the person using Spectrum.
     pub fn open(root: &Path) -> Result<Self> {
-        Self::open_as(
-            root,
-            Actor {
-                id: "person:local".into(),
-                display_name: "You".into(),
-                kind: ActorKind::Human,
-            },
-        )
+        Self::open_as(root, person())
     }
 
     /// Opens a library as an agent working through the command line.
@@ -57,17 +58,19 @@ impl Service {
         for directory in ["canvases", "images", "previews"] {
             std::fs::create_dir_all(library.root().join(directory))?;
         }
-        let kind = match actor.kind {
-            ActorKind::Human => "person",
-            _ => "agent",
+        let sessions = library.root().join("sessions");
+        let person = spectrum_document::local_session_id(&sessions.join("person"))?;
+        let session = match actor.kind {
+            ActorKind::Human => person,
+            _ => spectrum_document::local_session_id(&sessions.join("agent"))?,
         };
-        let session =
-            spectrum_document::local_session_id(&library.root().join("sessions").join(kind))?;
         Ok(Self {
             library,
             previews: Default::default(),
             actor,
             session,
+            person,
+            chosen: None,
         })
     }
 
@@ -150,170 +153,6 @@ impl Service {
     /// Renames an asset.
     pub fn rename(&mut self, id: AssetId, name: &str) -> Result<Asset> {
         self.library.rename(id, name)
-    }
-
-    /// An image as last saved.
-    pub fn image(&self, id: AssetId) -> Result<Image> {
-        spectrum_image::Workspace::read(&self.document(id, AssetKind::Image)?)
-    }
-
-    /// A canvas as last saved, with its linked images resolved for drawing.
-    pub fn canvas(&self, id: AssetId) -> Result<Document> {
-        let mut document = self.saved_canvas(id)?;
-        self.resolve(&mut document)?;
-        Ok(document)
-    }
-
-    /// A canvas as last saved, its linked images as they were stored.
-    pub fn saved_canvas(&self, id: AssetId) -> Result<Document> {
-        spectrum_canvas::Workspace::read(&self.document(id, AssetKind::Canvas)?)
-    }
-
-    /// Edits an image. Each edit is one revision in its history.
-    pub fn edit_image(
-        &self,
-        id: AssetId,
-        commands: Vec<spectrum_image::Command>,
-    ) -> Result<Vec<spectrum_image::CommandOutput>> {
-        let path = self.document(id, AssetKind::Image)?;
-        let mut workspace =
-            spectrum_image::Workspace::open_newest(&path, self.actor.clone(), self.session)?;
-        let outputs = commands
-            .into_iter()
-            .map(|command| workspace.execute(command))
-            .collect::<Result<Vec<_>>>()?;
-        if let Some(error) = workspace.pending_publish_error() {
-            bail!("the edit was saved but not published: {error}");
-        }
-        self.previews.borrow_mut().remove(&id);
-        Ok(outputs)
-    }
-
-    /// Edits a canvas. Consecutive edits apply together as one revision;
-    /// undo and redo step on their own.
-    pub fn edit_canvas(
-        &mut self,
-        id: AssetId,
-        commands: Vec<spectrum_canvas::Command>,
-    ) -> Result<Vec<spectrum_canvas::CommandOutput>> {
-        use spectrum_canvas::{CanvasModel, Command};
-        use spectrum_document::Model;
-        let path = self.document(id, AssetKind::Canvas)?;
-        let mut workspace =
-            spectrum_canvas::Workspace::open_newest(&path, self.actor.clone(), self.session)?;
-        let mut outputs = Vec::with_capacity(commands.len());
-        let mut batch: Vec<Command> = Vec::new();
-        for command in commands {
-            if CanvasModel::step(&command).is_some() || CanvasModel::transient(&command) {
-                if !batch.is_empty() {
-                    outputs.extend(workspace.execute_batch(std::mem::take(&mut batch))?);
-                }
-                outputs.push(workspace.execute(command)?);
-            } else {
-                batch.push(command);
-            }
-        }
-        if !batch.is_empty() {
-            outputs.extend(workspace.execute_batch(batch)?);
-        }
-        if let Some(error) = workspace.pending_publish_error() {
-            bail!("the edit was saved but not published: {error}");
-        }
-        self.library.references(id, &links(&workspace.document))?;
-        Ok(outputs)
-    }
-
-    /// An asset's history: every revision, and where each session is.
-    pub fn history(&self, id: AssetId) -> Result<spectrum_document::History> {
-        let asset = self.library.get(id)?;
-        let path = self.library.path(&asset)?;
-        let history = match asset.kind {
-            AssetKind::Image => {
-                spectrum_image::Workspace::open_newest(&path, self.actor.clone(), self.session)?
-                    .history()?
-            }
-            AssetKind::Canvas => {
-                spectrum_canvas::Workspace::open_newest(&path, self.actor.clone(), self.session)?
-                    .history()?
-            }
-            kind => bail!("{kind} assets have no history yet"),
-        };
-        history.context("the asset has no saved history")
-    }
-
-    /// Returns an asset to an earlier (or later) revision in its history.
-    pub fn move_to(&mut self, id: AssetId, revision: spectrum_document::RevisionId) -> Result<()> {
-        let asset = self.library.get(id)?;
-        let path = self.library.path(&asset)?;
-        match asset.kind {
-            AssetKind::Image => {
-                spectrum_image::Workspace::open_newest(&path, self.actor.clone(), self.session)?
-                    .move_to(revision)?;
-                self.previews.borrow_mut().remove(&id);
-            }
-            AssetKind::Canvas => {
-                let mut workspace = spectrum_canvas::Workspace::open_newest(
-                    &path,
-                    self.actor.clone(),
-                    self.session,
-                )?;
-                workspace.move_to(revision)?;
-                self.library.references(id, &links(&workspace.document))?;
-            }
-            kind => bail!("{kind} assets have no history yet"),
-        }
-        Ok(())
-    }
-
-    /// The document an asset of `kind` is stored in, and the session this
-    /// service edits in, for editors that work on documents directly.
-    pub fn editor_target(&self, id: AssetId, kind: AssetKind) -> Result<(PathBuf, SessionId)> {
-        Ok((self.document(id, kind)?, self.session))
-    }
-
-    /// Records which images a canvas uses after it was edited directly.
-    pub fn index_canvas(&mut self, id: AssetId) -> Result<()> {
-        let document = self.saved_canvas(id)?;
-        self.library.references(id, &links(&document))
-    }
-
-    /// Changes some of an image's adjustments.
-    pub fn adjust(&self, id: AssetId, patch: spectrum_image::AdjustmentPatch) -> Result<()> {
-        self.edit_image(id, vec![spectrum_image::Command::Adjust { patch }])
-            .map(drop)
-    }
-
-    /// Replaces an image's whole adjustment set, including curves, HSL, and
-    /// color grading, which patches do not cover.
-    pub fn set_adjustments(
-        &self,
-        id: AssetId,
-        adjustments: spectrum_image::Adjustments,
-    ) -> Result<()> {
-        self.edit_image(
-            id,
-            vec![spectrum_image::Command::SetAdjustments { adjustments }],
-        )
-        .map(drop)
-    }
-
-    /// Gives each target image all of the source image's edits, crop included.
-    pub fn apply_edits(&self, from: AssetId, to: &[AssetId]) -> Result<()> {
-        let adjustments = self.image(from)?.adjustments;
-        for id in to.iter().filter(|id| **id != from) {
-            self.set_adjustments(*id, adjustments.clone())?;
-        }
-        Ok(())
-    }
-
-    /// Steps an image's edit history back or forward.
-    pub fn step_history(&self, id: AssetId, forward: bool) -> Result<()> {
-        let command = if forward {
-            spectrum_image::Command::Redo
-        } else {
-            spectrum_image::Command::Undo
-        };
-        self.edit_image(id, vec![command]).map(drop)
     }
 
     /// The rendered image a canvas draws for `id`. Trashed and purged images
@@ -415,6 +254,14 @@ impl Service {
             }
             kind => bail!("copying is not implemented for {kind}"),
         }
+    }
+}
+
+fn person() -> Actor {
+    Actor {
+        id: "person:local".into(),
+        display_name: "You".into(),
+        kind: ActorKind::Human,
     }
 }
 

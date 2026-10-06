@@ -91,10 +91,16 @@ checkpoints, and clear attribution of who did what. Keep all history by default;
 any pruning needs an explicit, reviewable user decision. History and embedded
 files belong to the library, with rebuildable private caches.
 
-Collaboration is vendor-neutral and CLI-first. An agent edits through the CLI in
-its own attributed session; its edits and the person's build on each other's
-newest saved revision. The desktop should next show agent edits to an open
-asset as they land. Remaining work is in
+Collaboration is vendor-neutral and CLI-first: every change a person can make
+in the app, an agent can make through the CLI. An agent starts from where the
+person is and works in its own session; its work never overwrites the
+person's, because revisions are immutable and the person's place moves only by
+their own choice. Working together, the person follows the agent's revisions
+and watches them land until they edit, which branches. Working separately,
+the person never moves. The person can jump to any revision, an agent's
+included, and editing there branches from it. Next: a history tree view for
+every asset kind, showing each session's branch, so the person can watch an
+agent live and jump back to their own work. Remaining work is in
 [revision lifecycle](../tasks/revision-lifecycle.md).
 
 ## Current product work

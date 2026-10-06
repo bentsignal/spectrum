@@ -5,6 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::FontAsset;
 
 pub(super) const BUNDLED_UBUNTU: &[u8] = epaint_default_fonts::UBUNTU_LIGHT;
+const BUNDLED_KEY: &str = "bundled:ubuntu-light";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FaceChoice {
@@ -15,25 +16,42 @@ pub(super) enum FaceChoice {
 pub(super) struct ResolvedFonts {
     primary: std::sync::Arc<[u8]>,
     primary_is_bundled: bool,
+    /// Stable identities of the primary and bundled fonts' contents.
+    primary_key: std::sync::Arc<str>,
+    bundled_key: std::sync::Arc<str>,
 }
 
 impl ResolvedFonts {
     pub(super) fn new(font_asset: Option<&FontAsset>) -> Result<Self> {
-        let (primary, primary_is_bundled) = match font_asset {
+        let (primary, primary_is_bundled, primary_key) = match font_asset {
             Some(asset) => (
                 asset
                     .shared_bytes()
                     .context("could not load the exact imported font snapshot")?,
                 false,
+                std::sync::Arc::from(asset.content_hash.as_str()),
             ),
-            None => (std::sync::Arc::from(BUNDLED_UBUNTU), true),
+            None => (
+                std::sync::Arc::from(BUNDLED_UBUNTU),
+                true,
+                std::sync::Arc::from(BUNDLED_KEY),
+            ),
         };
         Face::parse(&primary, 0).context("primary text font is malformed")?;
         Face::parse(BUNDLED_UBUNTU, 0).context("bundled Ubuntu fallback is malformed")?;
         Ok(Self {
             primary,
             primary_is_bundled,
+            primary_key,
+            bundled_key: std::sync::Arc::from(BUNDLED_KEY),
         })
+    }
+
+    pub(super) fn key(&self, choice: FaceChoice) -> &std::sync::Arc<str> {
+        match choice {
+            FaceChoice::Primary => &self.primary_key,
+            FaceChoice::Bundled => &self.bundled_key,
+        }
     }
 
     pub(super) fn bytes(&self, choice: FaceChoice) -> &[u8] {
@@ -131,6 +149,8 @@ mod tests {
         let fonts = ResolvedFonts {
             primary: epaint_default_fonts::HACK_REGULAR.to_vec().into(),
             primary_is_bundled: false,
+            primary_key: "test:hack".into(),
+            bundled_key: BUNDLED_KEY.into(),
         };
         let (primary, bundled) = fonts.faces().unwrap();
         assert_eq!(

@@ -242,8 +242,6 @@ fn typography_cli_parses_face_paragraph_and_effect_controls() {
         "700",
         "--style",
         "Bold",
-        "--layout",
-        "harfbuzz-v1",
         "--language",
         "iw-IL",
         "--align",
@@ -269,10 +267,6 @@ fn typography_cli_parses_face_paragraph_and_effect_controls() {
     assert_eq!(arguments.family.as_deref(), Some("Hack"));
     assert_eq!(arguments.weight, Some(700));
     assert_eq!(arguments.style.as_deref(), Some("Bold"));
-    assert_eq!(
-        arguments.layout,
-        Some(typography::CliTextLayout::HarfbuzzV1)
-    );
     assert_eq!(arguments.language.as_deref(), Some("iw-IL"));
     assert_eq!(arguments.line_height, Some(0.8));
     assert_eq!(arguments.tracking, Some(-2.0));
@@ -283,48 +277,29 @@ fn typography_cli_parses_face_paragraph_and_effect_controls() {
 }
 
 #[test]
-fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_downgrade() {
+fn add_text_shapes_in_the_requested_language_and_typography_resets_it() {
     let project = temporary_project("shaped-text-cli");
     let project_arg = project.to_str().unwrap();
     for arguments in [
         vec!["init", "Shaped CLI", "--width", "320", "--height", "180"],
         vec!["add-text", "office العربية", "--language", "iw-IL"],
+        vec!["typography", "1", "--language", "und"],
     ] {
         let mut cli = vec!["canvas", "--document", project_arg];
         cli.extend(arguments);
         run(parse_cli(cli).unwrap()).unwrap();
     }
+    let history = Workspace::open(&project, cli_actor(), SessionId::new())
+        .unwrap()
+        .history()
+        .unwrap()
+        .unwrap();
+    assert_eq!(history.revisions.len(), 3);
     let document = Workspace::read(&project).unwrap();
     let spectrum_canvas::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind
     else {
         panic!("CLI did not create text");
     };
-    assert_eq!(
-        typography.shaping.engine,
-        spectrum_canvas::TextShapingEngine::HarfBuzzV1
-    );
-    assert_eq!(typography.shaping.language.as_deref(), Some("he-IL"));
-
-    run(parse_cli([
-        "canvas",
-        "--document",
-        project_arg,
-        "typography",
-        "1",
-        "--layout",
-        "legacy-v1",
-    ])
-    .unwrap())
-    .unwrap();
-    let document = Workspace::read(&project).unwrap();
-    let spectrum_canvas::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind
-    else {
-        panic!("CLI text disappeared");
-    };
-    assert_eq!(
-        typography.shaping.engine,
-        spectrum_canvas::TextShapingEngine::LegacyCharV1
-    );
     assert_eq!(typography.shaping.language, None);
     std::fs::remove_file(project).unwrap();
 }

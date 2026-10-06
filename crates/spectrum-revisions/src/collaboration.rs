@@ -86,6 +86,14 @@ impl RevisionStore {
         collaboration_for_agent_in(&self.connection, agent_session)
     }
 
+    /// The agent a person is currently following, if any.
+    pub fn active_together(
+        &self,
+        source_session: SessionId,
+    ) -> RevisionResult<Option<Collaboration>> {
+        active_together_for_source_in(&self.connection, source_session)
+    }
+
     pub fn sync_together(
         &mut self,
         source_session: SessionId,

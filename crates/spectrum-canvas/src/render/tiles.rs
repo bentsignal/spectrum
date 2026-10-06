@@ -15,14 +15,18 @@ pub(super) fn render_document_region_scaled_impl(
 ) -> Result<DynamicImage> {
     validate_render_region(document, scale, region, bound_fallback_layers)?;
     let Some(tile_size) = paint_output_tile_size(document, scale) else {
-        return render_document_region_scaled_untiled(
+        // One pass when every layer's visible source fits the staging budget;
+        // otherwise smaller regions, as a large photo shown scaled down needs.
+        let (image, tile_stats) = render_document_tile_adaptive(
             document,
             scale,
             region,
             bound_fallback_layers,
             raster_sources,
-            stats,
-        );
+        )?;
+        stats.output_pixels = u64::from(region.width) * u64::from(region.height);
+        merge_region_stats(stats, tile_stats);
+        return Ok(DynamicImage::ImageRgba8(image));
     };
     if region.width <= tile_size && region.height <= tile_size {
         let (image, tile_stats) = render_document_tile_adaptive(

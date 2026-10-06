@@ -6169,7 +6169,6 @@ dependencies = [
  "epaint_default_fonts",
  "flate2",
  "fontdb 0.23.0",
- "fontdue",
  "fs2",
  "icu_locale",
  "icu_locale_core",
@@ -6210,8 +6209,10 @@ dependencies = [
  "objc",
  "raw-window-handle",
  "serde_json",
+ "spectrum",
  "spectrum-assets",
  "spectrum-canvas",
+ "spectrum-document",
  "spectrum-image",
  "spectrum-library",
 ]

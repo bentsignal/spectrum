@@ -9,9 +9,9 @@ use unicode_script::{Script as UnicodeScript, UnicodeScript as _};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::{
+    TextGeometry,
     font_resolver::{FaceChoice, ResolvedFonts, validate_grapheme_boundaries},
     glyph_raster::{GlyphBitmap, glyph_pixel_bounds, rasterize_glyph},
-    legacy::TextGeometry,
     script::resolve_prior_or_next_strong,
 };
 use crate::{FontAsset, RenderRegion, TextAlignment, TextTypography};
@@ -704,13 +704,11 @@ fn render_layout_region(
             continue;
         }
         if let Some(bitmap) = rasterize_glyph(
+            layout.fonts.key(glyph.face),
             layout.fonts.bytes(glyph.face),
             glyph.glyph_id,
             layout.font_size,
-            glyph.pen_x,
-            glyph.baseline,
-            glyph.x_offset,
-            glyph.y_offset,
+            bounds,
         )? {
             composite_bitmap_alpha(layout, staging, &mut base, &bitmap);
         }

@@ -18,7 +18,9 @@ impl Service {
         let previews = self.library.root().join("previews");
         match asset.kind {
             AssetKind::Image => {
-                let image = spectrum_image::Workspace::read(&document)?;
+                // A thumbnail is a look at the asset: the person follows an
+                // agent they work together with, as when opening it.
+                let image = self.read::<spectrum_image::ImageModel>(&document, true)?.0;
                 let key = hex(&serde_json::to_vec(&(
                     &image.path,
                     &image.adjustments,
@@ -41,7 +43,9 @@ impl Service {
                 let key = hex(format!("{modified:?}{length}{max}").as_bytes());
                 let path = previews.join(format!("{id}-thumb-{}.png", &key[..24]));
                 if !path.exists() {
-                    let mut doc = spectrum_canvas::Workspace::read(&document)?;
+                    let mut doc = self
+                        .read::<spectrum_canvas::CanvasModel>(&document, true)?
+                        .0;
                     self.resolve(&mut doc)?;
                     spectrum_canvas::export_document_sized(&doc, &path, 90, Some(max))?;
                 }

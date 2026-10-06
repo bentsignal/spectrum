@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
 use serde_json::{Value, json};
-use spectrum_canvas::{Document, TextAlignment, TextShaping, TextShapingEngine, TextTypography};
+use spectrum_canvas::{Document, TextAlignment, TextTypography};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(super) enum CliTextAlignment {
@@ -17,34 +17,6 @@ impl From<CliTextAlignment> for TextAlignment {
             CliTextAlignment::Center => Self::Center,
             CliTextAlignment::Right => Self::Right,
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
-pub(super) enum CliTextLayout {
-    LegacyV1,
-    #[default]
-    HarfbuzzV1,
-}
-
-impl From<CliTextLayout> for TextShapingEngine {
-    fn from(value: CliTextLayout) -> Self {
-        match value {
-            CliTextLayout::LegacyV1 => Self::LegacyCharV1,
-            CliTextLayout::HarfbuzzV1 => Self::HarfBuzzV1,
-        }
-    }
-}
-
-pub(super) fn text_shaping(layout: CliTextLayout, language: Option<&str>) -> Result<TextShaping> {
-    match layout {
-        CliTextLayout::LegacyV1 => {
-            if language.is_some_and(|value| value != "und") {
-                bail!("legacy-v1 text cannot carry --language");
-            }
-            Ok(TextShaping::default())
-        }
-        CliTextLayout::HarfbuzzV1 => TextShaping::harfbuzz_v1(language),
     }
 }
 
@@ -68,9 +40,6 @@ pub(super) struct TypographyArgs {
     pub bundled: bool,
     #[arg(long)]
     pub align: Option<CliTextAlignment>,
-    /// Select the permanent text layout engine.
-    #[arg(long, value_enum)]
-    pub layout: Option<CliTextLayout>,
     /// Canonical BCP-47 shaping language; pass und to reset.
     #[arg(long)]
     pub language: Option<String>,
@@ -117,12 +86,6 @@ pub(super) fn updated_typography(
     }
     if let Some(alignment) = arguments.align {
         updated.alignment = alignment.into();
-    }
-    if let Some(layout) = arguments.layout {
-        updated.shaping.engine = layout.into();
-        if updated.shaping.engine == TextShapingEngine::LegacyCharV1 {
-            updated.shaping.language = None;
-        }
     }
     if let Some(language) = &arguments.language {
         updated.shaping.language = (language != "und").then(|| language.clone());

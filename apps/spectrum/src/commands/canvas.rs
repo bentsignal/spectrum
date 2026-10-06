@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
-use spectrum_canvas::Workspace;
 #[cfg(test)]
-use spectrum_canvas::{Command, Document};
+use spectrum_canvas::Command;
+use spectrum_canvas::{Document, Workspace};
 use spectrum_document::{Actor, ActorKind, SessionId};
 
 #[path = "canvas_commands/alignment.rs"]
@@ -40,7 +40,7 @@ mod selection;
 use selection::SelectionArgs;
 #[path = "canvas_commands/typography.rs"]
 mod typography;
-use typography::{CliTextLayout, TypographyArgs, text_shaping, updated_typography};
+use typography::{TypographyArgs, updated_typography};
 #[path = "canvas_commands/transfer.rs"]
 mod transfer;
 use transfer::{LayerCopyArgs, LayerPasteArgs};
@@ -51,7 +51,7 @@ struct Cli {
     /// The canvas's document, found from `--asset` in the library.
     #[arg(skip)]
     project: PathBuf,
-    /// The session edits are made in; a fresh one when unset.
+    /// The session the command reads and edits in; a fresh one when unset.
     #[arg(skip)]
     session: Option<SessionId>,
     #[command(subcommand)]
@@ -100,9 +100,6 @@ enum CliCommand {
         x: f32,
         #[arg(long, default_value_t = 0.0)]
         y: f32,
-        /// Permanent layout engine for the new text.
-        #[arg(long, value_enum, default_value_t = CliTextLayout::HarfbuzzV1)]
-        layout: CliTextLayout,
         /// Canonical BCP-47 shaping language; omitted means und.
         #[arg(long)]
         language: Option<String>,
@@ -441,31 +438,34 @@ fn run(cli: Cli) -> Result<Value> {
             Ok(json!({"ok": true, "action": "init", "document": workspace.document}))
         }
         CliCommand::List => {
-            let document = Workspace::read(&cli.project)?;
+            let document = read(&cli.project, cli.session)?;
             Ok(json!({"ok": true, "document": document}))
         }
         CliCommand::FontList { query, system } => Ok(typography::font_list(
-            &Workspace::read(&cli.project)?,
+            &read(&cli.project, cli.session)?,
             query,
             system,
         )),
         CliCommand::FontUsage { font_id } => {
-            typography::font_usage(&Workspace::read(&cli.project)?, font_id)
+            typography::font_usage(&read(&cli.project, cli.session)?, font_id)
         }
         CliCommand::LayerCopy(arguments) => {
-            transfer::copy_layer(&Workspace::read(&cli.project)?, arguments)
+            transfer::copy_layer(&read(&cli.project, cli.session)?, arguments)
         }
         CliCommand::Sample { x, y } => {
-            let document = Workspace::read(&cli.project)?;
+            let document = read(&cli.project, cli.session)?;
             let [r, g, b, a] = spectrum_canvas::sample_document_color(&document, x, y)?;
             Ok(
                 json!({"ok": true, "x": x, "y": y, "color": format!("{r:02x}{g:02x}{b:02x}{a:02x}")}),
             )
         }
         CliCommand::History => {
-            let workspace =
-                Workspace::open_newest(&cli.project, cli_actor(), cli.session.unwrap_or_default())?;
-            let history = workspace.history()?.context("the canvas has no history")?;
+            let history = match cli.session {
+                Some(session) => Workspace::history_of(&cli.project, session)?,
+                None => Workspace::open(&cli.project, cli_actor(), SessionId::new())?
+                    .history()?
+                    .context("the canvas has no history")?,
+            };
             Ok(json!({
                 "ok": true,
                 "root": history.root,
@@ -475,16 +475,13 @@ fn run(cli: Cli) -> Result<Value> {
             }))
         }
         CliCommand::HistoryJump { revision } => {
-            let mut workspace =
-                Workspace::open_newest(&cli.project, cli_actor(), cli.session.unwrap_or_default())?;
-            workspace.move_to(revision)?;
+            edit(&cli.project, cli.session)?.move_to(revision)?;
             Ok(json!({"ok": true, "action": "history_jump", "revision": revision}))
         }
         CliCommand::Schema => Ok(schema()),
         CliCommand::Benchmark { strict, profile } => benchmark(strict, profile),
         command => {
-            let session = cli.session.unwrap_or_default();
-            let mut workspace = Workspace::open_newest(&cli.project, cli_actor(), session)?;
+            let mut workspace = edit(&cli.project, cli.session)?;
             let plan = dispatch::semantic_commands(command, &workspace.document)?;
             let outputs = match plan.commands.as_slice() {
                 [only] if !plan.atomic_batch => vec![workspace.execute(only.clone())?],
@@ -495,6 +492,22 @@ fn run(cli: Cli) -> Result<Value> {
             }
             Ok(json!({"ok": true, "results": outputs}))
         }
+    }
+}
+
+/// The canvas as the command's session sees it.
+fn read(project: &std::path::Path, session: Option<SessionId>) -> Result<Document> {
+    match session {
+        Some(session) => Ok(Workspace::read_session(project, session)?.0),
+        None => Workspace::read(project),
+    }
+}
+
+/// The canvas opened for editing in the command's session.
+fn edit(project: &std::path::Path, session: Option<SessionId>) -> Result<Workspace> {
+    match session {
+        Some(session) => Workspace::open_session(project, session),
+        None => Workspace::open(project, cli_actor(), SessionId::new()),
     }
 }
 

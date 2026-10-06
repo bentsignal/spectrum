@@ -1,15 +1,38 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
+
 use anyhow::{Context, Result, bail};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
 use ttf_parser::{Face, GlyphId, OutlineBuilder, Rect};
 
 const MAX_GLYPH_PIXELS: u64 = 4_096 * 4_096;
+/// Rendered glyphs kept for reuse; the cache empties when it grows past this.
+const MAX_CACHED_GLYPH_BYTES: usize = 64 * 1024 * 1024;
 
 pub(super) struct GlyphBitmap {
     pub(super) left: i32,
     pub(super) top: i32,
     pub(super) width: u32,
     pub(super) height: u32,
-    pub(super) alpha: Vec<u8>,
+    pub(super) alpha: Arc<[u8]>,
+}
+
+/// A glyph's coverage depends only on its font, glyph, and size; where it
+/// lands only offsets it. Text re-renders on every slider step, so glyphs
+/// are kept by font content, glyph, and size.
+type GlyphKey = (Arc<str>, u16, u32);
+
+#[derive(Default)]
+struct GlyphCache {
+    glyphs: HashMap<GlyphKey, Option<Arc<[u8]>>>,
+    bytes: usize,
+}
+
+fn glyph_cache() -> &'static Mutex<GlyphCache> {
+    static CACHE: OnceLock<Mutex<GlyphCache>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
 }
 
 #[derive(Clone, Copy)]
@@ -49,37 +72,64 @@ pub(super) fn glyph_pixel_bounds(
     })
 }
 
+/// Renders a glyph whose pixel bounds are `bounds`, from `font`, the
+/// stable identity of `bytes`.
 pub(super) fn rasterize_glyph(
+    font: &Arc<str>,
     bytes: &[u8],
     glyph_id: u16,
     font_size: f32,
-    pen_x: f32,
-    baseline: f32,
-    x_offset_units: i32,
-    y_offset_units: i32,
+    bounds: GlyphPixelBounds,
 ) -> Result<Option<GlyphBitmap>> {
+    let key = (font.clone(), glyph_id, font_size.to_bits());
+    let cached = glyph_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .glyphs
+        .get(&key)
+        .cloned();
+    let alpha = match cached {
+        Some(alpha) => alpha,
+        None => {
+            let alpha = rasterize_coverage(bytes, glyph_id, font_size, bounds)?;
+            let mut cache = glyph_cache()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let size = alpha.as_ref().map_or(0, |alpha| alpha.len());
+            if cache.bytes + size > MAX_CACHED_GLYPH_BYTES {
+                *cache = GlyphCache::default();
+            }
+            cache.bytes += size;
+            cache.glyphs.insert(key, alpha.clone());
+            alpha
+        }
+    };
+    Ok(alpha.map(|alpha| GlyphBitmap {
+        left: bounds.left,
+        top: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+        alpha,
+    }))
+}
+
+fn rasterize_coverage(
+    bytes: &[u8],
+    glyph_id: u16,
+    font_size: f32,
+    bounds: GlyphPixelBounds,
+) -> Result<Option<Arc<[u8]>>> {
     let face = Face::parse(bytes, 0).context("could not parse resolved text face")?;
     let glyph = GlyphId(glyph_id);
-    let Some(bounds) = face.glyph_bounding_box(glyph) else {
+    let Some(outline_bounds) = face.glyph_bounding_box(glyph) else {
         return Ok(None);
     };
-    let pixel_bounds = glyph_pixel_bounds(
-        &face,
-        glyph_id,
-        font_size,
-        pen_x,
-        baseline,
-        x_offset_units,
-        y_offset_units,
-    )
-    .expect("glyph bounds were resolved above");
-    let width = pixel_bounds.width;
-    let height = pixel_bounds.height;
+    let (width, height) = (bounds.width, bounds.height);
     let scale = font_size / f32::from(face.units_per_em());
     if u64::from(width) * u64::from(height) > MAX_GLYPH_PIXELS {
         bail!("shaped glyph exceeds the bounded rendering budget");
     }
-    let mut builder = ScaledOutline::new(bounds, scale);
+    let mut builder = ScaledOutline::new(outline_bounds, scale);
     if face.outline_glyph(glyph, &mut builder).is_none() {
         return Ok(None);
     }
@@ -97,14 +147,9 @@ pub(super) fn rasterize_glyph(
         Transform::identity(),
         None,
     );
-    let alpha = pixmap.pixels().iter().map(|pixel| pixel.alpha()).collect();
-    Ok(Some(GlyphBitmap {
-        left: pixel_bounds.left,
-        top: pixel_bounds.top,
-        width,
-        height,
-        alpha,
-    }))
+    Ok(Some(
+        pixmap.pixels().iter().map(|pixel| pixel.alpha()).collect(),
+    ))
 }
 
 struct ScaledOutline {

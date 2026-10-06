@@ -198,3 +198,68 @@ fn imports_are_batched_and_projects_group_assets_without_owning_them() {
     ok(&root, &["projects", "delete", &project]);
     assert_eq!(unassigned(&root).as_array().unwrap().len(), 4);
 }
+
+#[test]
+fn agents_work_together_by_default_or_separately_in_their_own_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("library");
+    let source = temp.path().join("photo.png");
+    image::RgbaImage::from_pixel(8, 8, image::Rgba([90, 90, 90, 255]))
+        .save(&source)
+        .unwrap();
+    let imported = ok(&root, &["images", "import", source.to_str().unwrap()]);
+    let image = imported["assets"][0]["id"].as_str().unwrap().to_string();
+    let exposure = |args: &[&str]| ok(&root, args)["image"]["adjustments"]["exposure"].clone();
+
+    ok(
+        &root,
+        &["images", "--asset", &image, "edit", "--exposure", "1"],
+    );
+    assert_eq!(exposure(&["images", "--asset", &image, "inspect"]), 1.0);
+
+    let started = ok(
+        &root,
+        &[
+            "agent", "start", &image, "--mode", "separate", "--name", "Helper",
+        ],
+    );
+    let session = started["session"].as_str().unwrap().to_string();
+    assert_eq!(started["mode"], "separate");
+    ok(
+        &root,
+        &[
+            "images",
+            "--asset",
+            &image,
+            "--session",
+            &session,
+            "edit",
+            "--exposure",
+            "2",
+        ],
+    );
+    assert_eq!(
+        exposure(&[
+            "images",
+            "--asset",
+            &image,
+            "--session",
+            &session,
+            "inspect"
+        ]),
+        2.0
+    );
+    // The together session is untouched by the separate one.
+    assert_eq!(exposure(&["images", "--asset", &image, "inspect"]), 1.0);
+    let status = ok(&root, &["agent", "status", &image, "--session", &session]);
+    assert_eq!(status["mode"], "separate");
+    let history = ok(&root, &["images", "--asset", &image, "history"]);
+    let names: Vec<_> = history["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["actor"]["display_name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"Helper".to_string()));
+    assert!(names.contains(&"You".to_string()));
+}

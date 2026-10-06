@@ -78,9 +78,10 @@ impl Workspace {
         let Ok(store) = &self.store else {
             return;
         };
-        match store.service.image(id) {
-            Ok(photo) => {
+        match store.service.image_view(id) {
+            Ok((photo, revision)) => {
                 self.image.adjust = photo.adjustments.clone();
+                self.image.edits.revisions.insert(id, revision);
                 if self.open == Open::Image(id) {
                     self.image.edits.reset(photo.adjustments.clone());
                     self.image.photo_info = Some(photo);

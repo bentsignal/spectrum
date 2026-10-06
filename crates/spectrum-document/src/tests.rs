@@ -224,20 +224,98 @@ fn agents_work_in_their_own_session() {
     assert_eq!(Notebook::read(&path).unwrap().lines, ["mine", "theirs"]);
 }
 
+fn agent() -> Actor {
+    Actor {
+        id: "agent:test".into(),
+        display_name: "Agent".into(),
+        kind: ActorKind::Agent,
+    }
+}
+
 #[test]
-fn opening_at_the_newest_builds_on_other_sessions() {
+fn an_agent_branches_from_the_person_and_never_moves_them() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("notes.spectrum");
-    let (desk, cli) = (SessionId::new(), SessionId::new());
-    let mut notes = Notebook::create(&path, Notes::default(), person(), desk).unwrap();
-    notes.execute(Edit::Write("desk".into())).unwrap();
+    let me = SessionId::new();
+    let mut notes = Notebook::create(&path, Notes::default(), person(), me).unwrap();
+    notes.execute(Edit::Write("mine".into())).unwrap();
+    let start = notes.revision().unwrap();
     drop(notes);
-    let mut agent = Notebook::open_newest(&path, person(), cli).unwrap();
-    agent.execute(Edit::Write("agent".into())).unwrap();
-    drop(agent);
-    let notes = Notebook::open_newest(&path, person(), desk).unwrap();
-    assert_eq!(notes.document.lines, ["desk", "agent"]);
-    assert!(notes.can_undo());
+
+    let collaboration =
+        Notebook::start_collaboration(&path, Some(me), agent(), CollaborationMode::Separate)
+            .unwrap();
+    assert_eq!(collaboration.base_revision, start);
+    let mut helper = Notebook::open_session(&path, collaboration.agent_session).unwrap();
+    assert_eq!(helper.document.lines, ["mine"]);
+    helper.execute(Edit::Write("agent".into())).unwrap();
+    drop(helper);
+
+    // The person still sees, and keeps working on, their own line.
+    let (seen, at) = Notebook::read_session(&path, me).unwrap();
+    assert_eq!((seen.lines, at), (vec!["mine".to_string()], start));
+    let mut notes = Notebook::open(&path, person(), me).unwrap();
+    notes.execute(Edit::Write("more".into())).unwrap();
+    assert_eq!(notes.document.lines, ["mine", "more"]);
+    // Both futures remain, branching from where the agent started.
+    let history = Notebook::history_of(&path, me).unwrap();
+    let children = history
+        .revisions
+        .iter()
+        .filter(|revision| revision.parent_id == Some(start))
+        .count();
+    assert_eq!(children, 2);
+    drop(notes);
+
+    // Jumping to the agent's work and editing there branches from it.
+    let (agent_view, agent_at) =
+        Notebook::read_session(&path, collaboration.agent_session).unwrap();
+    assert_eq!(agent_view.lines, ["mine", "agent"]);
+    let mut notes = Notebook::open_at(&path, person(), me, Some(agent_at)).unwrap();
+    notes.execute(Edit::Write("after agent".into())).unwrap();
+    assert_eq!(notes.document.lines, ["mine", "agent", "after agent"]);
+    let (helper_view, _) = Notebook::read_session(&path, collaboration.agent_session).unwrap();
+    assert_eq!(helper_view.lines, ["mine", "agent"]);
+}
+
+#[test]
+fn a_person_follows_an_agent_together_until_they_edit() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("notes.spectrum");
+    let me = SessionId::new();
+    let notes = Notebook::create(&path, Notes::default(), person(), me).unwrap();
+    drop(notes);
+    let collaboration =
+        Notebook::start_collaboration(&path, Some(me), agent(), CollaborationMode::Together)
+            .unwrap();
+    let mut helper = Notebook::open_session(&path, collaboration.agent_session).unwrap();
+    helper.execute(Edit::Write("one".into())).unwrap();
+    assert!(matches!(
+        Notebook::follow(&path, me).unwrap(),
+        CollaborationSync::Advanced { .. }
+    ));
+    assert_eq!(Notebook::read_session(&path, me).unwrap().0.lines, ["one"]);
+    helper.execute(Edit::Write("two".into())).unwrap();
+    Notebook::follow(&path, me).unwrap();
+    assert_eq!(
+        Notebook::read_session(&path, me).unwrap().0.lines,
+        ["one", "two"]
+    );
+
+    // The person's own edit ends the following; later agent work stays apart.
+    let mut notes = Notebook::open(&path, person(), me).unwrap();
+    notes.execute(Edit::Write("mine".into())).unwrap();
+    drop(notes);
+    helper.execute(Edit::Write("three".into())).unwrap();
+    assert!(matches!(
+        Notebook::follow(&path, me).unwrap(),
+        CollaborationSync::Split(_)
+    ));
+    assert_eq!(
+        Notebook::read_session(&path, me).unwrap().0.lines,
+        ["one", "two", "mine"]
+    );
+    assert!(Notebook::following(&path, me).unwrap().is_none());
 }
 
 #[test]
@@ -289,7 +367,7 @@ fn a_copied_library_opens_and_keeps_saving() {
     let copy = root.path().join("copy");
     copy_tree(&original, &copy);
     let path = copy.join("notes.spectrum");
-    let mut notes = Notebook::open_newest(&path, person(), session).unwrap();
+    let mut notes = Notebook::open(&path, person(), session).unwrap();
     assert_eq!(notes.document.lines, ["a", "b", "c"]);
     notes.execute(Edit::Write("d".into())).unwrap();
     drop(notes);

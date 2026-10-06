@@ -1,6 +1,7 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use spectrum_assets::{Service, default_root};
+use spectrum_document::{CollaborationMode, SessionId};
 use spectrum_library::{AssetId, AssetKind, ProjectId};
 use std::path::PathBuf;
 
@@ -9,6 +10,10 @@ use std::path::PathBuf;
 pub(super) struct Cli {
     #[arg(long, global = true, env = "SPECTRUM_LIBRARY")]
     library: Option<PathBuf>,
+    /// Work in this agent session (from `agent start`) instead of together
+    /// with the person.
+    #[arg(long, global = true, env = "SPECTRUM_SESSION")]
+    session: Option<SessionId>,
     #[command(subcommand)]
     command: Domain,
 }
@@ -47,8 +52,35 @@ enum Domain {
     },
     /// Make an independent copy, including referenced images for a canvas.
     Copy { asset: AssetId },
+    /// Start or inspect an agent session on an asset.
+    Agent {
+        #[command(subcommand)]
+        command: Agent,
+    },
     /// Show typed JSON command formats for editor automation.
     Schema,
+}
+#[derive(Subcommand)]
+enum Agent {
+    /// Start a session from where the person is. Together, the person
+    /// follows your edits until they make their own; separately, they never
+    /// move. Pass the returned session with --session.
+    Start {
+        asset: AssetId,
+        #[arg(long, value_enum, default_value_t = Mode::Together)]
+        mode: Mode,
+        /// How the session is named in history.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Show a session's mode, where it started, and whether the person is
+    /// still following it.
+    Status { asset: AssetId },
+}
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Mode {
+    Together,
+    Separate,
 }
 #[derive(Subcommand)]
 enum Trash {
@@ -129,7 +161,9 @@ enum Canvas {
     },
 }
 pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
-    let mut service = Service::agent(&cli.library.map(Ok).unwrap_or_else(default_root)?)?;
+    let session = cli.session;
+    let mut service = Service::agent(&cli.library.map(Ok).unwrap_or_else(default_root)?)?
+        .with_session(session)?;
     service.purge_expired()?;
     let value = match cli.command {
         Domain::Rename { asset, name } => serde_json::to_value(service.rename(asset, &name)?)?,
@@ -156,6 +190,27 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
                 service.library.list()?
             };
             serde_json::json!({"root":service.library.root(),"assets":assets})
+        }
+        Domain::Agent {
+            command: Agent::Start { asset, mode, name },
+        } => {
+            let mode = match mode {
+                Mode::Together => CollaborationMode::Together,
+                Mode::Separate => CollaborationMode::Separate,
+            };
+            let collaboration = service.start_agent(asset, mode, name.as_deref())?;
+            serde_json::json!({
+                "session": collaboration.agent_session,
+                "mode": collaboration.mode,
+                "base_revision": collaboration.base_revision,
+                "continue": "pass --session with every command for this work",
+            })
+        }
+        Domain::Agent {
+            command: Agent::Status { asset },
+        } => {
+            let session = session.context("pass the agent's --session")?;
+            serde_json::to_value(service.agent_status(asset, session)?)?
         }
         Domain::Projects { command } => super::projects::run(&mut service, command)?,
         Domain::Imports => serde_json::to_value(service.library.imports()?)?,

@@ -38,24 +38,30 @@ canvas copy gets its own copies of its images), places images on canvases,
 renders previews and thumbnails, exports outside the library, and trashes,
 restores, and purges. Names live only in the index.
 
-## Durable documents
+## Durable documents and sessions
 
 `spectrum-document` turns any `Model` (a document type plus its commands) into
-a durable document. Each edit is a revision with its actor and session; undo and
-redo move a session's cursor through an immutable tree, so editing from the
-past keeps the old future as a branch. Snapshots are stored every 100 commands
-or 64 KiB of commands, so opening replays a bounded tail. Files a document uses
-(source photos, fonts, Clone Stamp sources) are embedded by content hash as
-`spectrum-asset:<sha256>.<ext>` and staged into the cache on demand.
+a durable document. Its history is an immutable tree of revisions, like Git
+commits; nothing is ever rewritten or discarded. Snapshots are stored every 100
+commands or 64 KiB of commands, so opening replays a bounded tail. Files a
+document uses (source photos, fonts, Clone Stamp sources) are embedded by
+content hash as `spectrum-asset:<sha256>.<ext>` and staged into the cache.
 
-The desktop opens a library as the person ("You"); the CLI opens it as an agent.
-Each has one lasting session per library. Edits open the document at its newest
-revision, so a CLI edit builds on what the desktop saved and the reverse.
-There is one storage format; files from other formats are refused.
+Every person and agent moves through the tree in their own session. The
+desktop always commits onto the revision it shows, so editing from an older
+revision, or beside an agent's work, makes a new branch. An agent starts from
+where the person is and commits in its own session; it never moves the person.
+Two ways to work with an agent (`spectrum-assets/src/sessions.rs`):
+
+- **Together** (the CLI's default): the person follows the agent's revisions,
+  and the open asset updates as they land, until the person makes an edit of
+  their own. That edit branches; the agent's next command starts again from it.
+- **Separate** (`spectrum agent start --mode separate`, then `--session`): the
+  person never moves. They can jump to the agent's revisions later.
 
 `Model` hooks let an engine resolve state-dependent commands before storing them
 (a Clone Stamp source, a magic wand's selection, the selection a stroke paints
-within) so replay is exact, and validate documents after loading.
+within) so replay is exact. There is one storage format; others are refused.
 
 ## Image engine
 
@@ -85,11 +91,12 @@ modes including Dissolve; layer styles and gradient fills; selections (rectangle
 ellipse, lasso, magic wand); brush, eraser, and Clone Stamp strokes; guides,
 snapping, and alignment; and layer copy and paste. Every change is a
 `spectrum_canvas::Command`. Shapes stay parametric and re-render at the current
-zoom and export scale. Text shapes with HarfBuzz (`spectrum-fonts`) or the
-older character layout; fonts are embedded in the document.
+zoom and export scale. Text shapes with HarfBuzz (`spectrum-fonts`) and
+renders cached glyph outlines; fonts are embedded in the document.
 
 Interactive previews and exports share one CPU compositor, which renders only
-the visible region and keeps decoded rasters in a bounded cache. A linked image
+the visible region, splits regions whose sources exceed one staging pass (such
+as a large photo shown scaled down), and keeps decoded rasters in a bounded cache. A linked image
 layer carries its image's asset ID; the service points it at the image's current
 render, so image edits show on every canvas that uses it.
 
@@ -101,7 +108,10 @@ render, so image edits show on every canvas that uses it.
 `CanvasControls` with the open `CanvasState`. The canvas editor applies commands
 to its document immediately and saves them in batches after a 300 ms pause;
 the image editor renders in memory and saves the whole adjustment set when
-edits pause. Both save through the service, off the main thread.
+edits pause. Both save through the service onto the revision on screen, off
+the main thread, and follow an agent the person works together with while
+nothing is waiting to save. The desktop executable is also the CLI: started as
+`spectrum` (packages link that name to it), it runs the command line.
 
 ## Performance checks
 

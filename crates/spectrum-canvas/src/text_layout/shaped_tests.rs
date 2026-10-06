@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 fn shaped_typography() -> TextTypography {
     TextTypography {
-        shaping: TextShaping::harfbuzz_v1(Some("en-US")).unwrap(),
+        shaping: TextShaping::new(Some("en-US")).unwrap(),
         ..Default::default()
     }
 }
@@ -180,7 +180,7 @@ fn mixed_direction_wrapping_and_region_render_share_geometry() {
     let typography = TextTypography {
         box_width: Some(170.0),
         tracking: 1.0,
-        shaping: TextShaping::harfbuzz_v1(Some("ar")).unwrap(),
+        shaping: TextShaping::new(Some("ar")).unwrap(),
         effects: TextEffects {
             outline_width: 2.0,
             shadow_offset_x: 3.0,

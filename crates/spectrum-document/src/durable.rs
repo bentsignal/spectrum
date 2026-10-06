@@ -117,6 +117,24 @@ fn cache_root(path: &Path) -> Result<PathBuf> {
     Ok(parent.join(".cache"))
 }
 
+/// Where `session` is in a document, or its newest revision for a session
+/// that has not opened it.
+fn session_cursor(
+    store: &LiveRevisionStore,
+    info: &ProjectInfo,
+    session: SessionId,
+) -> Result<RevisionId> {
+    match store
+        .store()
+        .session_on_track(session, info.default_track_id)?
+    {
+        Some(session) => Ok(session.cursor),
+        None => Ok(store
+            .store()
+            .most_recent_cursor_for_track(info.default_track_id)?),
+    }
+}
+
 /// Deletes a revision file and its working copy and staged files.
 pub fn remove(path: &Path) -> Result<()> {
     let project = match spectrum_revisions::RevisionStore::open_read_only(path) {
@@ -215,6 +233,24 @@ impl<M: Model> Durable<M> {
         Ok((durable, document))
     }
 
+    /// Adds `session` to a document, at its newest revision, unless it is
+    /// already there.
+    pub fn join(path: &Path, actor: Actor, session: SessionId) -> Result<()> {
+        let mut store = LiveRevisionStore::open(path, &cache_root(path)?)?;
+        let info = checked_info::<M>(&store, path)?;
+        if store
+            .store()
+            .session_on_track(session, info.default_track_id)?
+            .is_none()
+        {
+            let latest = store
+                .store()
+                .most_recent_cursor_for_track(info.default_track_id)?;
+            store.mutate(|store| store.resume_session(session, actor, latest))?;
+        }
+        Ok(())
+    }
+
     /// The newest document in a revision file, without joining a session.
     pub fn read(path: &Path) -> Result<M::Document> {
         let store = LiveRevisionStore::open(path, &cache_root(path)?)?;
@@ -222,6 +258,59 @@ impl<M: Model> Durable<M> {
         let cursor = store
             .store()
             .most_recent_cursor_for_track(info.default_track_id)?;
+        Self::reader(path, store, info, cursor)?.load_document()
+    }
+
+    /// The document as `session` sees it, changing nothing. A session that
+    /// has not opened this document sees its newest revision.
+    pub fn read_session(path: &Path, session: SessionId) -> Result<(M::Document, RevisionId)> {
+        let store = LiveRevisionStore::open(path, &cache_root(path)?)?;
+        let info = checked_info::<M>(&store, path)?;
+        let cursor = session_cursor(&store, &info, session)?;
+        let reader = Self::reader(path, store, info, cursor)?;
+        Ok((reader.load_document()?, cursor))
+    }
+
+    /// Where `session` is in a document (its newest revision, for a session
+    /// that has not opened it).
+    pub fn cursor_of(path: &Path, session: SessionId) -> Result<RevisionId> {
+        let store = LiveRevisionStore::open(path, &cache_root(path)?)?;
+        let info = checked_info::<M>(&store, path)?;
+        session_cursor(&store, &info, session)
+    }
+
+    /// The revision tree, with `session`'s place in it as the current one.
+    pub fn history_of(path: &Path, session: SessionId) -> Result<History> {
+        let store = LiveRevisionStore::open(path, &cache_root(path)?)?;
+        let info = checked_info::<M>(&store, path)?;
+        let cursor = session_cursor(&store, &info, session)?;
+        Self::reader(path, store, info, cursor)?.history()
+    }
+
+    /// Moves a person following an agent to the agent's newest revision, or
+    /// ends the following once the person has gone their own way.
+    pub fn follow(path: &Path, person: SessionId) -> Result<CollaborationSync> {
+        let mut store = LiveRevisionStore::open(path, &cache_root(path)?)?;
+        checked_info::<M>(&store, path)?;
+        if store.store().session(person)?.is_none() {
+            return Ok(CollaborationSync::Idle);
+        }
+        Ok(store.mutate(|store| store.sync_together(person))?)
+    }
+
+    /// The agent a person is following on this document, if any.
+    pub fn following(path: &Path, person: SessionId) -> Result<Option<Collaboration>> {
+        let store = LiveRevisionStore::open(path, &cache_root(path)?)?;
+        checked_info::<M>(&store, path)?;
+        Ok(store.store().active_together(person)?)
+    }
+
+    fn reader(
+        path: &Path,
+        store: LiveRevisionStore,
+        info: ProjectInfo,
+        cursor: RevisionId,
+    ) -> Result<Self> {
         let reader = Actor {
             id: "spectrum:reader".into(),
             display_name: "Spectrum".into(),
@@ -229,7 +318,11 @@ impl<M: Model> Durable<M> {
         };
         let mut durable = Self::new(path, store, info, reader, SessionId::new())?;
         durable.cursor = cursor;
-        Ok(durable.load(cursor)?.0)
+        Ok(durable)
+    }
+
+    fn load_document(&self) -> Result<M::Document> {
+        Ok(self.load(self.cursor)?.0)
     }
 
     /// Starts an agent session from a person's session.
@@ -455,8 +548,8 @@ impl<M: Model> Durable<M> {
         })
     }
 
-    /// For an agent working together with a person: follows the person's
-    /// newer revisions, returning the document if it moved.
+    /// For a person following an agent: moves to the agent's newest
+    /// revision, returning the document if it moved.
     pub fn sync_together(&mut self) -> Result<(CollaborationSync, Option<M::Document>)> {
         let sync = self
             .store
@@ -468,15 +561,6 @@ impl<M: Model> Durable<M> {
             return Ok((sync, Some(document)));
         }
         Ok((sync, None))
-    }
-
-    /// The revision most recently reached by any session: the document's
-    /// current state as the library shows it.
-    pub fn newest(&self) -> Result<RevisionId> {
-        Ok(self
-            .store
-            .store()
-            .most_recent_cursor_for_track(self.info.default_track_id)?)
     }
 
     pub fn cursor(&self) -> RevisionId {

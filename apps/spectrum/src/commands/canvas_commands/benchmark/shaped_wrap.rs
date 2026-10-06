@@ -19,7 +19,7 @@ pub(super) fn measure() -> Result<ShapedWrapMeasurement> {
     }
     let typography = TextTypography {
         box_width: Some(1_000_000.0),
-        shaping: TextShaping::harfbuzz_v1(Some("en"))?,
+        shaping: TextShaping::new(Some("en"))?,
         ..Default::default()
     };
     let mut samples = Vec::with_capacity(7);

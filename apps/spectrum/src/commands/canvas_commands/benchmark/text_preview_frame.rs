@@ -24,7 +24,7 @@ pub(super) fn measure() -> Result<Measurement> {
     let cold_edit_text = "Cold imported text edit ".repeat(128);
     let cold_edit_typography = TextTypography {
         font_id: Some(font.id),
-        shaping: TextShaping::harfbuzz_v1(Some("en"))?,
+        shaping: TextShaping::new(Some("en"))?,
         ..TextTypography::default()
     };
     let mut cold_edit_samples = Vec::with_capacity(9);
@@ -48,7 +48,7 @@ pub(super) fn measure() -> Result<Measurement> {
             color: [255; 4],
             typography: TextTypography {
                 font_id: Some(font.id),
-                shaping: TextShaping::harfbuzz_v1(Some("en"))?,
+                shaping: TextShaping::new(Some("en"))?,
                 ..TextTypography::default()
             },
         },

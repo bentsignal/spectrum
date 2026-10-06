@@ -6,9 +6,29 @@ stderr and exit nonzero. `--help` works at every level. Help, schemas, and
 benchmarks do not create a library.
 
 `--library <directory>` or `SPECTRUM_LIBRARY` selects a library; otherwise the
-default library in Spectrum's application-data directory is used. The CLI works
-as an agent: its edits are attributed to "Spectrum CLI" in each asset's history,
-in one lasting session per library, and build on the newest saved revision.
+default library in Spectrum's application-data directory is used. In packages,
+`spectrum` is the desktop executable started under that name.
+
+## Agents and history
+
+Every asset's history is a tree of revisions; the person and each agent have
+their own place in it, and nothing is overwritten. By default the CLI works
+**together** with the person: it starts from the revision the person is on,
+and the person (and the open asset in the app) follows its edits until they
+edit something themselves. Their edit branches, and the CLI's next command
+starts again from it. Before starting, ask the person whether to work together
+or separately.
+
+```sh
+spectrum agent start <asset> --mode separate --name "Claude"   # prints a session
+spectrum images --asset <image> --session <session> edit --exposure 0.5
+spectrum agent status <asset> --session <session>
+spectrum canvas --asset <canvas> history          # revisions and every session
+spectrum canvas --asset <canvas> history-jump <revision>
+```
+
+A separate session never moves the person. `SPECTRUM_SESSION` can stand in for
+`--session`. `history-jump` moves only the session running the command.
 
 ## Library commands
 

@@ -13,7 +13,6 @@ anyhow.workspace = true
 base64.workspace = true
 epaint_default_fonts.workspace = true
 flate2.workspace = true
-fontdue.workspace = true
 fs2.workspace = true
 image.workspace = true
 icu_locale.workspace = true

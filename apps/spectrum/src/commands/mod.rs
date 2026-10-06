@@ -72,7 +72,13 @@ fn dispatch(matches: clap::ArgMatches) -> Result<serde_json::Value> {
             "library": {"asset_types": ["image", "canvas"], "references": "live",
                 "copy": "independent, recursively copies referenced content"},
             "help": "spectrum images --help; spectrum canvas --help",
-            "targeting": "Library commands take asset UUIDs. Editor commands take --asset UUID; canvas layer IDs are local to the canvas."
+            "targeting": "Library commands take asset UUIDs. Editor commands take --asset UUID; canvas layer IDs are local to the canvas.",
+            "agents": {
+                "history": "each asset's history is an immutable tree of revisions; the person and each agent have their own session in it",
+                "together": "the default: start from the person's revision; the person follows your edits until they edit themselves, which branches",
+                "separate": "spectrum agent start <asset> --mode separate, then pass --session; the person never moves",
+                "agent_prompt": "before starting, ask whether the person wants to work together or separately"
+            }
         }));
     }
     let Some((_, library_operations)) = LIBRARY.iter().find(|(name, _)| *name == domain) else {
@@ -108,14 +114,27 @@ fn dispatch(matches: clap::ArgMatches) -> Result<serde_json::Value> {
         .cloned()
         .map(Ok)
         .unwrap_or_else(default_root)?;
-    let mut service = Service::agent(&root)?;
+    let session = matches
+        .get_one::<spectrum_document::SessionId>("session")
+        .copied();
+    let mut service = Service::agent(&root)?.with_session(session)?;
     if domain == "images" {
         images::execute_target(args, &mut service, id)
     } else {
-        let (path, session) = service.editor_target(id, AssetKind::Canvas)?;
+        let reading = matches!(
+            operation,
+            "inspect" | "font-list" | "font-usage" | "layer-copy" | "sample" | "history"
+        );
+        let (path, session) = if reading {
+            service.reader_target(id, AssetKind::Canvas)?
+        } else {
+            service.editor_target(id, AssetKind::Canvas)?
+        };
         let mut args = args.clone();
         let output = canvas::execute_target(&mut args, path, session)?;
-        service.index_canvas(id)?;
+        if !reading {
+            service.index_canvas(id)?;
+        }
         Ok(output)
     }
 }

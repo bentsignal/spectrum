@@ -186,7 +186,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
                 line_height: 1.35,
                 tracking: 2.0,
                 box_width: Some(720.0),
-                shaping: TextShaping::harfbuzz_v1(Some("en"))?,
+                shaping: TextShaping::new(Some("en"))?,
                 effects: TextEffects {
                     outline_width: 2.0,
                     shadow_offset_x: 4.0,

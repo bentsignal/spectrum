@@ -69,7 +69,7 @@ pub enum Command {
         color: [u8; 4],
         x: f32,
         y: f32,
-        #[serde(default, skip_serializing_if = "TextShaping::is_legacy_default")]
+        #[serde(default, skip_serializing_if = "TextShaping::is_default")]
         shaping: TextShaping,
     },
     ImportFont {

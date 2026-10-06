@@ -783,33 +783,3 @@ pub(crate) fn layer_mask_allows(layer: &Layer, x: u32, y: u32, width: u32, heigh
         && normalized_y <= layer.mask.y + layer.mask.height;
     !layer.mask.enabled || in_mask != layer.mask.invert
 }
-
-#[cfg(test)]
-mod text_tests {
-    use super::*;
-    use fontdue::Font;
-
-    #[test]
-    fn glyph_layout_does_not_discard_descender_pixels() {
-        let font = Font::from_bytes(
-            epaint_default_fonts::UBUNTU_LIGHT,
-            fontdue::FontSettings {
-                scale: crate::text_render::font_outline_scale(72.0) as f32,
-                ..fontdue::FontSettings::default()
-            },
-        )
-        .unwrap();
-        let (_, glyph) = font.rasterize('g', 72.0);
-        let rendered = render_text(
-            "g",
-            72.0,
-            [255, 255, 255, 255],
-            &crate::TextTypography::default(),
-            None,
-        )
-        .unwrap();
-        let source_alpha: u64 = glyph.into_iter().map(u64::from).sum();
-        let rendered_alpha: u64 = rendered.pixels().map(|pixel| u64::from(pixel[3])).sum();
-        assert_eq!(rendered_alpha, source_alpha);
-    }
-}

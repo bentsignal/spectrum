@@ -106,6 +106,9 @@ pub struct CanvasState {
     rendering: bool,
     /// Commands applied locally and waiting to be saved.
     queue: Vec<Command>,
+    /// The revision the saved document is at; saves continue from it, so an
+    /// agent's work elsewhere in the history never changes this canvas.
+    revision: Option<spectrum_document::RevisionId>,
     saving: bool,
     /// When the document last changed; saves wait for a pause so one
     /// slider drag saves, and undoes, as one step.
@@ -303,6 +306,7 @@ impl Workspace {
             loaded: false,
             rendering: false,
             queue: Vec::new(),
+            revision: None,
             saving: false,
             changed_at: None,
             save_waiting: false,
@@ -326,6 +330,28 @@ impl Workspace {
         }
     }
 
+    /// Whether the canvas has no edits waiting or saving, and which revision
+    /// it shows.
+    pub fn canvas_settled(&self) -> Option<(AssetId, Option<spectrum_document::RevisionId>)> {
+        let canvas = self.canvas.as_ref()?;
+        let busy = canvas.saving
+            || !canvas.queue.is_empty()
+            || canvas.reload
+            || !canvas.loaded
+            || canvas.drag.is_some()
+            || canvas.editing.is_some()
+            || !canvas.points.is_empty();
+        (!busy).then_some((canvas.id, canvas.revision))
+    }
+
+    /// Shows the canvas's saved document again, after following an agent.
+    pub fn show_saved_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(canvas) = &mut self.canvas {
+            canvas.reload = true;
+        }
+        self.reload_canvas(window, cx);
+    }
+
     /// Replaces the local document with the saved one when nothing is waiting to save.
     fn reload_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
@@ -339,7 +365,7 @@ impl Workspace {
         let (root, id, edits) = (store.root.clone(), canvas.id, canvas.edits);
         let task = cx
             .background_executor()
-            .spawn(async move { Service::open(&root)?.saved_canvas(id) });
+            .spawn(async move { Service::open(&root)?.canvas_view(id) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -348,7 +374,8 @@ impl Workspace {
                 };
                 match result {
                     // Newer local edits win; they are on their way to disk.
-                    Ok(doc) if canvas.edits == edits => {
+                    Ok((doc, revision)) if canvas.edits == edits => {
+                        canvas.revision = Some(revision);
                         if canvas
                             .selected
                             .is_some_and(|s| !doc.layers.iter().any(|l| l.id == s))
@@ -617,10 +644,12 @@ impl Workspace {
         }
         canvas.saving = true;
         let batch = std::mem::take(&mut canvas.queue);
-        let (root, id) = (store.root.clone(), canvas.id);
-        let task = cx
-            .background_executor()
-            .spawn(async move { Service::open(&root)?.edit_canvas(id, batch) });
+        let (root, id, base) = (store.root.clone(), canvas.id, canvas.revision);
+        let task = cx.background_executor().spawn(async move {
+            Service::open(&root)?
+                .edit_canvas_from(id, base, batch)
+                .map(|(_, revision)| revision)
+        });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -628,6 +657,9 @@ impl Workspace {
                     return;
                 };
                 canvas.saving = false;
+                if let Ok(revision) = &result {
+                    canvas.revision = Some(*revision);
+                }
                 if let Err(error) = result {
                     // Show what the library really holds.
                     canvas.reload = true;

@@ -32,7 +32,7 @@ pub use system_fonts::{SystemFont, regular_face, system_fonts};
 mod typography;
 pub use typography::{
     FontAsset, FontEmbeddingPermission, FontSlant, TextAlignment, TextEffects, TextShaping,
-    TextShapingEngine, TextTypography,
+    TextTypography,
 };
 
 mod bundled_font;

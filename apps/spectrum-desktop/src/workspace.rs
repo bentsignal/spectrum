@@ -153,6 +153,8 @@ pub struct Workspace {
     pub colors: crate::colors::Colors,
     /// The open canvas, when one fills the main area.
     pub canvas: Option<crate::canvas_state::CanvasState>,
+    /// A check for an agent's newer work is running.
+    pub following: bool,
     /// Keeps keyboard shortcuts working when no field has focus.
     pub focus_handle: FocusHandle,
     /// The title strip a window drag started in, if any.
@@ -390,6 +392,7 @@ impl Workspace {
             hold_token: 0,
             colors: crate::colors::Colors::new(window, cx),
             canvas: None,
+            following: false,
             focus_handle: cx.focus_handle(),
             dragging: None,
             settle: 1,
@@ -398,6 +401,7 @@ impl Workspace {
         if let Err(error) = workspace.reload() {
             workspace.store = Err(format!("{error:#}").into());
         }
+        workspace.start_following(window, cx);
         workspace
     }
 
