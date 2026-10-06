@@ -1,130 +1,16 @@
-use std::{path::Path, process::Command as ProcessCommand, str::FromStr};
+//! Canvas editing through the CLI. Tests name a canvas by a path; the
+//! helpers keep each one as an asset in a library beside it.
+use std::{path::Path, process::Command as ProcessCommand};
 
 use serde_json::Value;
-use spectrum_canvas::{Command, Document, Workspace};
-use spectrum_revisions::{
-    Actor, ActorKind, CollaborationMode, CollaborationStatus, CollaborationSync, SessionId,
-};
-
-#[test]
-fn cli_agent_sessions_support_together_and_separate_workflows() {
-    let human_session = SessionId::new();
-    let directory = std::env::temp_dir().join(format!("prism-cli-agent-{human_session}"));
-    std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("cli-agent.prism");
-    let mut human = Workspace::create_durable(
-        Document::new("CLI collaboration", 640, 480),
-        &project,
-        Actor {
-            id: "person:cli-test".into(),
-            display_name: "CLI Test User".into(),
-            kind: ActorKind::Human,
-        },
-        human_session,
-    )
-    .unwrap();
-
-    let together = run_prism(&[
-        "--document",
-        project.to_str().unwrap(),
-        "agent",
-        "start",
-        "--mode",
-        "together",
-        "--name",
-        "Codex Test",
-    ]);
-    assert_eq!(together["mode"], "together");
-    let together_session = session(&together);
-    run_prism(&[
-        "--document",
-        project.to_str().unwrap(),
-        "--session",
-        &together_session.to_string(),
-        "add-text",
-        "Together result",
-        "--name",
-        "Together result",
-    ]);
-    assert!(matches!(
-        human.sync_together().unwrap(),
-        CollaborationSync::Advanced { .. }
-    ));
-    assert_eq!(human.document.layers[0].name, "Together result");
-
-    human
-        .execute(Command::AddRectangle {
-            name: Some("Human result".into()),
-            width: 120,
-            height: 80,
-            color: [40, 180, 120, 255],
-            corner_radius: 12.0,
-            x: 50.0,
-            y: 100.0,
-        })
-        .unwrap();
-    run_prism(&[
-        "--document",
-        project.to_str().unwrap(),
-        "--session",
-        &together_session.to_string(),
-        "add-text",
-        "Agent alternate",
-    ]);
-    assert!(matches!(
-        human.sync_together().unwrap(),
-        CollaborationSync::Split(_)
-    ));
-    let together_status = status(&project, together_session);
-    assert_eq!(
-        together_status["collaboration"]["status"],
-        serde_json::to_value(CollaborationStatus::Split).unwrap()
-    );
-
-    let separate = run_prism(&[
-        "--document",
-        project.to_str().unwrap(),
-        "agent",
-        "start",
-        "--mode",
-        "separate",
-        "--name",
-        "Claude Test",
-    ]);
-    assert_eq!(
-        separate["mode"],
-        serde_json::to_value(CollaborationMode::Separate).unwrap()
-    );
-    let separate_session = session(&separate);
-    run_prism(&[
-        "--document",
-        project.to_str().unwrap(),
-        "--session",
-        &separate_session.to_string(),
-        "add-text",
-        "Separate result",
-    ]);
-    assert_eq!(human.sync_together().unwrap(), CollaborationSync::Idle);
-    assert!(
-        human
-            .document
-            .layers
-            .iter()
-            .all(|layer| layer.name != "Separate result")
-    );
-    drop(human);
-    std::fs::remove_dir_all(directory).unwrap();
-}
+use spectrum_canvas::Document;
 
 #[test]
 fn cli_creates_and_styles_editable_ellipses() {
-    let directory = std::env::temp_dir().join(format!(
-        "prism-cli-ellipse-{}",
-        spectrum_revisions::RevisionId::new()
-    ));
+    let directory = std::env::temp_dir().join(format!("canvas-cli-ellipse-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("ellipse.prism");
-    run_prism(&[
+    let project = directory.join("ellipse.spectrum");
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "init",
@@ -134,7 +20,7 @@ fn cli_creates_and_styles_editable_ellipses() {
         "--height",
         "480",
     ]);
-    run_prism(&[
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "add-ellipse",
@@ -151,7 +37,7 @@ fn cli_creates_and_styles_editable_ellipses() {
         "--y",
         "50",
     ]);
-    run_prism(&[
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "stroke",
@@ -161,7 +47,7 @@ fn cli_creates_and_styles_editable_ellipses() {
         "--color",
         "ffffffff",
     ]);
-    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
+    let listed = run_canvas(&["--document", project.to_str().unwrap(), "inspect"]);
     let layer = &listed["document"]["layers"][0];
     assert_eq!(layer["kind"]["type"], "ellipse");
     assert_eq!(layer["stroke"]["enabled"], true);
@@ -171,13 +57,10 @@ fn cli_creates_and_styles_editable_ellipses() {
 
 #[test]
 fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
-    let directory = std::env::temp_dir().join(format!(
-        "prism-cli-wand-{}",
-        spectrum_revisions::RevisionId::new()
-    ));
+    let directory = std::env::temp_dir().join(format!("canvas-cli-wand-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("wand.prism");
-    run_prism(&[
+    let project = directory.join("wand.spectrum");
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "init",
@@ -188,7 +71,7 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
         "8",
     ]);
     for x in [2, 14] {
-        run_prism(&[
+        run_canvas(&[
             "--document",
             project.to_str().unwrap(),
             "add-rectangle",
@@ -206,7 +89,7 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
             "2",
         ]);
     }
-    run_prism(&[
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "selection",
@@ -217,11 +100,11 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
         "0",
         "--no-antialias",
     ]);
-    let contiguous = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
+    let contiguous = run_canvas(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(contiguous["document"]["selection"]["type"], "rectangle");
     assert_eq!(contiguous["document"]["selection"]["width"], 3);
 
-    run_prism(&[
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "selection",
@@ -233,7 +116,7 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
         "--noncontiguous",
         "--no-antialias",
     ]);
-    let global = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
+    let global = run_canvas(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(global["document"]["selection"]["type"], "color_mask");
     assert_eq!(global["document"]["selection"]["x"], 2);
     assert_eq!(global["document"]["selection"]["width"], 15);
@@ -242,10 +125,8 @@ fn cli_magic_wand_supports_contiguous_and_canvas_wide_matching() {
 
 #[test]
 fn cli_magic_wand_delete_is_nondestructive_and_durable() {
-    let directory = std::env::temp_dir().join(format!(
-        "prism-cli-wand-delete-{}",
-        spectrum_revisions::RevisionId::new()
-    ));
+    let directory =
+        std::env::temp_dir().join(format!("canvas-cli-wand-delete-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let source = directory.join("two-colors.png");
     image::RgbaImage::from_fn(8, 4, |x, _| {
@@ -259,8 +140,8 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
     .unwrap();
     let source = std::fs::canonicalize(source).unwrap();
     let original = std::fs::read(&source).unwrap();
-    let project = directory.join("wand-delete.prism");
-    run_prism(&[
+    let project = directory.join("wand-delete.spectrum");
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "init",
@@ -272,13 +153,13 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
         "--background",
         "00000000",
     ]);
-    run_prism(&[
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "add-image",
         source.to_str().unwrap(),
     ]);
-    run_prism(&[
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "selection",
@@ -289,7 +170,7 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
         "0",
         "--no-antialias",
     ]);
-    let deleted = run_prism(&[
+    let deleted = run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "selection",
@@ -299,7 +180,7 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
     assert_eq!(deleted["results"][0]["action"], "hide_selection");
     assert_eq!(std::fs::read(&source).unwrap(), original);
 
-    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
+    let listed = run_canvas(&["--document", project.to_str().unwrap(), "inspect"]);
     let mask = &listed["document"]["layers"][0]["pixel_mask"];
     assert_eq!(mask["width"], 8);
     assert_eq!(mask["height"], 4);
@@ -310,8 +191,8 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
     );
     assert!(listed["document"]["selection"].is_object());
 
-    let reopened = Workspace::open(&project).unwrap();
-    let pixel_mask = reopened.document.layers[0].pixel_mask.as_ref().unwrap();
+    let reopened = saved(&project);
+    let pixel_mask = reopened.layers[0].pixel_mask.as_ref().unwrap();
     assert_eq!((pixel_mask.width, pixel_mask.height), (8, 4));
     assert_eq!(
         pixel_mask.alpha.iter().filter(|alpha| **alpha == 0).count(),
@@ -322,13 +203,11 @@ fn cli_magic_wand_delete_is_nondestructive_and_durable() {
 
 #[test]
 fn cli_rasterizes_a_shape_through_the_core_command() {
-    let directory = std::env::temp_dir().join(format!(
-        "prism-cli-rasterize-{}",
-        spectrum_revisions::RevisionId::new()
-    ));
+    let directory =
+        std::env::temp_dir().join(format!("canvas-cli-rasterize-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("rasterize.prism");
-    run_prism(&[
+    let project = directory.join("rasterize.spectrum");
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "init",
@@ -338,7 +217,7 @@ fn cli_rasterizes_a_shape_through_the_core_command() {
         "--height",
         "480",
     ]);
-    run_prism(&[
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "add-rectangle",
@@ -349,7 +228,7 @@ fn cli_rasterizes_a_shape_through_the_core_command() {
         "--radius",
         "3",
     ]);
-    let output = run_prism(&[
+    let output = run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "rasterize-shape",
@@ -358,7 +237,7 @@ fn cli_rasterizes_a_shape_through_the_core_command() {
         "4",
     ]);
     assert_eq!(output["results"][0]["action"], "rasterize_shape");
-    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
+    let listed = run_canvas(&["--document", project.to_str().unwrap(), "inspect"]);
     let layer = &listed["document"]["layers"][0];
     assert_eq!(layer["kind"]["type"], "raster");
     assert_eq!(layer["transform"]["scale_x"], 0.25);
@@ -369,15 +248,12 @@ fn cli_rasterizes_a_shape_through_the_core_command() {
 
 #[test]
 fn cli_exposes_extended_blend_modes_through_core_commands() {
-    let directory = std::env::temp_dir().join(format!(
-        "prism-cli-blend-{}",
-        spectrum_revisions::RevisionId::new()
-    ));
+    let directory = std::env::temp_dir().join(format!("canvas-cli-blend-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("blend.prism");
-    run_prism(&["--document", project.to_str().unwrap(), "init", "Blend CLI"]);
-    run_prism(&["--document", project.to_str().unwrap(), "add-rectangle"]);
-    let result = run_prism(&[
+    let project = directory.join("blend.spectrum");
+    run_canvas(&["--document", project.to_str().unwrap(), "init", "Blend CLI"]);
+    run_canvas(&["--document", project.to_str().unwrap(), "add-rectangle"]);
+    let result = run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "blend",
@@ -385,11 +261,11 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
         "vivid-light",
     ]);
     assert_eq!(result["results"][0]["action"], "set_blend_mode");
-    run_prism(&["--document", project.to_str().unwrap(), "clip", "1", "true"]);
-    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
+    run_canvas(&["--document", project.to_str().unwrap(), "clip", "1", "true"]);
+    let listed = run_canvas(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(listed["document"]["layers"][0]["blend_mode"], "vivid_light");
     assert_eq!(listed["document"]["layers"][0]["clip_to_below"], true);
-    let dissolve = run_prism(&[
+    let dissolve = run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "blend",
@@ -400,17 +276,17 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
     ]);
     assert_eq!(dissolve["results"][0]["action"], "set_blend_mode");
     assert_eq!(dissolve["results"][1]["action"], "set_dissolve_seed");
-    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
+    let listed = run_canvas(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(listed["document"]["layers"][0]["blend_mode"], "dissolve");
     assert_eq!(listed["document"]["layers"][0]["dissolve_seed"], 305419896);
-    run_prism(&[
+    run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "blend",
         "1",
         "normal",
     ]);
-    let dissolve_without_seed = run_prism(&[
+    let dissolve_without_seed = run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "blend",
@@ -425,17 +301,11 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
         dissolve_without_seed["results"][0]["action"],
         "set_blend_mode"
     );
-    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
+    let listed = run_canvas(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(listed["document"]["layers"][0]["blend_mode"], "dissolve");
     assert_eq!(listed["document"]["layers"][0]["dissolve_seed"], 305419896);
-    let revisions_before_seed_update = Workspace::open(&project)
-        .unwrap()
-        .history()
-        .unwrap()
-        .unwrap()
-        .revisions
-        .len();
-    let dissolve_with_new_seed = run_prism(&[
+    let revisions_before_seed_update = revision_count(&project);
+    let dissolve_with_new_seed = run_canvas(&[
         "--document",
         project.to_str().unwrap(),
         "blend",
@@ -456,18 +326,12 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
         dissolve_with_new_seed["results"][1]["action"],
         "set_dissolve_seed"
     );
-    let revisions_after_seed_update = Workspace::open(&project)
-        .unwrap()
-        .history()
-        .unwrap()
-        .unwrap()
-        .revisions
-        .len();
+    let revisions_after_seed_update = revision_count(&project);
     assert_eq!(
         revisions_after_seed_update,
         revisions_before_seed_update + 1
     );
-    let listed = run_prism(&["--document", project.to_str().unwrap(), "inspect"]);
+    let listed = run_canvas(&["--document", project.to_str().unwrap(), "inspect"]);
     assert_eq!(
         listed["document"]["layers"][0]["dissolve_seed"],
         2271560481u64
@@ -475,32 +339,50 @@ fn cli_exposes_extended_blend_modes_through_core_commands() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-fn status(project: &Path, session: SessionId) -> Value {
-    run_prism(&[
-        "--document",
-        project.to_str().unwrap(),
-        "--session",
-        &session.to_string(),
-        "agent",
-        "status",
-    ])
+/// The canvas as last saved.
+fn saved(project: &Path) -> Document {
+    serde_json::from_value(
+        run_canvas(&["--document", project.to_str().unwrap(), "inspect"])["document"].clone(),
+    )
+    .unwrap()
 }
 
-fn session(output: &Value) -> SessionId {
-    SessionId::from_str(output["session"].as_str().unwrap()).unwrap()
+fn revision_count(project: &Path) -> usize {
+    run_canvas(&["--document", project.to_str().unwrap(), "history"])["revisions"]
+        .as_array()
+        .unwrap()
+        .len()
 }
 
-fn run_prism(arguments: &[&str]) -> Value {
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_spectrum"))
-        .arg("canvas")
-        .args(arguments)
-        .output()
-        .unwrap();
+/// Runs `spectrum canvas`, where `--document <path>` names a test canvas:
+/// `init` creates it as an asset in a library beside the path, and later
+/// commands edit that asset.
+fn run_canvas(arguments: &[&str]) -> Value {
+    let (project, rest) = match arguments {
+        ["--document", project, rest @ ..] => (Path::new(project), rest),
+        _ => panic!("tests name their canvas with --document"),
+    };
+    let library = project.with_extension("library");
+    let marker = project.with_extension("asset");
+    let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_spectrum"));
+    command.arg("--library").arg(&library).arg("canvas");
+    let creating = rest.first() == Some(&"init");
+    if creating {
+        command.arg("new").args(&rest[1..]);
+    } else {
+        let asset = std::fs::read_to_string(&marker).unwrap();
+        command.arg("--asset").arg(asset.trim()).args(rest);
+    }
+    let output = command.output().unwrap();
     assert!(
         output.status.success(),
-        "prism failed\nstdout: {}\nstderr: {}",
+        "canvas command failed\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    if creating {
+        std::fs::write(&marker, value["id"].as_str().unwrap()).unwrap();
+    }
+    value
 }

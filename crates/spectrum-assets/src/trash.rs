@@ -1,9 +1,9 @@
-//! Deleting moves assets to the trash; purging removes their engine content.
+//! Deleting moves assets to the trash; purging removes their documents.
 use super::Service;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
-use spectrum_library::{Asset, AssetId, Project, Trashed};
-use std::path::{Path, PathBuf};
+use spectrum_library::{Asset, AssetId, AssetKind, Project, Trashed};
+use std::path::PathBuf;
 
 /// What a deletion affects, for confirmation and reporting.
 #[derive(Serialize)]
@@ -37,7 +37,7 @@ impl Service {
     /// the same size until it is restored.
     pub fn delete(&mut self, id: AssetId) -> Result<Deleted> {
         let asset = self.library.get(id)?;
-        let size = if asset.kind == "image" {
+        let size = if asset.kind == AssetKind::Image {
             Some(image::image_dimensions(self.preview(id)?)?)
         } else {
             None
@@ -53,26 +53,13 @@ impl Service {
         self.library.restore(id)
     }
 
-    /// Permanently removes a trashed asset's content and index entry.
+    /// Permanently removes a trashed asset's document and index entry.
     pub fn purge(&mut self, id: AssetId) -> Result<()> {
         let asset = self.library.lookup(id)?;
         let path = self.library.root().join(&asset.document);
-        if asset.kind == "image" && path.exists() {
-            let item = asset.item.context("image missing item")?;
-            let present = spectrum_image::DurableCatalog::library_entries(&path)?
-                .iter()
-                .any(|(entry, _)| *entry == item);
-            if present {
-                super::live::image(
-                    &path,
-                    item,
-                    spectrum_image::Command::Remove { ids: vec![item] },
-                )?;
-            }
-        }
         self.library.forget(id)?;
-        if !self.library.document_in_use(&asset.document)? && path != self.catalog() {
-            remove_document(&path)?;
+        if !self.library.document_in_use(&asset.document)? {
+            spectrum_document::remove(&path)?;
         }
         Ok(())
     }
@@ -120,17 +107,4 @@ impl Service {
         std::fs::rename(&temporary, &path)?;
         Ok(path)
     }
-}
-
-/// Removes an engine document and its SQLite sidecar files.
-fn remove_document(path: &Path) -> Result<()> {
-    for suffix in ["", "-wal", "-shm"] {
-        let mut file = path.as_os_str().to_owned();
-        file.push(suffix);
-        match std::fs::remove_file(PathBuf::from(file)) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
-            _ => {}
-        }
-    }
-    Ok(())
 }

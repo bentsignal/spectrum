@@ -20,14 +20,13 @@ spectrum-image = { path = "../../crates/spectrum-image" }
 png.workspace = true
 spectrum-canvas = { path = "../../crates/spectrum-canvas" }
 spectrum-assets = { path = "../../crates/spectrum-assets" }
+spectrum-document = { path = "../../crates/spectrum-document" }
 rayon.workspace = true
 same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 spectrum-imaging = { path = "../../crates/spectrum-imaging" }
-spectrum-live-bridge = { path = "../../crates/spectrum-live-bridge" }
-spectrum-revisions = { path = "../../crates/spectrum-revisions" }
 tiff = "0.11.3"
 unicode-linebreak.workspace = true
 

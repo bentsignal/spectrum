@@ -23,8 +23,8 @@ same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 spectrum-imaging = { path = "../spectrum-imaging" }
-spectrum-live-bridge = { path = "../spectrum-live-bridge" }
 spectrum-revisions = { path = "../spectrum-revisions" }
+spectrum-document = { path = "../spectrum-document" }
 spectrum-fonts = { path = "../spectrum-fonts" }
 sha2.workspace = true
 ttf-parser.workspace = true

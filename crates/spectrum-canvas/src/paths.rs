@@ -274,7 +274,7 @@ impl<'de> Deserialize<'de> for BoundedAnchors {
 
 fn validate_geometry(width: u32, height: u32, closed: bool, anchors: &[PathAnchor]) -> Result<()> {
     if width == 0 || height == 0 || width > MAX_CANVAS_DIMENSION || height > MAX_CANVAS_DIMENSION {
-        bail!("path viewport must be within Prism's canvas dimension limit");
+        bail!("path viewport must be within Spectrum's canvas dimension limit");
     }
     let minimum = if closed { 3 } else { 2 };
     if !(minimum..=MAX_PATH_ANCHORS).contains(&anchors.len()) {
@@ -395,7 +395,7 @@ impl PathSourceBounds {
         let width = (self.size[0] * scale[0]).ceil().max(1.0) as u32;
         let height = (self.size[1] * scale[1]).ceil().max(1.0) as u32;
         if width > MAX_CANVAS_DIMENSION || height > MAX_CANVAS_DIMENSION {
-            bail!("path render exceeds Prism's maximum raster dimension");
+            bail!("path render exceeds Spectrum's maximum raster dimension");
         }
         Ok((width, height))
     }

@@ -51,7 +51,7 @@ pub fn importable(paths: Vec<PathBuf>) -> Vec<PathBuf> {
             for child in children {
                 walk(&child, out);
             }
-        } else if spectrum_image::project::is_supported_image(path) {
+        } else if spectrum_image::is_supported_image(path) {
             out.push(path.to_path_buf());
         }
     }
@@ -64,16 +64,14 @@ pub fn importable(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 
 impl Store {
     pub fn is_image(&self, id: AssetId) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.asset.id == id && entry.asset.kind == "image")
+        self.entries.iter().any(|entry| {
+            entry.asset.id == id && entry.asset.kind == spectrum_library::AssetKind::Image
+        })
     }
 
     pub fn open() -> Result<Self> {
         let root = default_root()?;
         let mut service = Service::open(&root)?;
-        service.ensure_catalog()?;
-        service.scan()?;
         service.purge_expired()?;
         Ok(Self {
             root: service.library.root().to_path_buf(),
@@ -88,7 +86,6 @@ impl Store {
     /// Reloads projects and the assets in `view`. Returns the view actually
     /// shown, which falls back to all assets if a project no longer exists.
     pub fn load(&mut self, view: LibraryView) -> Result<LibraryView> {
-        self.service.scan()?;
         let library = &self.service.library;
         self.projects = library.projects()?;
         self.covers = self
@@ -148,7 +145,12 @@ impl Store {
         };
         self.entries = entries
             .into_iter()
-            .filter(|e| matches!(e.asset.kind.as_str(), "image" | "canvas"))
+            .filter(|e| {
+                matches!(
+                    e.asset.kind,
+                    spectrum_library::AssetKind::Image | spectrum_library::AssetKind::Canvas
+                )
+            })
             .collect();
         Ok(view)
     }

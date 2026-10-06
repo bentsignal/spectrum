@@ -1,9 +1,6 @@
-//! Prism's command-driven layered document engine.
+//! Spectrum's command-driven layered document engine.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -53,56 +50,16 @@ pub use font_usage::{
     analyze_font_usage, font_usage,
 };
 
-mod font_subset_plan;
-pub use font_subset_plan::{
-    FontShapingSample, FontSubsetCandidate, FontSubsetPlan, plan_font_subset,
-    plan_font_subset_with_verified_source,
-};
-
 mod transfer;
 pub use transfer::{
-    CLONE_STAMP_LAYER_TRANSFER_VERSION, DISSOLVE_LAYER_TRANSFER_VERSION, LAYER_TRANSFER_FORMAT,
-    LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont,
-    MODERN_GRADIENT_LAYER_TRANSFER_VERSION, PAINT_LAYER_TRANSFER_VERSION,
-    PATH_LAYER_TRANSFER_VERSION, RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION,
-    SHAPED_TEXT_LAYER_TRANSFER_VERSION,
+    LAYER_TRANSFER_FORMAT, LAYER_TRANSFER_VERSION, LayerTransfer, LayerTransferFont,
 };
 
 mod validation;
 use validation::*;
 
-mod revisions;
-pub use revisions::{
-    DurableProject, OptimizedCopyFont, OptimizedCopyReport, ProjectHistory, ReadOnlyFontSource,
-    ReadOnlyFontSubsetInput, create_optimized_font_copy, inspect_font_source_read_only,
-    inspect_font_subset_read_only, required_command_operations_version,
-};
-
-mod workspace;
-pub use workspace::{LiveWorkspaceState, Workspace};
-
-mod live_bridge;
-pub use live_bridge::{
-    PRISM_LIVE_ACTION_FAMILY, PRISM_LIVE_ACTION_VERSION, PRISM_LIVE_APPLICATION, PrismLiveAction,
-    PrismLiveActionExpectation, PrismLiveApplied, PrismLiveResult, PrismLiveState,
-    decode_live_action, prism_live_discovery_root,
-};
-
-mod live_bridge_host;
-pub use live_bridge_host::{
-    PrismLiveDrain, PrismLiveDrainReport, PrismLiveHost, PrismLiveInteractionState,
-};
-
-mod live_bridge_sessions;
-pub use live_bridge_sessions::{PrismLiveApplyError, PrismLiveSessions};
-
-#[cfg(test)]
-#[path = "live_bridge_tests.rs"]
-mod live_bridge_tests;
-
-#[cfg(test)]
-#[path = "live_bridge_outcome_tests.rs"]
-mod live_bridge_outcome_tests;
+mod model;
+pub use model::{CanvasModel, Workspace};
 
 mod shapes;
 pub use shapes::{
@@ -124,7 +81,6 @@ pub use paint_render::render_paint_layer_region;
 mod paint_selection;
 mod raster_requirements;
 mod sampled_source;
-mod sampled_source_portable;
 mod sampled_stroke;
 pub use document_export::{
     export_document, export_document_sized, export_document_with_sources, sample_document_color,
@@ -154,10 +110,9 @@ pub use lasso::{
     combine_selections, lasso_selection,
 };
 
-pub const PRISM_VERSION: u32 = 12;
-pub const PRISM_COMMAND_OPERATIONS_VERSION: u32 = 15;
-pub const MAX_HISTORY: usize = 100;
 pub const MAX_CANVAS_DIMENSION: u32 = 16_384;
+/// The largest image a canvas reads as one source.
+pub(crate) const MAX_EMBEDDED_RASTER_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_INLINE_PIXEL_MASK_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_DOCUMENT_NAME_CHARS: usize = 128;
 
@@ -203,8 +158,6 @@ pub use layer_masks::{LayerMask, PixelMask};
 pub enum LayerKind {
     Raster {
         path: PathBuf,
-        #[serde(default)]
-        original_path: Option<PathBuf>,
     },
     Text {
         text: String,
@@ -295,7 +248,6 @@ impl Default for Layer {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Document {
-    pub version: u32,
     pub name: String,
     pub width: u32,
     pub height: u32,
@@ -326,7 +278,6 @@ impl Default for Document {
 impl Document {
     pub fn new(name: impl Into<String>, width: u32, height: u32) -> Self {
         Self {
-            version: PRISM_VERSION,
             name: name.into(),
             width: width.clamp(1, MAX_CANVAS_DIMENSION),
             height: height.clamp(1, MAX_CANVAS_DIMENSION),
@@ -557,28 +508,13 @@ impl Document {
         Ok(())
     }
 
-    fn migrate(&mut self) -> Result<()> {
-        if self.version > PRISM_VERSION {
-            bail!(
-                "project version {} is newer than this app supports ({PRISM_VERSION})",
-                self.version
-            );
-        }
-        let source_version = self.version;
+    /// Checks and tidies a document read from storage.
+    pub(crate) fn validate(&mut self) -> Result<()> {
         if self.layers.iter().any(|layer| {
             matches!(&layer.kind, LayerKind::Paint { program } if program.contains_current_clone_marker())
         }) {
-            bail!("Prism snapshots cannot contain the authoring-only CurrentClone marker");
+            bail!("stored canvases cannot contain the authoring-only CurrentClone marker");
         }
-        let contains_clone_schema = self.clone_source.is_some()
-            || !self.sampled_sources.is_empty()
-            || self.layers.iter().any(|layer| {
-                matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
-            });
-        if source_version < revisions::CLONE_STAMP_SNAPSHOT_VERSION && contains_clone_schema {
-            bail!("Prism snapshot version {source_version} cannot contain Clone Stamp state");
-        }
-        self.version = PRISM_VERSION;
         self.width = self.width.clamp(1, MAX_CANVAS_DIMENSION);
         self.height = self.height.clamp(1, MAX_CANVAS_DIMENSION);
         for guide in &mut self.guides {
@@ -629,23 +565,11 @@ impl Document {
             }
             if let Some(mask) = &layer.vector_mask {
                 mask.validate()?;
-                if source_version < revisions::MODERN_GRADIENT_SNAPSHOT_VERSION
-                    && mask.alpha.is_some()
-                {
-                    bail!("Prism snapshot version {source_version} cannot contain painted masks");
-                }
             }
             effects::validate_layer_style(&layer.style)?;
             validate_shape_stroke(layer.stroke)?;
             if let Some(fill) = &layer.shape_fill {
                 effects::validate_shape_fill(fill)?;
-                if source_version < revisions::MODERN_GRADIENT_SNAPSHOT_VERSION
-                    && fill.requires_modern_encoding()
-                {
-                    bail!(
-                        "Prism snapshot version {source_version} cannot contain modern gradients"
-                    );
-                }
                 if !matches!(
                     layer.kind,
                     LayerKind::Rectangle { .. }
@@ -667,11 +591,6 @@ impl Document {
             layer.stroke = layer.stroke.sanitized();
             layer.adjustments = layer.adjustments.clone().sanitized();
             if let LayerKind::Text { typography, .. } = &mut layer.kind {
-                if source_version < revisions::SHAPED_TEXT_SNAPSHOT_VERSION
-                    && typography.shaping.engine == TextShapingEngine::HarfBuzzV1
-                {
-                    bail!("Prism snapshot version {source_version} cannot contain HarfBuzzV1 text");
-                }
                 *typography = typography.clone().validated_and_sanitized()?;
                 if typography
                     .font_id
@@ -738,7 +657,6 @@ impl Document {
 
 mod command_apply;
 use command_apply::apply_command;
-use commands::output;
 
 mod direct_preview;
 mod raster_backing_cache;
@@ -769,14 +687,13 @@ pub use raster_region::{RasterRegionInspection, inspect_raster_region_source};
 pub use raster_sources::{RasterSourceEpoch, RasterSourceResolver, ResolvedRasterSource};
 pub use render::{
     RegionRenderStats, RenderRegion, document_supports_region_native_zoom,
-    document_supports_region_native_zoom_with_sources, load_document, render_document,
+    document_supports_region_native_zoom_with_sources, render_document,
     render_document_region_scaled, render_document_region_scaled_with_sources,
     render_document_region_scaled_with_sources_and_stats, render_document_region_scaled_with_stats,
     render_document_scaled, render_document_scaled_with_sources, render_document_thumbnail,
     render_document_with_sources, render_layer_base, render_layer_base_scaled,
     render_layer_base_scaled_with_font, render_layer_preview, render_layer_preview_from_base,
     render_layer_preview_scaled, render_layer_preview_scaled_with_font, render_solid_color,
-    save_document,
 };
 pub use render_region::{RegionSourceScales, recommended_text_raster_scale, region_source_scales};
 pub use sequential_png_source::{SequentialPngLimits, SequentialPngReadError, SequentialPngSource};
@@ -817,8 +734,6 @@ pub fn paint_layer_allows_direct_strokes(layer: &Layer) -> bool {
         && adjustments.crop.is_none()
 }
 
-#[cfg(test)]
-mod document_lifecycle_tests;
 #[cfg(test)]
 #[path = "core_tests.rs"]
 mod tests;
@@ -872,14 +787,6 @@ mod typography_tests;
 mod transfer_tests;
 
 #[cfg(test)]
-#[path = "workspace_interaction_tests.rs"]
-mod workspace_interaction_tests;
-
-#[cfg(test)]
-#[path = "durable_asset_tests.rs"]
-mod durable_asset_tests;
-
-#[cfg(test)]
 #[path = "effect_tests.rs"]
 mod effect_tests;
 #[cfg(test)]
@@ -910,3 +817,12 @@ mod paint_limits_tests;
 #[cfg(test)]
 #[path = "paint_tests.rs"]
 mod paint_tests;
+
+#[cfg(test)]
+pub(crate) fn test_actor() -> spectrum_revisions::Actor {
+    spectrum_revisions::Actor {
+        id: "person:test".into(),
+        display_name: "Tester".into(),
+        kind: spectrum_revisions::ActorKind::Human,
+    }
+}

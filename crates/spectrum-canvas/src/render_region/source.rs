@@ -219,9 +219,9 @@ impl<'a> SourceDescriptor<'a> {
         let base = self.base_dimensions();
         let dimensions =
             spectrum_imaging::adjusted_image_dimensions(base.0, base.1, self.adjustments())
-                .context("Prism layer source must have positive dimensions")?;
+                .context("layer source must have positive dimensions")?;
         if dimensions.0 == 0 || dimensions.1 == 0 {
-            bail!("Prism adjusted layer source must have positive dimensions");
+            bail!("adjusted layer source must have positive dimensions");
         }
         Ok(dimensions)
     }

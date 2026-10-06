@@ -36,15 +36,6 @@ impl ResolvedFonts {
         })
     }
 
-    pub(super) fn from_primary_bytes(primary: &[u8]) -> Result<Self> {
-        Face::parse(primary, 0).context("primary text font is malformed")?;
-        Face::parse(BUNDLED_UBUNTU, 0).context("bundled Ubuntu fallback is malformed")?;
-        Ok(Self {
-            primary: std::sync::Arc::from(primary),
-            primary_is_bundled: false,
-        })
-    }
-
     pub(super) fn bytes(&self, choice: FaceChoice) -> &[u8] {
         match choice {
             FaceChoice::Primary => &self.primary,

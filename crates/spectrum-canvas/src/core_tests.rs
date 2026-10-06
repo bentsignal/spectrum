@@ -2,6 +2,8 @@ use super::*;
 use image::{Rgba, RgbaImage};
 use std::{
     ffi::OsString,
+    fs,
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -10,7 +12,7 @@ fn test_directory(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-{label}-{stamp}"))
+    std::env::temp_dir().join(format!("canvas-{label}-{stamp}"))
 }
 
 fn test_actor(id: &str, kind: spectrum_revisions::ActorKind) -> spectrum_revisions::Actor {
@@ -29,7 +31,7 @@ fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 
 #[test]
 fn command_history_restores_layers() {
-    let mut workspace = Workspace::default();
+    let mut workspace = Workspace::new(Document::default());
     workspace
         .execute(Command::AddRectangle {
             name: Some("Card".into()),
@@ -51,7 +53,7 @@ fn command_history_restores_layers() {
 #[test]
 fn clipping_uses_layer_below_alpha() {
     let mut document = Document::new("Clip", 20, 20);
-    let mut workspace = Workspace::new(document.clone(), None);
+    let mut workspace = Workspace::new(document.clone());
     workspace
         .execute(Command::AddRectangle {
             name: None,
@@ -90,7 +92,7 @@ fn clipping_uses_layer_below_alpha() {
 
 #[test]
 fn text_and_shapes_render() {
-    let mut workspace = Workspace::new(Document::new("Poster", 400, 200), None);
+    let mut workspace = Workspace::new(Document::new("Poster", 400, 200));
     workspace
         .execute(Command::AddText {
             text: "Prism".into(),
@@ -108,7 +110,7 @@ fn text_and_shapes_render() {
 
 #[test]
 fn automatic_text_names_follow_content_without_overwriting_manual_names() {
-    let mut workspace = Workspace::new(Document::new("Names", 400, 200), None);
+    let mut workspace = Workspace::new(Document::new("Names", 400, 200));
     workspace
         .execute(Command::AddText {
             text: "Title\n".into(),
@@ -193,7 +195,7 @@ fn solid_color_preview_matches_a_uniform_layer_adjustment() {
 
 #[test]
 fn arbitrary_rotation_never_samples_outside_source() {
-    let mut workspace = Workspace::new(Document::new("Rotate", 100, 100), None);
+    let mut workspace = Workspace::new(Document::new("Rotate", 100, 100));
     workspace
         .execute(Command::AddRectangle {
             name: None,
@@ -228,7 +230,7 @@ fn export_refuses_to_overwrite_a_raster_source() {
         .save(&source)
         .unwrap();
     let original = fs::read(&source).unwrap();
-    let mut workspace = Workspace::new(Document::new("Safety", 4, 4), None);
+    let mut workspace = Workspace::new(Document::new("Safety", 4, 4));
     workspace
         .execute(Command::AddRaster {
             path: source.clone(),
@@ -244,7 +246,7 @@ fn export_refuses_to_overwrite_a_raster_source() {
 
 #[test]
 fn non_finite_commands_are_rejected_before_serialization() {
-    let mut workspace = Workspace::new(Document::new("Finite", 20, 20), None);
+    let mut workspace = Workspace::new(Document::new("Finite", 20, 20));
     workspace
         .execute(Command::AddRectangle {
             name: None,
@@ -293,7 +295,7 @@ fn preview_renders_at_target_size_without_full_canvas_allocation() {
 
 #[test]
 fn selection_is_command_driven_but_not_an_undo_step() {
-    let mut workspace = Workspace::new(Document::new("Selection", 20, 20), None);
+    let mut workspace = Workspace::new(Document::new("Selection", 20, 20));
     workspace
         .execute(Command::AddRectangle {
             name: None,
@@ -313,296 +315,15 @@ fn selection_is_command_driven_but_not_an_undo_step() {
 }
 
 #[test]
-fn interaction_previews_coalesce_into_one_undo_step() {
-    let mut workspace = Workspace::new(Document::new("Gesture", 400, 300), None);
-    workspace
-        .execute(Command::AddRectangle {
-            name: None,
-            width: 100,
-            height: 80,
-            color: [255, 255, 255, 255],
-            corner_radius: 0.0,
-            x: 10.0,
-            y: 20.0,
-        })
-        .unwrap();
-    let id = workspace.document.selected.unwrap();
-    workspace.begin_interaction().unwrap();
-    for x in 11..=80 {
-        workspace
-            .preview(Command::SetTransform {
-                id,
-                transform: Transform {
-                    x: x as f32,
-                    y: 20.0,
-                    ..Default::default()
-                },
-            })
-            .unwrap();
-    }
-    assert!(workspace.commit_interaction().unwrap());
-    assert_eq!(workspace.document.layer(id).unwrap().transform.x, 80.0);
-    workspace.execute(Command::Undo).unwrap();
-    assert_eq!(workspace.document.layer(id).unwrap().transform.x, 10.0);
-}
-
-#[test]
-fn durable_project_preserves_alternate_futures() {
-    let directory = test_directory("durable-branches");
-    std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("branches.prism");
-    let session = spectrum_revisions::SessionId::new();
-    let (mut project, mut document) = DurableProject::create(
-        &project_path,
-        &Document::new("Branches", 400, 300),
-        test_actor("person:branches", spectrum_revisions::ActorKind::Human),
-        session,
-    )
-    .unwrap();
-
-    let first_command = Command::AddRectangle {
-        name: Some("First".into()),
-        width: 100,
-        height: 80,
-        color: [255, 0, 0, 255],
-        corner_radius: 8.0,
-        x: 20.0,
-        y: 30.0,
-    };
-    apply_command(&mut document, first_command.clone()).unwrap();
-    let first = project
-        .commit(&[first_command], &document, "Added first rectangle")
-        .unwrap();
-
-    let second_command = Command::AddRectangle {
-        name: Some("Second".into()),
-        width: 60,
-        height: 60,
-        color: [0, 255, 0, 255],
-        corner_radius: 0.0,
-        x: 160.0,
-        y: 30.0,
-    };
-    apply_command(&mut document, second_command.clone()).unwrap();
-    let second = project
-        .commit(&[second_command], &document, "Added second rectangle")
-        .unwrap();
-    document = project.undo().unwrap();
-    assert_eq!(project.cursor(), first);
-    assert_eq!(document.layers.len(), 1);
-
-    let alternate_command = Command::AddText {
-        text: "Alternate".into(),
-        name: None,
-        font_size: 32.0,
-        color: [255, 255, 255, 255],
-        x: 40.0,
-        y: 160.0,
-        shaping: Default::default(),
-    };
-    apply_command(&mut document, alternate_command.clone()).unwrap();
-    let alternate = project
-        .commit(&[alternate_command], &document, "Added alternate text")
-        .unwrap();
-    assert_ne!(second, alternate);
-
-    let original_future = project.move_to(second).unwrap();
-    assert_eq!(original_future.layers.len(), 2);
-    assert!(matches!(
-        original_future.layers[1].kind,
-        LayerKind::Rectangle { .. }
-    ));
-    let alternate_future = project.move_to(alternate).unwrap();
-    assert_eq!(alternate_future.layers.len(), 2);
-    assert!(matches!(
-        alternate_future.layers[1].kind,
-        LayerKind::Text { .. }
-    ));
-    project.checkpoint().unwrap();
-    drop(project);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn durable_project_uses_sparse_compressed_snapshots() {
-    let directory = test_directory("sparse-snapshots");
-    std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("compact.prism");
-    let session = spectrum_revisions::SessionId::new();
-    let mut document = Document::new("Compact", 400, 300);
-    apply_command(
-        &mut document,
-        Command::AddRectangle {
-            name: Some("Card".into()),
-            width: 100,
-            height: 80,
-            color: [255, 0, 0, 255],
-            corner_radius: 8.0,
-            x: 0.0,
-            y: 0.0,
-        },
-    )
-    .unwrap();
-    document.version = 2;
-    let (mut project, mut document) = DurableProject::create(
-        &project_path,
-        &document,
-        test_actor("person:compact", spectrum_revisions::ActorKind::Human),
-        session,
-    )
-    .unwrap();
-
-    for x in 1..=250 {
-        let command = Command::SetTransform {
-            id: 1,
-            transform: Transform {
-                x: x as f32,
-                ..document.layers[0].transform
-            },
-        };
-        apply_command(&mut document, command.clone()).unwrap();
-        project.commit(&[command], &document, "Moved card").unwrap();
-    }
-    let latest = project.cursor();
-    project.checkpoint().unwrap();
-    drop(project);
-
-    let connection = rusqlite::Connection::open(&project_path).unwrap();
-    let revision_count: u32 = connection
-        .query_row("SELECT count(*) FROM revisions", [], |row| row.get(0))
-        .unwrap();
-    let snapshot_count: u32 = connection
-        .query_row("SELECT count(*) FROM snapshots", [], |row| row.get(0))
-        .unwrap();
-    let snapshot_bytes: i64 = connection
-        .query_row("SELECT sum(length(bytes)) FROM snapshots", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(revision_count, 251);
-    assert_eq!(snapshot_count, 3);
-    assert!(snapshot_bytes < 16 * 1024);
-    let legacy_snapshot_count: u32 = connection
-        .query_row(
-            "SELECT count(*) FROM snapshots WHERE version = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let compressed_snapshot_count: u32 = connection
-        .query_row(
-            "SELECT count(*) FROM snapshots WHERE version = 2",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(legacy_snapshot_count, 1);
-    assert_eq!(compressed_snapshot_count, 0);
-    let selection_snapshot_count: u32 = connection
-        .query_row(
-            "SELECT count(*) FROM snapshots WHERE version = 4",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(selection_snapshot_count, 2);
-    drop(connection);
-    let project_bytes = std::fs::metadata(&project_path).unwrap().len();
-    eprintln!("250-action compact Prism project: {project_bytes} bytes");
-    assert!(project_bytes < 512 * 1024);
-
-    struct LegacyCompatibility;
-    impl spectrum_revisions::Compatibility for LegacyCompatibility {
-        fn supports_snapshot(&self, encoding: &spectrum_revisions::Encoding) -> bool {
-            encoding.family == "spectrum.prism.document"
-                && match encoding.version {
-                    1 => encoding.required_capabilities.is_empty(),
-                    2 => encoding.required_capabilities == ["deflate"],
-                    _ => false,
-                }
-        }
-
-        fn supports_operations(&self, encoding: &spectrum_revisions::Encoding) -> bool {
-            encoding.family == "spectrum.prism.commands"
-                && (1..=2).contains(&encoding.version)
-                && encoding.required_capabilities.is_empty()
-        }
-    }
-    let store = spectrum_revisions::RevisionStore::open(&project_path).unwrap();
-    let legacy_plan = store.replay_plan(latest, &LegacyCompatibility).unwrap();
-    assert_eq!(
-        legacy_plan.snapshot_revision,
-        store.project_info().unwrap().root_revision
-    );
-    assert_eq!(legacy_plan.steps.len(), 250);
-    drop(store);
-
-    let (reopened, document) = DurableProject::open(
-        &project_path,
-        test_actor("person:reopen", spectrum_revisions::ActorKind::Human),
-        spectrum_revisions::SessionId::new(),
-    )
-    .unwrap();
-    assert_eq!(document.layers[0].transform.x, 250.0);
-    drop(reopened);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn durable_project_embeds_raster_assets_in_the_single_file() {
-    let directory = test_directory("durable-assets");
-    std::fs::create_dir_all(&directory).unwrap();
-    let source = directory.join("source.png");
-    RgbaImage::from_pixel(8, 8, Rgba([12, 34, 56, 255]))
-        .save(&source)
-        .unwrap();
-    let mut workspace = Workspace::new(Document::new("Portable", 16, 16), None);
-    workspace
-        .execute(Command::AddRaster {
-            path: source.clone(),
-            name: Some("Embedded".into()),
-            x: 4.0,
-            y: 4.0,
-        })
-        .unwrap();
-    let project_path = directory.join("portable.prism");
-    let session = spectrum_revisions::SessionId::new();
-    let (project, materialized) = DurableProject::create(
-        &project_path,
-        &workspace.document,
-        test_actor("person:assets", spectrum_revisions::ActorKind::Human),
-        session,
-    )
-    .unwrap();
-    assert_eq!(render_document(&materialized, None).unwrap().width(), 16);
-    project.checkpoint().unwrap();
-    drop(project);
-    std::fs::remove_file(&source).unwrap();
-
-    let (reopened, document) = DurableProject::open(
-        &project_path,
-        test_actor("agent:assets", spectrum_revisions::ActorKind::Agent),
-        spectrum_revisions::SessionId::new(),
-    )
-    .unwrap();
-    assert_eq!(render_document(&document, None).unwrap().width(), 16);
-    reopened.checkpoint().unwrap();
-    drop(reopened);
-    assert!(project_path.is_file());
-    assert!(std::fs::metadata(&project_path).unwrap().len() > 8 * 8 * 4);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
 fn durable_workspace_auto_commits_and_restores_its_session_cursor() {
     let directory = test_directory("durable-workspace");
     std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("workspace.prism");
+    let project_path = directory.join("workspace.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let actor = test_actor("person:workspace", spectrum_revisions::ActorKind::Human);
-    let mut workspace = Workspace::create_durable(
-        Document::new("Workspace", 400, 300),
+    let mut workspace = Workspace::create(
         &project_path,
+        Document::new("Workspace", 400, 300),
         actor.clone(),
         session,
     )
@@ -624,19 +345,18 @@ fn durable_workspace_auto_commits_and_restores_its_session_cursor() {
             },
         ])
         .unwrap();
-    assert!(!workspace.is_dirty());
     assert!(!sidecar_path(&project_path, "-wal").exists());
     assert!(!sidecar_path(&project_path, "-shm").exists());
     drop(workspace);
 
-    let mut reopened = Workspace::open_as(&project_path, actor, session).unwrap();
+    let mut reopened = Workspace::open(&project_path, actor, session).unwrap();
     assert_eq!(reopened.document.layers.len(), 1);
     assert_eq!(reopened.document.layers[0].opacity, 0.5);
     reopened.execute(Command::Undo).unwrap();
     assert!(reopened.document.layers.is_empty());
     reopened.execute(Command::Redo).unwrap();
     assert_eq!(reopened.document.layers.len(), 1);
-    reopened.save(None).unwrap();
+    reopened.checkpoint().unwrap();
     drop(reopened);
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -645,11 +365,11 @@ fn durable_workspace_auto_commits_and_restores_its_session_cursor() {
 fn workspace_history_navigation_is_idempotent_and_visibly_forks() {
     let directory = test_directory("workspace-history-tree");
     std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("history.prism");
+    let project_path = directory.join("history.spectrum");
     let session = spectrum_revisions::SessionId::new();
-    let mut workspace = Workspace::create_durable(
-        Document::new("History", 400, 300),
+    let mut workspace = Workspace::create(
         &project_path,
+        Document::new("History", 400, 300),
         test_actor("person:history", spectrum_revisions::ActorKind::Human),
         session,
     )
@@ -679,10 +399,10 @@ fn workspace_history_navigation_is_idempotent_and_visibly_forks() {
         .unwrap();
     let original = workspace.history().unwrap().unwrap().current;
     let bytes_before = std::fs::read(&project_path).unwrap();
-    assert!(!workspace.move_to_revision(original).unwrap());
+    assert!(!workspace.move_to(original).unwrap());
     assert_eq!(std::fs::read(&project_path).unwrap(), bytes_before);
 
-    assert!(workspace.move_to_revision(first).unwrap());
+    assert!(workspace.move_to(first).unwrap());
     assert_eq!(workspace.document.layers.len(), 1);
     workspace
         .execute(Command::AddText {
@@ -728,11 +448,11 @@ fn workspace_history_navigation_is_idempotent_and_visibly_forks() {
 fn together_agent_session_live_follows_then_splits_on_human_edit() {
     let directory = test_directory("workspace-agent-together");
     std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("agent-together.prism");
+    let project_path = directory.join("agent-together.spectrum");
     let human_session = spectrum_revisions::SessionId::new();
-    let mut human = Workspace::create_durable(
-        Document::new("Together", 400, 300),
+    let mut human = Workspace::create(
         &project_path,
+        Document::new("Together", 400, 300),
         test_actor("person:together", spectrum_revisions::ActorKind::Human),
         human_session,
     )
@@ -811,10 +531,10 @@ fn together_agent_session_live_follows_then_splits_on_human_edit() {
 fn read_only_load_does_not_create_a_session_or_grow_history() {
     let directory = test_directory("read-only-load");
     std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("read-only.prism");
-    let workspace = Workspace::create_durable(
-        Document::new("Read only", 400, 300),
+    let project_path = directory.join("read-only.spectrum");
+    let workspace = Workspace::create(
         &project_path,
+        Document::new("Read only", 400, 300),
         test_actor("person:reader", spectrum_revisions::ActorKind::Human),
         spectrum_revisions::SessionId::new(),
     )
@@ -828,7 +548,7 @@ fn read_only_load_does_not_create_a_session_or_grow_history() {
         .unwrap();
     drop(connection);
 
-    let document = Workspace::load_read_only(&project_path).unwrap();
+    let document = Workspace::read(&project_path).unwrap();
     assert_eq!(document.name, "Read only");
 
     let connection = rusqlite::Connection::open(&project_path).unwrap();
@@ -847,12 +567,12 @@ fn read_only_load_does_not_create_a_session_or_grow_history() {
 fn reopening_the_same_session_does_not_change_the_project() {
     let directory = test_directory("stable-session-reopen");
     std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("stable.prism");
+    let project_path = directory.join("stable.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let actor = test_actor("person:stable", spectrum_revisions::ActorKind::Human);
-    let workspace = Workspace::create_durable(
-        Document::new("Stable", 400, 300),
+    let workspace = Workspace::create(
         &project_path,
+        Document::new("Stable", 400, 300),
         actor.clone(),
         session,
     )
@@ -860,134 +580,9 @@ fn reopening_the_same_session_does_not_change_the_project() {
     drop(workspace);
     let before = std::fs::read(&project_path).unwrap();
 
-    let reopened = Workspace::open_as(&project_path, actor, session).unwrap();
+    let reopened = Workspace::open(&project_path, actor, session).unwrap();
     assert_eq!(reopened.document.name, "Stable");
     drop(reopened);
     assert_eq!(std::fs::read(&project_path).unwrap(), before);
     std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn durable_workspace_moves_without_losing_history_or_session_position() {
-    let directory = test_directory("durable-move");
-    let source_directory = directory.join("managed");
-    let destination_directory = directory.join("chosen");
-    std::fs::create_dir_all(&source_directory).unwrap();
-    let source = source_directory.join("Moving.prism");
-    let destination = destination_directory.join("Moving.prism");
-    let session = spectrum_revisions::SessionId::new();
-    let actor = test_actor("person:moving", spectrum_revisions::ActorKind::Human);
-    let mut workspace = Workspace::create_durable(
-        Document::new("Moving", 400, 300),
-        &source,
-        actor.clone(),
-        session,
-    )
-    .unwrap();
-    workspace
-        .execute(Command::AddText {
-            text: "Still here".into(),
-            name: None,
-            font_size: 32.0,
-            color: [255, 255, 255, 255],
-            x: 20.0,
-            y: 30.0,
-            shaping: Default::default(),
-        })
-        .unwrap();
-
-    assert_eq!(workspace.move_project(&destination).unwrap(), destination);
-    assert!(!source.exists());
-    assert!(destination.is_file());
-    assert!(!sidecar_path(&destination, "-wal").exists());
-    assert!(!sidecar_path(&destination, "-shm").exists());
-    workspace.execute(Command::Undo).unwrap();
-    assert!(workspace.document.layers.is_empty());
-    workspace.execute(Command::Redo).unwrap();
-    assert_eq!(workspace.document.layers.len(), 1);
-    drop(workspace);
-
-    let reopened = Workspace::open_as(&destination, actor, session).unwrap();
-    assert_eq!(reopened.document.layers.len(), 1);
-    assert_eq!(reopened.document.layers[0].name, "Still here");
-    drop(reopened);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn canceled_interaction_restores_the_document() {
-    let mut workspace = Workspace::new(Document::new("Gesture", 400, 300), None);
-    workspace
-        .execute(Command::AddText {
-            text: "Prism".into(),
-            name: None,
-            font_size: 32.0,
-            color: [255, 255, 255, 255],
-            x: 4.0,
-            y: 8.0,
-            shaping: Default::default(),
-        })
-        .unwrap();
-    let before = workspace.document.clone();
-    let id = workspace.document.selected.unwrap();
-    workspace.begin_interaction().unwrap();
-    workspace
-        .preview(Command::SetOpacity { id, opacity: 0.25 })
-        .unwrap();
-    assert!(workspace.cancel_interaction());
-    assert_eq!(workspace.document, before);
-}
-
-#[test]
-fn saving_copies_external_sources_into_portable_assets() {
-    let root = test_directory("portable");
-    let source_directory = root.join("external");
-    let project_directory = root.join("project");
-    fs::create_dir_all(&source_directory).unwrap();
-    fs::create_dir_all(&project_directory).unwrap();
-    let source = source_directory.join("source.png");
-    RgbaImage::from_pixel(2, 2, Rgba([1, 2, 3, 255]))
-        .save(&source)
-        .unwrap();
-    let project = project_directory.join("portable.prism");
-    let mut workspace = Workspace::new(Document::new("Portable", 2, 2), Some(project.clone()));
-    workspace
-        .execute(Command::AddRaster {
-            path: source.clone(),
-            name: None,
-            x: 0.0,
-            y: 0.0,
-        })
-        .unwrap();
-    workspace.save(None).unwrap();
-    let LayerKind::Raster {
-        path,
-        original_path,
-    } = &workspace.document.layers[0].kind
-    else {
-        panic!("expected raster layer");
-    };
-    assert!(path.starts_with(fs::canonicalize(&project_directory).unwrap()));
-    assert!(path.exists());
-    assert_eq!(
-        original_path.as_ref(),
-        Some(&fs::canonicalize(&source).unwrap())
-    );
-    assert!(export_document(&workspace.document, &source, 90).is_err());
-    let serialized = fs::read_to_string(project).unwrap();
-    assert!(serialized.contains("portable-assets"));
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn legacy_mica_projects_remain_readable_and_writable() {
-    let root = test_directory("legacy-mica");
-    fs::create_dir_all(&root).unwrap();
-    let project = root.join("legacy.mica");
-    let document = Document::new("Legacy", 320, 240);
-    save_document(&document, &project).unwrap();
-    let loaded = load_document(&project).unwrap();
-    assert_eq!(loaded.name, "Legacy");
-    assert_eq!((loaded.width, loaded.height), (320, 240));
-    fs::remove_dir_all(root).unwrap();
 }

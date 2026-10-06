@@ -1,8 +1,3 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
-
 use anyhow::{Context, Result, bail};
 use image::{DynamicImage, GenericImageView, Rgba, RgbaImage, imageops::FilterType};
 use spectrum_imaging::{RenderOptions, render_image};
@@ -20,141 +15,6 @@ mod tiles;
 use tiles::render_document_region_scaled_impl;
 mod stats;
 pub use stats::RegionRenderStats;
-
-pub fn save_document(document: &Document, path: &Path) -> Result<()> {
-    let extension = path.extension().and_then(|value| value.to_str());
-    if !matches!(extension, Some("prism" | "mica")) {
-        bail!("Prism projects must use the .prism extension");
-    }
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("could not create {}", parent.display()))?;
-    }
-    let directory = fs::canonicalize(
-        path.parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new(".")),
-    )?;
-    let project_stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("prism");
-    let asset_directory = directory.join(format!("{project_stem}-assets"));
-    let mut portable = document.clone();
-    for layer in &mut portable.layers {
-        if let LayerKind::Raster {
-            path: source,
-            original_path,
-        } = &mut layer.kind
-        {
-            let canonical = fs::canonicalize(&*source)
-                .with_context(|| format!("could not read layer source {}", source.display()))?;
-            if original_path.is_none() {
-                *original_path = Some(canonical.clone());
-            }
-            if let Ok(relative) = canonical.strip_prefix(&directory) {
-                *source = relative.to_owned();
-            } else {
-                fs::create_dir_all(&asset_directory)?;
-                let file_name = canonical
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("image");
-                let destination = asset_directory.join(format!("layer-{}-{file_name}", layer.id));
-                fs::copy(&canonical, &destination).with_context(|| {
-                    format!(
-                        "could not copy {} into portable Prism assets",
-                        canonical.display()
-                    )
-                })?;
-                *source = destination.strip_prefix(&directory)?.to_owned();
-            }
-        }
-    }
-    crate::revisions::durable_sampled_sources::map_document_sampled_sources(
-        &mut portable,
-        |source| {
-            crate::sampled_source_portable::make_portable(source, &directory, &asset_directory)
-        },
-    )?;
-    crate::typography::make_fonts_portable(
-        &mut portable.font_assets,
-        &directory,
-        &asset_directory,
-    )?;
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    fs::write(&temporary, serde_json::to_vec_pretty(&portable)?)
-        .with_context(|| format!("could not write {}", temporary.display()))?;
-    #[cfg(not(target_os = "windows"))]
-    fs::rename(&temporary, path)
-        .with_context(|| format!("could not replace {}", path.display()))?;
-    #[cfg(target_os = "windows")]
-    replace_file_windows_safe(&temporary, path)?;
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn replace_file_windows_safe(temporary: &Path, destination: &Path) -> Result<()> {
-    if !destination.exists() {
-        fs::rename(temporary, destination)?;
-        return Ok(());
-    }
-    let mut backup = destination.as_os_str().to_owned();
-    backup.push(".backup");
-    let backup = PathBuf::from(backup);
-    if backup.exists() {
-        fs::remove_file(&backup)?;
-    }
-    fs::rename(destination, &backup)?;
-    match fs::rename(temporary, destination) {
-        Ok(()) => {
-            fs::remove_file(backup)?;
-            Ok(())
-        }
-        Err(error) => {
-            let _ = fs::rename(&backup, destination);
-            Err(error).with_context(|| format!("could not replace {}", destination.display()))
-        }
-    }
-}
-
-pub fn load_document(path: &Path) -> Result<Document> {
-    let bytes = fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
-    let mut document: Document = serde_json::from_slice(&bytes)
-        .with_context(|| format!("invalid Prism project {}", path.display()))?;
-    document.migrate()?;
-    let directory = path.parent().unwrap_or_else(|| Path::new("."));
-    for layer in &mut document.layers {
-        if let LayerKind::Raster { path, .. } = &mut layer.kind
-            && path.is_relative()
-        {
-            *path = directory.join(&*path);
-            if let Ok(canonical) = fs::canonicalize(&*path) {
-                *path = canonical;
-            }
-        }
-    }
-    crate::revisions::durable_sampled_sources::map_document_sampled_sources(
-        &mut document,
-        |source| {
-            if source.path.is_relative() {
-                source.path = directory.join(&source.path);
-                if let Ok(canonical) = fs::canonicalize(&source.path) {
-                    source.path = canonical;
-                }
-            }
-            Ok(())
-        },
-    )?;
-    crate::typography::resolve_portable_fonts(&mut document.font_assets, directory);
-    crate::typography::hydrate_legacy_font_permissions(&mut document.font_assets)?;
-    Ok(document)
-}
 
 pub fn render_document(document: &Document, max_size: Option<u32>) -> Result<DynamicImage> {
     let longest = document.width.max(document.height) as f32;
@@ -176,7 +36,7 @@ pub fn render_document_with_sources(
     render_document_scaled_with_sources(document, scale, raster_sources)
 }
 
-/// A physical-pixel subregion of a scaled Prism document.
+/// A physical-pixel subregion of a scaled canvas document.
 ///
 /// Interactive clients use regions to keep preview allocation proportional to
 /// the visible viewport instead of the full document at the current zoom.
@@ -227,7 +87,7 @@ fn document_supports_region_native_zoom_impl(
 pub fn render_document_scaled(document: &Document, scale: f32) -> Result<DynamicImage> {
     let (canvas_width, canvas_height) = scaled_document_dimensions(document, scale)?;
     if canvas_width > crate::MAX_CANVAS_DIMENSION || canvas_height > crate::MAX_CANVAS_DIMENSION {
-        bail!("scaled document exceeds Prism's maximum canvas dimension");
+        bail!("scaled document exceeds Spectrum's maximum canvas dimension");
     }
     render_document_region_scaled_impl(
         document,
@@ -251,7 +111,7 @@ pub fn render_document_scaled_with_sources(
 ) -> Result<DynamicImage> {
     let (canvas_width, canvas_height) = scaled_document_dimensions(document, scale)?;
     if canvas_width > crate::MAX_CANVAS_DIMENSION || canvas_height > crate::MAX_CANVAS_DIMENSION {
-        bail!("scaled document exceeds Prism's maximum canvas dimension");
+        bail!("scaled document exceeds Spectrum's maximum canvas dimension");
     }
     render_document_region_scaled_impl(
         document,
@@ -362,7 +222,7 @@ pub(super) fn render_document_region_scaled_untiled(
         bail!("document render region exceeds the scaled canvas");
     }
     if region.width > crate::MAX_CANVAS_DIMENSION || region.height > crate::MAX_CANVAS_DIMENSION {
-        bail!("document render region exceeds Prism's maximum canvas dimension");
+        bail!("document render region exceeds Spectrum's maximum canvas dimension");
     }
     if bound_fallback_layers && u64::from(region.width) * u64::from(region.height) > 4_096 * 4_096 {
         bail!("document render region exceeds the bounded viewport area");

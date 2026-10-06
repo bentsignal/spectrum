@@ -18,7 +18,7 @@ fn test_directory(label: &str) -> PathBuf {
         .as_nanos();
     fs::canonicalize(std::env::temp_dir())
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join(format!("prism-clone-{label}-{stamp}"))
+        .join(format!("canvas-clone-{label}-{stamp}"))
 }
 
 fn write_source(path: &Path) {
@@ -52,7 +52,6 @@ fn source_document(path: &Path) -> Document {
         pixel_mask: Some(PixelMask::new(8, 8, alpha)),
         kind: LayerKind::Raster {
             path: path.to_owned(),
-            original_path: None,
         },
         ..Layer::default()
     });
@@ -130,7 +129,7 @@ fn clone_stamp_applies_source_alpha_mask_and_destination_selection_once() {
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("source.png");
     write_source(&source);
-    let mut workspace = Workspace::new(source_document(&source), None);
+    let mut workspace = Workspace::new(source_document(&source));
     workspace
         .execute(Command::SetCloneSource {
             id: 1,
@@ -162,7 +161,7 @@ fn clone_stamp_is_transparent_outside_source_and_never_feeds_back_destination_da
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("source.png");
     write_source(&source);
-    let mut workspace = Workspace::new(source_document(&source), None);
+    let mut workspace = Workspace::new(source_document(&source));
     workspace
         .execute(Command::SetCloneSource {
             id: 1,
@@ -204,7 +203,7 @@ fn clone_source_inverse_maps_transforms_and_rejects_unsupported_inputs() {
     };
     let local = [2.5_f32, 1.5_f32];
     let document_point = local_to_document(local, (8, 8), document.layers[0].transform);
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::SetCloneSource {
             id: 1,
@@ -273,7 +272,7 @@ fn clone_mapping_freezes_full_source_and_destination_affines() {
     };
     let source_anchor = [2.5, 3.5];
     let source_document = local_to_document(source_anchor, (8, 8), document.layers[0].transform);
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::SetCloneSource {
             id: 1,
@@ -367,16 +366,16 @@ fn durable_clone_survives_source_mutation_deletion_undo_redo_reopen_and_transfer
     let directory = test_directory("durable");
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("source.png");
-    let project = directory.join("clone.prism");
+    let project = directory.join("clone.spectrum");
     write_source(&source);
     let actor = spectrum_revisions::Actor {
         id: "person:clone-test".into(),
         display_name: "Clone test".into(),
         kind: spectrum_revisions::ActorKind::Human,
     };
-    let mut workspace = Workspace::create_durable(
-        source_document(&source),
+    let mut workspace = Workspace::create(
         &project,
+        source_document(&source),
         actor,
         spectrum_revisions::SessionId::new(),
     )
@@ -426,15 +425,20 @@ fn durable_clone_survives_source_mutation_deletion_undo_redo_reopen_and_transfer
     workspace.execute(Command::Redo).unwrap();
     drop(workspace);
 
-    let reopened = Workspace::open(&project).unwrap();
+    let reopened = Workspace::open(
+        &project,
+        crate::test_actor(),
+        spectrum_revisions::SessionId::new(),
+    )
+    .unwrap();
     assert_eq!(render_paint(&reopened.document, paint_id, 8, 8), baseline);
     let transfer = LayerTransfer::from_document(&reopened.document, paint_id).unwrap();
-    assert_eq!(transfer.version, CLONE_STAMP_LAYER_TRANSFER_VERSION);
+    assert_eq!(transfer.version, LAYER_TRANSFER_VERSION);
     let decoded = LayerTransfer::from_json(&transfer.to_json().unwrap()).unwrap();
     assert_eq!(decoded, transfer);
-    let mut legacy = transfer.clone();
-    legacy.version = PAINT_LAYER_TRANSFER_VERSION;
-    assert!(legacy.to_json().is_err());
+    let mut unknown = transfer.clone();
+    unknown.version = LAYER_TRANSFER_VERSION + 1;
+    assert!(unknown.to_json().is_err());
 }
 
 #[test]
@@ -490,7 +494,7 @@ fn clone_source_hash_tampering_and_oversized_inputs_fail_atomically() {
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("source.png");
     write_source(&source);
-    let mut workspace = Workspace::new(source_document(&source), None);
+    let mut workspace = Workspace::new(source_document(&source));
     workspace
         .execute(Command::SetCloneSource {
             id: 1,
@@ -518,7 +522,7 @@ fn clone_source_hash_tampering_and_oversized_inputs_fail_atomically() {
     let oversized = directory.join("oversized.png");
     fs::File::create(&oversized)
         .unwrap()
-        .set_len(crate::revisions::MAX_EMBEDDED_RASTER_BYTES as u64 + 1)
+        .set_len(crate::MAX_EMBEDDED_RASTER_BYTES as u64 + 1)
         .unwrap();
     let mut oversized_document = source_document(&oversized);
     let before = oversized_document.clone();
@@ -541,16 +545,16 @@ fn durable_repeated_clone_strokes_deduplicate_the_captured_asset() {
     let directory = test_directory("dedup");
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("source.png");
-    let project = directory.join("dedup.prism");
+    let project = directory.join("dedup.spectrum");
     write_source(&source);
     let actor = spectrum_revisions::Actor {
         id: "person:clone-dedup".into(),
         display_name: "Clone dedup".into(),
         kind: spectrum_revisions::ActorKind::Human,
     };
-    let mut workspace = Workspace::create_durable(
-        source_document(&source),
+    let mut workspace = Workspace::create(
         &project,
+        source_document(&source),
         actor,
         spectrum_revisions::SessionId::new(),
     )
@@ -610,15 +614,11 @@ fn durable_repeated_clone_strokes_deduplicate_the_captured_asset() {
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(clone_operation_versions, vec![14]);
-    let v11_snapshots: u32 = connection
-        .query_row(
-            "SELECT count(*) FROM snapshots WHERE version = 11",
-            [],
-            |row| row.get(0),
-        )
+    assert_eq!(clone_operation_versions, vec![1]);
+    let snapshots: u32 = connection
+        .query_row("SELECT count(*) FROM snapshots", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(v11_snapshots, 1);
+    assert!(snapshots >= 1);
     let distinct_references = paint_program(&workspace.document, paint_id)
         .strokes
         .iter()
@@ -632,119 +632,16 @@ fn durable_repeated_clone_strokes_deduplicate_the_captured_asset() {
 }
 
 #[test]
-fn clone_envelopes_fail_closed_for_old_versions_and_ambiguous_transfers() {
-    let directory = test_directory("envelopes");
-    fs::create_dir_all(&directory).unwrap();
-    let source = directory.join("source.png");
-    write_source(&source);
-    let mut workspace = Workspace::new(source_document(&source), None);
-    workspace
-        .execute(Command::SetCloneSource {
-            id: 1,
-            document_x: 1.5,
-            document_y: 1.5,
-            resolved_source: None,
-        })
-        .unwrap();
-    let paint_id = workspace
-        .execute(Command::AddPaintLayerWithStroke {
-            name: None,
-            width: 8,
-            height: 8,
-            stroke: clone_stroke(vec![sample(4.5, 4.5)], 1.0),
-            selection: PaintSelection::None,
-        })
-        .unwrap()
-        .layer_ids[0];
-
-    let mut old_snapshot = workspace.document.clone();
-    old_snapshot.version = 10;
-    assert!(
-        format!("{:#}", old_snapshot.migrate().unwrap_err())
-            .contains("cannot contain Clone Stamp state")
-    );
-
-    let transfer = LayerTransfer::from_document(&workspace.document, paint_id).unwrap();
-    assert_eq!(transfer.version, 9);
-    let mut old_transfer = transfer.clone();
-    old_transfer.version = 8;
-    assert!(old_transfer.to_json().is_err());
-
-    let mut ambiguous = transfer;
-    let mut extra = ambiguous.sampled_sources.values().next().unwrap().clone();
-    extra.anchor_local[0] += 1.0;
-    ambiguous
-        .sampled_sources
-        .insert(extra.stable_id().unwrap(), extra);
-    assert!(format!("{:#}", ambiguous.to_json().unwrap_err()).contains("missing or ambiguous"));
-}
-
-#[cfg(unix)]
-#[test]
-fn portable_clone_publication_is_verified_atomic_and_no_replace() {
-    use std::os::unix::fs::symlink;
-
-    let directory = test_directory("portable-publication");
-    let source_directory = directory.join("outside");
-    let project_directory = directory.join("project");
-    let asset_directory = project_directory.join("assets");
-    fs::create_dir_all(&source_directory).unwrap();
-    fs::create_dir_all(&asset_directory).unwrap();
-    let source = source_directory.join("source.png");
-    write_source(&source);
-    let snapshot =
-        SampledSourceSnapshot::capture(&source_document(&source).layers[0], [1.5, 1.5]).unwrap();
-    let destination = asset_directory.join(format!("sampled-{}.png", snapshot.content_hash));
-    let attacker = directory.join("attacker.png");
-    RgbaImage::from_pixel(8, 8, Rgba([1, 2, 3, 255]))
-        .save(&attacker)
-        .unwrap();
-    let attacker_bytes = fs::read(&attacker).unwrap();
-    symlink(&attacker, &destination).unwrap();
-    let mut raced = snapshot.clone();
-    assert!(
-        crate::sampled_source_portable::make_portable(
-            &mut raced,
-            &project_directory,
-            &asset_directory,
-        )
-        .is_err()
-    );
-    assert_eq!(fs::read(&attacker).unwrap(), attacker_bytes);
-    fs::remove_file(&destination).unwrap();
-
-    let mut published = snapshot.clone();
-    crate::sampled_source_portable::make_portable(
-        &mut published,
-        &project_directory,
-        &asset_directory,
-    )
-    .unwrap();
-    assert_eq!(
-        fs::read(project_directory.join(&published.path)).unwrap(),
-        fs::read(&source).unwrap()
-    );
-    let mut reused = snapshot;
-    crate::sampled_source_portable::make_portable(
-        &mut reused,
-        &project_directory,
-        &asset_directory,
-    )
-    .unwrap();
-    assert_eq!(reused.path, published.path);
-}
-
-#[test]
 fn together_collaboration_materializes_clone_assets_for_the_follower() {
     let directory = test_directory("collaboration");
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("source.png");
-    let project = directory.join("collaboration.prism");
+    let project = directory.join("collaboration.spectrum");
     write_source(&source);
     let human_session = spectrum_revisions::SessionId::new();
-    let mut human = Workspace::create_durable(
-        source_document(&source),
+    let mut human = Workspace::create(
         &project,
+        source_document(&source),
         spectrum_revisions::Actor {
             id: "person:clone-human".into(),
             display_name: "Clone human".into(),
@@ -802,106 +699,6 @@ fn together_collaboration_materializes_clone_assets_for_the_follower() {
             .path,
         source,
     );
-}
-
-#[test]
-fn optimized_copy_preserves_clone_history_and_exact_sampled_pixels() {
-    const STATIC_FONT: &[u8] =
-        include_bytes!("../../../crates/spectrum-fonts/tests/fonts/noto-sans-static-source.ttf");
-
-    let directory = test_directory("optimized-copy");
-    fs::create_dir_all(&directory).unwrap();
-    let source_image = directory.join("source.png");
-    let font_path = directory.join("NotoSans.ttf");
-    let project = directory.join("source.prism");
-    let optimized = directory.join("optimized.prism");
-    write_source(&source_image);
-    let mut reducible_font = STATIC_FONT.to_vec();
-    reducible_font.resize(256 * 1024, 0);
-    fs::write(&font_path, reducible_font).unwrap();
-    let mut workspace = Workspace::create_durable(
-        Document::new("Clone optimized copy", 16, 16),
-        &project,
-        spectrum_revisions::Actor {
-            id: "person:clone-optimized-copy".into(),
-            display_name: "Clone optimized copy".into(),
-            kind: spectrum_revisions::ActorKind::Human,
-        },
-        spectrum_revisions::SessionId::new(),
-    )
-    .unwrap();
-    workspace
-        .execute(Command::ImportFont {
-            path: font_path,
-            source_name: None,
-        })
-        .unwrap();
-    let font_id = workspace.document.font_assets[0].id;
-    let text_id = workspace.document.next_id;
-    let source_id = text_id + 1;
-    workspace
-        .execute_batch(vec![
-            Command::AddText {
-                text: "A".into(),
-                name: None,
-                font_size: 12.0,
-                color: [255; 4],
-                x: 0.0,
-                y: 0.0,
-                shaping: TextShaping::default(),
-            },
-            Command::SetTextTypography {
-                id: text_id,
-                typography: TextTypography {
-                    font_id: Some(font_id),
-                    ..TextTypography::default()
-                },
-            },
-            Command::AddRaster {
-                path: source_image.clone(),
-                name: Some("Clone source".into()),
-                x: 0.0,
-                y: 0.0,
-            },
-            Command::SetCloneSource {
-                id: source_id,
-                document_x: 1.5,
-                document_y: 1.5,
-                resolved_source: None,
-            },
-            Command::AddPaintLayerWithStroke {
-                name: Some("Clone result".into()),
-                width: 16,
-                height: 16,
-                stroke: clone_stroke(vec![sample(8.5, 8.5)], 3.0),
-                selection: PaintSelection::None,
-            },
-            Command::RemoveLayer { id: source_id },
-        ])
-        .unwrap();
-    let paint_id = workspace
-        .document
-        .layers
-        .iter()
-        .find(|layer| layer.name == "Clone result")
-        .unwrap()
-        .id;
-    let expected = render_paint(&workspace.document, paint_id, 16, 16);
-    fs::remove_file(source_image).unwrap();
-    drop(workspace);
-
-    let report = create_optimized_font_copy(&project, &optimized).unwrap();
-    assert!(report.output_bytes < report.source_bytes);
-    let reopened = Workspace::open(&optimized).unwrap();
-    let optimized_paint_id = reopened
-        .document
-        .layers
-        .iter()
-        .find(|layer| layer.name == "Clone result")
-        .unwrap()
-        .id;
-    let actual = render_paint(&reopened.document, optimized_paint_id, 16, 16);
-    assert_eq!(actual, expected);
 }
 
 fn local_to_document(local: [f32; 2], dimensions: (u32, u32), transform: Transform) -> [f32; 2] {

@@ -6,7 +6,7 @@ mod projects;
 use anyhow::{Context, Result, bail};
 use clap::{Arg, Command, CommandFactory, FromArgMatches};
 use spectrum_assets::{Service, default_root};
-use spectrum_library::AssetId;
+use spectrum_library::{AssetId, AssetKind};
 use std::path::PathBuf;
 
 fn engine(domain: &str) -> Command {
@@ -22,24 +22,18 @@ fn definition() -> Command {
     for domain in ["images", "canvas"] {
         let base = engine(domain);
         root = root.mut_subcommand(domain, |mut command| {
-            for argument in base.get_arguments() {
-                if !matches!(argument.get_id().as_str(), "help" | "version") {
-                    let mut argument = argument.clone();
-                    if matches!(argument.get_id().as_str(), "catalog" | "project") {
-                        argument = argument.default_value(None::<&str>).required(false);
-                    }
-                    command = command.arg(argument);
-                }
-            }
-            command = command.arg(Arg::new("target_asset").long("asset").global(true)
-                .value_parser(clap::value_parser!(AssetId))
-                .help("Select a library asset for editor commands; image item IDs remain document-local"));
+            command = command.arg(
+                Arg::new("target_asset")
+                    .long("asset")
+                    .global(true)
+                    .value_parser(clap::value_parser!(AssetId))
+                    .help("The library asset an editor command works on"),
+            );
             for subcommand in base.get_subcommands() {
                 let name = subcommand.get_name();
-                if name == "list" {
+                if name == "list" || name == "get" {
                     command = command.subcommand(subcommand.clone().name("inspect"));
-                } else if !matches!(name, "from-lumen" | "import" | "export")
-                    && !command.get_subcommands().any(|c| c.get_name() == name) {
+                } else if !command.get_subcommands().any(|c| c.get_name() == name) {
                     command = command.subcommand(subcommand.clone());
                 }
             }
@@ -54,6 +48,22 @@ pub(super) fn run() -> Result<serde_json::Value> {
     dispatch(matches)
 }
 
+/// Library commands, which take asset UUIDs as arguments.
+const LIBRARY: [(&str, &[&str]); 2] = [
+    (
+        "images",
+        &[
+            "list",
+            "import",
+            "adjust",
+            "apply-edits",
+            "command",
+            "export",
+        ],
+    ),
+    ("canvas", &["list", "new", "place", "command", "export"]),
+];
+
 fn dispatch(matches: clap::ArgMatches) -> Result<serde_json::Value> {
     let (domain, args) = matches.subcommand().context("missing command")?;
     if domain == "schema" {
@@ -62,93 +72,50 @@ fn dispatch(matches: clap::ArgMatches) -> Result<serde_json::Value> {
             "library": {"asset_types": ["image", "canvas"], "references": "live",
                 "copy": "independent, recursively copies referenced content"},
             "help": "spectrum images --help; spectrum canvas --help",
-            "targeting": "Library commands use asset UUIDs. Editor commands use --asset UUID or --document PATH; image item and canvas layer IDs are local to that document."
+            "targeting": "Library commands take asset UUIDs. Editor commands take --asset UUID; canvas layer IDs are local to the canvas."
         }));
     }
-    if matches!(domain, "images" | "canvas") {
-        let (operation, _) = args.subcommand().context("missing editor command")?;
-        if operation == "schema" {
-            return Ok(if domain == "images" {
-                images::protocol()
-            } else {
-                canvas::protocol()
-            });
+    let Some((_, library_operations)) = LIBRARY.iter().find(|(name, _)| *name == domain) else {
+        return library::run(library::Cli::from_arg_matches(&matches)?);
+    };
+    let (operation, _) = args.subcommand().context("missing editor command")?;
+    let asset = args.get_one::<AssetId>("target_asset").copied();
+    if library_operations.contains(&operation) {
+        if asset.is_some() {
+            bail!(
+                "library commands take asset UUIDs as arguments; --asset belongs to editor commands"
+            );
         }
-        let managed = if domain == "images" {
-            [
-                "list",
-                "import",
-                "adjust",
-                "apply-edits",
-                "command",
-                "export",
-            ]
-            .contains(&operation)
+        return library::run(library::Cli::from_arg_matches(&matches)?);
+    }
+    if operation == "schema" {
+        return Ok(if domain == "images" {
+            images::protocol()
         } else {
-            ["list", "new", "place", "command", "export"].contains(&operation)
+            canvas::protocol()
+        });
+    }
+    if operation == "benchmark" {
+        return if domain == "images" {
+            images::execute_standalone(args).context("unknown image command")?
+        } else {
+            canvas::execute_standalone(args)
         };
-        if !managed {
-            let mut args = args.clone();
-            let field = if domain == "images" {
-                "catalog"
-            } else {
-                "project"
-            };
-            let explicit_asset = args.get_one::<AssetId>("target_asset").copied();
-            if explicit_asset.is_some()
-                && args.value_source(field) == Some(clap::parser::ValueSource::CommandLine)
-            {
-                bail!("choose --asset or --document, not both");
-            }
-            let path = if let Some(id) = explicit_asset {
-                let root = matches
-                    .get_one::<PathBuf>("library")
-                    .cloned()
-                    .map(Ok)
-                    .unwrap_or_else(default_root)?;
-                let service = Service::open(&root)?;
-                let asset = service.library.get(id)?;
-                let expected = if domain == "images" {
-                    "image"
-                } else {
-                    "canvas"
-                };
-                if asset.kind != expected {
-                    bail!("expected {expected} asset, got {}", asset.kind);
-                }
-                service.library.path(&asset)?
-            } else {
-                args.get_one::<PathBuf>(field).cloned().unwrap_or_default()
-            };
-            if path.as_os_str().is_empty() && !matches!(operation, "benchmark" | "live") {
-                bail!(
-                    "select a target with --asset UUID or --document PATH (the embedded terminal supplies its current document)"
-                );
-            }
-            // Reparse against the engine's own command tree, retaining clap's typed values.
-            // ArgMatches cannot rename a subcommand, so the adapter handles inspect explicitly.
-            if domain == "images" {
-                images::execute_target(&mut args, path)
-            } else {
-                canvas::execute_target(&mut args, path)
-            }
-        } else {
-            if args.get_one::<AssetId>("target_asset").is_some()
-                || args.value_source(if domain == "images" {
-                    "catalog"
-                } else {
-                    "project"
-                }) == Some(clap::parser::ValueSource::CommandLine)
-                || args.value_source("live") == Some(clap::parser::ValueSource::CommandLine)
-                || args.value_source("session") == Some(clap::parser::ValueSource::CommandLine)
-            {
-                bail!(
-                    "library commands take asset UUIDs as positional arguments; --asset, --document, --session, and --live belong to editor commands"
-                );
-            }
-            library::run(library::Cli::from_arg_matches(&matches)?)
-        }
+    }
+    let id = asset.context("choose the asset to edit with --asset UUID")?;
+    let root = matches
+        .get_one::<PathBuf>("library")
+        .cloned()
+        .map(Ok)
+        .unwrap_or_else(default_root)?;
+    let mut service = Service::agent(&root)?;
+    if domain == "images" {
+        images::execute_target(args, &mut service, id)
     } else {
-        library::run(library::Cli::from_arg_matches(&matches)?)
+        let (path, session) = service.editor_target(id, AssetKind::Canvas)?;
+        let mut args = args.clone();
+        let output = canvas::execute_target(&mut args, path, session)?;
+        service.index_canvas(id)?;
+        Ok(output)
     }
 }

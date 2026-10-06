@@ -1,5 +1,4 @@
-use spectrum_assets::{Service, actor};
-use spectrum_revisions::SessionId;
+use spectrum_assets::Service;
 
 #[test]
 fn shared_images_survive_restart_and_deep_copies_are_independent() {
@@ -18,35 +17,25 @@ fn shared_images_survive_restart_and_deep_copies_are_independent() {
     service.place(a.id, image.id).unwrap();
     service.place(b.id, image.id).unwrap();
     let copy = service.copy(a.id).unwrap();
-    let mut copy_doc =
-        spectrum_canvas::Workspace::load_read_only(&service.library.path(&copy).unwrap()).unwrap();
+    let mut copy_doc = service.saved_canvas(copy.id).unwrap();
     let copied_image = copy_doc.layers[0].image_asset.unwrap();
     assert_ne!(copied_image, image.id);
     assert_eq!(copy_doc.layers[1].image_asset, Some(copied_image));
     let before = service.preview(image.id).unwrap();
-    let mut workspace = spectrum_image::Workspace::open_as(
-        &service.library.path(&image).unwrap(),
-        actor(),
-        SessionId::new(),
-    )
-    .unwrap();
-    workspace
-        .execute(spectrum_image::Command::Adjust {
-            id: image.item.unwrap(),
-            patch: serde_json::from_str("{\"exposure\":1.0}").unwrap(),
-        })
+    // An agent edits the image; the person's canvases show it.
+    Service::agent(&root)
+        .unwrap()
+        .adjust(
+            image.id,
+            serde_json::from_str("{\"exposure\":1.0}").unwrap(),
+        )
         .unwrap();
-    drop(workspace);
     drop(service);
-    let mut service = Service::open(&root).unwrap();
-    service.scan().unwrap();
+    let service = Service::open(&root).unwrap();
     let after = service.preview(image.id).unwrap();
     assert_ne!(before, after);
     for canvas in [&a, &b] {
-        let mut doc =
-            spectrum_canvas::Workspace::load_read_only(&service.library.path(canvas).unwrap())
-                .unwrap();
-        service.resolve(&mut doc).unwrap();
+        let doc = service.canvas(canvas.id).unwrap();
         let rendered = spectrum_canvas::render_document(&doc, None)
             .unwrap()
             .to_rgba8();
@@ -65,55 +54,65 @@ fn shared_images_survive_restart_and_deep_copies_are_independent() {
 }
 
 #[test]
-fn cli_adapter_undo_targets_the_requested_image_and_canvas() {
+fn each_image_is_its_own_document_with_its_own_history() {
     let tmp = tempfile::tempdir().unwrap();
-    let source = tmp.path().join("source.png");
-    image::RgbaImage::from_pixel(8, 8, image::Rgba([64, 64, 64, 255]))
-        .save(&source)
-        .unwrap();
-    let mut service = Service::open(&tmp.path().join("library")).unwrap();
-    let mut assets = service.import(vec![source.clone()]).unwrap();
-    // Add another image to the same internal document to exercise selection.
-    let path = service.library.path(&assets[0]).unwrap();
-    let mut workspace =
-        spectrum_image::Workspace::open_as(&path, actor(), SessionId::new()).unwrap();
-    let source2 = tmp.path().join("second.png");
-    std::fs::copy(&source, &source2).unwrap();
-    workspace
-        .execute(spectrum_image::Command::Import {
-            paths: vec![source2],
-        })
-        .unwrap();
-    drop(workspace);
-    assets = service.index_catalog(&path).unwrap();
-    let second = assets.iter().find(|a| a.item == Some(2)).unwrap();
-    spectrum_assets::live::image(
-        &path,
-        2,
-        spectrum_image::Command::Adjust {
-            id: 2,
-            patch: serde_json::from_str("{\"exposure\":1.0}").unwrap(),
-        },
-    )
-    .unwrap();
-    spectrum_assets::live::image(&path, 2, spectrum_image::Command::Undo).unwrap();
-    assert_eq!(service.image(second.id).unwrap().adjustments.exposure, 0.0);
-    let canvas = service.create_canvas("Canvas".into(), 8, 8).unwrap();
-    let path = service.library.path(&canvas).unwrap();
-    spectrum_assets::live::canvas(
-        &path,
-        vec![spectrum_canvas::Command::RenameDocument {
-            name: "Renamed".into(),
-        }],
-    )
-    .unwrap();
-    spectrum_assets::live::canvas(&path, vec![spectrum_canvas::Command::Undo]).unwrap();
+    let mut sources = Vec::new();
+    for name in ["first.png", "second.png"] {
+        let source = tmp.path().join(name);
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([64, 64, 64, 255]))
+            .save(&source)
+            .unwrap();
+        sources.push(source);
+    }
+    let root = tmp.path().join("library");
+    let mut service = Service::open(&root).unwrap();
+    let assets = service.import(sources).unwrap();
+    assert_eq!(assets[0].name, "first");
+    assert_ne!(assets[0].document, assets[1].document);
+    let exposure = serde_json::from_str("{\"exposure\":1.0}").unwrap();
+    service.adjust(assets[1].id, exposure).unwrap();
     assert_eq!(
-        spectrum_canvas::Workspace::load_read_only(&path)
-            .unwrap()
-            .name,
-        "Canvas"
+        service.image(assets[0].id).unwrap().adjustments.exposure,
+        0.0
     );
+    assert_eq!(
+        service.image(assets[1].id).unwrap().adjustments.exposure,
+        1.0
+    );
+    service.step_history(assets[1].id, false).unwrap();
+    assert_eq!(
+        service.image(assets[1].id).unwrap().adjustments.exposure,
+        0.0
+    );
+    service.step_history(assets[1].id, true).unwrap();
+    assert_eq!(
+        service.image(assets[1].id).unwrap().adjustments.exposure,
+        1.0
+    );
+    let renamed = service.rename(assets[0].id, " Cover ").unwrap();
+    assert_eq!(renamed.name, "Cover");
+
+    let canvas = service.create_canvas("Canvas".into(), 8, 8).unwrap();
+    service
+        .edit_canvas(
+            canvas.id,
+            vec![
+                spectrum_canvas::Command::RenameDocument {
+                    name: "Renamed".into(),
+                },
+                spectrum_canvas::Command::Undo,
+            ],
+        )
+        .unwrap();
+    assert_eq!(service.saved_canvas(canvas.id).unwrap().name, "Canvas");
+    assert!(service.edit_canvas(assets[0].id, Vec::new()).is_err());
+
+    // Purging removes the document and its cache.
+    let document = root.join(&assets[0].document);
+    service.delete(assets[0].id).unwrap();
+    service.purge(assets[0].id).unwrap();
+    assert!(!document.exists());
+    assert_eq!(service.library.list().unwrap().len(), 2);
 }
 
 #[test]

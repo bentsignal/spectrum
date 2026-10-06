@@ -10,7 +10,6 @@ members = [
     "crates/spectrum-library",
     "crates/spectrum-fonts",
     "crates/spectrum-revisions",
-    "crates/spectrum-live-bridge",
     "tools/workspace-guardrails",
 ]
 exclude = ["third_party/hb-subset"]

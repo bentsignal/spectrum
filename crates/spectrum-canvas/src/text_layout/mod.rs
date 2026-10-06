@@ -81,7 +81,6 @@ pub(crate) fn render_text_region(
 }
 
 pub(crate) use legacy::clear_parsed_fonts;
-pub(crate) use shaped::{PrimaryFontShapingSample, primary_font_shaping_samples};
 
 #[cfg(test)]
 pub(crate) use legacy::font_outline_scale;

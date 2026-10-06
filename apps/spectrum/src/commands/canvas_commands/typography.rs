@@ -1,14 +1,7 @@
-use std::path::Path;
-
 use anyhow::{Context, Result, bail};
 use clap::{Args, ValueEnum};
 use serde_json::{Value, json};
-use spectrum_canvas::{
-    Document, DurableProject, FontAsset, TextAlignment, TextShaping, TextShapingEngine,
-    TextTypography, VerifiedFontSource, Workspace, inspect_font_source_read_only,
-    inspect_font_subset_read_only,
-};
-use spectrum_revisions::SessionId;
+use spectrum_canvas::{Document, TextAlignment, TextShaping, TextShapingEngine, TextTypography};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(super) enum CliTextAlignment {
@@ -70,7 +63,7 @@ pub(super) struct TypographyArgs {
     /// Preferred style/subfamily when resolving --family.
     #[arg(long, requires = "family")]
     pub style: Option<String>,
-    /// Return to Prism's bundled Ubuntu Light font.
+    /// Return to Spectrum's bundled Ubuntu Light font.
     #[arg(long, conflicts_with_all = ["font_id", "family"])]
     pub bundled: bool,
     #[arg(long)]
@@ -209,116 +202,10 @@ pub(super) fn font_usage(document: &Document, font_id: Option<u64>) -> Result<Va
         "editable_font_bytes_preserved": true,
         "limitations": [
             "does not inspect symbol or other non-Unicode cmaps",
-            "does not model shaping or renderer fallback",
-            "opening --session retains Prism's standard session-resume behavior"
+            "does not model shaping or renderer fallback"
         ],
         "fonts": fonts,
     }))
-}
-
-pub(super) fn font_source(document: &Document, font_id: u64) -> Result<Value> {
-    let font = document.font_asset(font_id)?;
-    let snapshot = font.source_snapshot()?;
-    Ok(font_source_value(
-        font,
-        snapshot.content_hash(),
-        snapshot.len(),
-        snapshot.subset_allowed(),
-    ))
-}
-
-pub(super) fn font_source_command(
-    project: &Path,
-    session: Option<SessionId>,
-    font_id: u64,
-) -> Result<Value> {
-    if session.is_some() {
-        bail!("font-source is read-only and does not accept --session");
-    }
-    if DurableProject::looks_durable(project)? {
-        let inspected = inspect_font_source_read_only(project, font_id)?;
-        Ok(verified_font_source(&inspected.font, &inspected.source))
-    } else {
-        font_source(&Workspace::load_read_only(project)?, font_id)
-    }
-}
-
-pub(super) fn verified_font_source(font: &FontAsset, source: &VerifiedFontSource) -> Value {
-    font_source_value(
-        font,
-        source.content_hash(),
-        source.len(),
-        source.subset_allowed(),
-    )
-}
-
-pub(super) fn font_subset_plan(document: &Document, font_id: u64) -> Result<Value> {
-    subset_plan_value(spectrum_canvas::plan_font_subset(document, font_id)?)
-}
-
-pub(super) fn font_subset_plan_command(
-    project: &Path,
-    session: Option<SessionId>,
-    font_id: u64,
-) -> Result<Value> {
-    if session.is_some() {
-        bail!("font-subset-plan is read-only and does not accept --session");
-    }
-    if DurableProject::looks_durable(project)? {
-        let inspected = inspect_font_subset_read_only(project, font_id)?;
-        verified_font_subset_plan(&inspected.document, font_id, &inspected.source)
-    } else {
-        font_subset_plan(&Workspace::load_read_only(project)?, font_id)
-    }
-}
-
-pub(super) fn verified_font_subset_plan(
-    document: &Document,
-    font_id: u64,
-    source: &VerifiedFontSource,
-) -> Result<Value> {
-    subset_plan_value(spectrum_canvas::plan_font_subset_with_verified_source(
-        document, font_id, source,
-    )?)
-}
-
-fn subset_plan_value(plan: spectrum_canvas::FontSubsetPlan) -> Result<Value> {
-    Ok(json!({
-        "ok": true,
-        "action": "font_subset_plan",
-        "mutates_project": false,
-        "font_bytes_modified": false,
-        "candidate_bytes_emitted": false,
-        "storage_decision": "a history-preserving reduction requires a separate fresh-database compact-copy transaction; appending a subset cannot remove retained full-font assets",
-        "plan": plan,
-    }))
-}
-
-fn font_source_value(
-    font: &FontAsset,
-    content_hash: &str,
-    source_bytes: usize,
-    subset_allowed: bool,
-) -> Value {
-    json!({
-        "ok": true,
-        "action": "font_source",
-        "font_id": font.id,
-        "family": &font.family,
-        "style": &font.style,
-        "source_name": &font.source_name,
-        "content_hash": content_hash,
-        "source_bytes": source_bytes,
-        "embedding_permission": font.embedding_permission,
-        "embedding_metadata_allows_subsetting": subset_allowed,
-        "local_editing_supported": true,
-        "portable_editable_embedding_verified": font.embedding_permission.portable_editing_verified(),
-        "editable_embedding_verified": font.embedding_permission.portable_editing_verified(),
-        "immutable_identity_verified": true,
-        "font_bytes_modified": false,
-        "mutates_project": false,
-        "portability_note": font.embedding_permission.advisory()
-    })
 }
 
 fn resolve_face(

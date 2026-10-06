@@ -1,7 +1,7 @@
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use spectrum_assets::{Service, default_root};
-use spectrum_library::{AssetId, ProjectId};
+use spectrum_library::{AssetId, AssetKind, ProjectId};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -84,7 +84,7 @@ enum Images {
         #[arg(required = true)]
         to: Vec<AssetId>,
     },
-    /// Execute any image engine command as JSON. Photo IDs are local to the asset's document.
+    /// Execute image Command JSON: one object or an array.
     Command {
         asset: AssetId,
         json: String,
@@ -107,6 +107,9 @@ enum Canvas {
         width: u32,
         #[arg(long, default_value_t = 1080)]
         height: u32,
+        /// Background color as RRGGBB or RRGGBBAA.
+        #[arg(long, default_value = "18191dff")]
+        background: String,
         /// Add the new canvas to this project.
         #[arg(long = "project", id = "project_id")]
         project: Option<ProjectId>,
@@ -115,7 +118,7 @@ enum Canvas {
         canvas: AssetId,
         image: AssetId,
     },
-    /// Execute any canvas engine command as JSON.
+    /// Execute canvas Command JSON: one object, or an array applied as one edit.
     Command {
         asset: AssetId,
         json: String,
@@ -131,9 +134,7 @@ enum Canvas {
     },
 }
 pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
-    let mut service = Service::open(&cli.library.map(Ok).unwrap_or_else(default_root)?)?;
-    service.ensure_catalog()?;
-    service.scan()?;
+    let mut service = Service::agent(&cli.library.map(Ok).unwrap_or_else(default_root)?)?;
     service.purge_expired()?;
     let value = match cli.command {
         Domain::Rename { asset, name } => serde_json::to_value(service.rename(asset, &name)?)?,
@@ -165,7 +166,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
         Domain::Imports => serde_json::to_value(service.library.imports()?)?,
         Domain::Copy { asset } => serde_json::to_value(service.copy(asset)?)?,
         Domain::Schema => {
-            serde_json::json!({"images":{"adjust":{"exposure":1.0},"command":{"command":"set-adjustments","id":1,"adjustments":spectrum_image::Adjustments::default()}},"canvas":{"command":{"command":"add_text","text":"Hello","name":null,"font_size":48,"color":[255,255,255,255],"x":0,"y":0}},"asset_types":["image","canvas"],"references":"live","copy":"independent, recursively copies referenced content"})
+            serde_json::json!({"images":{"adjust":{"exposure":1.0},"command":{"action":"set_adjustments","adjustments":spectrum_image::Adjustments::default()}},"canvas":{"command":{"command":"add_text","text":"Hello","name":null,"font_size":48,"color":[255,255,255,255],"x":0,"y":0}},"asset_types":["image","canvas"],"references":"live","copy":"independent, recursively copies referenced content"})
         }
         Domain::Images {
             command: Images::List,
@@ -174,7 +175,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
                 .library
                 .list()?
                 .into_iter()
-                .filter(|a| a.kind == "image")
+                .filter(|a| a.kind == AssetKind::Image)
                 .collect::<Vec<_>>(),
         )?,
         Domain::Images {
@@ -209,14 +210,18 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
                     quality,
                     max_size,
                 },
+        }
+        | Domain::Canvas {
+            command:
+                Canvas::Export {
+                    asset,
+                    path,
+                    quality,
+                    max_size,
+                },
         } => {
-            service.check_export(&path)?;
-            spectrum_image::engine::export_photo(
-                &service.image(asset)?,
-                &path,
-                spectrum_imaging::RenderOptions { max_size },
-                quality,
-            )?;
+            let options = spectrum_assets::ExportOptions { quality, max_size };
+            service.export_with(asset, &path, options)?;
             serde_json::json!({"exported":path})
         }
         Domain::Images {
@@ -225,37 +230,17 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
             service.apply_edits(from, &to)?;
             serde_json::json!({"from": from, "to": to})
         }
-        Domain::Images { command } => {
-            let (id, raw, patch) = match command {
-                Images::Adjust { asset, patch } => (asset, None, Some(patch)),
-                Images::Command { asset, json } => (asset, Some(json), None),
-                _ => unreachable!(),
-            };
-            let asset = service.library.get(id)?;
-            if asset.kind != "image" {
-                bail!("expected image");
-            }
-            let command = if let Some(raw) = raw {
-                serde_json::from_str(&raw)?
-            } else {
-                spectrum_image::Command::Adjust {
-                    id: asset.item.context("missing image item")?,
-                    patch: serde_json::from_str(&patch.unwrap())?,
-                }
-            };
-            if matches!(
-                command,
-                spectrum_image::Command::New { .. }
-                    | spectrum_image::Command::Open { .. }
-                    | spectrum_image::Command::Save { .. }
-            ) {
-                bail!("library owns document locations");
-            }
-            spectrum_assets::live::image(
-                &service.library.path(&asset)?,
-                asset.item.context("missing image item")?,
-                command,
-            )?
+        Domain::Images {
+            command: Images::Adjust { asset, patch },
+        } => {
+            service.adjust(asset, serde_json::from_str(&patch)?)?;
+            serde_json::json!({"asset": asset, "adjustments": service.image(asset)?.adjustments})
+        }
+        Domain::Images {
+            command: Images::Command { asset, json },
+        } => {
+            let outputs = service.edit_image(asset, super::images::decode_commands(&json)?)?;
+            serde_json::json!({"asset": asset, "results": outputs})
         }
         Domain::Canvas {
             command: Canvas::List,
@@ -264,7 +249,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
                 .library
                 .list()?
                 .into_iter()
-                .filter(|a| a.kind == "canvas")
+                .filter(|a| a.kind == AssetKind::Canvas)
                 .collect::<Vec<_>>(),
         )?,
         Domain::Canvas {
@@ -273,13 +258,16 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
                     name,
                     width,
                     height,
+                    background,
                     project,
                 },
         } => {
             if let Some(project) = project {
                 service.library.project(project)?;
             }
-            let canvas = service.create_canvas(name, width, height)?;
+            let mut document = spectrum_canvas::Document::new(name, width, height);
+            document.background = super::canvas::parse_color(&background)?;
+            let canvas = service.create_canvas_from(document)?;
             if let Some(project) = project {
                 service.library.add_to_project(project, &[canvas.id])?;
             }
@@ -289,36 +277,10 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
             command: Canvas::Place { canvas, image },
         } => serde_json::json!({"layer":service.place(canvas,image)?}),
         Domain::Canvas {
-            command:
-                Canvas::Export {
-                    asset,
-                    path,
-                    quality,
-                    max_size,
-                },
-        } => {
-            let asset = service.library.get(asset)?;
-            if asset.kind != "canvas" {
-                bail!("expected canvas");
-            }
-            let mut doc =
-                spectrum_canvas::Workspace::load_read_only(&service.library.path(&asset)?)?;
-            service.check_export(&path)?;
-            service.resolve(&mut doc)?;
-            spectrum_canvas::export_document_sized(&doc, &path, quality, max_size)?;
-            serde_json::json!({"exported":path})
-        }
-        Domain::Canvas {
             command: Canvas::Command { asset, json },
         } => {
-            let asset = service.library.get(asset)?;
-            if asset.kind != "canvas" {
-                bail!("expected canvas");
-            }
-            spectrum_assets::live::canvas(
-                &service.library.path(&asset)?,
-                vec![serde_json::from_str(&json)?],
-            )?
+            let commands = super::canvas::decode_commands(&json)?;
+            serde_json::json!({"asset": asset, "results": service.edit_canvas(asset, commands)?})
         }
     };
     Ok(value)

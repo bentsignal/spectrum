@@ -1,106 +1,39 @@
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
-
-use anyhow::{Context, Result};
+//! Editing one image asset: its adjustments, crop, and history.
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use image::{DynamicImage, Rgb, RgbImage};
-use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
+use spectrum_assets::Service;
 use spectrum_image::{
-    AdjustmentPatch, Adjustments, ColorGrade, Command, CropRect, CurvePoint, ExportFormat, Photo,
-    PickState, Project, SpotRemoval, ToneCurve, ToneCurves, Workspace,
-    engine::{RenderOptions, render_image},
-    preview::{
-        PreparedPreview, PreviewCompletionDisposition, PreviewPipeline, PreviewRequestDecision,
-        PreviewWorker,
-    },
+    AdjustmentPatch, Adjustments, ColorGrade, Command, CropRect, CurvePoint, SpotRemoval, ToneCurve,
 };
-use spectrum_revisions::{CollaborationMode, SessionId};
+use spectrum_library::AssetId;
 
 #[path = "image_commands/benchmark.rs"]
 mod benchmark;
-#[path = "image_commands/benchmark_live_bridge.rs"]
-mod benchmark_live_bridge;
 #[path = "image_commands/benchmark_profile.rs"]
 mod benchmark_profile;
-#[path = "image_commands/collaboration.rs"]
-mod collaboration;
-#[path = "image_commands/live_bridge.rs"]
-mod live_bridge;
-#[path = "image_commands/schema.rs"]
-mod schema;
-use benchmark::benchmark;
 use benchmark_profile::BenchmarkProfile;
-use collaboration::*;
-use live_bridge::{
-    CliLiveMode, LiveCommand, live_command, require_direct_mode, resolved_live_mode,
-    run_required_live,
-};
-use schema::schema;
 
 #[derive(Parser)]
 #[command(
     name = "images",
     version,
     about = "Spectrum image editing commands",
-    long_about = "Spectrum's image CLI exposes the same command engine as its native GUI. All successful output is JSON."
+    long_about = "Edit one image asset, chosen with --asset. All successful output is JSON."
 )]
 struct Cli {
-    /// Advanced: select an internal image document. Prefer library asset IDs.
-    #[arg(
-        short,
-        global = true,
-        env = "SPECTRUM_IMAGES_DOCUMENT",
-        long = "document",
-        default_value = "."
-    )]
-    catalog: PathBuf,
-
-    /// Continue commands in an existing collaboration session.
-    #[arg(long, global = true, env = "SPECTRUM_SESSION")]
-    session: Option<SessionId>,
-
-    /// Use the authenticated live GUI bridge or ordinary direct project access.
-    #[arg(long, global = true, value_enum)]
-    live: Option<CliLiveMode>,
-
     #[command(subcommand)]
     command: CliCommand,
 }
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Inspect or mutate an open Spectrum image editor through its authenticated bridge.
-    Live {
-        #[command(subcommand)]
-        command: LiveCommand,
-    },
-    /// Create a new empty catalog.
-    Init {
-        #[arg(default_value = "Untitled")]
-        name: String,
-        /// Replace an existing catalog.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Import one or more photos without changing the originals.
-    Import { paths: Vec<PathBuf> },
-    /// List catalog photos and their current edits.
-    List,
-    /// Inspect one photo.
-    Get { id: u64 },
-    /// Set one or more edit values on a photo.
-    Edit {
-        id: u64,
-        #[command(flatten)]
-        adjustments: EditArgs,
-    },
+    /// Inspect the image: its source, size, camera details, and edits.
+    Get,
+    /// Set one or more edit values.
+    Edit(EditArgs),
     /// Set or clear a normalized crop rectangle and straighten angle.
     Crop {
-        id: u64,
         #[arg(long)]
         x: Option<f32>,
         #[arg(long)]
@@ -116,7 +49,6 @@ enum CliCommand {
     },
     /// Adjust hue, saturation, and luminance for one color range.
     Hsl {
-        id: u64,
         color: ColorBand,
         #[arg(long, allow_hyphen_values = true)]
         hue: Option<f32>,
@@ -129,7 +61,6 @@ enum CliCommand {
     },
     /// Set a global or per-channel tone curve from normalized x,y points.
     Curve {
-        id: u64,
         channel: CurveChannel,
         /// Semicolon-separated points, for example: 0,0;0.4,0.55;1,1
         #[arg(long)]
@@ -139,7 +70,6 @@ enum CliCommand {
     },
     /// Grade shadows, midtones, or highlights with hue, saturation, and luminance.
     Grade {
-        id: u64,
         range: GradeRange,
         #[arg(long)]
         hue: Option<f32>,
@@ -152,9 +82,8 @@ enum CliCommand {
         #[arg(long)]
         reset: bool,
     },
-    /// Add or clear nondestructive dust/smudge repair dabs.
+    /// Add or clear dust and smudge repair dabs.
     Spot {
-        id: u64,
         #[arg(long)]
         x: Option<f32>,
         #[arg(long)]
@@ -166,146 +95,43 @@ enum CliCommand {
         #[arg(long)]
         clear: bool,
     },
-    /// Mark photos as keeps, rejects, or unmarked for fast culling.
-    Pick {
-        #[arg(num_args = 1..)]
-        ids: Vec<u64>,
-        #[arg(long, value_enum)]
-        state: CliPickState,
-    },
-    /// Rename a chronological shoot batch in the catalog library.
-    BatchRename { id: u64, name: String },
-    /// Show one photo's immutable revision tree and session cursors.
-    History { id: u64 },
-    /// Move this session one photo edit backward.
-    HistoryBack { id: u64 },
-    /// Move this session one photo edit forward.
-    HistoryForward { id: u64 },
-    /// Jump this session to a specific revision of one photo.
-    HistoryJump {
-        id: u64,
-        revision: spectrum_revisions::RevisionId,
-    },
-    /// Reset edits for one or more photos.
-    Reset { ids: Vec<u64> },
-    /// Copy every edit from one photo to one or more others.
-    CopyEdits {
-        #[arg(long)]
-        from: u64,
-        #[arg(long, num_args = 1..)]
-        to: Vec<u64>,
-    },
-    /// Rotate a photo 90 degrees.
+    /// Rotate 90 degrees.
     Rotate {
-        id: u64,
         #[arg(long)]
         counterclockwise: bool,
     },
-    /// Flip a photo horizontally or vertically.
+    /// Flip horizontally or vertically.
     Flip {
-        id: u64,
         #[arg(long, conflicts_with = "vertical")]
         horizontal: bool,
         #[arg(long)]
         vertical: bool,
     },
-    /// Remove photos from the catalog (source files stay untouched).
-    Remove { ids: Vec<u64> },
-    /// Render a photo to a new image file.
-    Export {
-        id: u64,
-        path: PathBuf,
-        /// Optional maximum long-edge size in pixels.
-        #[arg(long)]
-        max_size: Option<u32>,
-        #[arg(long, default_value_t = 92, value_parser = clap::value_parser!(u8).range(1..=100))]
-        quality: u8,
+    /// Remove every edit.
+    Reset,
+    /// Show the image's revisions and where each session is.
+    History,
+    /// Go back one edit.
+    Undo,
+    /// Go forward one edit.
+    Redo,
+    /// Return to a revision from `history`.
+    HistoryJump {
+        revision: spectrum_document::RevisionId,
     },
-    /// Render multiple photos into a directory with generated filenames.
-    ExportBatch {
-        #[arg(num_args = 1..)]
-        ids: Vec<u64>,
-        #[arg(long)]
-        directory: PathBuf,
-        #[arg(long, value_enum, default_value_t = CliExportFormat::Jpeg)]
-        format: CliExportFormat,
-        #[arg(long)]
-        max_size: Option<u32>,
-        #[arg(long, default_value_t = 92, value_parser = clap::value_parser!(u8).range(1..=100))]
-        quality: u8,
-    },
-    /// List saved development presets.
-    PresetList,
-    /// Save a photo's reusable development settings as a preset.
-    PresetSave {
-        name: String,
-        #[arg(long)]
-        from: u64,
-    },
-    /// Apply a saved preset to one or more photos.
-    PresetApply {
-        preset_id: u64,
-        #[arg(num_args = 1..)]
-        ids: Vec<u64>,
-    },
-    /// Delete a saved preset.
-    PresetDelete { preset_id: u64 },
-    /// Execute a serialized core command. Useful for agents and integrations.
-    Run {
-        /// JSON object or array matching the tagged core Command enum.
-        json: String,
-    },
-    /// Start or inspect a CLI-first agent collaboration.
-    Agent {
-        #[command(subcommand)]
-        command: AgentCommand,
-    },
-    /// Run deterministic tone-curve and 24 MP export performance workloads.
+    /// Execute image Command JSON: one object or an array.
+    Run { json: String },
+    /// Run image rendering and editing performance workloads.
     Benchmark {
-        /// Return a failure when any user-experience performance budget is missed.
+        /// Fail when any performance budget is missed.
         #[arg(long)]
         strict: bool,
         /// Budget calibration: workstation feel or GitHub's shared Linux runner.
         #[arg(long, value_enum, default_value_t = BenchmarkProfile::Interactive)]
         profile: BenchmarkProfile,
-        /// Optional real RAW file used for an import-only metadata benchmark.
-        #[arg(long)]
-        raw_import: Option<PathBuf>,
     },
     /// Print the JSON command protocol and adjustment ranges.
     Schema,
-}
-
-#[derive(Clone, Subcommand)]
-enum AgentCommand {
-    /// Start from the current human position and return a persistent agent session.
-    Start {
-        /// Photo whose history this agent may extend.
-        photo_id: u64,
-        #[arg(long, value_enum)]
-        mode: CliAgentMode,
-        #[arg(long, default_value = "Agent")]
-        name: String,
-        #[arg(long)]
-        from_session: Option<SessionId>,
-    },
-    /// Inspect this agent session's mode, cursor, and follow status.
-    Status,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum CliAgentMode {
-    Together,
-    Separate,
-}
-
-impl From<CliAgentMode> for CollaborationMode {
-    fn from(value: CliAgentMode) -> Self {
-        match value {
-            CliAgentMode::Together => Self::Together,
-            CliAgentMode::Separate => Self::Separate,
-        }
-    }
 }
 
 #[derive(Args, Default)]
@@ -344,76 +170,6 @@ struct EditArgs {
     noise_reduction: Option<f32>,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum ColorBand {
-    Red,
-    Orange,
-    Yellow,
-    Green,
-    Aqua,
-    Blue,
-    Purple,
-    Magenta,
-}
-
-impl ColorBand {
-    fn index(self) -> usize {
-        self as usize
-    }
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum CurveChannel {
-    Master,
-    Red,
-    Green,
-    Blue,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum GradeRange {
-    Shadows,
-    Midtones,
-    Highlights,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum CliPickState {
-    Unmarked,
-    Keep,
-    Reject,
-}
-
-impl From<CliPickState> for PickState {
-    fn from(value: CliPickState) -> Self {
-        match value {
-            CliPickState::Unmarked => Self::Unmarked,
-            CliPickState::Keep => Self::Keep,
-            CliPickState::Reject => Self::Reject,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Default, ValueEnum)]
-enum CliExportFormat {
-    #[default]
-    Jpeg,
-    Png,
-    Tiff,
-    Webp,
-}
-
-impl From<CliExportFormat> for ExportFormat {
-    fn from(value: CliExportFormat) -> Self {
-        match value {
-            CliExportFormat::Jpeg => Self::Jpeg,
-            CliExportFormat::Png => Self::Png,
-            CliExportFormat::Tiff => Self::Tiff,
-            CliExportFormat::Webp => Self::Webp,
-        }
-    }
-}
-
 impl From<EditArgs> for AdjustmentPatch {
     fn from(args: EditArgs) -> Self {
         Self {
@@ -438,138 +194,106 @@ impl From<EditArgs> for AdjustmentPatch {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum ColorBand {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Aqua,
+    Blue,
+    Purple,
+    Magenta,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CurveChannel {
+    Master,
+    Red,
+    Green,
+    Blue,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum GradeRange {
+    Shadows,
+    Midtones,
+    Highlights,
+}
+
 pub(super) fn definition() -> clap::Command {
     use clap::CommandFactory;
     Cli::command()
 }
 
-pub(super) fn execute_target(
-    matches: &mut clap::ArgMatches,
-    path: PathBuf,
-) -> Result<serde_json::Value> {
-    use clap::FromArgMatches;
-    let command = if matches.subcommand_name() == Some("inspect") {
-        CliCommand::List
-    } else {
-        CliCommand::from_arg_matches(matches)?
-    };
-    run(Cli {
-        catalog: path,
-        session: matches.get_one::<SessionId>("session").copied(),
-        live: matches.get_one::<CliLiveMode>("live").copied(),
-        command,
-    })
-}
-
-pub(super) fn protocol() -> serde_json::Value {
+pub(super) fn protocol() -> Value {
     schema()
 }
 
-fn run(cli: Cli) -> Result<serde_json::Value> {
-    if matches!(&cli.command, CliCommand::Schema) {
-        return Ok(schema());
-    }
-    if let CliCommand::Benchmark {
-        strict,
-        profile,
-        raw_import,
-    } = &cli.command
-    {
-        return benchmark(*strict, *profile, raw_import.as_deref());
-    }
+/// Runs an editor command on one image asset.
+pub(super) fn execute_target(
+    matches: &clap::ArgMatches,
+    service: &mut Service,
+    id: AssetId,
+) -> Result<Value> {
+    use clap::FromArgMatches;
+    let command = if matches.subcommand_name() == Some("inspect") {
+        CliCommand::Get
+    } else {
+        CliCommand::from_arg_matches(matches)?
+    };
+    run(service, id, command)
+}
 
-    if let CliCommand::Agent { command } = &cli.command {
-        require_direct_mode(resolved_live_mode(cli.live)?, "agent")?;
-        return agent_command(&cli.catalog, cli.session, command.clone());
+/// Commands that need no image.
+pub(super) fn execute_standalone(matches: &clap::ArgMatches) -> Option<Result<Value>> {
+    use clap::FromArgMatches;
+    match CliCommand::from_arg_matches(matches).ok()? {
+        CliCommand::Schema => Some(Ok(schema())),
+        CliCommand::Benchmark { strict, profile } => Some(benchmark::benchmark(strict, profile)),
+        _ => None,
     }
+}
 
-    let live_mode = resolved_live_mode(cli.live)?;
-    if let CliCommand::Live { command } = &cli.command {
-        return live_command(&cli.catalog, cli.session, command.clone());
-    }
-    if live_mode == CliLiveMode::Required {
-        return run_required_live(&cli);
-    }
-
-    if let CliCommand::Init { name, force } = &cli.command {
-        if cli.catalog.exists() && !force {
-            anyhow::bail!(
-                "catalog {} already exists; pass --force to replace it",
-                cli.catalog.display()
-            );
+fn run(service: &mut Service, id: AssetId, command: CliCommand) -> Result<Value> {
+    let set = |service: &Service, edit: &dyn Fn(&mut Adjustments) -> Result<()>| {
+        let mut adjustments = service.image(id)?.adjustments;
+        edit(&mut adjustments)?;
+        service.edit_image(id, vec![Command::SetAdjustments { adjustments }])
+    };
+    let outputs = match command {
+        CliCommand::Get | CliCommand::Schema | CliCommand::Benchmark { .. } => {
+            return Ok(json!({"ok": true, "asset": id, "image": service.image(id)?}));
         }
-        if cli.catalog.exists() {
-            fs::remove_file(&cli.catalog)
-                .with_context(|| format!("could not replace {}", cli.catalog.display()))?;
-        }
-        let project = Project::new(name.clone());
-        let workspace =
-            Workspace::create_durable(project, &cli.catalog, cli_actor(), SessionId::new())?;
-        return Ok(json!({
-            "ok": true,
-            "action": "init",
-            "catalog": cli.catalog,
-            "project": workspace.project,
-        }));
-    }
-
-    let mut workspace = match cli.session {
-        Some(session) => Workspace::open_session(&cli.catalog, session),
-        None => Workspace::open_as(&cli.catalog, cli_actor(), SessionId::new()),
-    }
-    .with_context(|| {
-        format!(
-            "open {} or create it first with `lumen init`",
-            cli.catalog.display()
-        )
-    })?;
-    let active_catalog = workspace
-        .catalog_path
-        .clone()
-        .unwrap_or_else(|| cli.catalog.clone());
-
-    let (result, _should_save) = match cli.command {
-        CliCommand::Import { paths } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::Import { paths },
-            )?),
-            true,
-        ),
-        CliCommand::List => {
+        CliCommand::History => {
+            let history = service.history(id)?;
             return Ok(json!({
                 "ok": true,
-                "catalog": active_catalog,
-                "project": workspace.project,
+                "asset": id,
+                "root": history.root,
+                "current": history.current,
+                "revisions": history.revisions,
+                "sessions": history.sessions,
             }));
         }
-        CliCommand::Get { id } => {
-            return Ok(json!({
-                "ok": true,
-                "catalog": active_catalog,
-                "photo": workspace.project.photo(id)?,
-            }));
+        CliCommand::HistoryJump { revision } => {
+            service.move_to(id, revision)?;
+            return Ok(json!({"ok": true, "action": "history_jump", "revision": revision}));
         }
-        CliCommand::Edit { id, adjustments } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::Adjust {
-                    id,
-                    patch: adjustments.into(),
-                },
-            )?),
-            true,
-        ),
-        CliCommand::Crop {
+        CliCommand::Edit(arguments) => service.edit_image(
             id,
+            vec![Command::Adjust {
+                patch: arguments.into(),
+            }],
+        )?,
+        CliCommand::Crop {
             x,
             y,
             width,
             height,
             straighten,
             clear,
-        } => {
-            let mut adjustments = workspace.project.photo(id)?.adjustments.clone();
+        } => set(service, &|adjustments| {
             if clear {
                 adjustments.crop = None;
             } else if x.is_some() || y.is_some() || width.is_some() || height.is_some() {
@@ -584,51 +308,29 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             if let Some(value) = straighten {
                 adjustments.straighten = value;
             }
-            (
-                output(&workspace_command(
-                    &mut workspace,
-                    Command::SetAdjustments { id, adjustments },
-                )?),
-                true,
-            )
-        }
+            Ok(())
+        })?,
         CliCommand::Hsl {
-            id,
             color,
             hue,
             saturation,
             luminance,
             reset,
-        } => {
-            let mut adjustments = workspace.project.photo(id)?.adjustments.clone();
-            let band = adjustments.hsl.band_mut(color.index());
+        } => set(service, &|adjustments| {
+            let band = adjustments.hsl.band_mut(color as usize);
             if reset {
                 *band = Default::default();
             }
-            if let Some(value) = hue {
-                band.hue = value;
-            }
-            if let Some(value) = saturation {
-                band.saturation = value;
-            }
-            if let Some(value) = luminance {
-                band.luminance = value;
-            }
-            (
-                output(&workspace_command(
-                    &mut workspace,
-                    Command::SetAdjustments { id, adjustments },
-                )?),
-                true,
-            )
-        }
+            band.hue = hue.unwrap_or(band.hue);
+            band.saturation = saturation.unwrap_or(band.saturation);
+            band.luminance = luminance.unwrap_or(band.luminance);
+            Ok(())
+        })?,
         CliCommand::Curve {
-            id,
             channel,
             points,
             reset,
-        } => {
-            let mut adjustments = workspace.project.photo(id)?.adjustments.clone();
+        } => set(service, &|adjustments| {
             let curve = match channel {
                 CurveChannel::Master => &mut adjustments.curves.master,
                 CurveChannel::Red => &mut adjustments.curves.red,
@@ -638,27 +340,19 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             if reset {
                 *curve = ToneCurve::default();
             }
-            if let Some(points) = points {
-                *curve = parse_curve(&points)?;
+            if let Some(points) = &points {
+                *curve = parse_curve(points)?;
             }
-            (
-                output(&workspace_command(
-                    &mut workspace,
-                    Command::SetAdjustments { id, adjustments },
-                )?),
-                true,
-            )
-        }
+            Ok(())
+        })?,
         CliCommand::Grade {
-            id,
             range,
             hue,
             saturation,
             luminance,
             balance,
             reset,
-        } => {
-            let mut adjustments = workspace.project.photo(id)?.adjustments.clone();
+        } => set(service, &|adjustments| {
             let grade = match range {
                 GradeRange::Shadows => &mut adjustments.color_grading.shadows,
                 GradeRange::Midtones => &mut adjustments.color_grading.midtones,
@@ -667,35 +361,21 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
             if reset {
                 *grade = ColorGrade::default();
             }
-            if let Some(value) = hue {
-                grade.hue = value;
-            }
-            if let Some(value) = saturation {
-                grade.saturation = value;
-            }
-            if let Some(value) = luminance {
-                grade.luminance = value;
-            }
+            grade.hue = hue.unwrap_or(grade.hue);
+            grade.saturation = saturation.unwrap_or(grade.saturation);
+            grade.luminance = luminance.unwrap_or(grade.luminance);
             if let Some(value) = balance {
                 adjustments.color_grading.balance = value;
             }
-            (
-                output(&workspace_command(
-                    &mut workspace,
-                    Command::SetAdjustments { id, adjustments },
-                )?),
-                true,
-            )
-        }
+            Ok(())
+        })?,
         CliCommand::Spot {
-            id,
             x,
             y,
             radius,
             opacity,
             clear,
-        } => {
-            let mut adjustments = workspace.project.photo(id)?.adjustments.clone();
+        } => set(service, &|adjustments| {
             if clear {
                 adjustments.spots.clear();
             } else {
@@ -706,198 +386,48 @@ fn run(cli: Cli) -> Result<serde_json::Value> {
                     opacity,
                 });
             }
-            (
-                output(&workspace_command(
-                    &mut workspace,
-                    Command::SetAdjustments { id, adjustments },
-                )?),
-                true,
-            )
-        }
-        CliCommand::Pick { ids, state } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::SetPick {
-                    ids,
-                    state: state.into(),
-                },
-            )?),
-            true,
-        ),
-        CliCommand::BatchRename { id, name } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::RenameBatch { id, name },
-            )?),
-            true,
-        ),
-        CliCommand::History { id } => {
-            return Ok(json!({
-                "ok": true,
-                "project": active_catalog,
-                "history": workspace.history_for(id)?.context("photo history is unavailable")?,
-            }));
-        }
-        CliCommand::HistoryBack { id } => {
-            workspace.execute(Command::Select { id })?;
-            (
-                output(&workspace_command(&mut workspace, Command::Undo)?),
-                true,
-            )
-        }
-        CliCommand::HistoryForward { id } => {
-            workspace.execute(Command::Select { id })?;
-            (
-                output(&workspace_command(&mut workspace, Command::Redo)?),
-                true,
-            )
-        }
-        CliCommand::HistoryJump { id, revision } => {
-            workspace.move_photo_to_revision(id, revision)?;
-            (
-                json!({"ok": true, "action": "history_jump", "photo_id": id, "revision": revision}),
-                true,
-            )
-        }
-        CliCommand::Reset { ids } => (
-            output(&workspace_command(&mut workspace, Command::Reset { ids })?),
-            true,
-        ),
-        CliCommand::CopyEdits { from, to } => {
-            workspace.execute(Command::CopyEdits { id: from })?;
-            (
-                output(&workspace_command(
-                    &mut workspace,
-                    Command::PasteEdits { ids: to },
-                )?),
-                true,
-            )
-        }
-        CliCommand::Rotate {
-            id,
-            counterclockwise,
-        } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::Rotate {
-                    id,
-                    clockwise: !counterclockwise,
-                },
-            )?),
-            true,
-        ),
+            Ok(())
+        })?,
+        CliCommand::Rotate { counterclockwise } => set(service, &|adjustments| {
+            let turn = if counterclockwise { -90 } else { 90 };
+            adjustments.rotation = (adjustments.rotation + turn).rem_euclid(360);
+            Ok(())
+        })?,
         CliCommand::Flip {
-            id,
             horizontal,
             vertical,
-        } => {
-            let command = if vertical && !horizontal {
-                Command::FlipVertical { id }
+        } => set(service, &|adjustments| {
+            if vertical && !horizontal {
+                adjustments.flip_vertical = !adjustments.flip_vertical;
             } else {
-                Command::FlipHorizontal { id }
-            };
-            (output(&workspace_command(&mut workspace, command)?), true)
-        }
-        CliCommand::Remove { ids } => (
-            output(&workspace_command(&mut workspace, Command::Remove { ids })?),
-            true,
-        ),
-        CliCommand::Export {
-            id,
-            path,
-            max_size,
-            quality,
-        } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::Export {
-                    id,
-                    path,
-                    max_size,
-                    quality,
-                },
-            )?),
-            false,
-        ),
-        CliCommand::ExportBatch {
-            ids,
-            directory,
-            format,
-            max_size,
-            quality,
-        } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::ExportBatch {
-                    ids,
-                    directory,
-                    format: format.into(),
-                    max_size,
-                    quality,
-                },
-            )?),
-            false,
-        ),
-        CliCommand::PresetList => {
-            return Ok(json!({
-                "ok": true,
-                "catalog": active_catalog,
-                "presets": workspace.project.presets,
-            }));
-        }
-        CliCommand::PresetSave { name, from } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::SavePreset {
-                    name,
-                    from_id: from,
-                },
-            )?),
-            true,
-        ),
-        CliCommand::PresetApply { preset_id, ids } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::ApplyPreset { preset_id, ids },
-            )?),
-            true,
-        ),
-        CliCommand::PresetDelete { preset_id } => (
-            output(&workspace_command(
-                &mut workspace,
-                Command::DeletePreset { id: preset_id },
-            )?),
-            true,
-        ),
-        CliCommand::Run { json } => {
-            let outputs = run_commands(&mut workspace, &json)?;
-            (serde_json::to_value(outputs)?, true)
-        }
-        CliCommand::Init { .. }
-        | CliCommand::Live { .. }
-        | CliCommand::Agent { .. }
-        | CliCommand::Benchmark { .. }
-        | CliCommand::Schema => {
-            unreachable!()
-        }
+                adjustments.flip_horizontal = !adjustments.flip_horizontal;
+            }
+            Ok(())
+        })?,
+        CliCommand::Reset => service.edit_image(id, vec![Command::Reset])?,
+        CliCommand::Undo => service.edit_image(id, vec![Command::Undo])?,
+        CliCommand::Redo => service.edit_image(id, vec![Command::Redo])?,
+        CliCommand::Run { json } => service.edit_image(id, decode_commands(&json)?)?,
     };
-
-    workspace.checkpoint()?;
     Ok(json!({
-        "result": result,
-        "catalog": active_catalog,
+        "ok": true,
+        "asset": id,
+        "results": outputs,
+        "adjustments": service.image(id)?.adjustments,
     }))
 }
 
-fn workspace_command(
-    workspace: &mut Workspace,
-    command: Command,
-) -> Result<spectrum_image::CommandOutput> {
-    workspace.execute(command)
-}
-
-fn output(value: &impl Serialize) -> serde_json::Value {
-    serde_json::to_value(value).unwrap()
+/// One command object, or an array of them.
+pub(super) fn decode_commands(value: &str) -> Result<Vec<Command>> {
+    let commands = if value.trim_start().starts_with('[') {
+        serde_json::from_str(value)?
+    } else {
+        vec![serde_json::from_str(value)?]
+    };
+    if commands.is_empty() {
+        bail!("there is nothing to do");
+    }
+    Ok(commands)
 }
 
 fn parse_curve(value: &str) -> Result<ToneCurve> {
@@ -916,7 +446,51 @@ fn parse_curve(value: &str) -> Result<ToneCurve> {
         });
     }
     if points.len() < 2 {
-        anyhow::bail!("a tone curve needs at least two points");
+        bail!("a tone curve needs at least two points");
     }
     Ok(ToneCurve { points }.sanitized())
+}
+
+fn schema() -> Value {
+    json!({
+        "ok": true,
+        "output": "JSON on stdout; structured errors on stderr; nonzero exit on failure",
+        "targeting": "spectrum images --asset <UUID> <command>; spectrum library lists asset IDs",
+        "storage": "each image is one .spectrum document: its embedded source photo and a revision for every edit",
+        "history": "history lists revisions; undo, redo, and history-jump move through them",
+        "commands": {
+            "adjust": { "action": "adjust", "patch": { "exposure": 0.7, "shadows": 18 } },
+            "set_adjustments": { "action": "set_adjustments", "adjustments": Adjustments::default() },
+            "reset": { "action": "reset" },
+            "undo": { "action": "undo" },
+            "redo": { "action": "redo" }
+        },
+        "adjustments": {
+            "exposure": { "range": [-5.0, 5.0], "unit": "stops", "default": 0.0 },
+            "temperature": { "range": [-100, 100], "default": 0 },
+            "tint": { "range": [-100, 100], "default": 0 },
+            "contrast": { "range": [-100, 100], "default": 0 },
+            "highlights": { "range": [-100, 100], "default": 0 },
+            "shadows": { "range": [-100, 100], "default": 0 },
+            "whites": { "range": [-100, 100], "default": 0 },
+            "blacks": { "range": [-100, 100], "default": 0 },
+            "texture": { "range": [-100, 100], "default": 0 },
+            "clarity": { "range": [-100, 100], "default": 0 },
+            "dehaze": { "range": [-100, 100], "default": 0 },
+            "vibrance": { "range": [-100, 100], "default": 0 },
+            "saturation": { "range": [-100, 100], "default": 0 },
+            "vignette": { "range": [-100, 100], "default": 0 },
+            "sharpening": { "range": [0, 100], "default": 0 },
+            "noise_reduction": { "range": [0, 100], "default": 0 },
+            "crop": { "type": "normalized rectangle", "fields": ["x", "y", "width", "height"] },
+            "straighten": { "range": [-45, 45], "unit": "degrees" },
+            "hsl": { "colors": ["red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"], "range": [-100, 100] },
+            "curves": { "channels": ["master", "red", "green", "blue"], "points": "normalized x,y pairs" },
+            "color_grading": { "ranges": ["shadows", "midtones", "highlights"], "hue": [0, 360], "saturation": [0, 100], "luminance": [-100, 100], "balance": [-100, 100] },
+            "spots": { "type": "normalized repair dabs", "fields": ["x", "y", "radius", "opacity"] },
+            "rotation": { "values": [0, 90, 180, 270], "unit": "degrees clockwise" },
+            "flip_horizontal": { "type": "boolean" },
+            "flip_vertical": { "type": "boolean" }
+        }
+    })
 }

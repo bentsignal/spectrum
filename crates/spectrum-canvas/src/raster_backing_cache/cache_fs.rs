@@ -328,7 +328,7 @@ mod fallback_tests {
     #[test]
     fn retained_plane_serializes_cursor_based_positioned_reads() {
         let path =
-            std::env::temp_dir().join(format!("prism-retained-plane-{}", std::process::id()));
+            std::env::temp_dir().join(format!("canvas-retained-plane-{}", std::process::id()));
         let first = vec![0x31_u8; 4_096];
         let second = vec![0xc7_u8; 4_096];
         let mut contents = first.clone();

@@ -41,7 +41,7 @@ impl TemporaryProject {
     }
 
     fn path(&self) -> PathBuf {
-        self.directory.join("benchmark.prism")
+        self.directory.join("benchmark.spectrum")
     }
 }
 

@@ -223,3 +223,40 @@ fn agents_work_in_their_own_session() {
     agent.execute(Edit::Write("theirs".into())).unwrap();
     assert_eq!(Notebook::read(&path).unwrap().lines, ["mine", "theirs"]);
 }
+
+#[test]
+fn opening_at_the_newest_builds_on_other_sessions() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("notes.spectrum");
+    let (desk, cli) = (SessionId::new(), SessionId::new());
+    let mut notes = Notebook::create(&path, Notes::default(), person(), desk).unwrap();
+    notes.execute(Edit::Write("desk".into())).unwrap();
+    drop(notes);
+    let mut agent = Notebook::open_newest(&path, person(), cli).unwrap();
+    agent.execute(Edit::Write("agent".into())).unwrap();
+    drop(agent);
+    let notes = Notebook::open_newest(&path, person(), desk).unwrap();
+    assert_eq!(notes.document.lines, ["desk", "agent"]);
+    assert!(notes.can_undo());
+}
+
+#[test]
+fn removing_a_document_removes_its_caches() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("notes.spectrum");
+    let attachment = root.path().join("photo.png");
+    std::fs::write(&attachment, b"pixels").unwrap();
+    let mut notes = Notebook::create(&path, Notes::default(), person(), SessionId::new()).unwrap();
+    notes.execute(Edit::Attach(attachment)).unwrap();
+    drop(notes);
+    crate::remove(&path).unwrap();
+    assert!(!path.exists());
+    let cache = root.path().join(".cache");
+    let leftover = std::fs::read_dir(&cache)
+        .unwrap()
+        .chain(std::fs::read_dir(cache.join("files")).unwrap())
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "files" && !name.starts_with('.'))
+        .collect::<Vec<_>>();
+    assert!(leftover.is_empty(), "{leftover:?}");
+}

@@ -1,24 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
-use spectrum_canvas::{Command, Document, Workspace, export_document};
-use spectrum_image::{
-    DurableCatalog as LumenDurableCatalog, Project as LumenProject, engine::render_photo,
-};
-use spectrum_imaging::RenderOptions;
-use spectrum_revisions::{Actor, ActorKind, SessionId};
+use spectrum_canvas::Workspace;
+#[cfg(test)]
+use spectrum_canvas::{Command, Document};
+use spectrum_document::{Actor, ActorKind, SessionId};
 
-#[path = "canvas_commands/agent.rs"]
-mod agent;
-use agent::{AgentCommand, agent_command};
-#[path = "canvas_commands/live_bridge.rs"]
-mod live_bridge;
-use live_bridge::{
-    CliLiveMode, LiveCommand, live_command, live_execute_prepared, prepare_live_semantic,
-    resolved_live_mode,
-};
 #[path = "canvas_commands/alignment.rs"]
 mod alignment;
 use alignment::{CliAlignment, GuideCommand};
@@ -30,15 +19,13 @@ mod blend;
 use blend::CliBlend;
 #[path = "canvas_commands/dispatch.rs"]
 mod dispatch;
+pub(super) use dispatch::decode_commands;
 #[path = "canvas_commands/effects.rs"]
 mod effects;
 use effects::{GradientArgs, ShadowArgs};
 #[path = "canvas_commands/style_effects.rs"]
 mod style_effects;
 use style_effects::EffectArgs;
-#[path = "canvas_commands/from_lumen.rs"]
-mod from_lumen;
-use from_lumen::from_lumen;
 #[path = "canvas_commands/paths.rs"]
 mod paths;
 use paths::{PathArgs, PathCommand, VectorMaskArgs};
@@ -61,27 +48,20 @@ use transfer::{LayerCopyArgs, LayerPasteArgs};
 #[derive(Parser)]
 #[command(name = "canvas", version, about = "Spectrum canvas editing commands")]
 struct Cli {
-    #[arg(
-        short,
-        global = true,
-        env = "SPECTRUM_CANVAS_DOCUMENT",
-        long = "document",
-        default_value = "."
-    )]
+    /// The canvas's document, found from `--asset` in the library.
+    #[arg(skip)]
     project: PathBuf,
-    /// Continue commands in an existing collaboration session.
-    #[arg(long, global = true, env = "SPECTRUM_SESSION")]
+    /// The session edits are made in; a fresh one when unset.
+    #[arg(skip)]
     session: Option<SessionId>,
-    /// Choose direct project access or require the authenticated running GUI.
-    #[arg(long, global = true, value_enum)]
-    live: Option<CliLiveMode>,
     #[command(subcommand)]
     command: CliCommand,
 }
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Create a new editable canvas.
+    /// Creates a canvas document outside a library, for tests.
+    #[cfg(test)]
     Init {
         name: String,
         #[arg(long, default_value_t = 1920)]
@@ -93,7 +73,7 @@ enum CliCommand {
     },
     /// Inspect the complete layered document.
     List,
-    /// Rename document metadata without changing the .prism file path.
+    /// Rename the canvas's document title.
     RenameDocument {
         name: String,
     },
@@ -107,7 +87,7 @@ enum CliCommand {
         #[arg(long, default_value_t = 0.0)]
         y: f32,
     },
-    /// Add editable text using Prism's bundled Ubuntu Light font.
+    /// Add editable text in the bundled Ubuntu Light font.
     AddText {
         text: String,
         #[arg(long)]
@@ -127,7 +107,7 @@ enum CliCommand {
         #[arg(long)]
         language: Option<String>,
     },
-    /// Embed an OpenType font in this portable Prism project.
+    /// Embed an OpenType font in this canvas.
     FontImport {
         path: PathBuf,
     },
@@ -145,19 +125,6 @@ enum CliCommand {
         /// Limit analysis to one embedded font asset.
         #[arg(long)]
         font_id: Option<u64>,
-    },
-    /// Verify and inspect one immutable embedded source-font snapshot.
-    FontSource {
-        font_id: u64,
-    },
-    /// Prove an in-memory subset candidate and report why physical replacement is not yet safe.
-    FontSubsetPlan {
-        font_id: u64,
-    },
-    /// Create a smaller project by safely rewriting linear history with font subsets.
-    OptimizedCopy {
-        #[arg(long)]
-        output: PathBuf,
     },
     /// Update one text layer's font, paragraph metrics, and effects.
     Typography(TypographyArgs),
@@ -398,34 +365,15 @@ enum CliCommand {
         x: u32,
         y: u32,
     },
-    /// Flatten the current document into PNG or JPEG.
-    Export {
-        path: PathBuf,
-        #[arg(long, default_value_t = 92)]
-        quality: u8,
+    /// Show the canvas's revisions and where each session is.
+    History,
+    /// Return to a revision from `history`.
+    HistoryJump {
+        revision: spectrum_document::RevisionId,
     },
-    /// Create a Prism project from a developed Lumen catalog photo.
-    FromLumen {
-        #[arg(long)]
-        catalog: PathBuf,
-        #[arg(long)]
-        photo: u64,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    /// Execute one Command JSON object or an array of commands.
+    /// Execute one Command JSON object, or an array applied as one edit.
     Run {
         json: String,
-    },
-    /// Start or inspect a CLI-first agent collaboration.
-    Agent {
-        #[command(subcommand)]
-        command: AgentCommand,
-    },
-    /// Discover, inspect, mutate, and subscribe through the running Prism GUI.
-    Live {
-        #[command(subcommand)]
-        command: LiveCommand,
     },
     /// Print the machine-facing Command protocol and examples.
     Schema,
@@ -444,9 +392,11 @@ pub(super) fn definition() -> clap::Command {
     Cli::command()
 }
 
+/// Runs an editor command on a canvas document in `session`.
 pub(super) fn execute_target(
     matches: &mut clap::ArgMatches,
     path: PathBuf,
+    session: SessionId,
 ) -> Result<serde_json::Value> {
     use clap::FromArgMatches;
     let command = if matches.subcommand_name() == Some("inspect") {
@@ -456,9 +406,18 @@ pub(super) fn execute_target(
     };
     run(Cli {
         project: path,
-        session: matches.get_one::<SessionId>("session").copied(),
-        live: matches.get_one::<CliLiveMode>("live").copied(),
+        session: Some(session),
         command,
+    })
+}
+
+/// Runs a command that needs no canvas, such as the benchmark.
+pub(super) fn execute_standalone(matches: &clap::ArgMatches) -> Result<Value> {
+    use clap::FromArgMatches;
+    run(Cli {
+        project: PathBuf::new(),
+        session: None,
+        command: CliCommand::from_arg_matches(matches)?,
     })
 }
 
@@ -467,144 +426,87 @@ pub(super) fn protocol() -> serde_json::Value {
 }
 
 fn run(cli: Cli) -> Result<Value> {
-    let live_mode = resolved_live_mode(cli.live)?;
     match cli.command {
+        #[cfg(test)]
         CliCommand::Init {
             name,
             width,
             height,
             background,
         } => {
-            require_direct_mode(live_mode, "init")?;
             let mut document = Document::new(name, width, height);
             document.background = parse_color(&background)?;
-            let mut workspace =
-                Workspace::create_durable(document, &cli.project, cli_actor(), SessionId::new())?;
-            workspace.save(None)?;
-            Ok(
-                json!({"ok": true, "action": "init", "project": cli.project, "document": workspace.document}),
-            )
+            let workspace =
+                Workspace::create(&cli.project, document, cli_actor(), SessionId::new())?;
+            Ok(json!({"ok": true, "action": "init", "document": workspace.document}))
         }
         CliCommand::List => {
-            let document = session_document(&cli.project, cli.session)?;
-            Ok(json!({"ok": true, "project": cli.project, "document": document}))
+            let document = Workspace::read(&cli.project)?;
+            Ok(json!({"ok": true, "document": document}))
         }
         CliCommand::FontList { query, system } => Ok(typography::font_list(
-            &session_document(&cli.project, cli.session)?,
+            &Workspace::read(&cli.project)?,
             query,
             system,
         )),
         CliCommand::FontUsage { font_id } => {
-            typography::font_usage(&session_document(&cli.project, cli.session)?, font_id)
-        }
-        CliCommand::FontSource { font_id } => {
-            typography::font_source_command(&cli.project, cli.session, font_id)
-        }
-        CliCommand::FontSubsetPlan { font_id } => {
-            typography::font_subset_plan_command(&cli.project, cli.session, font_id)
-        }
-        CliCommand::OptimizedCopy { output } => {
-            require_direct_mode(live_mode, "optimized-copy")?;
-            if cli.session.is_some() {
-                bail!("optimized-copy does not accept --session");
-            }
-            let report = spectrum_canvas::create_optimized_font_copy(&cli.project, &output)?;
-            Ok(json!({"ok": true, "action": "optimized_copy", "report": report}))
+            typography::font_usage(&Workspace::read(&cli.project)?, font_id)
         }
         CliCommand::LayerCopy(arguments) => {
-            transfer::copy_layer(&session_document(&cli.project, cli.session)?, arguments)
+            transfer::copy_layer(&Workspace::read(&cli.project)?, arguments)
         }
         CliCommand::Sample { x, y } => {
-            let document = session_document(&cli.project, cli.session)?;
+            let document = Workspace::read(&cli.project)?;
             let [r, g, b, a] = spectrum_canvas::sample_document_color(&document, x, y)?;
             Ok(
                 json!({"ok": true, "x": x, "y": y, "color": format!("{r:02x}{g:02x}{b:02x}{a:02x}")}),
             )
         }
-        CliCommand::Export { path, quality } => {
-            let document = session_document(&cli.project, cli.session)?;
-            export_document(&document, &path, quality)?;
-            Ok(json!({"ok": true, "action": "export", "path": path}))
+        CliCommand::History => {
+            let workspace =
+                Workspace::open_newest(&cli.project, cli_actor(), cli.session.unwrap_or_default())?;
+            let history = workspace.history()?.context("the canvas has no history")?;
+            Ok(json!({
+                "ok": true,
+                "root": history.root,
+                "current": history.current,
+                "revisions": history.revisions,
+                "sessions": history.sessions,
+            }))
         }
-        CliCommand::FromLumen {
-            catalog,
-            photo,
-            output,
-        } => {
-            require_direct_mode(live_mode, "from-lumen")?;
-            from_lumen(&catalog, photo, &output)
+        CliCommand::HistoryJump { revision } => {
+            let mut workspace =
+                Workspace::open_newest(&cli.project, cli_actor(), cli.session.unwrap_or_default())?;
+            workspace.move_to(revision)?;
+            Ok(json!({"ok": true, "action": "history_jump", "revision": revision}))
         }
-        CliCommand::Agent { command } => agent_command(&cli.project, cli.session, command),
-        CliCommand::Live { command } => live_command(&cli.project, cli.session, command),
         CliCommand::Schema => Ok(schema()),
         CliCommand::Benchmark { strict, profile } => benchmark(strict, profile),
         command => {
-            enum Target {
-                Direct(Box<Workspace>),
-                Live(Box<live_bridge::PreparedLiveSemantic>),
-            }
-            let target = match live_mode {
-                CliLiveMode::Off => Target::Direct(Box::new(match cli.session {
-                    Some(session) => Workspace::open_session(&cli.project, session)?,
-                    None => Workspace::open_as(&cli.project, cli_actor(), SessionId::new())?,
-                })),
-                CliLiveMode::Required => {
-                    Target::Live(Box::new(prepare_live_semantic(&cli.project, cli.session)?))
-                }
+            let session = cli.session.unwrap_or_default();
+            let mut workspace = Workspace::open_newest(&cli.project, cli_actor(), session)?;
+            let plan = dispatch::semantic_commands(command, &workspace.document)?;
+            let outputs = match plan.commands.as_slice() {
+                [only] if !plan.atomic_batch => vec![workspace.execute(only.clone())?],
+                _ => workspace.execute_batch(plan.commands)?,
             };
-            let document = match &target {
-                Target::Direct(workspace) => &workspace.document,
-                Target::Live(prepared) => &prepared.document,
-            };
-            let plan = dispatch::semantic_commands(command, document)?;
-            match target {
-                Target::Direct(mut workspace) => {
-                    let outputs = if plan.atomic_batch || plan.commands.len() != 1 {
-                        workspace.execute_batch(plan.commands)?
-                    } else {
-                        vec![
-                            workspace.execute(
-                                plan.commands
-                                    .into_iter()
-                                    .next()
-                                    .expect("single semantic command"),
-                            )?,
-                        ]
-                    };
-                    workspace.save(None)?;
-                    Ok(json!({"ok": true, "project": cli.project, "results": outputs}))
-                }
-                Target::Live(prepared) => live_execute_prepared(*prepared, plan.commands),
+            if let Some(error) = workspace.pending_publish_error() {
+                bail!("the edit was saved but not published: {error}");
             }
+            Ok(json!({"ok": true, "results": outputs}))
         }
     }
-}
-
-fn session_document(path: &Path, session: Option<SessionId>) -> Result<Document> {
-    match session {
-        Some(session) => Ok(Workspace::open_session(path, session)?.document),
-        None => Workspace::load_read_only(path),
-    }
-}
-
-fn require_direct_mode(mode: CliLiveMode, command: &str) -> Result<()> {
-    if mode == CliLiveMode::Required {
-        bail!(
-            "{command} creates a standalone artifact and is unavailable when live mode is required"
-        );
-    }
-    Ok(())
 }
 
 fn cli_actor() -> Actor {
     Actor {
-        id: "local:spectrum-canvas-cli".into(),
-        display_name: "Spectrum canvas CLI".into(),
+        id: "agent:spectrum-cli".into(),
+        display_name: "Spectrum CLI".into(),
         kind: ActorKind::Agent,
     }
 }
 
-fn parse_color(value: &str) -> Result<[u8; 4]> {
+pub(super) fn parse_color(value: &str) -> Result<[u8; 4]> {
     let value = value.trim().trim_start_matches('#');
     if value.len() != 6 && value.len() != 8 {
         bail!("colors use RRGGBB or RRGGBBAA hex");

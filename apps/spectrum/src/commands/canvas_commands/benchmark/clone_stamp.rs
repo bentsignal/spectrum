@@ -32,13 +32,12 @@ pub(super) fn measure() -> Result<CloneStampMeasurements> {
         name: "Immutable source".into(),
         kind: LayerKind::Raster {
             path: fixture.source_path().to_owned(),
-            original_path: None,
         },
         ..Layer::default()
     });
     document.selected = Some(1);
     document.next_id = 2;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace.execute(Command::SetCloneSource {
         id: 1,
         document_x: 7_680.5,
@@ -115,12 +114,11 @@ fn validate_full_export(fixture: &PreparedRasterFixture) -> Result<()> {
         name: "16K Derived source".into(),
         kind: LayerKind::Raster {
             path: fixture.source_path().to_owned(),
-            original_path: None,
         },
         ..Layer::default()
     });
     document.next_id = 2;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace.execute(Command::SetCloneSource {
         id: 1,
         document_x: 7_680.5,
@@ -157,7 +155,7 @@ fn validate_full_export(fixture: &PreparedRasterFixture) -> Result<()> {
         selection: PaintSelection::None,
     })?;
     let export = std::env::temp_dir().join(format!(
-        "prism-strict-clone-export-{}-{}.png",
+        "canvas-strict-clone-export-{}-{}.png",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -238,7 +236,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "the exact 16K DerivedBackingCache fixture runs in prism benchmark --strict"]
+    #[ignore = "the exact 16K DerivedBackingCache fixture runs in canvas benchmark --strict"]
     fn clone_stamp_benchmark_is_provider_backed_and_bounded() {
         let measured = measure().unwrap();
         assert!(measured.source_full_plane_bytes > 1_000_000_000);

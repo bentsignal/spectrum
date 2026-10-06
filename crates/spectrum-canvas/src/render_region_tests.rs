@@ -76,7 +76,7 @@ fn temporary_raster(label: &str, width: u32, height: u32) -> std::path::PathBuf 
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("prism-region-{label}-{stamp}.png"));
+    let path = std::env::temp_dir().join(format!("canvas-region-{label}-{stamp}.png"));
     image::RgbaImage::from_fn(width, height, |x, y| {
         image::Rgba([
             ((x * 29 + y * 7) % 256) as u8,
@@ -97,7 +97,7 @@ fn temporary_large_grayscale_png(label: &str, width: u32, height: u32) -> std::p
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("prism-region-{label}-{stamp}.png"));
+    let path = std::env::temp_dir().join(format!("canvas-region-{label}-{stamp}.png"));
     let file = std::fs::File::create(&path).unwrap();
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     encoder.set_color(png::ColorType::Grayscale);
@@ -122,7 +122,7 @@ fn temporary_font(label: &str) -> (std::path::PathBuf, FontAsset) {
         .as_nanos();
     let path = std::fs::canonicalize(std::env::temp_dir())
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join(format!("prism-region-{label}-{stamp}.ttf"));
+        .join(format!("canvas-region-{label}-{stamp}.ttf"));
     std::fs::write(&path, epaint_default_fonts::HACK_REGULAR).unwrap();
     let asset = FontAsset::import(71, &path).unwrap();
     (path, asset)
@@ -319,7 +319,6 @@ fn rotated_raster_region_matches_export_without_full_source_staging() {
         },
         kind: LayerKind::Raster {
             path: raster_path.clone(),
-            original_path: None,
         },
         ..Layer::default()
     });
@@ -387,7 +386,6 @@ fn adjusted_raster_region_matches_export_with_development_and_layer_geometry() {
         },
         kind: LayerKind::Raster {
             path: raster_path.clone(),
-            original_path: None,
         },
         ..Layer::default()
     });
@@ -553,7 +551,6 @@ fn raster_larger_than_legacy_full_source_cap_stages_only_visible_rows() {
         id: 43,
         kind: LayerKind::Raster {
             path: raster_path.clone(),
-            original_path: None,
         },
         ..Layer::default()
     });
@@ -726,7 +723,6 @@ fn spot_adjustments_are_region_native_but_unprepared_non_png_rasters_are_not() {
     jpeg.layers.push(Layer {
         kind: LayerKind::Raster {
             path: jpeg_path.clone(),
-            original_path: None,
         },
         ..Layer::default()
     });

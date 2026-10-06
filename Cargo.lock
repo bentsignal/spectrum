@@ -1051,12 +1051,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "cmov"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
-
-[[package]]
 name = "cocoa"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1476,15 +1470,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
 
 [[package]]
-name = "ctutils"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
-dependencies = [
- "cmov",
-]
-
-[[package]]
 name = "dary_heap"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1535,7 +1520,6 @@ dependencies = [
  "block-buffer 0.12.1",
  "const-oid",
  "crypto-common 0.2.2",
- "ctutils",
 ]
 
 [[package]]
@@ -2892,7 +2876,7 @@ version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
 dependencies = [
- "hmac 0.12.1",
+ "hmac",
 ]
 
 [[package]]
@@ -2902,15 +2886,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest 0.10.7",
-]
-
-[[package]]
-name = "hmac"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
-dependencies = [
- "digest 0.11.3",
 ]
 
 [[package]]
@@ -4547,7 +4522,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "hkdf",
- "hmac 0.12.1",
+ "hmac",
  "md-5",
  "num",
  "num-bigint-dig",
@@ -4661,7 +4636,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
 dependencies = [
  "digest 0.10.7",
- "hmac 0.12.1",
+ "hmac",
 ]
 
 [[package]]
@@ -6158,11 +6133,10 @@ dependencies = [
  "sha2 0.11.0",
  "spectrum-assets",
  "spectrum-canvas",
+ "spectrum-document",
  "spectrum-image",
  "spectrum-imaging",
  "spectrum-library",
- "spectrum-live-bridge",
- "spectrum-revisions",
  "tempfile",
  "tiff",
  "unicode-linebreak",
@@ -6179,11 +6153,10 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "spectrum-canvas",
+ "spectrum-document",
  "spectrum-image",
  "spectrum-imaging",
  "spectrum-library",
- "spectrum-live-bridge",
- "spectrum-revisions",
  "tempfile",
 ]
 
@@ -6209,10 +6182,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "spectrum-document",
  "spectrum-fonts",
  "spectrum-imaging",
  "spectrum-library",
- "spectrum-live-bridge",
  "spectrum-revisions",
  "tempfile",
  "tiff",
@@ -6252,7 +6225,6 @@ dependencies = [
  "fs2",
  "serde",
  "serde_json",
- "spectrum-library",
  "spectrum-revisions",
  "tempfile",
 ]
@@ -6280,10 +6252,8 @@ dependencies = [
  "same-file",
  "serde",
  "serde_json",
+ "spectrum-document",
  "spectrum-imaging",
- "spectrum-library",
- "spectrum-live-bridge",
- "spectrum-revisions",
  "tempfile",
 ]
 
@@ -6307,23 +6277,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "uuid",
-]
-
-[[package]]
-name = "spectrum-live-bridge"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.3.4",
- "hmac 0.13.0",
- "libc",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "spectrum-revisions",
- "tempfile",
- "uuid",
- "windows-sys 0.61.2",
- "zeroize",
 ]
 
 [[package]]

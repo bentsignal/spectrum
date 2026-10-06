@@ -48,7 +48,7 @@ pub(super) fn paste_command(arguments: LayerPasteArgs) -> Result<Command> {
     let metadata = fs::metadata(&arguments.input)
         .with_context(|| format!("could not inspect {}", arguments.input.display()))?;
     if metadata.len() > 4 * 1024 * 1024 {
-        bail!("Prism layer transfer exceeds the 4 MiB metadata limit");
+        bail!("layer transfer exceeds the 4 MiB metadata limit");
     }
     let json = fs::read_to_string(&arguments.input)
         .with_context(|| format!("could not read {}", arguments.input.display()))?;

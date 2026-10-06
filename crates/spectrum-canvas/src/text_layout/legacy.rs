@@ -785,7 +785,7 @@ mod tests {
         let temporary_root = std::env::temp_dir();
         let path = std::fs::canonicalize(&temporary_root)
             .unwrap_or(temporary_root)
-            .join(format!("prism-{label}-{stamp}.ttf"));
+            .join(format!("canvas-{label}-{stamp}.ttf"));
         std::fs::write(&path, bytes).unwrap();
         path
     }

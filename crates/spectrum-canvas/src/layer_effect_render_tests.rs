@@ -113,7 +113,7 @@ fn style_round_trips_and_old_layers_read_without_styles() {
     let shadow_only = serde_json::json!({"drop_shadow": DropShadow::default()});
     let read: LayerStyle = serde_json::from_value(shadow_only).unwrap();
     assert!(read.stroke.is_none() && read.outer_glow.is_none());
-    let mut workspace = Workspace::new(styled(LayerStyle::default()), None);
+    let mut workspace = Workspace::new(styled(LayerStyle::default()));
     workspace
         .execute(Command::SetLayerStyle {
             id: 1,
@@ -268,7 +268,8 @@ fn effects_timing_probe() {
 #[test]
 #[ignore = "timing probe; run in release with --nocapture"]
 fn raster_rotation_timing_probe() {
-    let directory = std::env::temp_dir().join(format!("prism-rotate-probe-{}", std::process::id()));
+    let directory =
+        std::env::temp_dir().join(format!("canvas-rotate-probe-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("photo.png");
     let image = image::RgbaImage::from_fn(2560, 1600, |x, y| {
@@ -278,10 +279,7 @@ fn raster_rotation_timing_probe() {
     let mut document = Document::new("Rotate", 1920, 1080);
     document.layers.push(Layer {
         id: 1,
-        kind: LayerKind::Raster {
-            path: path.clone(),
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path: path.clone() },
         transform: Transform {
             x: 100.0,
             y: 100.0,

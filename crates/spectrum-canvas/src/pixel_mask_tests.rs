@@ -10,7 +10,7 @@ fn test_directory(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-pixel-mask-{label}-{stamp}"))
+    std::env::temp_dir().join(format!("canvas-pixel-mask-{label}-{stamp}"))
 }
 
 fn test_actor() -> spectrum_revisions::Actor {
@@ -53,12 +53,11 @@ fn magic_wand_delete_is_mask_only_one_revision_and_round_trips_two_edits() {
     let source = std::fs::canonicalize(source).unwrap();
     let original_bytes = std::fs::read(&source).unwrap();
     let original_hash = sha2::Sha256::digest(&original_bytes);
-    let project = directory.join("delete.prism");
+    let project = directory.join("delete.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let mut document = Document::new("Delete pixels", 64, 48);
     document.background = [0; 4];
-    let mut workspace =
-        Workspace::create_durable(document, &project, test_actor(), session).unwrap();
+    let mut workspace = Workspace::create(&project, document, test_actor(), session).unwrap();
     workspace
         .execute(Command::AddRaster {
             path: source.clone(),
@@ -138,10 +137,7 @@ fn magic_wand_delete_is_mask_only_one_revision_and_round_trips_two_edits() {
             < after_red.pixels().filter(|pixel| pixel[2] > 220).count()
     );
     let final_document = workspace.document.clone();
-    let mut reopened_document = final_document.clone();
-    if let LayerKind::Raster { original_path, .. } = &mut reopened_document.layers[0].kind {
-        *original_path = None;
-    }
+    let reopened_document = final_document.clone();
     let final_history = workspace.history().unwrap().unwrap().revisions.len();
     assert!(
         workspace
@@ -173,10 +169,10 @@ fn magic_wand_delete_is_mask_only_one_revision_and_round_trips_two_edits() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(operation_version, 12);
+    assert_eq!(operation_version, 1);
     drop(connection);
 
-    let mut reopened = Workspace::open_as(&project, test_actor(), session).unwrap();
+    let mut reopened = Workspace::open(&project, test_actor(), session).unwrap();
     assert_eq!(reopened.document, reopened_document);
     let reopened_full = render_document(&reopened.document, None)
         .unwrap()
@@ -207,7 +203,7 @@ fn magic_wand_delete_is_mask_only_one_revision_and_round_trips_two_edits() {
     reopened.execute(Command::Redo).unwrap();
     assert_eq!(reopened.document, reopened_document);
     let transfer = LayerTransfer::from_document(&reopened.document, 1).unwrap();
-    assert_eq!(transfer.version, 7);
+    assert_eq!(transfer.version, LAYER_TRANSFER_VERSION);
     assert_eq!(
         LayerTransfer::from_json(&transfer.to_json().unwrap()).unwrap(),
         transfer
@@ -382,7 +378,6 @@ fn transparent_raster_mask_matches_worker_full_region_export_and_bounded_crop_ge
         },
         kind: LayerKind::Raster {
             path: source.clone(),
-            original_path: None,
         },
         ..Layer::default()
     };
@@ -465,7 +460,7 @@ fn delete_selected_pixels_fails_atomically_for_empty_unsupported_and_locked_targ
     image::RgbaImage::from_pixel(4, 4, Rgba([20, 30, 40, 255]))
         .save(&source)
         .unwrap();
-    let mut workspace = Workspace::new(Document::new("Errors", 20, 20), None);
+    let mut workspace = Workspace::new(Document::new("Errors", 20, 20));
     workspace
         .execute(Command::AddRaster {
             path: source,

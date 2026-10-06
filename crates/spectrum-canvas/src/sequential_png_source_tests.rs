@@ -20,7 +20,7 @@ impl TestDirectory {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "prism-sequential-png-{label}-{}-{stamp}",
+            "canvas-sequential-png-{label}-{}-{stamp}",
             std::process::id()
         ));
         fs::create_dir(&path).unwrap();

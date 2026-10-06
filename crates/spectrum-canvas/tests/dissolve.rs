@@ -124,9 +124,9 @@ fn kept_dissolve_pixels_are_opaque_over_a_transparent_background() {
 
 #[test]
 fn seed_command_changes_the_pattern_and_round_trips_durably() {
-    let directory = std::env::temp_dir().join(format!("prism-dissolve-{}", RevisionId::new()));
+    let directory = std::env::temp_dir().join(format!("canvas-dissolve-{}", RevisionId::new()));
     fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("seeded.prism");
+    let project = directory.join("seeded.spectrum");
     let actor = Actor {
         id: "test:dissolve".into(),
         display_name: "Dissolve test".into(),
@@ -134,7 +134,7 @@ fn seed_command_changes_the_pattern_and_round_trips_durably() {
     };
     let session = SessionId::new();
     let mut workspace =
-        Workspace::create_durable(fixture().document, &project, actor.clone(), session).unwrap();
+        Workspace::create(&project, fixture().document, actor.clone(), session).unwrap();
     let before = render_document(&workspace.document, None).unwrap();
     workspace
         .execute(Command::SetDissolveSeed {
@@ -146,7 +146,7 @@ fn seed_command_changes_the_pattern_and_round_trips_durably() {
     assert_ne!(before.as_bytes(), after.as_bytes());
     drop(workspace);
 
-    let reopened = Workspace::open_as(&project, actor, session).unwrap();
+    let reopened = Workspace::open(&project, actor, session).unwrap();
     assert_eq!(
         reopened.document.layer(1).unwrap().dissolve_seed,
         0x8765_4321
@@ -164,7 +164,7 @@ fn seed_command_changes_the_pattern_and_round_trips_durably() {
 fn dissolve_transfer_requires_v6_and_preserves_the_seed() {
     let document = fixture().document;
     let transfer = LayerTransfer::from_document(&document, 1).unwrap();
-    assert_eq!(transfer.version, 6);
+    assert_eq!(transfer.version, spectrum_canvas::LAYER_TRANSFER_VERSION);
     assert_eq!(transfer.layer.blend_mode, BlendMode::Dissolve);
     assert_eq!(transfer.layer.dissolve_seed, 0x1234_5678);
     assert_eq!(

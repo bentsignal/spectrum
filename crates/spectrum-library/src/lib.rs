@@ -1,4 +1,6 @@
-//! Editable library identities and typed references, independent of editor engines.
+//! The library index: every asset's identity, kind, name, and document,
+//! the typed references between assets, projects, import batches, and the
+//! trash. Engines own what is inside each document.
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -13,14 +15,70 @@ mod trash;
 pub use projects::{BatchId, ImportBatch, Project, ProjectId};
 pub use trash::{Removed, TRASH_DAYS, Trashed};
 
+/// What an asset is, which decides the editors that open it and what it
+/// can use.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetKind {
+    Image,
+    Canvas,
+    Video,
+    Audio,
+    Music,
+}
+
+impl AssetKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Canvas => "canvas",
+            Self::Video => "video",
+            Self::Audio => "audio",
+            Self::Music => "music",
+        }
+    }
+
+    /// Whether an asset of this kind can use one of `target`'s: canvases
+    /// use images; video uses images, canvases, audio, video, and music.
+    pub fn accepts(self, target: AssetKind) -> bool {
+        use AssetKind::*;
+        matches!(
+            (self, target),
+            (Canvas, Image) | (Video, Image | Canvas | Audio | Video | Music)
+        )
+    }
+}
+
+impl std::fmt::Display for AssetKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for AssetKind {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Ok(match value {
+            "image" => Self::Image,
+            "canvas" => Self::Canvas,
+            "video" => Self::Video,
+            "audio" => Self::Audio,
+            "music" => Self::Music,
+            other => bail!("{other} is not a kind of asset"),
+        })
+    }
+}
+
+/// An asset in the library: its identity, kind, name, and the document
+/// that holds it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Asset {
     pub id: AssetId,
-    pub kind: String,
+    pub kind: AssetKind,
     pub name: String,
-    /// Engine-owned durable document, relative to the library root.
+    /// The asset's document, relative to the library root.
     pub document: PathBuf,
-    pub item: Option<u64>,
 }
 
 pub struct Library {
@@ -36,8 +94,7 @@ impl Library {
         db.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS assets(id TEXT PRIMARY KEY, kind TEXT NOT NULL,
-              name TEXT NOT NULL, document TEXT NOT NULL, item INTEGER NOT NULL,
-              UNIQUE(document,item));
+              name TEXT NOT NULL, document TEXT NOT NULL UNIQUE);
             CREATE TABLE IF NOT EXISTS refs(owner TEXT NOT NULL REFERENCES assets(id),
               slot TEXT NOT NULL, target TEXT NOT NULL REFERENCES assets(id),
               PRIMARY KEY(owner,slot));",
@@ -49,46 +106,36 @@ impl Library {
     pub fn root(&self) -> &Path {
         &self.root
     }
-    pub fn register(
-        &self,
-        kind: &str,
-        name: &str,
-        path: &Path,
-        item: Option<u64>,
-    ) -> Result<Asset> {
-        if kind.is_empty()
-            || !kind
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
-        {
-            bail!("asset type must be a nonempty identifier");
-        }
+    /// Adds the asset held by `path`, a document in the library.
+    pub fn register(&self, kind: AssetKind, name: &str, path: &Path) -> Result<Asset> {
         let path = std::fs::canonicalize(path)?;
         let document = path
             .strip_prefix(&self.root)
             .context("document must belong to the library")?;
-        let item_key = item.map(i64::try_from).transpose()?.unwrap_or(-1);
+        let id = AssetId::new_v4();
         self.db.execute(
-            "INSERT INTO assets VALUES(?1,?2,?3,?4,?5)
-            ON CONFLICT(document,item) DO UPDATE SET name=excluded.name WHERE assets.name != excluded.name AND assets.kind = excluded.kind",
+            "INSERT INTO assets VALUES(?1,?2,?3,?4)",
             params![
-                AssetId::new_v4().to_string(),
-                kind,
+                id.to_string(),
+                kind.as_str(),
                 name,
-                document.to_string_lossy(),
-                item_key
+                document.to_string_lossy()
             ],
         )?;
-        let id: String = self.db.query_row(
-            "SELECT id FROM assets WHERE document=?1 AND item=?2",
-            params![document.to_string_lossy(), item_key],
-            |r| r.get(0),
-        )?;
-        let asset = self.lookup(id.parse()?)?;
-        if asset.kind != kind {
-            bail!("asset type cannot change");
+        self.lookup(id)
+    }
+    /// Renames an asset.
+    pub fn rename(&self, id: AssetId, name: &str) -> Result<Asset> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("asset name cannot be empty");
         }
-        Ok(asset)
+        self.get(id)?;
+        self.db.execute(
+            "UPDATE assets SET name=?2 WHERE id=?1",
+            params![id.to_string(), name],
+        )?;
+        self.get(id)
     }
     /// A live asset. Trashed assets are not returned.
     pub fn get(&self, id: AssetId) -> Result<Asset> {
@@ -102,7 +149,7 @@ impl Library {
     pub fn lookup(&self, id: AssetId) -> Result<Asset> {
         self.db
             .query_row(
-                "SELECT id,kind,name,document,item FROM assets WHERE id=?1",
+                "SELECT id,kind,name,document FROM assets WHERE id=?1",
                 [id.to_string()],
                 asset_row,
             )
@@ -113,7 +160,7 @@ impl Library {
     /// Live assets, excluding the trash.
     pub fn list(&self) -> Result<Vec<Asset>> {
         let mut statement = self.db.prepare(&format!(
-            "SELECT id,kind,name,document,item FROM assets a WHERE {} ORDER BY name,id",
+            "SELECT id,kind,name,document FROM assets a WHERE {} ORDER BY name,id",
             trash::LIVE
         ))?;
         let rows = statement.query_map([], asset_row)?;
@@ -136,7 +183,7 @@ impl Library {
                 continue;
             }
             let target_kind = self.lookup(*target)?.kind;
-            if !accepts(&kind, &target_kind) {
+            if !kind.accepts(target_kind) {
                 bail!("{kind} cannot reference {target_kind}");
             }
             kept.push((slot.clone(), *target));
@@ -188,31 +235,21 @@ impl Library {
             .collect()
     }
 }
-type AssetRow = (String, String, String, String, i64);
+type AssetRow = (String, String, String, String);
 
 fn asset_row(r: &rusqlite::Row) -> rusqlite::Result<AssetRow> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
 }
 
-fn asset_from_row((id, kind, name, document, item): AssetRow) -> Result<Asset> {
+fn asset_from_row((id, kind, name, document): AssetRow) -> Result<Asset> {
     Ok(Asset {
         id: id.parse()?,
-        kind,
+        kind: kind.parse()?,
         name,
         document: document.into(),
-        item: if item < 0 { None } else { Some(item as u64) },
     })
 }
 
-/// Compatibility is explicit. New types can be stored before an editor supports them.
-pub fn accepts(owner: &str, target: &str) -> bool {
-    matches!(
-        (owner, target),
-        ("canvas", "image") | ("video", "image" | "canvas" | "audio" | "video" | "music")
-    )
-}
-
-/// Shared app-managed location used by the CLI and both editor adapters.
 /// Spectrum's per-user data directory: the library, caches, and live-bridge
 /// discovery live under it.
 pub fn data_root() -> Result<PathBuf> {
@@ -245,6 +282,14 @@ pub fn cache_root() -> Result<PathBuf> {
     Ok(data_root()?.join("Caches"))
 }
 
+/// A document file for tests.
+#[cfg(test)]
+pub(crate) fn test_document(root: &Path, number: u32) -> PathBuf {
+    let path = root.join(format!("document-{number}.spectrum"));
+    std::fs::write(&path, b"fixture").unwrap();
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,15 +297,27 @@ mod tests {
     fn references_are_typed_transitive_and_atomic() {
         let tmp = tempfile::tempdir().unwrap();
         let mut lib = Library::open(tmp.path()).unwrap();
-        let path = tmp.path().join("data");
-        std::fs::write(&path, b"fixture").unwrap();
-        let image = lib.register("image", "image", &path, Some(1)).unwrap();
-        let canvas = lib.register("canvas", "canvas", &path, Some(2)).unwrap();
-        let video = lib.register("video", "video", &path, Some(3)).unwrap();
-        let future = lib
-            .register("spectrum.future-music", "score", &path, Some(4))
+        let image = lib
+            .register(
+                crate::AssetKind::Image,
+                "image",
+                &crate::test_document(tmp.path(), 1),
+            )
             .unwrap();
-        assert_eq!(lib.get(future.id).unwrap().kind, "spectrum.future-music");
+        let canvas = lib
+            .register(
+                crate::AssetKind::Canvas,
+                "canvas",
+                &crate::test_document(tmp.path(), 2),
+            )
+            .unwrap();
+        let video = lib
+            .register(
+                crate::AssetKind::Video,
+                "video",
+                &crate::test_document(tmp.path(), 3),
+            )
+            .unwrap();
         lib.references(canvas.id, &[("layer".into(), image.id)])
             .unwrap();
         lib.references(video.id, &[("clip".into(), canvas.id)])
@@ -276,9 +333,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(lib.dependents(image.id).unwrap().len(), 2);
-        assert_eq!(
-            lib.register("image", "renamed", &path, Some(1)).unwrap().id,
-            image.id
-        );
+        assert_eq!(lib.rename(image.id, " renamed ").unwrap().name, "renamed");
+        assert!(lib.rename(image.id, "  ").is_err());
     }
 }

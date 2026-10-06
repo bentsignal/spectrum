@@ -150,7 +150,7 @@ fn bundled_harfbuzz_preserves_default_and_nondefault_uvs_kinds() {
             .rasterize_indexed(output_alternate.0, 64.0)
             .1
             .is_empty(),
-        "fontdue 0.9.3 does not materialize format-14-only alternates; Prism does not yet render UVS alternates"
+        "fontdue 0.9.3 does not materialize format-14-only alternates; Spectrum does not yet render UVS alternates"
     );
     assert_output_golden("uvs_default_nondefault", &first.bytes);
 }

@@ -5,8 +5,8 @@ use spectrum_canvas::{
 use spectrum_imaging::AdjustmentPatch;
 
 use super::{
-    CliCommand, GuideCommand, PathCommand, effects, live_bridge::decode_commands, paint,
-    parse_color, paths, selection, style_effects, text_shaping, transfer, updated_typography,
+    CliCommand, GuideCommand, PathCommand, effects, paint, parse_color, paths, selection,
+    style_effects, text_shaping, transfer, updated_typography,
 };
 
 pub(super) struct SemanticPlan {
@@ -349,19 +349,15 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
             atomic_batch = json.trim_start().starts_with('[');
             decode_commands(&json)?
         }
-        CliCommand::Init { .. }
-        | CliCommand::List
+        #[cfg(test)]
+        CliCommand::Init { .. } => unreachable!(),
+        CliCommand::List
+        | CliCommand::History
+        | CliCommand::HistoryJump { .. }
         | CliCommand::FontList { .. }
         | CliCommand::FontUsage { .. }
-        | CliCommand::FontSource { .. }
-        | CliCommand::FontSubsetPlan { .. }
-        | CliCommand::OptimizedCopy { .. }
         | CliCommand::LayerCopy(..)
-        | CliCommand::Export { .. }
         | CliCommand::Sample { .. }
-        | CliCommand::FromLumen { .. }
-        | CliCommand::Agent { .. }
-        | CliCommand::Live { .. }
         | CliCommand::Schema
         | CliCommand::Benchmark { .. } => unreachable!(),
     };
@@ -369,4 +365,13 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
         commands,
         atomic_batch,
     })
+}
+
+/// One command object, or an array applied as one edit.
+pub(crate) fn decode_commands(value: &str) -> Result<Vec<Command>> {
+    if value.trim_start().starts_with('[') {
+        Ok(serde_json::from_str(value)?)
+    } else {
+        Ok(vec![serde_json::from_str(value)?])
+    }
 }

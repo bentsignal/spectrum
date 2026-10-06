@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-/// Stable metadata for the font bytes compiled into Prism.
+/// Stable metadata for the font bytes compiled into Spectrum.
 ///
 /// `font_id: None` remains the document representation for this face. Older
 /// automation may call it "Spectrum Sans"; that string is a compatibility

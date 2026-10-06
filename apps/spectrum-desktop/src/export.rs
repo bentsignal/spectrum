@@ -115,7 +115,7 @@ impl Workspace {
         else {
             return;
         };
-        let canvas = asset.kind == "canvas";
+        let canvas = asset.kind == spectrum_library::AssetKind::Canvas;
         let full = self
             .store
             .as_ref()

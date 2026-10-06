@@ -178,7 +178,7 @@ impl Workspace {
         };
         // Erasing a layer of another kind re-renders it with the stroke.
         if matches!(command, Command::EraseLayer { .. }) {
-            let mut local = spectrum_canvas::Workspace::new(canvas.doc.clone(), None);
+            let mut local = spectrum_canvas::Workspace::new(canvas.doc.clone());
             if local.execute(command).is_ok() {
                 canvas.live_doc = Some(local.document);
                 canvas.bump_version();
@@ -201,7 +201,7 @@ impl Workspace {
             | Command::AddPaintLayerWithStroke { stroke, .. } => stroke.samples.clone(),
             _ => return,
         };
-        let mut local = spectrum_canvas::Workspace::new(canvas.doc.clone(), None);
+        let mut local = spectrum_canvas::Workspace::new(canvas.doc.clone());
         if local.execute(command).is_err() {
             return;
         }

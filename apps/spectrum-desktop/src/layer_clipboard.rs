@@ -1,5 +1,5 @@
 //! Command+C and Command+V on a canvas: the selected layer goes to the system
-//! clipboard in Prism's layer transfer format (the same JSON as
+//! clipboard in Spectrum's layer transfer format (the same JSON as
 //! `spectrum canvas layer-copy`), and pasting inserts it above the selection.
 use crate::workspace::Workspace;
 use gpui::*;

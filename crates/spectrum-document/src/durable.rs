@@ -117,6 +117,37 @@ fn cache_root(path: &Path) -> Result<PathBuf> {
     Ok(parent.join(".cache"))
 }
 
+/// Deletes a revision file and its working copy and staged files.
+pub fn remove(path: &Path) -> Result<()> {
+    let project = match spectrum_revisions::RevisionStore::open_read_only(path) {
+        Ok(store) => Some(store.project_info()?.project_id.to_string()),
+        Err(_) if !path.exists() => None,
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(project) = project {
+        let cache = cache_root(path)?;
+        for directory in [cache.join(&project), cache.join("files").join(&project)] {
+            match fs::remove_dir_all(&directory) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.into());
+                }
+                _ => {}
+            }
+        }
+    }
+    for suffix in ["", "-wal", "-shm"] {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        match fs::remove_file(PathBuf::from(file)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error.into());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 impl<M: Model> Durable<M> {
     /// Creates a revision file holding `document`.
     pub fn create(
@@ -439,6 +470,15 @@ impl<M: Model> Durable<M> {
         Ok((sync, None))
     }
 
+    /// The revision most recently reached by any session: the document's
+    /// current state as the library shows it.
+    pub fn newest(&self) -> Result<RevisionId> {
+        Ok(self
+            .store
+            .store()
+            .most_recent_cursor_for_track(self.info.default_track_id)?)
+    }
+
     pub fn cursor(&self) -> RevisionId {
         self.cursor
     }
@@ -506,6 +546,7 @@ impl<M: Model> Durable<M> {
             let commands: Vec<M::Command> = serde_json::from_slice(&step.operations.bytes)
                 .with_context(|| format!("a {} edit is unreadable", M::NOUN))?;
             for mut command in commands {
+                M::check_stored(&command)?;
                 M::command_files(&mut command, &mut |path, _| self.restore(path))?;
                 M::apply(&mut document, command)?;
             }

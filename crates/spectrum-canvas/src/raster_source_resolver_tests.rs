@@ -65,7 +65,7 @@ impl MemorySource {
                     sample_depth: SourceSampleDepth::EightBit,
                     frame_index: 0,
                     page_index: 0,
-                    decoder_contract: "prism-test-memory:v1".into(),
+                    decoder_contract: "canvas-test-memory:v1".into(),
                 },
                 capability: RegionReadCapability::DerivedBacking,
                 readiness: RegionReadiness::Ready,
@@ -174,10 +174,7 @@ fn raster_document(path: PathBuf, width: u32, height: u32) -> Document {
     document.background = [19, 31, 47, 173];
     document.layers.push(Layer {
         id: 1,
-        kind: LayerKind::Raster {
-            path,
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path },
         ..Layer::default()
     });
     document
@@ -189,7 +186,7 @@ fn valid_raster_path(label: &str, width: u32, height: u32) -> PathBuf {
         .unwrap()
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "prism-provider-{label}-{}-{stamp}.png",
+        "canvas-provider-{label}-{}-{stamp}.png",
         std::process::id()
     ));
     RgbaImage::from_pixel(width, height, Rgba([37, 211, 83, 255]))
@@ -218,7 +215,7 @@ fn render_full_provider_region(
 #[test]
 fn provider_backed_render_never_inspects_its_missing_path() {
     let path = std::env::temp_dir().join(format!(
-        "prism-provider-missing-{}-{}.webp",
+        "canvas-provider-missing-{}-{}.webp",
         std::process::id(),
         91_337
     ));
@@ -256,7 +253,7 @@ fn provider_backed_render_never_inspects_its_missing_path() {
 fn provider_regions_match_the_export_oracle_with_adjustments_and_geometry() {
     let source_pixels = pixels(73, 51);
     let path = std::env::temp_dir().join(format!(
-        "prism-provider-parity-{}-{}.png",
+        "canvas-provider-parity-{}-{}.png",
         std::process::id(),
         73_051
     ));
@@ -304,10 +301,7 @@ fn provider_regions_match_the_export_oracle_with_adjustments_and_geometry() {
             width: 0.81,
             height: 0.72,
         },
-        kind: LayerKind::Raster {
-            path: path.clone(),
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path: path.clone() },
         ..Layer::default()
     });
     let full = render_document_scaled(&document, 1.5).unwrap().to_rgba8();
@@ -335,7 +329,7 @@ fn provider_regions_match_the_export_oracle_with_adjustments_and_geometry() {
 #[test]
 fn resolved_provider_failure_never_falls_back_to_a_valid_path() {
     let path = std::env::temp_dir().join(format!(
-        "prism-provider-no-fallback-{}-{}.png",
+        "canvas-provider-no-fallback-{}-{}.png",
         std::process::id(),
         8_006
     ));
@@ -387,7 +381,7 @@ fn missing_provider_never_falls_back_to_a_valid_path() {
 fn spotted_provider_matches_export_without_redecoding_or_full_source_staging() {
     let source = opaque_pixels(512, 384);
     let path = std::env::temp_dir().join(format!(
-        "prism-provider-spotted-parity-{}-{}.tiff",
+        "canvas-provider-spotted-parity-{}-{}.tiff",
         std::process::id(),
         512_384
     ));

@@ -81,7 +81,7 @@ to use HarfBuzz defaults. `SubsetRequest` now carries explicit run properties
 used by Prism shaped text; feature overrides and variable coordinates remain
 outside the candidate claim.
 
-Prism's optimized-copy transaction is the only production caller allowed to
+Spectrum's optimized-copy transaction is the only production caller allowed to
 persist a candidate artifact. It additionally verifies immutable source identity,
 linear history, reachable assets, and exact full/region render parity at every
 retained revision before
@@ -112,7 +112,7 @@ each sample at 256 scalars and rejects any returned glyph count above 16,384
 before constructing native-result slices. At most 256 samples and 16,384 total
 sample scalars are accepted per request.
 The runtime guard does not inventory or reject additional unrequested cmap/UVS
-mappings, and Prism's current fontdue renderer does not render UVS alternates.
+mappings, and Spectrum's current fontdue renderer does not render UVS alternates.
 Those remain corpus prerequisites. The caller owns immutable source
 retention, provenance, and legal license decisions. OS/2 fsType is only
 technical embedding metadata. Any failed prerequisite leaves the original full

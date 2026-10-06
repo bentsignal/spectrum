@@ -3,7 +3,7 @@
 //! commands then save to the library in order.
 use crate::{preview::to_render_image, workspace::Workspace};
 use gpui::*;
-use spectrum_assets::{Service, live};
+use spectrum_assets::Service;
 use spectrum_canvas::{Command, Document};
 use spectrum_library::AssetId;
 use std::{collections::HashMap, sync::Arc};
@@ -180,7 +180,6 @@ impl CanvasState {
                     layer.image_asset = None;
                     layer.kind = spectrum_canvas::LayerKind::Raster {
                         path: original.clone(),
-                        original_path: None,
                     };
                     layer.adjustments = adjustments.clone();
                 }
@@ -221,12 +220,6 @@ fn queue_key(command: &Command) -> Option<(String, u64)> {
     let value = serde_json::to_value(command).ok()?;
     let id = value.get("id")?.as_u64()?;
     Some((value.get("command")?.as_str()?.to_string(), id))
-}
-
-fn canvas_path(root: &std::path::Path, id: AssetId) -> anyhow::Result<std::path::PathBuf> {
-    let service = Service::open(root)?;
-    let asset = service.library.get(id)?;
-    service.library.path(&asset)
 }
 
 /// Resolves library images and renders the document with its layer bounds.
@@ -344,9 +337,9 @@ impl Workspace {
         }
         canvas.reload = false;
         let (root, id, edits) = (store.root.clone(), canvas.id, canvas.edits);
-        let task = cx.background_executor().spawn(async move {
-            spectrum_canvas::Workspace::load_read_only(&canvas_path(&root, id)?)
-        });
+        let task = cx
+            .background_executor()
+            .spawn(async move { Service::open(&root)?.saved_canvas(id) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -538,7 +531,7 @@ impl Workspace {
             _ => None,
         });
         if !history && !commands.is_empty() {
-            let mut local = spectrum_canvas::Workspace::new(canvas.doc.clone(), None);
+            let mut local = spectrum_canvas::Workspace::new(canvas.doc.clone());
             if let Err(error) = local.execute_batch(commands.clone()) {
                 return self.notify_error(error, window, cx);
             }
@@ -627,7 +620,7 @@ impl Workspace {
         let (root, id) = (store.root.clone(), canvas.id);
         let task = cx
             .background_executor()
-            .spawn(async move { live::canvas(&canvas_path(&root, id)?, batch) });
+            .spawn(async move { Service::open(&root)?.edit_canvas(id, batch) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {

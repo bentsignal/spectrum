@@ -1,17 +1,8 @@
 //! Small cached renders for library grids.
-use super::{Service, file_stamp};
-use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
-use spectrum_library::AssetId;
+use super::{Service, file_stamp, hex, save_atomically};
+use anyhow::{Result, bail};
+use spectrum_library::{AssetId, AssetKind};
 use std::path::PathBuf;
-
-fn hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .take(12)
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
 
 impl Service {
     /// Renders an asset no larger than `max` pixels on its long edge. Trashed
@@ -25,39 +16,34 @@ impl Service {
         let asset = self.library.lookup(id)?;
         let document = self.library.path(&asset)?;
         let previews = self.library.root().join("previews");
-        match asset.kind.as_str() {
-            "image" => {
-                let photo = spectrum_image::DurableCatalog::load_photo_current(
-                    &document,
-                    asset.item.context("image missing item")?,
-                )?;
+        match asset.kind {
+            AssetKind::Image => {
+                let image = spectrum_image::Workspace::read(&document)?;
                 let key = hex(&serde_json::to_vec(&(
-                    &photo.path,
-                    &photo.adjustments,
+                    &image.path,
+                    &image.adjustments,
                     max,
                 ))?);
-                let path = previews.join(format!("{id}-thumb-{key}.png"));
+                let path = previews.join(format!("{id}-thumb-{}.png", &key[..24]));
                 if !path.exists() {
-                    let image = spectrum_image::engine::render_photo(
-                        &photo,
+                    let rendered = spectrum_image::engine::render(
+                        &image,
                         spectrum_image::engine::RenderOptions {
                             max_size: Some(max),
                         },
                     )?;
-                    let temporary = path.with_file_name(format!("{}.png", AssetId::new_v4()));
-                    image.save(&temporary)?;
-                    std::fs::rename(&temporary, &path)?;
+                    save_atomically(&rendered, &path)?;
                 }
                 Ok(path)
             }
-            "canvas" => {
+            AssetKind::Canvas => {
                 let (modified, length) = file_stamp(&document)?;
-                let key = hex(format!("{modified:?}{length}").as_bytes());
-                let path = previews.join(format!("{id}-thumb-{key}.png"));
+                let key = hex(format!("{modified:?}{length}{max}").as_bytes());
+                let path = previews.join(format!("{id}-thumb-{}.png", &key[..24]));
                 if !path.exists() {
-                    let mut doc = spectrum_canvas::Workspace::load_read_only(&document)?;
+                    let mut doc = spectrum_canvas::Workspace::read(&document)?;
                     self.resolve(&mut doc)?;
-                    spectrum_canvas::export_document(&doc, &path, 90)?;
+                    spectrum_canvas::export_document_sized(&doc, &path, 90, Some(max))?;
                 }
                 Ok(path)
             }

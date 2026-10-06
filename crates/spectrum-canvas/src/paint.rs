@@ -533,7 +533,7 @@ impl BrushProgram {
             || width > crate::MAX_CANVAS_DIMENSION
             || height > crate::MAX_CANVAS_DIMENSION
         {
-            bail!("Paint viewport dimensions are outside Prism limits");
+            bail!("Paint viewport dimensions are outside canvas limits");
         }
         if strokes.len() > MAX_BRUSH_STROKES_PER_LAYER {
             bail!("Paint layer exceeds the {MAX_BRUSH_STROKES_PER_LAYER}-stroke limit");

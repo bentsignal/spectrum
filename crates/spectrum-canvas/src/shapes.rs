@@ -44,7 +44,7 @@ pub fn rasterize_shape_asset(
         0,
         0,
     )?;
-    let directory = std::env::temp_dir().join("spectrum-prism-generated");
+    let directory = std::env::temp_dir().join("spectrum-canvas-generated");
     fs::create_dir_all(&directory)
         .with_context(|| format!("could not create {}", directory.display()))?;
     let sequence = NEXT_GENERATED_ASSET.fetch_add(1, Ordering::Relaxed);
@@ -167,7 +167,7 @@ impl<'a> ShapeSampler<'a> {
             scaled_dimension(height, scale[1]),
         );
         if dimensions.0 > MAX_CANVAS_DIMENSION || dimensions.1 > MAX_CANVAS_DIMENSION {
-            bail!("shape render exceeds Prism's maximum raster dimension");
+            bail!("shape render exceeds Spectrum's maximum raster dimension");
         }
         Ok(Self {
             layer,

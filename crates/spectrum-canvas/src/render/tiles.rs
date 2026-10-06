@@ -82,7 +82,7 @@ fn validate_render_region(
         bail!("document render region exceeds the scaled canvas");
     }
     if region.width > crate::MAX_CANVAS_DIMENSION || region.height > crate::MAX_CANVAS_DIMENSION {
-        bail!("document render region exceeds Prism's maximum canvas dimension");
+        bail!("document render region exceeds Spectrum's maximum canvas dimension");
     }
     if bound_fallback_layers && u64::from(region.width) * u64::from(region.height) > 4_096 * 4_096 {
         bail!("document render region exceeds the bounded viewport area");

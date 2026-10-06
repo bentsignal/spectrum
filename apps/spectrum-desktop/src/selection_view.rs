@@ -282,7 +282,7 @@ impl Workspace {
                 .map(|l| l.id),
         );
         let target = candidates.into_iter().find(|&id| {
-            let mut trial = spectrum_canvas::Workspace::new(canvas.doc.clone(), None);
+            let mut trial = spectrum_canvas::Workspace::new(canvas.doc.clone());
             trial.execute(Command::HideSelection { id }).is_ok()
         });
         let Some(layer) = target.and_then(|id| canvas.doc.layer(id).ok()) else {

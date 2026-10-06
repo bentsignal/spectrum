@@ -26,7 +26,7 @@ pub(crate) fn read_secure_regular_file(
     }
     if before.len() > max_bytes as u64 {
         bail!(
-            "{kind} exceeds Prism's {} MiB embedded-asset limit",
+            "{kind} exceeds Spectrum's {} MiB embedded-asset limit",
             max_bytes / (1024 * 1024)
         );
     }
@@ -43,30 +43,12 @@ pub(crate) fn read_secure_regular_file(
     }
     if bytes.len() > max_bytes {
         bail!(
-            "{kind} exceeds Prism's {} MiB embedded-asset limit",
+            "{kind} exceeds Spectrum's {} MiB embedded-asset limit",
             max_bytes / (1024 * 1024)
         );
     }
     let canonical = verify_unchanged_path(path, file, &before, before_identity)?;
     Ok((canonical, bytes))
-}
-
-pub(crate) fn secure_regular_file_len(path: &Path, max_bytes: usize, kind: &str) -> Result<u64> {
-    let file = open_no_follow(path)?;
-    let metadata = file.metadata()?;
-    require_regular_metadata(&metadata, path)?;
-    let identity = file_identity(&file, &metadata)?;
-    if metadata.len() == 0 {
-        bail!("{kind} data cannot be empty");
-    }
-    if metadata.len() > max_bytes as u64 {
-        bail!(
-            "{kind} exceeds Prism's {} MiB embedded-asset limit",
-            max_bytes / (1024 * 1024)
-        );
-    }
-    verify_unchanged_path(path, &file, &metadata, identity)?;
-    Ok(metadata.len())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,7 +60,7 @@ struct FileIdentity {
 /// One bounded, authorized, immutable read of a source OpenType font.
 ///
 /// The bytes are private so callers cannot change the identity that was
-/// validated at construction time. Durable Prism projects store these exact
+/// validated at construction time. Canvas documents store these exact
 /// bytes through the existing content-addressed asset transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FontSourceSnapshot {
@@ -173,17 +155,12 @@ impl FontSourceSnapshot {
 }
 
 impl VerifiedFontSource {
-    pub(crate) fn from_embedded_bytes(bytes: Vec<u8>, expected_hash: &str) -> Result<Self> {
-        validate_content_hash(expected_hash)?;
-        Self::from_bytes(bytes, Some(expected_hash), Path::new("embedded font asset"))
-    }
-
     fn from_bytes(bytes: Vec<u8>, expected_hash: Option<&str>, label: &Path) -> Result<Self> {
         if bytes.is_empty() {
             bail!("font data cannot be empty");
         }
         if bytes.len() > MAX_EMBEDDED_FONT_BYTES {
-            bail!("font exceeds Prism's 32 MiB embedded-font limit");
+            bail!("font exceeds Spectrum's 32 MiB embedded-font limit");
         }
         let content_hash = sha256_hex(&bytes);
         if expected_hash.is_some_and(|expected| expected != content_hash) {
@@ -265,7 +242,7 @@ fn read_bounded(
         bail!("font data cannot be empty");
     }
     if before.len() > MAX_EMBEDDED_FONT_BYTES as u64 {
-        bail!("font exceeds Prism's 32 MiB embedded-font limit");
+        bail!("font exceeds Spectrum's 32 MiB embedded-font limit");
     }
     let expected_len = usize::try_from(before.len()).context("font length does not fit memory")?;
     let mut bytes = Vec::with_capacity(expected_len);
@@ -279,7 +256,7 @@ fn read_bounded(
         bail!("font source changed while reading {}", path.display());
     }
     if bytes.len() > MAX_EMBEDDED_FONT_BYTES {
-        bail!("font exceeds Prism's 32 MiB embedded-font limit");
+        bail!("font exceeds Spectrum's 32 MiB embedded-font limit");
     }
     Ok(bytes)
 }
@@ -636,7 +613,7 @@ fn embedding_permission(permissions: Option<Permissions>) -> Result<FontEmbeddin
         Some(Permissions::PreviewAndPrint) => Ok(FontEmbeddingPermission::PreviewAndPrint),
         Some(Permissions::Restricted) => Ok(FontEmbeddingPermission::Restricted),
         None => bail!(
-            "OpenType embedding metadata is missing or malformed; Prism cannot safely determine whether this font may be embedded"
+            "OpenType embedding metadata is missing or malformed; Spectrum cannot safely determine whether this font may be embedded"
         ),
     }
 }
@@ -709,7 +686,7 @@ mod tests {
             .as_nanos();
         let directory = fs::canonicalize(std::env::temp_dir())
             .unwrap_or_else(|_| std::env::temp_dir())
-            .join(format!("prism-font-identity-{stamp}"));
+            .join(format!("spectrum-font-identity-{stamp}"));
         fs::create_dir_all(&directory).unwrap();
         let first = directory.join("first.ttf");
         let replacement = directory.join("replacement.ttf");
@@ -749,7 +726,7 @@ mod tests {
             .as_nanos();
         let directory = fs::canonicalize(std::env::temp_dir())
             .unwrap_or_else(|_| std::env::temp_dir())
-            .join(format!("prism-font-final-path-{stamp}"));
+            .join(format!("spectrum-font-final-path-{stamp}"));
         fs::create_dir_all(&directory).unwrap();
         let opened_path = directory.join("opened.ttf");
         let intended_path = directory.join("intended.ttf");
@@ -807,7 +784,7 @@ mod tests {
             .as_nanos();
         let directory = fs::canonicalize(std::env::temp_dir())
             .unwrap_or_else(|_| std::env::temp_dir())
-            .join(format!("prism-font-junction-swap-{stamp}"));
+            .join(format!("spectrum-font-junction-swap-{stamp}"));
         let intended_directory = directory.join("intended");
         let saved_directory = directory.join("saved-intended");
         let redirect_directory = directory.join("redirect");

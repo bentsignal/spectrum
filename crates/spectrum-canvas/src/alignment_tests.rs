@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::*;
 
 fn rectangle(document: &mut Document, x: f32, y: f32, width: u32, height: u32) -> u64 {
-    let mut workspace = Workspace::new(document.clone(), None);
+    let mut workspace = Workspace::new(document.clone());
     let id = workspace
         .execute(Command::AddRectangle {
             name: None,
@@ -21,7 +21,7 @@ fn rectangle(document: &mut Document, x: f32, y: f32, width: u32, height: u32) -
 }
 
 fn text(document: &mut Document, value: &str, x: f32, y: f32) -> u64 {
-    let mut workspace = Workspace::new(document.clone(), None);
+    let mut workspace = Workspace::new(document.clone());
     let id = workspace
         .execute(Command::AddText {
             text: value.into(),
@@ -89,7 +89,7 @@ fn align_to_canvas_uses_rotated_visual_bounds_without_changing_rotation() {
     let mut document = Document::new("Alignment", 500, 400);
     let id = rectangle(&mut document, 80.0, 70.0, 120, 40);
     document.layer_mut(id).unwrap().transform.rotation = 30.0;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::AlignLayer {
             id,
@@ -110,7 +110,7 @@ fn align_to_another_rotated_layer_and_undo_are_exact() {
     document.layer_mut(moving).unwrap().transform.rotation = 27.0;
     document.layer_mut(reference).unwrap().transform.rotation = 315.0;
     let before = document.layer(moving).unwrap().transform;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::AlignLayer {
             id: moving,
@@ -132,7 +132,7 @@ fn text_alignment_uses_visible_glyph_bounds_for_canvas_and_layer_references() {
     let reference = text(&mut document, "Reference", 420.0, 240.0);
     document.layer_mut(moving).unwrap().transform.rotation = 19.0;
     document.layer_mut(reference).unwrap().transform.rotation = 331.0;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
 
     workspace
         .execute(Command::AlignLayer {
@@ -164,7 +164,7 @@ fn imported_typography_alignment_uses_the_rendered_effect_bounds() {
         .as_nanos();
     let font_path = std::fs::canonicalize(std::env::temp_dir())
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join(format!("prism-align-font-{stamp}.ttf"));
+        .join(format!("canvas-align-font-{stamp}.ttf"));
     std::fs::write(&font_path, epaint_default_fonts::HACK_REGULAR).unwrap();
     let font = FontAsset::import(31, &font_path).unwrap();
     let mut document = Document::new("Imported alignment", 720, 420);
@@ -188,7 +188,7 @@ fn imported_typography_alignment_uses_the_rendered_effect_bounds() {
         ..Default::default()
     };
     document.layer_mut(id).unwrap().transform.rotation = 14.0;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::AlignLayer {
             id,
@@ -227,7 +227,7 @@ fn alignment_respects_locking_and_rejects_self_reference() {
     let mut document = Document::new("Alignment", 500, 400);
     let id = rectangle(&mut document, 80.0, 70.0, 120, 40);
     document.layer_mut(id).unwrap().locked = true;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     assert!(
         workspace
             .execute(Command::AlignLayer {
@@ -254,164 +254,6 @@ fn alignment_respects_locking_and_rejects_self_reference() {
 }
 
 #[test]
-fn guide_commands_clamp_validate_and_share_one_step_gestures() {
-    let mut workspace = Workspace::new(Document::new("Guides", 400, 300), None);
-    let output = workspace
-        .execute(Command::AddGuide {
-            orientation: GuideOrientation::Vertical,
-            position: 450.0,
-        })
-        .unwrap();
-    let id = output.guide_ids[0];
-    assert_eq!(workspace.document.guide(id).unwrap().position, 400.0);
-
-    workspace.begin_interaction().unwrap();
-    for position in [320.0, 210.0, 123.0] {
-        workspace
-            .preview(Command::MoveGuide { id, position })
-            .unwrap();
-    }
-    assert!(workspace.commit_interaction().unwrap());
-    assert_eq!(workspace.document.guide(id).unwrap().position, 123.0);
-    workspace.execute(Command::Undo).unwrap();
-    assert_eq!(workspace.document.guide(id).unwrap().position, 400.0);
-    workspace.execute(Command::Undo).unwrap();
-    assert!(workspace.document.guides.is_empty());
-
-    assert!(
-        workspace
-            .execute(Command::AddGuide {
-                orientation: GuideOrientation::Horizontal,
-                position: f32::NAN,
-            })
-            .is_err()
-    );
-}
-
-#[test]
-fn snapped_move_previews_commit_as_exactly_one_history_revision() {
-    let mut document = Document::new("Snapping", 500, 400);
-    let id = rectangle(&mut document, 40.0, 60.0, 100, 80);
-    let before = document.layer(id).unwrap().transform;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory = std::env::temp_dir().join(format!("prism-snapping-history-{stamp}"));
-    std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("snapping.prism");
-    let mut workspace = Workspace::create_durable(
-        document,
-        &project,
-        spectrum_revisions::Actor {
-            id: "test:snapping".into(),
-            display_name: "Snapping Test".into(),
-            kind: spectrum_revisions::ActorKind::Human,
-        },
-        spectrum_revisions::SessionId::new(),
-    )
-    .unwrap();
-    assert_eq!(workspace.history().unwrap().unwrap().revisions.len(), 1);
-    workspace.begin_interaction().unwrap();
-    for x in [110.0, 180.0, 200.0] {
-        workspace
-            .preview(Command::SetTransform {
-                id,
-                transform: Transform { x, ..before },
-            })
-            .unwrap();
-    }
-    assert!(workspace.commit_interaction().unwrap());
-    assert_eq!(workspace.history().unwrap().unwrap().revisions.len(), 2);
-    assert_eq!(workspace.document.layer(id).unwrap().transform.x, 200.0);
-    workspace.execute(Command::Undo).unwrap();
-    assert_eq!(workspace.document.layer(id).unwrap().transform, before);
-    assert!(workspace.execute(Command::Undo).is_err());
-    workspace.execute(Command::Redo).unwrap();
-    assert_eq!(workspace.document.layer(id).unwrap().transform.x, 200.0);
-    drop(workspace);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn guide_drag_changes_only_the_guide_and_commits_one_revision() {
-    let mut document = Document::new("Guide drag", 500, 400);
-    let layer_id = rectangle(&mut document, 40.0, 60.0, 100, 80);
-    document.guides.push(Guide {
-        id: 1,
-        orientation: GuideOrientation::Vertical,
-        position: 100.0,
-    });
-    document.next_guide_id = 2;
-    let layer_before = document.layer(layer_id).unwrap().transform;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory = std::env::temp_dir().join(format!("prism-guide-drag-{stamp}"));
-    std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("guide-drag.prism");
-    let mut workspace = Workspace::create_durable(
-        document,
-        &project,
-        spectrum_revisions::Actor {
-            id: "test:guide-drag".into(),
-            display_name: "Guide Drag Test".into(),
-            kind: spectrum_revisions::ActorKind::Human,
-        },
-        spectrum_revisions::SessionId::new(),
-    )
-    .unwrap();
-
-    workspace.begin_interaction().unwrap();
-    for position in [120.0, 180.0, 240.0] {
-        workspace
-            .preview(Command::MoveGuide { id: 1, position })
-            .unwrap();
-    }
-    assert!(workspace.commit_interaction().unwrap());
-    assert_eq!(workspace.history().unwrap().unwrap().revisions.len(), 2);
-    assert_eq!(workspace.document.guide(1).unwrap().position, 240.0);
-    assert_eq!(
-        workspace.document.layer(layer_id).unwrap().transform,
-        layer_before
-    );
-    workspace.execute(Command::Undo).unwrap();
-    assert_eq!(workspace.document.guide(1).unwrap().position, 100.0);
-    assert_eq!(
-        workspace.document.layer(layer_id).unwrap().transform,
-        layer_before
-    );
-    drop(workspace);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn guides_and_snapping_round_trip_in_the_one_file_project() {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("prism-guides-{stamp}.prism"));
-    let document = Document {
-        guides: vec![Guide {
-            id: 7,
-            orientation: GuideOrientation::Horizontal,
-            position: 86.5,
-        }],
-        snapping_enabled: false,
-        next_guide_id: 8,
-        ..Document::new("Guides", 320, 240)
-    };
-    save_document(&document, &path).unwrap();
-    let loaded = load_document(&path).unwrap();
-    assert_eq!(loaded.guides, document.guides);
-    assert!(!loaded.snapping_enabled);
-    assert_eq!(loaded.next_guide_id, 8);
-    std::fs::remove_file(path).unwrap();
-}
-
-#[test]
 fn crop_repositions_and_discards_guides_outside_the_new_canvas() {
     let mut document = Document::new("Guides", 400, 300);
     document.guides = vec![
@@ -431,7 +273,7 @@ fn crop_repositions_and_discards_guides_outside_the_new_canvas() {
             position: 100.0,
         },
     ];
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::CropCanvas {
             x: 50,

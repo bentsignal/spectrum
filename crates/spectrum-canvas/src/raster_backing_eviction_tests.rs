@@ -18,12 +18,12 @@ use spectrum_imaging::RegionSourceDescriptor;
 use crate::{DerivedBackingCache, DerivedBackingLimits, PrepareDerivedBacking};
 
 static TEMPORARY_COUNTER: AtomicU64 = AtomicU64::new(1);
-const CHILD_ROOT: &str = "PRISM_EVICTION_CHILD_ROOT";
-const CHILD_SOURCE: &str = "PRISM_EVICTION_CHILD_SOURCE";
-const CHILD_LIMIT: &str = "PRISM_EVICTION_CHILD_LIMIT";
-const CHILD_EXPECT_READY: &str = "PRISM_EVICTION_CHILD_EXPECT_READY";
-const CHILD_MARKER: &str = "PRISM_EVICTION_CHILD_MARKER";
-const CHILD_MODE: &str = "PRISM_EVICTION_CHILD_MODE";
+const CHILD_ROOT: &str = "SPECTRUM_EVICTION_CHILD_ROOT";
+const CHILD_SOURCE: &str = "SPECTRUM_EVICTION_CHILD_SOURCE";
+const CHILD_LIMIT: &str = "SPECTRUM_EVICTION_CHILD_LIMIT";
+const CHILD_EXPECT_READY: &str = "SPECTRUM_EVICTION_CHILD_EXPECT_READY";
+const CHILD_MARKER: &str = "SPECTRUM_EVICTION_CHILD_MARKER";
+const CHILD_MODE: &str = "SPECTRUM_EVICTION_CHILD_MODE";
 const CHILD_MODE_READER_LEASE: &str = "reader-lease-v2";
 
 struct ChildConfig {
@@ -45,7 +45,7 @@ struct TestDirectory(PathBuf);
 impl TestDirectory {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "prism-derived-eviction-{label}-{}-{}",
+            "canvas-derived-eviction-{label}-{}-{}",
             std::process::id(),
             TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));

@@ -34,7 +34,7 @@ fn project(application_id: &str) -> NewProject {
 #[test]
 fn initial_create_publication_is_one_shot_and_cannot_recreate_a_deleted_project() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (live, _) =
         LiveRevisionStore::create(&canonical, &cache, project("spectrum.initial-publication"))
@@ -50,7 +50,7 @@ fn initial_create_publication_is_one_shot_and_cannot_recreate_a_deleted_project(
 #[test]
 fn create_rejects_an_existing_zero_length_destination() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     std::fs::write(&canonical, []).unwrap();
 
@@ -69,7 +69,7 @@ fn create_rejects_an_existing_zero_length_destination() {
 #[test]
 fn initial_publication_never_replaces_a_destination_raced_in_after_validation() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let raced_bytes = b"concurrent creator owns this destination".to_vec();
 
@@ -105,7 +105,7 @@ fn initial_publication_crash_child() {
 #[test]
 fn initial_no_replace_publication_crash_leaves_one_valid_canonical_name() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
 
     let status = Command::new(std::env::current_exe().unwrap())
@@ -119,7 +119,7 @@ fn initial_no_replace_publication_crash_leaves_one_valid_canonical_name() {
     let metadata = canonical.metadata().unwrap();
     assert_eq!(metadata.nlink(), 1);
     let inspection = RevisionStore::inspect(&canonical).unwrap();
-    let temporary_prefix = ".project.lumen.spectrum-publish-";
+    let temporary_prefix = ".project.spectrum.spectrum-publish-";
     assert!(std::fs::read_dir(directory.path()).unwrap().all(|entry| {
         !entry
             .unwrap()
@@ -139,7 +139,7 @@ fn initial_no_replace_publication_crash_leaves_one_valid_canonical_name() {
 #[test]
 fn failed_initial_publication_reopens_through_durable_recovery_proof() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     PUBLISH_FAULT.set(Some(PublishFault::FullCopyPublished));
     let failed = LiveRevisionStore::create(
@@ -202,7 +202,7 @@ fn real_process_death_leaves_each_recovery_protocol_boundary_fail_closed_or_exac
         ("poison-removed", false, true, false),
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let canonical = directory.path().join("project.lumen");
+        let canonical = directory.path().join("project.spectrum");
         let cache = directory.path().join("cache");
         let (live, info) = LiveRevisionStore::create(
             &canonical,
@@ -273,8 +273,8 @@ fn open_preserves_higher_working_state_when_any_publication_marker_is_bad() {
         ),
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let canonical = directory.path().join("project.lumen");
-        let stale = directory.path().join("stale.lumen");
+        let canonical = directory.path().join("project.spectrum");
+        let stale = directory.path().join("stale.spectrum");
         let cache = directory.path().join("cache");
         let (mut live, info) = LiveRevisionStore::create(
             &canonical,
@@ -332,7 +332,7 @@ fn working_marker_cleanup_crash_child() {
 #[test]
 fn published_recovery_durably_removes_the_working_marker_before_process_death() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (live, info) = LiveRevisionStore::create(
         &canonical,
@@ -365,7 +365,7 @@ fn published_recovery_durably_removes_the_working_marker_before_process_death() 
 #[test]
 fn failed_publication_marks_exact_working_state_for_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (mut live, info) = LiveRevisionStore::create(
         &canonical,
@@ -418,7 +418,7 @@ fn failed_publication_marks_exact_working_state_for_reopen() {
 #[test]
 fn abrupt_pre_exchange_death_discards_unmarked_higher_working_cache() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (live, info) = LiveRevisionStore::create(
         &canonical,
@@ -466,7 +466,7 @@ fn abrupt_pre_exchange_death_discards_unmarked_higher_working_cache() {
 #[test]
 fn pending_recovery_is_published_before_the_next_mutation_can_overwrite_it() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (live, info) = LiveRevisionStore::create(
         &canonical,
@@ -529,7 +529,7 @@ fn pending_recovery_is_published_before_the_next_mutation_can_overwrite_it() {
 #[test]
 fn shared_lock_publishes_another_store_recovery_before_entering_the_next_mutation() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (mut first, _) = LiveRevisionStore::create(
         &canonical,
@@ -609,7 +609,7 @@ fn shared_lock_publishes_another_store_recovery_before_entering_the_next_mutatio
 #[test]
 fn already_open_store_accepts_exact_canonical_proof_of_shared_working_state() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (first, _) =
         LiveRevisionStore::create(&canonical, &cache, project("spectrum.shared-proof")).unwrap();
@@ -638,7 +638,7 @@ fn already_open_store_accepts_exact_canonical_proof_of_shared_working_state() {
 #[test]
 fn older_slot_proof_is_non_authorizing_when_canonical_has_no_inode_proof() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     fs::create_dir(&cache).unwrap();
     fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
@@ -686,7 +686,7 @@ fn older_slot_proof_is_non_authorizing_when_canonical_has_no_inode_proof() {
 #[test]
 fn mutate_reports_failure_when_working_recovery_marker_cannot_be_written() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (mut live, info) = LiveRevisionStore::create(
         &canonical,
@@ -756,7 +756,7 @@ fn recovery_protocol_faults_never_turn_an_ordinary_error_into_a_later_publicatio
     ];
     for fault in poison_faults {
         let directory = tempfile::tempdir().unwrap();
-        let canonical = directory.path().join("project.lumen");
+        let canonical = directory.path().join("project.spectrum");
         let cache = directory.path().join("cache");
         let (mut live, info) = LiveRevisionStore::create(
             &canonical,
@@ -798,7 +798,7 @@ fn poison_cleanup_ambiguity_is_acknowledged_as_pending_not_returned_as_retryable
         PublishFault::WorkingPoisonRemovalSynced,
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let canonical = directory.path().join("project.lumen");
+        let canonical = directory.path().join("project.spectrum");
         let cache = directory.path().join("cache");
         let (mut live, _) = LiveRevisionStore::create(
             &canonical,

@@ -64,11 +64,11 @@ fn path_and_vector_mask_cli_surfaces_mutate_durable_projects_end_to_end() {
         vec!["add-rectangle", "--width", "120", "--height", "60"],
         vec!["vector-mask", "2", closed_arg, "--invert"],
     ] {
-        let mut cli = vec!["prism", "--document", project_arg];
+        let mut cli = vec!["canvas", "--document", project_arg];
         cli.extend(arguments);
-        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+        run(parse_cli(cli).unwrap()).unwrap();
     }
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     let spectrum_canvas::LayerKind::Path { geometry, color } = &document.layer(1).unwrap().kind
     else {
         panic!("path CLI did not create a path layer")
@@ -85,8 +85,8 @@ fn path_and_vector_mask_cli_surfaces_mutate_durable_projects_end_to_end() {
             .invert
     );
 
-    run(Cli::try_parse_from([
-        "prism",
+    run(parse_cli([
+        "canvas",
         "--document",
         project_arg,
         "vector-mask",
@@ -96,7 +96,7 @@ fn path_and_vector_mask_cli_surfaces_mutate_durable_projects_end_to_end() {
     .unwrap())
     .unwrap();
     assert!(
-        Workspace::load_read_only(&project)
+        Workspace::read(&project)
             .unwrap()
             .layer(2)
             .unwrap()
@@ -128,11 +128,11 @@ fn selection_cli_persists_and_fills_without_touching_existing_layers() {
         vec!["selection", "rectangle", "4", "5", "20", "10"],
         vec!["selection", "fill", "--color", "12345678", "--name", "Wash"],
     ] {
-        let mut cli = vec!["prism", "--document", project_arg];
+        let mut cli = vec!["canvas", "--document", project_arg];
         cli.extend(arguments);
-        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+        run(parse_cli(cli).unwrap()).unwrap();
     }
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     assert_eq!(
         document.selection,
         Some(spectrum_canvas::Selection::rectangle(4, 5, 20, 10))
@@ -179,11 +179,11 @@ fn selection_crop_cli_uses_the_atomic_core_command() {
         vec!["selection", "rectangle", "4", "5", "20", "10"],
         vec!["selection", "crop"],
     ] {
-        let mut cli = vec!["prism", "--document", project_arg];
+        let mut cli = vec!["canvas", "--document", project_arg];
         cli.extend(arguments);
-        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+        run(parse_cli(cli).unwrap()).unwrap();
     }
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     assert_eq!((document.width, document.height), (20, 10));
     assert_eq!(document.selection, None);
     assert_eq!(document.layers.len(), 1);
@@ -199,7 +199,7 @@ fn selection_crop_cli_uses_the_atomic_core_command() {
 
 #[test]
 fn benchmark_cli_defaults_to_interactive_and_accepts_hosted_ci() {
-    let default = Cli::try_parse_from(["prism", "benchmark", "--strict"]).unwrap();
+    let default = parse_cli(["canvas", "benchmark", "--strict"]).unwrap();
     let CliCommand::Benchmark {
         strict,
         profile: default_profile,
@@ -212,8 +212,7 @@ fn benchmark_cli_defaults_to_interactive_and_accepts_hosted_ci() {
     assert_eq!(default_profile.gradient_shadow_budget_ms(), 500.0);
     assert_eq!(default_profile.magic_wand_budget_ms(), 5_000.0);
 
-    let hosted =
-        Cli::try_parse_from(["prism", "benchmark", "--strict", "--profile", "hosted-ci"]).unwrap();
+    let hosted = parse_cli(["canvas", "benchmark", "--strict", "--profile", "hosted-ci"]).unwrap();
     let CliCommand::Benchmark {
         profile: hosted_profile,
         ..
@@ -231,10 +230,10 @@ fn benchmark_cli_defaults_to_interactive_and_accepts_hosted_ci() {
 
 #[test]
 fn typography_cli_parses_face_paragraph_and_effect_controls() {
-    let cli = Cli::try_parse_from([
-        "prism",
+    let cli = parse_cli([
+        "canvas",
         "--document",
-        "type.prism",
+        "type.spectrum",
         "typography",
         "7",
         "--family",
@@ -291,11 +290,11 @@ fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_d
         vec!["init", "Shaped CLI", "--width", "320", "--height", "180"],
         vec!["add-text", "office العربية", "--language", "iw-IL"],
     ] {
-        let mut cli = vec!["prism", "--document", project_arg];
+        let mut cli = vec!["canvas", "--document", project_arg];
         cli.extend(arguments);
-        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+        run(parse_cli(cli).unwrap()).unwrap();
     }
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     let spectrum_canvas::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind
     else {
         panic!("CLI did not create text");
@@ -306,8 +305,8 @@ fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_d
     );
     assert_eq!(typography.shaping.language.as_deref(), Some("he-IL"));
 
-    run(Cli::try_parse_from([
-        "prism",
+    run(parse_cli([
+        "canvas",
         "--document",
         project_arg,
         "typography",
@@ -317,7 +316,7 @@ fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_d
     ])
     .unwrap())
     .unwrap();
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     let spectrum_canvas::LayerKind::Text { typography, .. } = &document.layer(1).unwrap().kind
     else {
         panic!("CLI text disappeared");
@@ -332,10 +331,10 @@ fn add_text_defaults_to_shaped_layout_and_typography_can_explicitly_upgrade_or_d
 
 #[test]
 fn font_list_cli_accepts_an_optional_query() {
-    let cli = Cli::try_parse_from([
-        "prism",
+    let cli = parse_cli([
+        "canvas",
         "--document",
-        "type.prism",
+        "type.spectrum",
         "font-list",
         "--query",
         "hack",
@@ -349,7 +348,7 @@ fn font_list_cli_accepts_an_optional_query() {
 
 #[test]
 fn bundled_font_output_is_truthful_and_legacy_family_automation_remains_compatible() {
-    let mut workspace = Workspace::new(Document::new("Bundled font", 320, 200), None);
+    let mut workspace = Workspace::new(Document::new("Bundled font", 320, 200));
     workspace
         .execute(Command::AddText {
             text: "Legacy automation".into(),
@@ -377,10 +376,10 @@ fn bundled_font_output_is_truthful_and_legacy_family_automation_remains_compatib
     );
     assert_ne!(output["bundled"]["family"], "Spectrum Sans");
 
-    let cli = Cli::try_parse_from([
-        "prism",
+    let cli = parse_cli([
+        "canvas",
         "--document",
-        "type.prism",
+        "type.spectrum",
         "typography",
         "1",
         "--family",
@@ -396,10 +395,10 @@ fn bundled_font_output_is_truthful_and_legacy_family_automation_remains_compatib
 
 #[test]
 fn font_usage_cli_accepts_an_optional_asset_filter() {
-    let cli = Cli::try_parse_from([
-        "prism",
+    let cli = parse_cli([
+        "canvas",
         "--document",
-        "type.prism",
+        "type.spectrum",
         "font-usage",
         "--font-id",
         "12",
@@ -412,410 +411,6 @@ fn font_usage_cli_accepts_an_optional_asset_filter() {
 }
 
 #[test]
-fn font_source_cli_requires_one_embedded_asset() {
-    let cli =
-        Cli::try_parse_from(["prism", "--document", "type.prism", "font-source", "12"]).unwrap();
-    let CliCommand::FontSource { font_id } = cli.command else {
-        panic!("font-source subcommand should parse");
-    };
-    assert_eq!(font_id, 12);
-}
-
-#[test]
-fn font_subset_plan_cli_requires_one_embedded_asset() {
-    let cli = Cli::try_parse_from([
-        "prism",
-        "--document",
-        "type.prism",
-        "font-subset-plan",
-        "12",
-    ])
-    .unwrap();
-    let CliCommand::FontSubsetPlan { font_id } = cli.command else {
-        panic!("font-subset-plan subcommand should parse");
-    };
-    assert_eq!(font_id, 12);
-}
-
-#[test]
-fn durable_font_subset_plan_replays_tail_text_without_writes() {
-    let directory = temporary_project("font-subset-plan").with_extension("tree");
-    std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("subset-plan.prism");
-    let source = directory.join("Hack-Regular.ttf");
-    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
-    let mut workspace = Workspace::create_durable(
-        Document::new("Subset plan", 320, 200),
-        &project,
-        cli_actor(),
-        spectrum_revisions::SessionId::new(),
-    )
-    .unwrap();
-    workspace
-        .execute(Command::ImportFont {
-            path: source,
-            source_name: None,
-        })
-        .unwrap();
-    let font_id = workspace.document.font_assets[0].id;
-    workspace
-        .execute(Command::AddText {
-            text: "BA\nAV".into(),
-            name: None,
-            font_size: 48.0,
-            color: [255; 4],
-            x: 20.0,
-            y: 30.0,
-            shaping: Default::default(),
-        })
-        .unwrap();
-    let layer_id = workspace.document.selected.unwrap();
-    workspace
-        .execute(Command::SetTextTypography {
-            id: layer_id,
-            typography: spectrum_canvas::TextTypography {
-                font_id: Some(font_id),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-    drop(workspace);
-    let before = tree_snapshot(&directory);
-
-    let output = run(Cli {
-        project: project.clone(),
-        session: None,
-        live: None,
-        command: CliCommand::FontSubsetPlan { font_id },
-    })
-    .unwrap();
-    let session_error = run(Cli {
-        project,
-        session: Some(spectrum_revisions::SessionId::new()),
-        live: None,
-        command: CliCommand::FontSubsetPlan { font_id },
-    })
-    .unwrap_err();
-
-    assert_eq!(output["action"], "font_subset_plan");
-    assert_eq!(output["mutates_project"], false);
-    assert_eq!(output["font_bytes_modified"], false);
-    assert_eq!(output["candidate_bytes_emitted"], false);
-    assert_eq!(
-        output["plan"]["analysis"]["usage"]["layer_ids"],
-        json!([layer_id])
-    );
-    assert_eq!(
-        output["plan"]["shaping_samples"][0]["codepoints"],
-        json!([66, 65])
-    );
-    assert_eq!(output["plan"]["physical_replacement_supported"], false);
-    assert!(
-        session_error
-            .to_string()
-            .contains("does not accept --session")
-    );
-    assert_eq!(tree_snapshot(&directory), before);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn font_source_output_proves_identity_without_mutating_the_document() {
-    let directory = temporary_project("font-source").with_extension("assets");
-    std::fs::create_dir_all(&directory).unwrap();
-    let source = directory.join("Hack-Regular.ttf");
-    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
-    let mut document = Document::new("Source proof", 320, 200);
-    document
-        .font_assets
-        .push(spectrum_canvas::FontAsset::import(1, &source).unwrap());
-    let before = document.clone();
-
-    let output = typography::font_source(&document, 1).unwrap();
-
-    assert_eq!(output["action"], "font_source");
-    assert_eq!(output["immutable_identity_verified"], true);
-    assert_eq!(output["editable_embedding_verified"], true);
-    assert_eq!(output["font_bytes_modified"], false);
-    assert_eq!(output["mutates_project"], false);
-    assert_eq!(
-        output["source_bytes"],
-        epaint_default_fonts::HACK_REGULAR.len()
-    );
-    assert_eq!(document, before);
-
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn restricted_font_source_output_is_contextual_and_never_subset_eligible() {
-    let directory = temporary_project("restricted-font-source").with_extension("assets");
-    std::fs::create_dir_all(&directory).unwrap();
-    let source = directory.join("Restricted.ttf");
-    let mut bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
-    set_os2_fs_type(&mut bytes, 0x0002);
-    std::fs::write(&source, &bytes).unwrap();
-    let mut document = Document::new("Restricted source proof", 320, 200);
-    document
-        .font_assets
-        .push(spectrum_canvas::FontAsset::import(1, &source).unwrap());
-
-    let output = typography::font_source(&document, 1).unwrap();
-
-    assert_eq!(output["embedding_permission"], "restricted");
-    assert_eq!(output["embedding_metadata_allows_subsetting"], false);
-    assert_eq!(output["local_editing_supported"], true);
-    assert_eq!(output["portable_editable_embedding_verified"], false);
-    assert_eq!(output["editable_embedding_verified"], false);
-    assert!(
-        output["portability_note"]
-            .as_str()
-            .unwrap()
-            .contains("Restricted embedding")
-    );
-    assert_eq!(std::fs::read(&source).unwrap(), bytes);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-fn set_os2_fs_type(bytes: &mut [u8], fs_type: u16) {
-    let table_count = usize::from(u16::from_be_bytes([bytes[4], bytes[5]]));
-    for index in 0..table_count {
-        let record = 12 + index * 16;
-        if &bytes[record..record + 4] == b"OS/2" {
-            let offset = u32::from_be_bytes([
-                bytes[record + 8],
-                bytes[record + 9],
-                bytes[record + 10],
-                bytes[record + 11],
-            ]) as usize;
-            bytes[offset + 8..offset + 10].copy_from_slice(&fs_type.to_be_bytes());
-            return;
-        }
-    }
-    panic!("test font has no OS/2 table");
-}
-
-#[test]
-fn durable_font_source_keeps_store_bytes_unchanged_and_rejects_sessions() {
-    let project = temporary_project("font-source-read-only");
-    let directory = temporary_project("font-source-read-only").with_extension("assets");
-    std::fs::create_dir_all(&directory).unwrap();
-    let source = directory.join("Hack-Regular.ttf");
-    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
-    run(Cli {
-        project: project.clone(),
-        session: None,
-        live: None,
-        command: CliCommand::Init {
-            name: "Read-only proof".into(),
-            width: 320,
-            height: 200,
-            background: "18191dff".into(),
-        },
-    })
-    .unwrap();
-    run(Cli {
-        project: project.clone(),
-        session: None,
-        live: None,
-        command: CliCommand::FontImport { path: source },
-    })
-    .unwrap();
-    let before = std::fs::read(&project).unwrap();
-
-    let output = run(Cli {
-        project: project.clone(),
-        session: None,
-        live: None,
-        command: CliCommand::FontSource { font_id: 1 },
-    })
-    .unwrap();
-    let session_error = run(Cli {
-        project: project.clone(),
-        session: Some(spectrum_revisions::SessionId::new()),
-        live: None,
-        command: CliCommand::FontSource { font_id: 1 },
-    })
-    .unwrap_err();
-
-    assert_eq!(output["mutates_project"], false);
-    assert!(
-        session_error
-            .to_string()
-            .contains("does not accept --session")
-    );
-    assert_eq!(std::fs::read(&project).unwrap(), before);
-    std::fs::remove_file(project).unwrap();
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn durable_font_source_ignores_newer_live_and_recovery_state_without_writes() {
-    let directory = temporary_project("font-source-invariant").with_extension("tree");
-    std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("invariant.prism");
-    let source = directory.join("Hack-Regular.ttf");
-    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
-    run(Cli {
-        project: project.clone(),
-        session: None,
-        live: None,
-        command: CliCommand::Init {
-            name: "Immutable inspection".into(),
-            width: 320,
-            height: 200,
-            background: "18191dff".into(),
-        },
-    })
-    .unwrap();
-    run(Cli {
-        project: project.clone(),
-        session: None,
-        live: None,
-        command: CliCommand::FontImport { path: source },
-    })
-    .unwrap();
-    let project_info = spectrum_revisions::RevisionStore::open_read_only(&project)
-        .unwrap()
-        .project_info()
-        .unwrap();
-    let live_cache = directory.join(".revision-cache");
-    drop(
-        spectrum_revisions::LiveRevisionStore::open(&project, &live_cache)
-            .expect("test live cache should materialize from the canonical project"),
-    );
-    let working = live_cache
-        .join(project_info.project_id.to_string())
-        .join("live.sqlite");
-    let canonical_writer = rusqlite::Connection::open(&project).unwrap();
-    canonical_writer
-        .execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA wal_autocheckpoint=0;
-             CREATE TABLE read_only_recovery_probe(value INTEGER);
-             INSERT INTO read_only_recovery_probe VALUES (1);
-             UPDATE spectrum_meta SET value = CAST('888888' AS BLOB)
-             WHERE key = 'storage_generation';",
-        )
-        .unwrap();
-    let live_writer = rusqlite::Connection::open(working).unwrap();
-    live_writer
-        .execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA wal_autocheckpoint=0;
-             CREATE TABLE newer_live_probe(value INTEGER);
-             INSERT INTO newer_live_probe VALUES (2);
-             UPDATE spectrum_meta SET value = CAST('999999' AS BLOB)
-             WHERE key = 'storage_generation';",
-        )
-        .unwrap();
-    let before = tree_snapshot(&directory);
-
-    let output = run(Cli {
-        project: project.clone(),
-        session: None,
-        live: None,
-        command: CliCommand::FontSource { font_id: 1 },
-    })
-    .unwrap();
-
-    assert_eq!(output["immutable_identity_verified"], true);
-    assert_eq!(tree_snapshot(&directory), before);
-    drop(live_writer);
-    drop(canonical_writer);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn durable_font_source_replays_transferred_fonts_with_dedup_without_writes() {
-    let directory = temporary_project("font-source-transfer").with_extension("tree");
-    std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("transfer-destination.prism");
-    let source = directory.join("Hack-Regular.ttf");
-    let transfer_path = directory.join("font-layer.json");
-    std::fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
-    let mut source_workspace = Workspace::new(Document::new("Transfer source", 320, 200), None);
-    source_workspace
-        .execute(Command::ImportFont {
-            path: source.clone(),
-            source_name: None,
-        })
-        .unwrap();
-    let font_id = source_workspace.document.font_assets[0].id;
-    source_workspace
-        .execute(Command::AddText {
-            text: "Transferred type".into(),
-            name: None,
-            font_size: 48.0,
-            color: [255, 255, 255, 255],
-            x: 20.0,
-            y: 30.0,
-            shaping: Default::default(),
-        })
-        .unwrap();
-    let layer_id = source_workspace.document.selected.unwrap();
-    source_workspace
-        .execute(Command::SetTextTypography {
-            id: layer_id,
-            typography: spectrum_canvas::TextTypography {
-                font_id: Some(font_id),
-                ..Default::default()
-            },
-        })
-        .unwrap();
-    let transfer =
-        spectrum_canvas::LayerTransfer::from_selected(&source_workspace.document).unwrap();
-    std::fs::write(&transfer_path, transfer.to_json().unwrap()).unwrap();
-    run(Cli {
-        project: project.clone(),
-        session: None,
-        live: None,
-        command: CliCommand::Init {
-            name: "Transfer destination".into(),
-            width: 320,
-            height: 200,
-            background: "18191dff".into(),
-        },
-    })
-    .unwrap();
-    for _ in 0..2 {
-        run(Cli {
-            project: project.clone(),
-            session: None,
-            live: None,
-            command: CliCommand::LayerPaste(LayerPasteArgs {
-                input: transfer_path.clone(),
-                index: None,
-            }),
-        })
-        .unwrap();
-    }
-    let before = tree_snapshot(&directory);
-
-    let output = run(Cli {
-        project: project.clone(),
-        session: None,
-        live: None,
-        command: CliCommand::FontSource { font_id: 1 },
-    })
-    .unwrap();
-    let inspected = spectrum_canvas::inspect_font_source_read_only(&project, 1).unwrap();
-
-    assert_eq!(output["family"], "Hack");
-    assert_eq!(output["style"], "Regular");
-    assert_eq!(output["source_name"], "Hack-Regular.ttf");
-    assert_eq!(
-        output["content_hash"],
-        spectrum_revisions::AssetId::for_bytes(epaint_default_fonts::HACK_REGULAR).to_string()
-    );
-    assert_eq!(inspected.embedded_font_count, 1);
-    assert_eq!(inspected.next_font_id, 2);
-    assert_eq!(inspected.font.id, 1);
-    assert_eq!(tree_snapshot(&directory), before);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
 fn font_usage_output_limits_its_non_mutation_and_coverage_claims() {
     let output = typography::font_usage(&Document::new("Usage", 320, 200), None).unwrap();
     assert_eq!(output["action"], "font_usage");
@@ -823,7 +418,7 @@ fn font_usage_output_limits_its_non_mutation_and_coverage_claims() {
     assert_eq!(output["font_bytes_modified"], false);
     assert!(output.get("mutates_project").is_none());
     assert_eq!(output["editable_font_bytes_preserved"], true);
-    assert_eq!(output["limitations"].as_array().unwrap().len(), 3);
+    assert_eq!(output["limitations"].as_array().unwrap().len(), 2);
     assert_eq!(output["fonts"], serde_json::json!([]));
 }
 
@@ -836,7 +431,6 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
     run(Cli {
         project: destination.clone(),
         session: None,
-        live: None,
         command: CliCommand::Init {
             name: "Destination".into(),
             width: 400,
@@ -846,8 +440,8 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
     })
     .unwrap();
 
-    let copy = Cli::try_parse_from([
-        "prism",
+    let copy = parse_cli([
+        "canvas",
         "--document",
         source.to_str().unwrap(),
         "layer-copy",
@@ -860,8 +454,8 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
     assert_eq!(copied["version"], 1);
     assert!(transfer.exists());
 
-    let paste = Cli::try_parse_from([
-        "prism",
+    let paste = parse_cli([
+        "canvas",
         "--document",
         destination.to_str().unwrap(),
         "layer-paste",
@@ -871,7 +465,7 @@ fn layer_copy_defaults_to_selection_and_layer_paste_is_one_revision() {
     ])
     .unwrap();
     run(paste).unwrap();
-    let workspace = Workspace::open(&destination).unwrap();
+    let workspace = Workspace::open(&destination, cli_actor(), SessionId::new()).unwrap();
     assert_eq!(workspace.document.layers.len(), 1);
     assert_eq!(workspace.document.layers[0].name, "Rectangle");
     assert_eq!(workspace.document.selected, Some(1));
@@ -889,8 +483,8 @@ fn layer_copy_refuses_to_overwrite_an_existing_transfer_file() {
     let transfer = temporary_project("transfer-overwrite-json").with_extension("json");
     initialize_rectangle_project(&source);
     std::fs::write(&transfer, "keep me").unwrap();
-    let cli = Cli::try_parse_from([
-        "prism",
+    let cli = parse_cli([
+        "canvas",
         "--document",
         source.to_str().unwrap(),
         "layer-copy",
@@ -909,8 +503,8 @@ fn layer_copy_refuses_to_overwrite_an_existing_transfer_file() {
 fn rotate_cli_persists_the_normalized_angle() {
     let project = temporary_project("rotate");
     initialize_rectangle_project(&project);
-    let rotate = Cli::try_parse_from([
-        "prism",
+    let rotate = parse_cli([
+        "canvas",
         "--document",
         project.to_str().unwrap(),
         "rotate",
@@ -919,7 +513,7 @@ fn rotate_cli_persists_the_normalized_angle() {
     ])
     .unwrap();
     run(rotate).unwrap();
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     assert_eq!(document.layer(1).unwrap().transform.rotation, 345.0);
     std::fs::remove_file(project).unwrap();
 }
@@ -933,11 +527,11 @@ fn guide_snapping_and_alignment_cli_persist_semantic_commands() {
         vec!["guide", "add", "vertical", "125.5"],
         vec!["align", "1", "horizontal-center"],
     ] {
-        let mut cli = vec!["prism", "--document", project.to_str().unwrap()];
+        let mut cli = vec!["canvas", "--document", project.to_str().unwrap()];
         cli.extend(arguments);
-        run(Cli::try_parse_from(cli).unwrap()).unwrap();
+        run(parse_cli(cli).unwrap()).unwrap();
     }
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     assert!(!document.snapping_enabled);
     assert_eq!(document.guides[0].position, 125.5);
     let geometry = spectrum_canvas::layer_geometry(document.layer(1).unwrap()).unwrap();
@@ -952,9 +546,9 @@ pub(super) fn temporary_project(label: &str) -> PathBuf {
         .as_nanos();
     std::fs::canonicalize(std::env::temp_dir())
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join(format!("prism-{label}-cli-{stamp}.prism"))
+        .join(format!("canvas-{label}-cli-{stamp}.spectrum"))
 }
 
 #[path = "tests_support.rs"]
 mod support;
-use support::{initialize_rectangle_project, tree_snapshot};
+use support::initialize_rectangle_project;

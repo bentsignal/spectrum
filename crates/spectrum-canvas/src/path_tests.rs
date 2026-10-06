@@ -30,7 +30,7 @@ fn test_project(label: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-path-{label}-{stamp}.prism"))
+    std::env::temp_dir().join(format!("canvas-path-{label}-{stamp}.spectrum"))
 }
 
 #[test]
@@ -42,9 +42,9 @@ fn path_commands_are_atomic_undoable_and_durable() {
         kind: spectrum_revisions::ActorKind::Human,
     };
     let session = spectrum_revisions::SessionId::new();
-    let mut workspace = Workspace::create_durable(
-        Document::new("Paths", 320, 240),
+    let mut workspace = Workspace::create(
         &project,
+        Document::new("Paths", 320, 240),
         actor.clone(),
         session,
     )
@@ -74,111 +74,14 @@ fn path_commands_are_atomic_undoable_and_durable() {
     };
     assert_eq!(geometry, &original);
     workspace.execute(Command::Redo).unwrap();
-    workspace.save(None).unwrap();
+    workspace.checkpoint().unwrap();
     drop(workspace);
 
-    let reopened = Workspace::open_as(&project, actor, session).unwrap();
+    let reopened = Workspace::open(&project, actor, session).unwrap();
     let LayerKind::Path { geometry, .. } = &reopened.document.layer(1).unwrap().kind else {
         panic!("expected path")
     };
     assert_eq!(geometry, &edited);
-    drop(reopened);
-    std::fs::remove_file(project).unwrap();
-}
-
-#[test]
-fn multi_preview_anchor_gesture_commits_one_durable_revision() {
-    let project = test_project("gesture-history");
-    let actor = spectrum_revisions::Actor {
-        id: "person:path-gesture".into(),
-        display_name: "Path gesture".into(),
-        kind: spectrum_revisions::ActorKind::Human,
-    };
-    let session = spectrum_revisions::SessionId::new();
-    let mut workspace = Workspace::create_durable(
-        Document::new("Gesture", 320, 240),
-        &project,
-        actor.clone(),
-        session,
-    )
-    .unwrap();
-    let original = corner_path(100, 80, false);
-    workspace
-        .execute(Command::AddPath {
-            name: None,
-            geometry: original.clone(),
-            color: [255; 4],
-            x: 20.0,
-            y: 30.0,
-        })
-        .unwrap();
-    let before = workspace.document.clone();
-    workspace.begin_interaction().unwrap();
-    let middle = original
-        .replacing_anchor(1, PathAnchor::corner(48.0, 12.0))
-        .unwrap();
-    workspace
-        .preview_batch(vec![
-            Command::ReplacePath {
-                id: 1,
-                geometry: middle,
-            },
-            Command::SetTransform {
-                id: 1,
-                transform: Transform {
-                    x: 18.0,
-                    y: 29.0,
-                    ..Transform::default()
-                },
-            },
-        ])
-        .unwrap();
-    let final_geometry = original
-        .replacing_anchor(
-            1,
-            PathAnchor {
-                point: [44.0, 9.0],
-                handle_in: [-12.0, 3.0],
-                handle_out: [14.0, -2.0],
-            },
-        )
-        .unwrap();
-    let final_transform = Transform {
-        x: 16.0,
-        y: 27.0,
-        ..Transform::default()
-    };
-    workspace
-        .preview_batch(vec![
-            Command::ReplacePath {
-                id: 1,
-                geometry: final_geometry.clone(),
-            },
-            Command::SetTransform {
-                id: 1,
-                transform: final_transform,
-            },
-        ])
-        .unwrap();
-    assert!(workspace.commit_interaction().unwrap());
-    let final_document = workspace.document.clone();
-
-    workspace.execute(Command::Undo).unwrap();
-    assert_eq!(workspace.document, before);
-    workspace.execute(Command::Redo).unwrap();
-    assert_eq!(workspace.document, final_document);
-    workspace.save(None).unwrap();
-    drop(workspace);
-    let reopened = Workspace::open_as(&project, actor, session).unwrap();
-    assert_eq!(reopened.document, final_document);
-    let LayerKind::Path { geometry, .. } = &reopened.document.layer(1).unwrap().kind else {
-        panic!("expected path")
-    };
-    assert_eq!(geometry, &final_geometry);
-    assert_eq!(
-        reopened.document.layer(1).unwrap().transform,
-        final_transform
-    );
     drop(reopened);
     std::fs::remove_file(project).unwrap();
 }
@@ -388,7 +291,7 @@ fn stroke_padding_preserves_path_viewport_origin_and_rasterized_placement() {
     assert_eq!(bounds.origin, [-6.0, -6.0]);
     let before = render_document(&document, None).unwrap().to_rgba8();
     let asset = rasterize_shape_asset(&document, 1, 1.0).unwrap();
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::RasterizeShape {
             id: 1,

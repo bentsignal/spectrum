@@ -111,13 +111,6 @@ impl BenchmarkProfile {
         }
     }
 
-    pub(crate) fn optimized_copy_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 1_000.0,
-            Self::HostedCi => 3_000.0,
-        }
-    }
-
     pub(crate) fn shaped_wrap_budget_ms(self) -> f64 {
         match self {
             Self::Interactive => 250.0,
@@ -144,7 +137,7 @@ impl TemporaryRaster {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("prism-benchmark-{stamp}.png"));
+        let path = std::env::temp_dir().join(format!("canvas-benchmark-{stamp}.png"));
         let file = std::fs::File::create(&path)?;
         let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
         encoder.set_color(png::ColorType::Grayscale);
@@ -183,4 +176,13 @@ pub(super) fn gpu_upload(rgba: &image::RgbaImage) -> Vec<u8> {
         pixel.swap(0, 2);
     }
     bgra
+}
+
+/// Applies a dragged edit to the open document without history, as the
+/// editor does between pointer events.
+pub(crate) fn preview(
+    document: &mut spectrum_canvas::Document,
+    command: spectrum_canvas::Command,
+) -> anyhow::Result<spectrum_canvas::CommandOutput> {
+    <spectrum_canvas::CanvasModel as spectrum_document::Model>::apply(document, command)
 }

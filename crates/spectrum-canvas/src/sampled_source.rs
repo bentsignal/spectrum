@@ -1,9 +1,4 @@
-use std::{
-    error::Error,
-    fmt,
-    io::Cursor,
-    path::{Path, PathBuf},
-};
+use std::{error::Error, fmt, io::Cursor, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use image::{ImageFormat, RgbaImage};
@@ -67,7 +62,7 @@ impl SampledSourceSnapshot {
         validate_non_geometric_adjustments(&layer.adjustments)?;
         let (canonical, bytes) = crate::font_source::read_secure_regular_file(
             path,
-            crate::revisions::MAX_EMBEDDED_RASTER_BYTES,
+            crate::MAX_EMBEDDED_RASTER_BYTES,
             "Clone Stamp raster source",
         )
         .with_context(|| format!("could not capture Clone Stamp source {}", path.display()))?;
@@ -129,7 +124,7 @@ impl SampledSourceSnapshot {
             || self.width > crate::MAX_CANVAS_DIMENSION
             || self.height > crate::MAX_CANVAS_DIMENSION
         {
-            bail!("sampled source dimensions are outside Prism limits");
+            bail!("sampled source dimensions are outside canvas limits");
         }
         if !self.anchor_local[0].is_finite() || !self.anchor_local[1].is_finite() {
             bail!("sampled source anchor must be finite");
@@ -163,7 +158,7 @@ impl SampledSourceSnapshot {
         self.validate_metadata()?;
         let (_, bytes) = crate::font_source::read_secure_regular_file(
             &self.path,
-            crate::revisions::MAX_EMBEDDED_RASTER_BYTES,
+            crate::MAX_EMBEDDED_RASTER_BYTES,
             "Clone Stamp raster source",
         )
         .with_context(|| {
@@ -193,14 +188,6 @@ impl SampledSourceSnapshot {
             bail!("Clone Stamp source dimensions changed after capture");
         }
         Ok(())
-    }
-
-    pub(crate) fn asset_path(&self) -> &Path {
-        &self.path
-    }
-
-    pub(crate) fn set_asset_path(&mut self, path: PathBuf) {
-        self.path = path;
     }
 }
 
@@ -389,7 +376,7 @@ fn read_base_region(
         let sequential = SequentialPngSource::open(
             &source.path,
             SequentialPngLimits {
-                max_encoded_source_bytes: crate::revisions::MAX_EMBEDDED_RASTER_BYTES as u64,
+                max_encoded_source_bytes: crate::MAX_EMBEDDED_RASTER_BYTES as u64,
                 max_region_pixels: MAX_PAINT_REGION_PIXELS,
             },
         )
@@ -412,7 +399,7 @@ fn read_base_region(
     }
     let (_, bytes) = crate::font_source::read_secure_regular_file(
         &source.path,
-        crate::revisions::MAX_EMBEDDED_RASTER_BYTES,
+        crate::MAX_EMBEDDED_RASTER_BYTES,
         "Clone Stamp raster source",
     )
     .map_err(SourceReadError::anyhow)?;
@@ -501,7 +488,7 @@ fn image_dimensions_from_bytes(bytes: &[u8]) -> Result<(u32, u32)> {
         || dimensions.0 > crate::MAX_CANVAS_DIMENSION
         || dimensions.1 > crate::MAX_CANVAS_DIMENSION
     {
-        bail!("Clone Stamp raster dimensions are outside Prism limits");
+        bail!("Clone Stamp raster dimensions are outside canvas limits");
     }
     Ok(dimensions)
 }

@@ -32,8 +32,6 @@ mod gradient;
 mod interactive;
 #[path = "benchmark/mixed_raster.rs"]
 mod mixed_raster;
-#[path = "benchmark/optimized_copy.rs"]
-mod optimized_copy;
 #[path = "benchmark/paint.rs"]
 mod paint;
 #[path = "benchmark/path.rs"]
@@ -73,11 +71,10 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
     let mut mixed_raster = mixed_raster::measure()?;
     let dissolve_preview_budget =
         dissolve_preview::budget_ms(matches!(profile, BenchmarkProfile::HostedCi));
-    let mut optimized_copy = optimized_copy::measure()?;
     let mut command_samples = Vec::new();
     let mut workspace = None;
     for _ in 0..9 {
-        let mut sample = Workspace::new(Document::new("Benchmark", 1600, 1200), None);
+        let mut sample = Workspace::new(Document::new("Benchmark", 1600, 1200));
         let started = Instant::now();
         for index in 0..24 {
             sample.execute(Command::AddRectangle {
@@ -94,28 +91,29 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         workspace = Some(sample);
     }
     let workspace = workspace.expect("benchmark always records at least one command sample");
-    let mut interaction_workspace = Workspace::new(workspace.document.clone(), None);
+    let mut interaction_workspace = Workspace::new(workspace.document.clone());
     let interaction_layer = interaction_workspace.document.layers.last().unwrap().id;
-    interaction_workspace.begin_interaction().unwrap();
     let mut interaction_samples = Vec::new();
     for frame in 0..240 {
         let started = Instant::now();
-        interaction_workspace.preview(Command::SetTransform {
-            id: interaction_layer,
-            transform: Transform {
-                x: frame as f32 * 2.0,
-                y: frame as f32,
-                scale_x: 1.0 + frame as f32 / 1_000.0,
-                scale_y: 1.0 + frame as f32 / 1_000.0,
-                rotation: 0.0,
+        support::preview(
+            &mut interaction_workspace.document,
+            Command::SetTransform {
+                id: interaction_layer,
+                transform: Transform {
+                    x: frame as f32 * 2.0,
+                    y: frame as f32,
+                    scale_x: 1.0 + frame as f32 / 1_000.0,
+                    scale_y: 1.0 + frame as f32 / 1_000.0,
+                    rotation: 0.0,
+                },
             },
-        })?;
+        )?;
         interaction_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    interaction_workspace.commit_interaction()?;
-    let mut text_workspace = Workspace::new(Document::new("Text benchmark", 1600, 1200), None);
+    let mut text_workspace = Workspace::new(Document::new("Text benchmark", 1600, 1200));
     text_workspace.execute(Command::AddText {
-        text: "Prism interaction benchmark".into(),
+        text: "Canvas interaction benchmark".into(),
         name: Some("Text".into()),
         font_size: 144.0,
         color: [255, 255, 255, 255],
@@ -124,21 +122,22 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         shaping: Default::default(),
     })?;
     let text_layer = text_workspace.document.selected.unwrap();
-    text_workspace.begin_interaction().unwrap();
     let mut text_interaction_samples = Vec::new();
     for frame in 0..240 {
         let started = Instant::now();
-        text_workspace.preview(Command::SetTransform {
-            id: text_layer,
-            transform: Transform {
-                x: 100.0 + frame as f32 * 2.0,
-                y: 100.0 + frame as f32,
-                ..Default::default()
+        support::preview(
+            &mut text_workspace.document,
+            Command::SetTransform {
+                id: text_layer,
+                transform: Transform {
+                    x: 100.0 + frame as f32 * 2.0,
+                    y: 100.0 + frame as f32,
+                    ..Default::default()
+                },
             },
-        })?;
+        )?;
         text_interaction_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    text_workspace.commit_interaction()?;
     let mut shape_preview_samples = Vec::new();
     for frame in 0..240 {
         let adjustments = Adjustments {
@@ -157,7 +156,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         rendered = Some(render_document(&workspace.document, None)?);
         render_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    let mut scaled_shape_workspace = Workspace::new(Document::new("Scaled shape", 800, 600), None);
+    let mut scaled_shape_workspace = Workspace::new(Document::new("Scaled shape", 800, 600));
     scaled_shape_workspace.execute(Command::AddEllipse {
         name: Some("Scale benchmark".into()),
         width: 32,
@@ -212,7 +211,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         )?;
         typography_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    let mut blend_workspace = Workspace::new(Document::new("Blend benchmark", 960, 540), None);
+    let mut blend_workspace = Workspace::new(Document::new("Blend benchmark", 960, 540));
     for index in 0..12 {
         blend_workspace.execute(Command::AddRectangle {
             name: Some(format!("Blend {index}")),
@@ -251,7 +250,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         let _ = render_document(&blend_workspace.document, None)?;
         blend_render_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    let mut viewport_workspace = Workspace::new(Document::new("Viewport", 16_384, 16_384), None);
+    let mut viewport_workspace = Workspace::new(Document::new("Viewport", 16_384, 16_384));
     for index in 0..6 {
         viewport_workspace.execute(Command::AddRectangle {
             name: Some(format!("Viewport blend {index}")),
@@ -315,7 +314,6 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             },
             kind: LayerKind::Raster {
                 path: large_raster.path.clone(),
-                original_path: None,
             },
             ..Layer::default()
         },
@@ -540,7 +538,6 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         },
         kind: LayerKind::Raster {
             path: cached_raster_source.source_path().to_owned(),
-            original_path: None,
         },
         ..Layer::default()
     });
@@ -591,7 +588,6 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
         sample_summary(&mut mixed_raster.samples_8x);
     let (mixed_raster_16x_median, mixed_raster_16x_p95) =
         sample_summary(&mut mixed_raster.samples_16x);
-    let (optimized_copy_median, optimized_copy_p95) = sample_summary(&mut optimized_copy.samples);
     let (shaped_wrap_median, shaped_wrap_p95) = sample_summary(&mut shaped_wrap.samples);
     let (clone_viewport_median, clone_viewport_p95) =
         sample_summary(&mut clone_stamp.viewport_samples);
@@ -732,13 +728,6 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             p95_ms: shaped_wrap_p95,
             budget_ms: profile.shaped_wrap_budget_ms(),
             pass: shaped_wrap_p95 <= profile.shaped_wrap_budget_ms(),
-        },
-        BenchmarkMetric {
-            name: "verified_linear_history_optimized_font_copy",
-            median_ms: optimized_copy_median,
-            p95_ms: optimized_copy_p95,
-            budget_ms: profile.optimized_copy_budget_ms(),
-            pass: optimized_copy_p95 <= profile.optimized_copy_budget_ms(),
         },
         BenchmarkMetric {
             name: "24_layer_command_batch",
@@ -891,7 +880,7 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             })
             .collect::<Vec<_>>()
             .join(", ");
-        bail!("Prism benchmark exceeded a strict regression budget: {failures}");
+        bail!("canvas benchmark exceeded a strict regression budget: {failures}");
     }
     Ok(json!({
         "ok": true,
@@ -907,7 +896,6 @@ pub(super) fn benchmark(strict: bool, profile: BenchmarkProfile) -> Result<Value
             "mixed_raster_full_plane_copy_bytes": mixed_raster.full_plane_copy_bytes,
             "cached_raster_samples": "warm file-backed provider reads",
             "paint_max_source_staging_pixels": paint.max_source_staging_pixels,
-            "optimized_copy_reduction_bytes": optimized_copy.reduction_bytes,
             "shaped_wrap_graphemes": shaped_wrap.graphemes,
             "shaped_wrap_break_opportunities": shaped_wrap.break_opportunities,
             "live_brush_max_source_staging_pixels": paint.drag_preview_max_source_staging_pixels,

@@ -8,7 +8,7 @@ fn white_text_on_white_has_no_dark_edges_at_any_scale() {
     for clip in [true, false] {
         let mut document = Document::new("Edges", 200, 120);
         document.background = [0, 0, 0, 0];
-        let mut workspace = Workspace::new(document, None);
+        let mut workspace = Workspace::new(document);
         workspace
             .execute(Command::AddRectangle {
                 name: None,

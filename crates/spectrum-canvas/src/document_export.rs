@@ -110,15 +110,8 @@ fn refuse_source_alias(document: &Document, destination: &Path) -> Result<()> {
     };
     let mut sources = Vec::new();
     for layer in &document.layers {
-        if let LayerKind::Raster {
-            path,
-            original_path,
-        } = &layer.kind
-        {
+        if let LayerKind::Raster { path } = &layer.kind {
             sources.push(path);
-            if let Some(original_path) = original_path {
-                sources.push(original_path);
-            }
         }
     }
     sources.extend(document.sampled_sources.values().map(|source| &source.path));
@@ -206,7 +199,7 @@ fn replace_export(temporary: &Path, destination: &Path) -> Result<()> {
         fs::rename(temporary, destination)?;
         return Ok(());
     }
-    let backup = destination.with_extension("prism-export-backup");
+    let backup = destination.with_extension("canvas-export-backup");
     if backup.exists() {
         fs::remove_file(&backup)?;
     }
@@ -234,7 +227,7 @@ mod tests {
         let temporary_root =
             fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
         tempfile::Builder::new()
-            .prefix(&format!("prism-export-{label}-"))
+            .prefix(&format!("canvas-export-{label}-"))
             .tempdir_in(temporary_root)
             .unwrap()
     }

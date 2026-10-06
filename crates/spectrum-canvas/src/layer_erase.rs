@@ -35,14 +35,6 @@ impl VectorMask {
     }
 }
 
-/// Whether a layer carries a painted mask: newer encodings only.
-pub(crate) fn has_painted_mask(layer: &crate::Layer) -> bool {
-    layer
-        .vector_mask
-        .as_ref()
-        .is_some_and(|mask| mask.alpha.is_some())
-}
-
 pub(crate) fn validate_painted_alpha(alpha: &PixelMask) -> Result<()> {
     let pixels = u64::from(alpha.width) * u64::from(alpha.height);
     if alpha.width == 0 || alpha.height == 0 || pixels > MAX_PAINTED_PIXELS {

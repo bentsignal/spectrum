@@ -25,7 +25,12 @@ impl Workspace {
             Ok(library
                 .list()?
                 .into_iter()
-                .filter(|a| matches!(a.kind.as_str(), "image" | "canvas"))
+                .filter(|a| {
+                    matches!(
+                        a.kind,
+                        spectrum_library::AssetKind::Image | spectrum_library::AssetKind::Canvas
+                    )
+                })
                 .filter(|a| !members.iter().any(|m| m.id == a.id))
                 .collect::<Vec<Asset>>())
         });
@@ -46,7 +51,9 @@ impl Workspace {
         self.picker_assets = store
             .entries
             .iter()
-            .filter(|e| e.asset.kind == "image" && e.purge_after.is_none())
+            .filter(|e| {
+                e.asset.kind == spectrum_library::AssetKind::Image && e.purge_after.is_none()
+            })
             .map(|e| e.asset.clone())
             .collect();
         self.picker_place = true;

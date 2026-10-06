@@ -115,7 +115,7 @@ pub struct Workspace {
     /// Installed font families, loaded when the font browser first opens.
     pub fonts: Option<std::sync::Arc<Vec<crate::font_browser::Family>>>,
     pub font_open: bool,
-    /// Font files that Prism will not embed, found while previewing.
+    /// Font files that Spectrum will not embed, found while previewing.
     pub font_blocked: std::collections::HashSet<std::path::PathBuf>,
     pub font_query: Entity<InputState>,
     pub font_highlight: usize,
@@ -196,7 +196,7 @@ pub struct Workspace {
     pub overlay_gradient: crate::gradient_editor::GradientEditor,
     pub style_section: usize,
     /// The open image's record, for Info mode.
-    pub photo_info: Option<spectrum_image::Photo>,
+    pub photo_info: Option<spectrum_image::Image>,
     /// Shows the unedited image beside the edited one.
     pub compare: bool,
     /// Guides show on canvases; hiding them also stops dragging them.

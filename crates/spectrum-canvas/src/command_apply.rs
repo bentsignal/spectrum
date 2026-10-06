@@ -163,10 +163,7 @@ fn apply_command_inner(
                     y,
                     ..Default::default()
                 },
-                kind: LayerKind::Raster {
-                    original_path: Some(path.clone()),
-                    path,
-                },
+                kind: LayerKind::Raster { path },
                 ..Default::default()
             });
             document.selected = Some(id);
@@ -950,10 +947,7 @@ fn apply_command_inner(
                 );
             }
             let layer = document.layer_mut(id)?;
-            layer.kind = LayerKind::Raster {
-                path,
-                original_path: None,
-            };
+            layer.kind = LayerKind::Raster { path };
             layer.transform.x += path_origin[0] * layer.transform.scale_x;
             layer.transform.y += path_origin[1] * layer.transform.scale_y;
             layer.transform.scale_x /= scale;

@@ -134,7 +134,7 @@ fn duplicate_and_insert_validate_document_paint_budgets_atomically() {
     source.next_id = 2;
     let transfer = LayerTransfer::from_document(&source, 1).unwrap();
 
-    let mut duplicate = Workspace::new(source.clone(), None);
+    let mut duplicate = Workspace::new(source.clone());
     let before = duplicate.document.clone();
     assert!(
         duplicate
@@ -143,7 +143,7 @@ fn duplicate_and_insert_validate_document_paint_budgets_atomically() {
     );
     assert_eq!(duplicate.document, before);
 
-    let mut destination = Workspace::new(source, None);
+    let mut destination = Workspace::new(source);
     let before = destination.document.clone();
     assert!(
         destination
@@ -175,7 +175,7 @@ fn transformed_selection_clip_is_frozen_when_selection_and_transform_change() {
     document.selected = Some(1);
     document.next_id = 2;
     document.selection = Some(Selection::rectangle(50, 35, 30, 24));
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::AddBrushStroke {
             id: 1,
@@ -233,7 +233,7 @@ fn geometric_adjustments_fail_closed_before_mutating_paint() {
         });
         document.selected = Some(1);
         document.next_id = 2;
-        let mut workspace = Workspace::new(document, None);
+        let mut workspace = Workspace::new(document);
         let before = workspace.document.clone();
         let error = workspace
             .execute(Command::AddBrushStroke {
@@ -261,7 +261,7 @@ fn geometric_adjustments_fail_closed_before_mutating_paint() {
     });
     document.next_id = 2;
     assert!(
-        Workspace::new(document, None)
+        Workspace::new(document)
             .execute(Command::AddBrushStroke {
                 id: 1,
                 stroke: stroke(vec![sample(4.5, 4.5)]),
@@ -277,16 +277,16 @@ fn paint_gesture_is_durable_undoable_redoable_and_reopens_exactly() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let project = std::env::temp_dir().join(format!("prism-paint-history-{stamp}.prism"));
+    let project = std::env::temp_dir().join(format!("canvas-paint-history-{stamp}.spectrum"));
     let actor = Actor {
         id: "person:paint-test".into(),
         display_name: "Paint test".into(),
         kind: ActorKind::Human,
     };
     let session = SessionId::new();
-    let mut workspace = Workspace::create_durable(
-        Document::new("Paint history", 64, 64),
+    let mut workspace = Workspace::create(
         &project,
+        Document::new("Paint history", 64, 64),
         actor.clone(),
         session,
     )
@@ -305,10 +305,10 @@ fn paint_gesture_is_durable_undoable_redoable_and_reopens_exactly() {
     assert!(workspace.document.layers.is_empty());
     workspace.execute(Command::Redo).unwrap();
     assert_eq!(workspace.document, expected);
-    workspace.save(None).unwrap();
+    workspace.checkpoint().unwrap();
     drop(workspace);
 
-    let reopened = Workspace::open_as(&project, actor, session).unwrap();
+    let reopened = Workspace::open(&project, actor, session).unwrap();
     assert_eq!(reopened.document, expected);
     drop(reopened);
     fs::remove_file(project).unwrap();
@@ -320,7 +320,7 @@ fn painting_never_mutates_or_converts_a_raster_original() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let original = std::env::temp_dir().join(format!("prism-paint-original-{stamp}.png"));
+    let original = std::env::temp_dir().join(format!("canvas-paint-original-{stamp}.png"));
     image::RgbaImage::from_pixel(4, 4, image::Rgba([10, 20, 30, 255]))
         .save(&original)
         .unwrap();
@@ -330,13 +330,12 @@ fn painting_never_mutates_or_converts_a_raster_original() {
         id: 1,
         kind: LayerKind::Raster {
             path: original.clone(),
-            original_path: Some(original.clone()),
         },
         ..Layer::default()
     });
     document.selected = Some(1);
     document.next_id = 2;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     assert!(
         workspace
             .execute(Command::AddBrushStroke {

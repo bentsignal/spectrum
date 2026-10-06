@@ -197,12 +197,6 @@ pub enum ShapeFill {
 }
 
 impl ShapeFill {
-    pub(crate) fn requires_modern_encoding(&self) -> bool {
-        match self {
-            Self::Gradient(gradient) => gradient.requires_modern_encoding(),
-        }
-    }
-
     pub(crate) fn sanitized(self) -> Self {
         match self {
             Self::Gradient(gradient) => Self::Gradient(gradient.canonicalized()),

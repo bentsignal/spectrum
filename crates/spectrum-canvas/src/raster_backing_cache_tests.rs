@@ -27,7 +27,7 @@ struct TestDirectory(PathBuf);
 impl TestDirectory {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "prism-derived-backing-{label}-{}-{}",
+            "canvas-derived-backing-{label}-{}-{}",
             std::process::id(),
             TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));

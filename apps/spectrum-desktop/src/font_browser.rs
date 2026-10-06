@@ -60,7 +60,7 @@ pub fn font_commands(doc: &Document, layer: u64, path: &Path) -> anyhow::Result<
 
 /// A copy of `doc` with `layer` in the font at `path`, for previews.
 pub fn with_font(doc: &Document, layer: u64, path: &Path) -> anyhow::Result<Document> {
-    let mut local = spectrum_canvas::Workspace::new(doc.clone(), None);
+    let mut local = spectrum_canvas::Workspace::new(doc.clone());
     local.execute_batch(font_commands(doc, layer, path)?)?;
     Ok(local.document)
 }

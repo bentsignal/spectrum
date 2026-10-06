@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temporary_path(label: &str, extension: &str) -> PathBuf {
@@ -6,13 +7,13 @@ fn temporary_path(label: &str, extension: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-paint-{label}-{stamp}.{extension}"))
+    std::env::temp_dir().join(format!("canvas-paint-{label}-{stamp}.{extension}"))
 }
 
 fn invoke(project: &Path, arguments: &[&str]) -> Result<Value> {
-    let mut cli = vec!["prism", "--document", project.to_str().unwrap()];
+    let mut cli = vec!["canvas", "--document", project.to_str().unwrap()];
     cli.extend_from_slice(arguments);
-    run(Cli::try_parse_from(cli).unwrap())
+    run(parse_cli(cli).unwrap())
 }
 
 fn stroke_json(mode: &str, x: f32, y: f32) -> Vec<u8> {
@@ -35,14 +36,14 @@ fn clone_cli_captures_one_raster_source_and_commits_resolved_stroke() {
     let directory = std::fs::canonicalize(std::env::temp_dir())
         .unwrap_or_else(|_| std::env::temp_dir())
         .join(format!(
-            "prism-clone-cli-{}",
+            "canvas-clone-cli-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
     std::fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("clone.prism");
+    let project = directory.join("clone.spectrum");
     let source = directory.join("source.png");
     let stroke = directory.join("stroke.json");
     let export = directory.join("clone-export.png");
@@ -75,7 +76,7 @@ fn clone_cli_captures_one_raster_source_and_commits_resolved_stroke() {
     )
     .unwrap();
 
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     let spectrum_canvas::LayerKind::Paint { program } = &document.layer(2).unwrap().kind else {
         panic!("clone CLI did not retain a Paint layer")
     };
@@ -93,17 +94,13 @@ fn clone_cli_captures_one_raster_source_and_commits_resolved_stroke() {
         .to_rgba8();
     assert_eq!(rendered.get_pixel(4, 4).0, [210, 40, 90, 255]);
     invoke(&project, &["visibility", "1", "false"]).unwrap();
-    invoke(
-        &project,
-        &["export", export.to_str().unwrap(), "--quality", "92"],
-    )
-    .unwrap();
+    spectrum_canvas::export_document(&Workspace::read(&project).unwrap(), &export, 92).unwrap();
     assert_eq!(image::open(export).unwrap().to_rgba8(), rendered);
 }
 
 #[test]
 fn paint_cli_persists_each_stroke_and_honors_no_selection() {
-    let project = temporary_path("e2e", "prism");
+    let project = temporary_path("e2e", "spectrum");
     let selected_stroke = temporary_path("selected", "json");
     let unselected_stroke = temporary_path("unselected", "json");
     std::fs::write(&selected_stroke, stroke_json("paint", 12.5, 12.5)).unwrap();
@@ -146,7 +143,7 @@ fn paint_cli_persists_each_stroke_and_honors_no_selection() {
     )
     .unwrap();
 
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     let spectrum_canvas::LayerKind::Paint { program } = &document.layer(1).unwrap().kind else {
         panic!("paint CLI did not create a Paint layer")
     };
@@ -155,7 +152,7 @@ fn paint_cli_persists_each_stroke_and_honors_no_selection() {
     assert!(program.strokes[1].clip.is_none());
 
     invoke(&project, &["run", r#"{"command":"undo"}"#]).unwrap();
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     let spectrum_canvas::LayerKind::Paint { program } = &document.layer(1).unwrap().kind else {
         panic!("undo removed the Paint layer instead of one stroke")
     };
@@ -168,7 +165,7 @@ fn paint_cli_persists_each_stroke_and_honors_no_selection() {
 
 #[test]
 fn paint_cli_rejects_invalid_and_oversized_stroke_files_without_mutation() {
-    let project = temporary_path("invalid", "prism");
+    let project = temporary_path("invalid", "spectrum");
     let invalid = temporary_path("invalid", "json");
     let oversized = temporary_path("oversized", "json");
     invoke(
@@ -200,7 +197,7 @@ fn paint_cli_rejects_invalid_and_oversized_stroke_files_without_mutation() {
     .unwrap_err();
     assert!(format!("{error:#}").contains("32 MiB input limit"));
 
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     let spectrum_canvas::LayerKind::Paint { program } = &document.layer(1).unwrap().kind else {
         panic!("expected Paint layer")
     };
@@ -212,7 +209,7 @@ fn paint_cli_rejects_invalid_and_oversized_stroke_files_without_mutation() {
 
 #[test]
 fn erase_and_hide_cli_work_on_shapes_without_rasterizing() {
-    let project = temporary_path("erase-any", "prism");
+    let project = temporary_path("erase-any", "spectrum");
     let stroke = temporary_path("erase-any-stroke", "json");
     std::fs::write(&stroke, stroke_json("erase", 10.0, 10.0)).unwrap();
     invoke(
@@ -230,7 +227,12 @@ fn erase_and_hide_cli_work_on_shapes_without_rasterizing() {
     invoke(&project, &["selection", "rectangle", "30", "0", "10", "30"]).unwrap();
     let hidden = invoke(&project, &["selection", "delete", "1"]).unwrap();
     assert_eq!(hidden["results"][0]["action"], "hide_selection");
-    let workspace = spectrum_canvas::Workspace::open(&project).unwrap();
+    let workspace = spectrum_canvas::Workspace::open(
+        &project,
+        cli_actor(),
+        spectrum_document::SessionId::new(),
+    )
+    .unwrap();
     let layer = workspace.document.layer(1).unwrap();
     assert!(matches!(
         layer.kind,

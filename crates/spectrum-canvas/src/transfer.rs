@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Document, FontAsset, FontSlant, Layer, LayerKind, MAX_CANVAS_DIMENSION, SampledSourceId,
-    SampledSourceSnapshot, TextShapingEngine,
+    SampledSourceSnapshot,
     effects::{validate_layer_style, validate_shape_fill},
     validation::{
         require_finite, validate_adjustments, validate_mask, validate_shape_stroke,
@@ -13,21 +13,14 @@ use crate::{
     },
 };
 
-pub const LAYER_TRANSFER_FORMAT: &str = "spectrum.prism.layer";
-pub const PATH_LAYER_TRANSFER_VERSION: u32 = 4;
-pub const PAINT_LAYER_TRANSFER_VERSION: u32 = 5;
-pub const DISSOLVE_LAYER_TRANSFER_VERSION: u32 = 6;
-pub const RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION: u32 = 7;
-pub const SHAPED_TEXT_LAYER_TRANSFER_VERSION: u32 = 8;
-pub const CLONE_STAMP_LAYER_TRANSFER_VERSION: u32 = 9;
-pub const MODERN_GRADIENT_LAYER_TRANSFER_VERSION: u32 = 10;
-pub const LAYER_TRANSFER_VERSION: u32 = MODERN_GRADIENT_LAYER_TRANSFER_VERSION;
+pub const LAYER_TRANSFER_FORMAT: &str = "spectrum.canvas.layer";
+pub const LAYER_TRANSFER_VERSION: u32 = 1;
 const MAX_LAYER_TRANSFER_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A portable, single-layer payload for clipboard and cross-document transfer.
 ///
 /// Document-local layer and font IDs and source-provenance paths are deliberately
-/// removed. Only active raster and font paths remain so durable Prism revisions
+/// removed. Only active raster and font paths remain so durable canvas revisions
 /// can embed their bytes before recording `Command::InsertLayer`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayerTransfer {
@@ -62,10 +55,7 @@ impl LayerTransfer {
         let mut layer = document.layer(id)?.clone();
         layer.id = 0;
         let font_asset = match &mut layer.kind {
-            LayerKind::Raster { original_path, .. } => {
-                *original_path = None;
-                None
-            }
+            LayerKind::Raster { .. } => None,
             LayerKind::Text { typography, .. } => match typography.font_id.take() {
                 Some(font_id) => Some(LayerTransferFont::from(document.font_asset(font_id)?)),
                 None => None,
@@ -89,40 +79,9 @@ impl LayerTransfer {
                 );
             }
         }
-        let version = if layer
-            .shape_fill
-            .as_ref()
-            .is_some_and(crate::ShapeFill::requires_modern_encoding)
-            || crate::layer_erase::has_painted_mask(&layer)
-        {
-            MODERN_GRADIENT_LAYER_TRANSFER_VERSION
-        } else if matches!(&layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
-        {
-            CLONE_STAMP_LAYER_TRANSFER_VERSION
-        } else if matches!(
-            &layer.kind,
-            LayerKind::Text { typography, .. }
-                if typography.shaping.engine == TextShapingEngine::HarfBuzzV1
-        ) {
-            SHAPED_TEXT_LAYER_TRANSFER_VERSION
-        } else if matches!(layer.kind, LayerKind::Raster { .. }) && layer.pixel_mask.is_some() {
-            RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
-        } else if layer.blend_mode == crate::BlendMode::Dissolve || layer.dissolve_seed != 0 {
-            DISSOLVE_LAYER_TRANSFER_VERSION
-        } else if matches!(layer.kind, LayerKind::Paint { .. }) {
-            PAINT_LAYER_TRANSFER_VERSION
-        } else if layer.vector_mask.is_some() || matches!(layer.kind, LayerKind::Path { .. }) {
-            PATH_LAYER_TRANSFER_VERSION
-        } else if layer.pixel_mask.is_some() {
-            3
-        } else if !layer.style.is_empty() || layer.shape_fill.is_some() {
-            2
-        } else {
-            1
-        };
         Ok(Self {
             format: LAYER_TRANSFER_FORMAT.into(),
-            version,
+            version: LAYER_TRANSFER_VERSION,
             layer,
             font_asset,
             sampled_sources,
@@ -131,20 +90,19 @@ impl LayerTransfer {
 
     pub fn to_json(&self) -> Result<String> {
         self.validate_envelope()?;
-        serde_json::to_string(self).context("could not encode Prism layer transfer")
+        serde_json::to_string(self).context("could not encode layer transfer")
     }
 
     pub fn to_json_pretty(&self) -> Result<String> {
         self.validate_envelope()?;
-        serde_json::to_string_pretty(self).context("could not encode Prism layer transfer")
+        serde_json::to_string_pretty(self).context("could not encode layer transfer")
     }
 
     pub fn from_json(value: &str) -> Result<Self> {
         if value.len() > MAX_LAYER_TRANSFER_JSON_BYTES {
-            bail!("Prism layer transfer exceeds the 64 MiB metadata limit");
+            bail!("layer transfer exceeds the 64 MiB metadata limit");
         }
-        let transfer: Self =
-            serde_json::from_str(value).context("invalid Prism layer transfer JSON")?;
+        let transfer: Self = serde_json::from_str(value).context("invalid layer transfer JSON")?;
         transfer.validate_envelope()?;
         Ok(transfer)
     }
@@ -213,74 +171,17 @@ impl LayerTransfer {
 
     pub(crate) fn validate_envelope_metadata(&self) -> Result<()> {
         if self.format != LAYER_TRANSFER_FORMAT {
-            bail!("unsupported Prism layer transfer format {}", self.format);
+            bail!("unsupported layer transfer format {}", self.format);
         }
-        if !(1..=LAYER_TRANSFER_VERSION).contains(&self.version) {
+        if self.version != LAYER_TRANSFER_VERSION {
             bail!(
-                "unsupported Prism layer transfer version {} (supports 1 through {LAYER_TRANSFER_VERSION})",
+                "unsupported layer transfer version {} (supports {LAYER_TRANSFER_VERSION})",
                 self.version
             );
         }
         if matches!(&self.layer.kind, LayerKind::Paint { program } if program.contains_current_clone_marker())
         {
-            bail!("Prism layer transfers cannot contain the authoring-only CurrentClone marker");
-        }
-        if self.version == 1 && (!self.layer.style.is_empty() || self.layer.shape_fill.is_some()) {
-            bail!("Prism layer transfer version 1 cannot contain layer styles or shape fills");
-        }
-        if self.version < 3 && self.layer.pixel_mask.is_some() {
-            bail!("Prism layer transfer versions before 3 cannot contain pixel masks");
-        }
-        if self.version < PATH_LAYER_TRANSFER_VERSION
-            && (self.layer.vector_mask.is_some()
-                || matches!(self.layer.kind, LayerKind::Path { .. }))
-        {
-            bail!("Prism layer transfer versions before 4 cannot contain paths or vector masks");
-        }
-        if self.version < PAINT_LAYER_TRANSFER_VERSION
-            && matches!(self.layer.kind, LayerKind::Paint { .. })
-        {
-            bail!("Prism layer transfer versions before 5 cannot contain Paint layers");
-        }
-        if self.version < DISSOLVE_LAYER_TRANSFER_VERSION
-            && (self.layer.blend_mode == crate::BlendMode::Dissolve
-                || self.layer.dissolve_seed != 0)
-        {
-            bail!("Prism layer transfer versions before 6 cannot contain Dissolve settings");
-        }
-        if self.version < RASTER_PIXEL_MASK_LAYER_TRANSFER_VERSION
-            && matches!(self.layer.kind, LayerKind::Raster { .. })
-            && self.layer.pixel_mask.is_some()
-        {
-            bail!("Prism layer transfer versions before 7 cannot contain raster pixel masks");
-        }
-        if self.version < SHAPED_TEXT_LAYER_TRANSFER_VERSION
-            && matches!(
-                &self.layer.kind,
-                LayerKind::Text { typography, .. }
-                    if typography.shaping.engine == TextShapingEngine::HarfBuzzV1
-            )
-        {
-            bail!("Prism layer transfer versions before 8 cannot contain HarfBuzzV1 text");
-        }
-        if self.version < CLONE_STAMP_LAYER_TRANSFER_VERSION
-            && matches!(&self.layer.kind, LayerKind::Paint { program } if program.contains_sampled_sources())
-        {
-            bail!("Prism layer transfer versions before 9 cannot contain Clone Stamp sources");
-        }
-        if self.version < MODERN_GRADIENT_LAYER_TRANSFER_VERSION
-            && self
-                .layer
-                .shape_fill
-                .as_ref()
-                .is_some_and(crate::ShapeFill::requires_modern_encoding)
-        {
-            bail!("Prism layer transfers before 10 cannot contain modern gradients");
-        }
-        if self.version < MODERN_GRADIENT_LAYER_TRANSFER_VERSION
-            && crate::layer_erase::has_painted_mask(&self.layer)
-        {
-            bail!("Prism layer transfers before 10 cannot contain painted masks");
+            bail!("layer transfers cannot contain the authoring-only CurrentClone marker");
         }
         let mut referenced = std::collections::BTreeSet::new();
         if let LayerKind::Paint { program } = &self.layer.kind {
@@ -290,7 +191,7 @@ impl LayerTransfer {
         }
         let supplied = self.sampled_sources.keys().cloned().collect();
         if referenced != supplied {
-            bail!("Prism layer transfer sampled-source registry is missing or ambiguous");
+            bail!("layer transfer sampled-source registry is missing or ambiguous");
         }
         let inline_mask_bytes =
             self.sampled_sources
@@ -306,7 +207,7 @@ impl LayerTransfer {
                         .context("transferred sampled-source inline mask byte count overflows")
                 })?;
         if inline_mask_bytes > crate::MAX_SAMPLED_SOURCE_INLINE_MASK_BYTES {
-            bail!("Prism layer transfer sampled-source masks exceed their aggregate limit");
+            bail!("layer transfer sampled-source masks exceed their aggregate limit");
         }
         let metadata_bytes =
             self.sampled_sources
@@ -323,10 +224,10 @@ impl LayerTransfer {
         if self.sampled_sources.len() > crate::MAX_SAMPLED_SOURCES_PER_DOCUMENT
             || metadata_bytes > crate::MAX_SAMPLED_SOURCE_METADATA_BYTES
         {
-            bail!("Prism layer transfer sampled-source registry exceeds its aggregate limits");
+            bail!("layer transfer sampled-source registry exceeds its aggregate limits");
         }
         if self.layer.id != 0 {
-            bail!("Prism layer transfers cannot contain a document-local layer ID");
+            bail!("layer transfers cannot contain a document-local layer ID");
         }
         validate_pixel_mask(&self.layer)?;
         match &self.layer.kind {
@@ -335,11 +236,11 @@ impl LayerTransfer {
             }
             LayerKind::Text { typography, .. } => {
                 if typography.font_id.is_some() {
-                    bail!("Prism layer transfers cannot contain a document-local font ID");
+                    bail!("layer transfers cannot contain a document-local font ID");
                 }
                 let canonical = typography.clone().validated_and_sanitized()?;
                 if canonical.shaping != typography.shaping {
-                    bail!("Prism layer transfer contains a noncanonical shaping policy");
+                    bail!("layer transfer contains a noncanonical shaping policy");
                 }
             }
             _ if self.font_asset.is_some() => {
@@ -513,7 +414,6 @@ fn import_transferred_font(document: &mut Document, font: LayerTransferFont) -> 
         subset_allowed: parsed.subset_allowed,
         content_hash: parsed.content_hash,
         path: parsed.path,
-        original_path: None,
     });
     Ok(id)
 }

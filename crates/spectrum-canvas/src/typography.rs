@@ -1,15 +1,11 @@
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use icu_locale::LocaleCanonicalizer;
 use icu_locale_core::Locale;
 use serde::{Deserialize, Serialize};
 
-use crate::{FontSourceSnapshot, VerifiedFontSource};
+use crate::FontSourceSnapshot;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,7 +20,6 @@ pub enum FontSlant {
 #[serde(rename_all = "snake_case")]
 pub enum FontEmbeddingPermission {
     #[default]
-    LegacyUnknown,
     Installable,
     Editable,
     PreviewAndPrint,
@@ -40,7 +35,7 @@ impl FontEmbeddingPermission {
             Self::Restricted => Some(
                 "Restricted embedding metadata disables optimized font copies and may limit sharing.",
             ),
-            Self::Installable | Self::Editable | Self::LegacyUnknown => None,
+            Self::Installable | Self::Editable => None,
         }
     }
 
@@ -76,8 +71,6 @@ pub struct FontAsset {
     pub subset_allowed: bool,
     pub content_hash: String,
     pub path: PathBuf,
-    #[serde(default)]
-    pub original_path: Option<PathBuf>,
 }
 
 impl FontAsset {
@@ -98,7 +91,6 @@ impl FontAsset {
             subset_allowed: snapshot.subset_allowed(),
             content_hash: snapshot.content_hash().to_owned(),
             path: snapshot.canonical_path().to_owned(),
-            original_path: Some(snapshot.canonical_path().to_owned()),
         })
     }
 
@@ -108,10 +100,7 @@ impl FontAsset {
             || snapshot.style != self.style
             || snapshot.weight != self.weight
             || snapshot.slant != self.slant
-            || !embedding_permission_matches(
-                self.embedding_permission,
-                snapshot.embedding_permission,
-            )
+            || self.embedding_permission != snapshot.embedding_permission
             || snapshot.subset_allowed != self.subset_allowed
         {
             bail!("embedded font metadata does not match its immutable source snapshot");
@@ -144,152 +133,6 @@ impl FontAsset {
             }
         }
         Ok(bytes)
-    }
-
-    pub(crate) fn from_embedded_bytes(
-        id: u64,
-        source_name: String,
-        path: PathBuf,
-        bytes: Vec<u8>,
-        expected_hash: &str,
-    ) -> Result<Self> {
-        let verified = VerifiedFontSource::from_embedded_bytes(bytes, expected_hash)?;
-        Ok(Self {
-            id,
-            family: verified.family.clone(),
-            style: verified.style.clone(),
-            weight: verified.weight,
-            slant: verified.slant,
-            source_name,
-            embedding_permission: verified.embedding_permission(),
-            subset_allowed: verified.subset_allowed(),
-            content_hash: verified.content_hash().to_owned(),
-            path,
-            original_path: None,
-        })
-    }
-
-    pub(crate) fn verify_embedded_bytes(&self, bytes: Vec<u8>) -> Result<VerifiedFontSource> {
-        let verified = VerifiedFontSource::from_embedded_bytes(bytes, &self.content_hash)?;
-        if verified.family != self.family
-            || verified.style != self.style
-            || verified.weight != self.weight
-            || verified.slant != self.slant
-            || !embedding_permission_matches(
-                self.embedding_permission,
-                verified.embedding_permission,
-            )
-            || verified.subset_allowed != self.subset_allowed
-        {
-            bail!("embedded font metadata does not match its immutable source snapshot");
-        }
-        Ok(verified)
-    }
-
-    pub(crate) fn hydrate_legacy_embedding_permission(&mut self) -> Result<()> {
-        if self.embedding_permission != FontEmbeddingPermission::LegacyUnknown {
-            return Ok(());
-        }
-        let verified = VerifiedFontSource::from_embedded_bytes(self.bytes()?, &self.content_hash)?;
-        self.embedding_permission = verified.embedding_permission();
-        self.subset_allowed = verified.subset_allowed();
-        Ok(())
-    }
-
-    pub(crate) fn hydrate_legacy_from_verified(&mut self, verified: &VerifiedFontSource) {
-        if self.embedding_permission == FontEmbeddingPermission::LegacyUnknown {
-            self.embedding_permission = verified.embedding_permission();
-            self.subset_allowed = verified.subset_allowed();
-        }
-    }
-}
-
-fn embedding_permission_matches(
-    stored: FontEmbeddingPermission,
-    parsed: FontEmbeddingPermission,
-) -> bool {
-    stored == FontEmbeddingPermission::LegacyUnknown || stored == parsed
-}
-
-pub(crate) fn hydrate_legacy_font_permissions(fonts: &mut [FontAsset]) -> Result<()> {
-    for font in fonts {
-        font.hydrate_legacy_embedding_permission()?;
-    }
-    Ok(())
-}
-
-pub(crate) fn make_fonts_portable(
-    fonts: &mut [FontAsset],
-    project_directory: &Path,
-    asset_directory: &Path,
-) -> Result<()> {
-    for font in fonts {
-        let snapshot = font.source_snapshot()?;
-        let canonical = snapshot.canonical_path();
-        if font.original_path.is_none() {
-            font.original_path = Some(canonical.to_owned());
-        }
-        let font_directory = asset_directory.join("fonts");
-        fs::create_dir_all(&font_directory)?;
-        let extension = canonical
-            .extension()
-            .and_then(|value| value.to_str())
-            .filter(|value| {
-                value.len() <= 8 && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
-            })
-            .unwrap_or("otf");
-        let destination = font_directory.join(format!(
-            "font-{}-{}.{}",
-            font.id,
-            snapshot.content_hash(),
-            extension
-        ));
-        if canonical != destination {
-            persist_font_snapshot(&destination, &snapshot)?;
-        }
-        font.path = destination.strip_prefix(project_directory)?.to_owned();
-    }
-    Ok(())
-}
-
-fn persist_font_snapshot(destination: &Path, snapshot: &FontSourceSnapshot) -> Result<()> {
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)
-    {
-        Ok(mut file) => {
-            if let Err(error) = file
-                .write_all(snapshot.bytes())
-                .and_then(|()| file.sync_all())
-            {
-                drop(file);
-                let _ = fs::remove_file(destination);
-                return Err(error).with_context(|| {
-                    format!("could not persist font snapshot {}", destination.display())
-                });
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            FontSourceSnapshot::read_verified(destination, snapshot.content_hash())?;
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!("could not create font snapshot {}", destination.display())
-            });
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn resolve_portable_fonts(fonts: &mut [FontAsset], project_directory: &Path) {
-    for font in fonts {
-        if font.path.is_relative() {
-            font.path = project_directory.join(&font.path);
-            if let Ok(canonical) = fs::canonicalize(&font.path) {
-                font.path = canonical;
-            }
-        }
     }
 }
 
@@ -400,7 +243,7 @@ pub struct TextTypography {
     #[serde(default, skip_serializing_if = "TextShaping::is_legacy_default")]
     pub shaping: TextShaping,
     pub alignment: TextAlignment,
-    /// Line-spacing multiplier. `1.25` exactly preserves Prism's legacy spacing.
+    /// Line-spacing multiplier. `1.25` exactly preserves Spectrum's legacy spacing.
     pub line_height: f32,
     /// Additional advance between glyphs in document pixels.
     pub tracking: f32,

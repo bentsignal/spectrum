@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use image::Rgba;
@@ -10,7 +9,7 @@ fn test_directory(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-selection-{label}-{stamp}"))
+    std::env::temp_dir().join(format!("canvas-selection-{label}-{stamp}"))
 }
 
 fn test_actor() -> spectrum_revisions::Actor {
@@ -31,20 +30,8 @@ fn triangle_lasso() -> LassoPath {
 }
 
 #[test]
-fn legacy_documents_default_to_no_selection_and_migrate_to_v4() {
-    let mut value = serde_json::to_value(Document::new("Legacy", 80, 60)).unwrap();
-    value["version"] = serde_json::json!(3);
-    value.as_object_mut().unwrap().remove("selection");
-    let mut document: Document = serde_json::from_value(value).unwrap();
-    assert_eq!(document.selection, None);
-    document.migrate().unwrap();
-    assert_eq!(document.version, PRISM_VERSION);
-    assert_eq!(document.selection, None);
-}
-
-#[test]
 fn selection_validation_clips_to_canvas_and_rejects_empty_or_disjoint_rectangles() {
-    let mut workspace = Workspace::new(Document::new("Selection", 100, 80), None);
+    let mut workspace = Workspace::new(Document::new("Selection", 100, 80));
     workspace
         .execute(Command::SetSelection {
             selection: Some(Selection::rectangle(90, 70, 40, 30)),
@@ -74,7 +61,7 @@ fn selection_validation_clips_to_canvas_and_rejects_empty_or_disjoint_rectangles
 
 #[test]
 fn crop_intersects_and_translates_persistent_selection() {
-    let mut workspace = Workspace::new(Document::new("Crop", 100, 80), None);
+    let mut workspace = Workspace::new(Document::new("Crop", 100, 80));
     workspace
         .execute(Command::SetSelection {
             selection: Some(Selection::rectangle(30, 20, 50, 40)),
@@ -126,7 +113,7 @@ fn crop_to_selection_uses_exact_bounds_offsets_content_and_clears_selection() {
         },
     ];
     document.next_guide_id = 3;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::SetSelection {
             selection: Some(Selection::rectangle(20, 10, 50, 40)),
@@ -154,7 +141,7 @@ fn crop_to_selection_uses_exact_bounds_offsets_content_and_clears_selection() {
 
 #[test]
 fn crop_to_selection_rejects_missing_invalid_and_full_canvas_selections_atomically() {
-    let mut workspace = Workspace::new(Document::new("Crop errors", 100, 80), None);
+    let mut workspace = Workspace::new(Document::new("Crop errors", 100, 80));
     let before = workspace.document.clone();
     assert!(workspace.execute(Command::CropToSelection).is_err());
     assert_eq!(workspace.document, before);
@@ -192,7 +179,7 @@ fn fill_creates_one_editable_layer_and_undo_preserves_original_content() {
     });
     document.next_id = 2;
     let original = document.layers[0].clone();
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::SetSelection {
             selection: Some(Selection::rectangle(3, 4, 11, 7)),
@@ -237,7 +224,7 @@ fn soft_disconnected_fill_preserves_alpha_in_export_and_region_preview() {
     let mut document = Document::new("Soft fill", 8, 4);
     document.background = [0, 0, 0, 0];
     let alpha = vec![255, 0, 128, 0, 0, 255, 0, 64];
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::SetSelection {
             selection: Some(Selection::color_mask(1, 1, 4, 2, alpha.clone())),
@@ -312,7 +299,7 @@ fn soft_disconnected_fill_preserves_alpha_in_export_and_region_preview() {
 fn durable_magic_wand_is_one_v6_marker_plus_exact_v5_snapshot() {
     let directory = test_directory("durable-wand");
     std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join("wand.prism");
+    let path = directory.join("wand.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let mut document = Document::new("Durable wand", 10, 4);
     document.background = [0, 0, 0, 255];
@@ -334,7 +321,7 @@ fn durable_magic_wand_is_one_v6_marker_plus_exact_v5_snapshot() {
         });
     }
     document.next_id = 3;
-    let mut workspace = Workspace::create_durable(document, &path, test_actor(), session).unwrap();
+    let mut workspace = Workspace::create(&path, document, test_actor(), session).unwrap();
     let before = workspace.document.clone();
     let revisions_before = workspace.history().unwrap().unwrap().revisions.len();
     let command = Command::MagicWandSelection {
@@ -370,19 +357,16 @@ fn durable_magic_wand_is_one_v6_marker_plus_exact_v5_snapshot() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 1);
     assert!(
         bytes.len() < 512,
         "marker operation unexpectedly stored mask bytes"
     );
-    let v5_snapshots: u32 = connection
-        .query_row(
-            "SELECT count(*) FROM snapshots WHERE version = 5",
-            [],
-            |row| row.get(0),
-        )
+    // The creation snapshot, and the one the magic wand forces.
+    let snapshots: u32 = connection
+        .query_row("SELECT count(*) FROM snapshots", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(v5_snapshots, 1);
+    assert_eq!(snapshots, 2);
     drop(connection);
 
     let marker = Command::MagicWandSnapshot {
@@ -396,7 +380,7 @@ fn durable_magic_wand_is_one_v6_marker_plus_exact_v5_snapshot() {
     assert!(crate::apply_command(&mut without_snapshot, marker).is_err());
     assert_eq!(without_snapshot, before);
 
-    let mut reopened = Workspace::open_as(&path, test_actor(), session).unwrap();
+    let mut reopened = Workspace::open(&path, test_actor(), session).unwrap();
     // Reopen succeeds although the marker is fail-closed, proving the replay
     // plan starts from the same-revision v5 snapshot and has zero marker steps.
     assert_eq!(reopened.document.selection, Some(selected.clone()));
@@ -412,11 +396,11 @@ fn durable_magic_wand_is_one_v6_marker_plus_exact_v5_snapshot() {
 fn durable_lasso_is_one_v9_revision_and_reopens_exactly() {
     let directory = test_directory("durable-lasso");
     std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join("lasso.prism");
+    let path = directory.join("lasso.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let document = Document::new("Durable lasso", 32, 32);
     let before = document.clone();
-    let mut workspace = Workspace::create_durable(document, &path, test_actor(), session).unwrap();
+    let mut workspace = Workspace::create(&path, document, test_actor(), session).unwrap();
     let revisions_before = workspace.history().unwrap().unwrap().revisions.len();
     let command = Command::LassoSelection {
         points: triangle_lasso(),
@@ -445,10 +429,10 @@ fn durable_lasso_is_one_v9_revision_and_reopens_exactly() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 1);
     drop(connection);
 
-    let mut reopened = Workspace::open_as(&path, test_actor(), session).unwrap();
+    let mut reopened = Workspace::open(&path, test_actor(), session).unwrap();
     assert_eq!(reopened.document.selection, Some(selected.clone()));
     reopened.execute(Command::Undo).unwrap();
     assert_eq!(reopened.document, before);
@@ -462,10 +446,10 @@ fn durable_lasso_is_one_v9_revision_and_reopens_exactly() {
 fn failed_lasso_is_atomic_for_document_and_durable_history() {
     let directory = test_directory("failed-lasso");
     std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join("failed.prism");
+    let path = directory.join("failed.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let document = Document::new("Failed lasso", 32, 32);
-    let mut workspace = Workspace::create_durable(document, &path, test_actor(), session).unwrap();
+    let mut workspace = Workspace::create(&path, document, test_actor(), session).unwrap();
     let before = workspace.document.clone();
     let revisions_before = workspace.history().unwrap().unwrap().revisions.len();
     let line = LassoPath::new(vec![
@@ -494,7 +478,7 @@ fn failed_lasso_is_atomic_for_document_and_durable_history() {
 
 #[test]
 fn lasso_soft_selection_interoperates_with_fill_and_frozen_brush_clip() {
-    let mut workspace = Workspace::new(Document::new("Lasso interop", 32, 32), None);
+    let mut workspace = Workspace::new(Document::new("Lasso interop", 32, 32));
     workspace
         .execute(Command::LassoSelection {
             points: triangle_lasso(),
@@ -573,46 +557,6 @@ fn lasso_soft_selection_interoperates_with_fill_and_frozen_brush_clip() {
 }
 
 #[test]
-fn inline_mask_budget_failures_are_atomic_for_execute_and_preview() {
-    let alpha = Arc::<[u8]>::from(vec![255; 4_096 * 4_096]);
-    let mask = PixelMask::new(4_096, 4_096, alpha);
-    let mut document = Document::new("Mask budget", 4_096, 4_096);
-    for id in 1..=4 {
-        document.layers.push(Layer {
-            id,
-            pixel_mask: Some(mask.clone()),
-            kind: LayerKind::Rectangle {
-                width: 4_096,
-                height: 4_096,
-                color: [20, 40, 60, 255],
-                corner_radius: 0.0,
-            },
-            ..Default::default()
-        });
-    }
-    document.next_id = 5;
-    let mut workspace = Workspace::new(document, None);
-    let before = workspace.document.clone();
-    assert!(
-        workspace
-            .execute(Command::SetSelection {
-                selection: Some(Selection::color_mask(0, 0, 1, 1, vec![128])),
-            })
-            .is_err()
-    );
-    assert_eq!(workspace.document, before);
-
-    workspace.begin_interaction().unwrap();
-    assert!(
-        workspace
-            .preview(Command::DuplicateLayer { id: 1 })
-            .is_err()
-    );
-    assert_eq!(workspace.document, before);
-    workspace.cancel_interaction();
-}
-
-#[test]
 fn fill_never_rewrites_or_repoints_original_raster_bytes() {
     let directory = test_directory("immutable-raster");
     std::fs::create_dir_all(&directory).unwrap();
@@ -622,7 +566,7 @@ fn fill_never_rewrites_or_repoints_original_raster_bytes() {
         .unwrap();
     let before_bytes = std::fs::read(&source).unwrap();
     let canonical = std::fs::canonicalize(&source).unwrap();
-    let mut workspace = Workspace::new(Document::new("Immutable", 20, 16), None);
+    let mut workspace = Workspace::new(Document::new("Immutable", 20, 16));
     workspace
         .execute(Command::AddRaster {
             path: source,
@@ -642,15 +586,10 @@ fn fill_never_rewrites_or_repoints_original_raster_bytes() {
             name: None,
         })
         .unwrap();
-    let LayerKind::Raster {
-        path,
-        original_path,
-    } = &workspace.document.layers[0].kind
-    else {
+    let LayerKind::Raster { path } = &workspace.document.layers[0].kind else {
         panic!("original layer should remain raster");
     };
     assert_eq!(path, &canonical);
-    assert_eq!(original_path.as_ref(), Some(&canonical));
     assert_eq!(std::fs::read(&canonical).unwrap(), before_bytes);
     drop(workspace);
     std::fs::remove_dir_all(directory).unwrap();
@@ -680,7 +619,7 @@ fn fill_pixels_match_export_over_rotated_content() {
         ..Default::default()
     });
     document.next_id = 2;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::SetSelection {
             selection: Some(Selection::rectangle(2, 3, 4, 3)),
@@ -709,11 +648,11 @@ fn fill_pixels_match_export_over_rotated_content() {
 fn durable_selection_and_fill_each_commit_exactly_one_revision() {
     let directory = test_directory("durable");
     std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join("fill.prism");
+    let path = directory.join("fill.spectrum");
     let session = spectrum_revisions::SessionId::new();
-    let mut workspace = Workspace::create_durable(
-        Document::new("Durable fill", 80, 60),
+    let mut workspace = Workspace::create(
         &path,
+        Document::new("Durable fill", 80, 60),
         test_actor(),
         session,
     )
@@ -734,7 +673,7 @@ fn durable_selection_and_fill_each_commit_exactly_one_revision() {
     assert_eq!(workspace.history().unwrap().unwrap().revisions.len(), 3);
     drop(workspace);
 
-    let reopened = Workspace::open_as(&path, test_actor(), session).unwrap();
+    let reopened = Workspace::open(&path, test_actor(), session).unwrap();
     assert_eq!(
         reopened.document.selection,
         Some(Selection::rectangle(8, 9, 20, 15))
@@ -748,7 +687,7 @@ fn durable_selection_and_fill_each_commit_exactly_one_revision() {
 fn durable_crop_to_selection_is_one_revision_with_reopen_undo_and_redo_parity() {
     let directory = test_directory("durable-crop");
     std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join("crop.prism");
+    let path = directory.join("crop.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let mut document = Document::new("Durable crop", 120, 90);
     document.layers.push(Layer {
@@ -773,7 +712,7 @@ fn durable_crop_to_selection_is_one_revision_with_reopen_undo_and_redo_parity() 
         position: 35.0,
     });
     document.next_guide_id = 2;
-    let mut workspace = Workspace::create_durable(document, &path, test_actor(), session).unwrap();
+    let mut workspace = Workspace::create(&path, document, test_actor(), session).unwrap();
     workspace
         .execute(Command::SetSelection {
             selection: Some(Selection::rectangle(20, 15, 60, 45)),
@@ -806,14 +745,14 @@ fn durable_crop_to_selection_is_one_revision_with_reopen_undo_and_redo_parity() 
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!(operation_version, 5);
+    assert_eq!(operation_version, 1);
     assert_eq!(
         serde_json::from_slice::<Vec<Command>>(&operation_bytes).unwrap(),
         vec![Command::CropToSelection]
     );
     drop(connection);
 
-    let mut reopened = Workspace::open_as(&path, test_actor(), session).unwrap();
+    let mut reopened = Workspace::open(&path, test_actor(), session).unwrap();
     assert_eq!(reopened.document, cropped);
     reopened.execute(Command::Undo).unwrap();
     assert_eq!(reopened.document, before_crop);

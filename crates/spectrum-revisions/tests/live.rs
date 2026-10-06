@@ -20,7 +20,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let canonical = directory.path().join("project.prism");
+        let canonical = directory.path().join("project.spectrum");
         let cache = directory.path().join("private-cache");
         let human_session = SessionId::new();
         let (live, info) = LiveRevisionStore::create(
@@ -77,7 +77,7 @@ fn live_store_keeps_transaction_sidecars_out_of_the_project_folder() {
     let stale_publish = fixture
         .directory
         .path()
-        .join(".project.prism.spectrum-publish-stale.tmp");
+        .join(".project.spectrum.spectrum-publish-stale.tmp");
     fs::write(&stale_publish, b"interrupted publish").unwrap();
     let mut live = LiveRevisionStore::open(&fixture.canonical, &fixture.cache).unwrap();
     live.mutate(|store| {
@@ -106,7 +106,7 @@ fn live_store_keeps_transaction_sidecars_out_of_the_project_folder() {
         fs::read(live.working_path()).unwrap()
     );
 
-    let portable = fixture.directory.path().join("portable-copy.prism");
+    let portable = fixture.directory.path().join("portable-copy.spectrum");
     fs::copy(&fixture.canonical, &portable).unwrap();
     let reopened = LiveRevisionStore::open(
         &portable,
@@ -210,7 +210,7 @@ fn mutation_error_after_commit_publishes_before_concurrent_reopen() {
 #[test]
 fn same_cache_publishers_rebase_and_explicit_retry_converges() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("shared.prism");
+    let canonical = directory.path().join("shared.spectrum");
     let cache = directory.path().join("shared-cache");
     let (mut first, info) = LiveRevisionStore::create(
         &canonical,
@@ -264,7 +264,7 @@ fn same_cache_publishers_rebase_and_explicit_retry_converges() {
 #[test]
 fn exact_published_marker_recovers_a_stale_published_copy() {
     let mut fixture = Fixture::new();
-    let stale = fixture.directory.path().join("stale.prism");
+    let stale = fixture.directory.path().join("stale.spectrum");
     fs::copy(&fixture.canonical, &stale).unwrap();
     let latest = fixture.append(fixture.human_session, fixture.root, "Survives");
     #[cfg(target_os = "linux")]
@@ -306,7 +306,7 @@ fn exact_published_marker_recovers_a_stale_published_copy() {
 #[test]
 fn unmarked_newer_live_cache_is_discarded_for_the_canonical_copy() {
     let mut fixture = Fixture::new();
-    let stale = fixture.directory.path().join("stale.prism");
+    let stale = fixture.directory.path().join("stale.spectrum");
     fs::copy(&fixture.canonical, &stale).unwrap();
     let project_id = fixture.live.store().project_info().unwrap().project_id;
     let unmarked = fixture.append(fixture.human_session, fixture.root, "Unmarked");
@@ -329,7 +329,7 @@ fn unmarked_newer_live_cache_is_discarded_for_the_canonical_copy() {
 #[test]
 fn equally_advanced_returned_copy_replaces_an_inactive_local_cache() {
     let mut fixture = Fixture::new();
-    let traveler = fixture.directory.path().join("traveler.prism");
+    let traveler = fixture.directory.path().join("traveler.spectrum");
     fs::copy(&fixture.canonical, &traveler).unwrap();
     let traveler_cache = fixture.directory.path().join("traveler-cache");
     let mut remote = LiveRevisionStore::open(&traveler, &traveler_cache).unwrap();
@@ -427,7 +427,7 @@ fn small_edits_do_not_rewrite_large_immutable_assets() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("large-project.lumen");
+    let canonical = directory.path().join("large-project.spectrum");
     let cache = directory.path().join("private-cache");
     let session = SessionId::new();
     let original = Asset::new("image/jpeg", vec![0x5a; 8 * 1024 * 1024]);
@@ -451,14 +451,12 @@ fn small_edits_do_not_rewrite_large_immutable_assets() {
     let project_cache = cache.join(info.project_id.to_string());
     let mirror = project_cache.join("published-mirror.sqlite");
     let ready = project_cache.join("published-mirror.ready");
-    let backup = project_cache.join("published-backup.sqlite");
     assert_ne!(
         canonical.metadata().unwrap().ino(),
         mirror.metadata().unwrap().ino(),
         "the mutable mirror must never alias the visible project inode"
     );
     assert_eq!(mirror.metadata().unwrap().nlink(), 1);
-    fs::write(&backup, b"stale interrupted backup").unwrap();
 
     let tiny = live
         .mutate(|store| {
@@ -477,7 +475,6 @@ fn small_edits_do_not_rewrite_large_immutable_assets() {
         .unwrap()
         .id;
 
-    assert!(!backup.exists());
     assert_ne!(
         canonical.metadata().unwrap().ino(),
         mirror.metadata().unwrap().ino(),
@@ -607,7 +604,7 @@ fn linked_canonical_falls_back_without_changing_the_external_alias() {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     let mut fixture = Fixture::new();
-    let alias = fixture.directory.path().join("external-alias.prism");
+    let alias = fixture.directory.path().join("external-alias.spectrum");
     fs::set_permissions(&fixture.canonical, fs::Permissions::from_mode(0o640)).unwrap();
     fs::hard_link(&fixture.canonical, &alias).unwrap();
     let alias_bytes = fs::read(&alias).unwrap();
@@ -636,7 +633,7 @@ fn linked_canonical_falls_back_without_changing_the_external_alias() {
 #[test]
 fn distinct_cache_publishers_detect_same_generation_peer_conflicts() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("conflict.lumen");
+    let canonical = directory.path().join("conflict.spectrum");
     let session = SessionId::new();
     let (mut first, info) = LiveRevisionStore::create(
         &canonical,
@@ -746,7 +743,7 @@ fn cross_filesystem_cache_uses_the_full_copy_fallback() {
     if directory.path().metadata().unwrap().dev() == cache.path().metadata().unwrap().dev() {
         return;
     }
-    let canonical = directory.path().join("cross-filesystem.lumen");
+    let canonical = directory.path().join("cross-filesystem.spectrum");
     let session = SessionId::new();
     let (mut live, info) = LiveRevisionStore::create(
         &canonical,

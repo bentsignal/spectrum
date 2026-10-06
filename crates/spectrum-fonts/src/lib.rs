@@ -3,7 +3,7 @@
 //! [`HarfBuzzShaper`] shapes one already-resolved font run and deliberately leaves
 //! bidi paragraph resolution, fallback, line breaking, and editing behavior to
 //! higher layers. The subset API remains an engine seam rather than a general
-//! export command. Prism's optimized-copy transaction may use a passing artifact
+//! export command. Spectrum's optimized-copy transaction may use a passing artifact
 //! only after its own history, asset, and exact-render checks. Passing these checks
 //! is not proof of broad production subsetting conformance.
 //! Callers must retain the immutable source snapshot, provenance, and font-license

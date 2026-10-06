@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -32,7 +32,7 @@ pub struct UnicodeVariationSequence {
 /// Unicode cmap retention information for a future font subset.
 ///
 /// This does not model symbol or other non-Unicode cmaps, shaping, font fallback,
-/// or Prism renderer behavior. It must not be described as legal license advice.
+/// or Spectrum renderer behavior. It must not be described as legal license advice.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FontUsageAnalysis {
     pub usage: FontUsage,
@@ -40,7 +40,6 @@ pub struct FontUsageAnalysis {
     pub style: String,
     pub content_hash: String,
     pub source_name: String,
-    pub original_path: Option<PathBuf>,
     pub embedding_permission: FontEmbeddingPermission,
     pub embedding_advisory: Option<String>,
     /// The OpenType OS/2 embedding metadata's no-subsetting bit, not legal advice.
@@ -159,7 +158,6 @@ pub(crate) fn analyze_font_usage_with_source(
         style: font.style.clone(),
         content_hash: font.content_hash.clone(),
         source_name: font.source_name.clone(),
-        original_path: font.original_path.clone(),
         embedding_permission: font.embedding_permission,
         embedding_advisory: font.embedding_permission.advisory().map(str::to_owned),
         embedding_metadata_allows_subsetting: font.subset_allowed,

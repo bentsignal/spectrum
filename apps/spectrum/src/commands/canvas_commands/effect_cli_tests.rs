@@ -1,9 +1,9 @@
 use super::*;
 
 fn invoke(project: &std::path::Path, arguments: &[&str]) -> anyhow::Result<()> {
-    let mut argv = vec!["prism", "--document", project.to_str().unwrap()];
+    let mut argv = vec!["canvas", "--document", project.to_str().unwrap()];
     argv.extend_from_slice(arguments);
-    run(Cli::try_parse_from(argv).unwrap()).map(|_| ())
+    run(parse_cli(argv).unwrap()).map(|_| ())
 }
 
 #[test]
@@ -12,7 +12,7 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let project = std::env::temp_dir().join(format!("prism-cli-effects-{stamp}.prism"));
+    let project = std::env::temp_dir().join(format!("canvas-cli-effects-{stamp}.spectrum"));
     invoke(
         &project,
         &["init", "Effects", "--width", "80", "--height", "60"],
@@ -43,7 +43,7 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
     invoke(&project, &["effect", "1", "color-overlay"]).unwrap();
     invoke(&project, &["effect", "1", "inner-shadow", "--x", "-3"]).unwrap();
     invoke(&project, &["effect", "1", "stroke", "--size", "2"]).unwrap();
-    let style = Workspace::load_read_only(&project)
+    let style = Workspace::read(&project)
         .unwrap()
         .layer(1)
         .unwrap()
@@ -107,7 +107,7 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
         ],
     )
     .unwrap();
-    let style = Workspace::load_read_only(&project)
+    let style = Workspace::read(&project)
         .unwrap()
         .layer(1)
         .unwrap()
@@ -135,7 +135,7 @@ fn effect_cli_sets_one_style_and_keeps_the_others() {
 
     invoke(&project, &["effect", "1", "outer-glow", "--clear"]).unwrap();
     invoke(&project, &["shadow", "1", "--clear"]).unwrap();
-    let style = Workspace::load_read_only(&project)
+    let style = Workspace::read(&project)
         .unwrap()
         .layer(1)
         .unwrap()
@@ -152,7 +152,7 @@ fn selection_cli_selects_ellipses_inverts_and_masks_layers() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let project = std::env::temp_dir().join(format!("prism-cli-selection-{stamp}.prism"));
+    let project = std::env::temp_dir().join(format!("canvas-cli-selection-{stamp}.spectrum"));
     invoke(
         &project,
         &["init", "Selections", "--width", "80", "--height", "60"],
@@ -164,14 +164,14 @@ fn selection_cli_selects_ellipses_inverts_and_masks_layers() {
     )
     .unwrap();
     invoke(&project, &["selection", "ellipse", "10", "10", "30", "20"]).unwrap();
-    let selected = Workspace::load_read_only(&project).unwrap();
+    let selected = Workspace::read(&project).unwrap();
     assert!(selected.selection.is_some());
     invoke(&project, &["selection", "invert"]).unwrap();
-    let inverted = Workspace::load_read_only(&project).unwrap();
+    let inverted = Workspace::read(&project).unwrap();
     let (.., width, height) = inverted.selection.as_ref().unwrap().bounds();
     assert_eq!((width, height), (80, 60), "the inverse spans the canvas");
     invoke(&project, &["selection", "mask", "1"]).unwrap();
-    let masked = Workspace::load_read_only(&project).unwrap();
+    let masked = Workspace::read(&project).unwrap();
     assert!(masked.layer(1).unwrap().vector_mask.is_some());
     std::fs::remove_file(project).unwrap();
 }
@@ -182,7 +182,7 @@ fn sample_cli_reads_the_composited_color() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let project = std::env::temp_dir().join(format!("prism-cli-sample-{stamp}.prism"));
+    let project = std::env::temp_dir().join(format!("canvas-cli-sample-{stamp}.spectrum"));
     invoke(
         &project,
         &["init", "Sample", "--width", "40", "--height", "30"],
@@ -201,14 +201,14 @@ fn sample_cli_reads_the_composited_color() {
         ],
     )
     .unwrap();
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     assert_eq!(
         spectrum_canvas::sample_document_color(&document, 5, 5).unwrap(),
         [255, 0, 0, 255]
     );
     assert!(spectrum_canvas::sample_document_color(&document, 50, 5).is_err());
-    let sampled = run(Cli::try_parse_from([
-        "prism",
+    let sampled = run(parse_cli([
+        "canvas",
         "--document",
         project.to_str().unwrap(),
         "sample",

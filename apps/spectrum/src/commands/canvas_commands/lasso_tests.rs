@@ -6,15 +6,15 @@ fn temporary_project(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-cli-{label}-{timestamp}.prism"))
+    std::env::temp_dir().join(format!("canvas-cli-{label}-{timestamp}.spectrum"))
 }
 
 #[test]
 fn lasso_cli_persists_fixed_point_soft_selection_and_rejects_short_paths() {
     let project = temporary_project("selection-lasso");
     let project_arg = project.to_str().unwrap();
-    run(Cli::try_parse_from([
-        "prism",
+    run(parse_cli([
+        "canvas",
         "--document",
         project_arg,
         "init",
@@ -27,8 +27,8 @@ fn lasso_cli_persists_fixed_point_soft_selection_and_rejects_short_paths() {
     .unwrap())
     .unwrap();
     assert!(
-        run(Cli::try_parse_from([
-            "prism",
+        run(parse_cli([
+            "canvas",
             "--document",
             project_arg,
             "selection",
@@ -41,14 +41,9 @@ fn lasso_cli_persists_fixed_point_soft_selection_and_rejects_short_paths() {
         .unwrap())
         .is_err()
     );
-    assert!(
-        Workspace::load_read_only(&project)
-            .unwrap()
-            .selection
-            .is_none()
-    );
-    run(Cli::try_parse_from([
-        "prism",
+    assert!(Workspace::read(&project).unwrap().selection.is_none());
+    run(parse_cli([
+        "canvas",
         "--document",
         project_arg,
         "selection",
@@ -64,7 +59,7 @@ fn lasso_cli_persists_fixed_point_soft_selection_and_rejects_short_paths() {
     ])
     .unwrap())
     .unwrap();
-    let document = Workspace::load_read_only(&project).unwrap();
+    let document = Workspace::read(&project).unwrap();
     let selection = document.selection.unwrap();
     assert!(selection.alpha().is_some());
     assert!(selection.bounds().2 < document.width && selection.bounds().3 < document.height);

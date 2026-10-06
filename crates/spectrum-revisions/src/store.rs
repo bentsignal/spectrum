@@ -150,10 +150,10 @@ impl RevisionStore {
     }
 
     fn open_with_durability(path: &Path, durability: WriteDurability) -> RevisionResult<Self> {
-        let mut connection = Connection::open(path)?;
+        let connection = Connection::open(path)?;
         schema::configure(&connection)?;
         schema::verify_header(&connection)?;
-        schema::migrate(&mut connection)?;
+        schema::check_format(&connection)?;
         let store = Self {
             connection,
             path: path.to_owned(),
@@ -180,13 +180,7 @@ impl RevisionStore {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         schema::verify_header(&connection)?;
-        let version = schema::container_format(&connection)?;
-        if version != schema::CONTAINER_FORMAT {
-            return Err(RevisionError::Invalid(format!(
-                "read-only inspection requires container format {}; found {version}",
-                schema::CONTAINER_FORMAT
-            )));
-        }
+        schema::check_format(&connection)?;
         let store = Self {
             connection,
             path: path.to_owned(),
@@ -220,9 +214,9 @@ impl RevisionStore {
     }
 
     /// Take a SQLite-consistent snapshot, including any committed WAL frames, into a private
-    /// writable file and migrate that copy to the current container format.
+    /// writable file.
     #[cfg(target_os = "linux")]
-    pub(crate) fn snapshot_for_migration(
+    pub(crate) fn snapshot_into(
         source: &Path,
         destination: &Path,
     ) -> RevisionResult<StoreInspection> {
@@ -233,9 +227,9 @@ impl RevisionStore {
         source.busy_timeout(std::time::Duration::from_secs(5))?;
         schema::verify_header(&source)?;
         source.backup(rusqlite::MAIN_DB, destination, None)?;
-        let migrated = Self::open(destination)?;
-        migrated.checkpoint()?;
-        drop(migrated);
+        let copy = Self::open(destination)?;
+        copy.checkpoint()?;
+        drop(copy);
         Self::inspect(destination)
     }
 
@@ -248,22 +242,6 @@ impl RevisionStore {
         validate_actor(&actor)?;
         self.require_revision(fallback)?;
         if let Some(session) = self.session(id)? {
-            let default_track = self.project_info()?.default_track_id;
-            if self.session_on_track(id, default_track)?.is_none() {
-                let transaction = self
-                    .connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
-                insert_session_cursor(
-                    &transaction,
-                    id,
-                    default_track,
-                    session.cursor,
-                    session.updated_at_ms,
-                )?;
-                bump_generation(&transaction)?;
-                transaction.commit()?;
-                self.finish_write()?;
-            }
             return Ok(session);
         }
         let updated_at_ms = now_ms();

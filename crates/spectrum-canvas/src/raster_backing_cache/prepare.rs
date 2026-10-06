@@ -108,7 +108,7 @@ pub(super) fn memory_plan(
 }
 
 /// Decoder construction, decode, and publication share one process-wide permit
-/// so only one dependency full-raster workload is resident anywhere in Prism.
+/// so only one dependency full-raster workload is resident anywhere in Spectrum.
 pub(super) fn prepare_exact_rgba8_plane(
     source: &Path,
     identity: &DerivedBackingIdentity,

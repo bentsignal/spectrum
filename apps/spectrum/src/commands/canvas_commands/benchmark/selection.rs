@@ -21,17 +21,18 @@ pub(super) fn measure_color_mask_raster_delete() -> Result<RasterDeleteSamples> 
     const CANVAS_EDGE: u32 = 16_384;
     const SOURCE_EDGE: u32 = 164;
     let path = std::env::temp_dir().join(format!(
-        "prism-raster-delete-benchmark-{}.png",
+        "canvas-raster-delete-benchmark-{}.png",
         std::process::id()
     ));
     image::RgbaImage::from_pixel(SOURCE_EDGE, SOURCE_EDGE, image::Rgba([80, 120, 220, 255]))
         .save(&path)?;
     let mut samples = Vec::with_capacity(17);
     for _ in 0..17 {
-        let mut workspace = Workspace::new(
-            Document::new("Raster delete bound", CANVAS_EDGE, CANVAS_EDGE),
-            None,
-        );
+        let mut workspace = Workspace::new(Document::new(
+            "Raster delete bound",
+            CANVAS_EDGE,
+            CANVAS_EDGE,
+        ));
         workspace.execute(Command::AddRaster {
             path: path.clone(),
             name: None,
@@ -79,14 +80,15 @@ pub(super) fn measure_color_mask_raster_delete() -> Result<RasterDeleteSamples> 
 fn measure_near_cap_color_mask_delete() -> Result<f64> {
     const EDGE: u32 = 4_080;
     let path = std::env::temp_dir().join(format!(
-        "prism-near-cap-raster-delete-benchmark-{}.png",
+        "canvas-near-cap-raster-delete-benchmark-{}.png",
         std::process::id()
     ));
     image::RgbaImage::from_pixel(EDGE, EDGE, image::Rgba([80, 120, 220, 255])).save(&path)?;
-    let mut workspace = Workspace::new(
-        Document::new("Near-cap ColorMask raster delete", EDGE, EDGE),
-        None,
-    );
+    let mut workspace = Workspace::new(Document::new(
+        "Near-cap ColorMask raster delete",
+        EDGE,
+        EDGE,
+    ));
     workspace.execute(Command::AddRaster {
         path: path.clone(),
         name: None,
@@ -138,7 +140,7 @@ pub(super) struct LassoSample {
 
 pub(super) fn measure_lasso_bound() -> Result<LassoSample> {
     const EDGE: u32 = 16_384;
-    let mut workspace = Workspace::new(Document::new("Lasso bound", EDGE, EDGE), None);
+    let mut workspace = Workspace::new(Document::new("Lasso bound", EDGE, EDGE));
     let corners = [(8_000.0, 8_000.0), (8_192.0, 8_000.0), (8_000.0, 8_192.0)];
     let mut raw_points = Vec::with_capacity(8_190);
     for edge in 0..3 {
@@ -179,7 +181,7 @@ pub(super) fn measure_lasso_bound() -> Result<LassoSample> {
 
 pub(super) fn measure_magic_wand_bound() -> Result<MagicWandSample> {
     const EDGE: u32 = 4_096;
-    let mut workspace = Workspace::new(Document::new("Magic wand bound", EDGE, EDGE), None);
+    let mut workspace = Workspace::new(Document::new("Magic wand bound", EDGE, EDGE));
     let started = Instant::now();
     workspace.execute(Command::MagicWandSelection {
         x: EDGE / 2,
@@ -207,7 +209,7 @@ pub(super) fn measure_magic_wand_bound() -> Result<MagicWandSample> {
 pub(super) fn measure_selection_fill() -> Result<SelectionFillSamples> {
     let mut samples = Vec::with_capacity(17);
     for _ in 0..17 {
-        let mut workspace = Workspace::new(Document::new("Selection fill", 4_096, 4_096), None);
+        let mut workspace = Workspace::new(Document::new("Selection fill", 4_096, 4_096));
         workspace.execute(Command::SetSelection {
             selection: Some(Selection::rectangle(1_024, 960, 640, 480)),
         })?;

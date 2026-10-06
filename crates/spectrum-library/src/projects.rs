@@ -278,7 +278,7 @@ impl Library {
 
     fn assets_where(&self, clause: &str, params: impl rusqlite::Params) -> Result<Vec<Asset>> {
         let mut statement = self.db.prepare(&format!(
-            "SELECT a.id,a.kind,a.name,a.document,a.item FROM assets a {clause}"
+            "SELECT a.id,a.kind,a.name,a.document FROM assets a {clause}"
         ))?;
         let rows = statement.query_map(params, crate::asset_row)?;
         rows.map(|row| crate::asset_from_row(row?)).collect()
@@ -293,10 +293,20 @@ mod tests {
     fn projects_group_assets_without_owning_them() {
         let tmp = tempfile::tempdir().unwrap();
         let mut lib = Library::open(tmp.path()).unwrap();
-        let path = tmp.path().join("data");
-        std::fs::write(&path, b"fixture").unwrap();
-        let a = lib.register("image", "a", &path, Some(1)).unwrap();
-        let b = lib.register("image", "b", &path, Some(2)).unwrap();
+        let a = lib
+            .register(
+                crate::AssetKind::Image,
+                "a",
+                &crate::test_document(tmp.path(), 1),
+            )
+            .unwrap();
+        let b = lib
+            .register(
+                crate::AssetKind::Image,
+                "b",
+                &crate::test_document(tmp.path(), 2),
+            )
+            .unwrap();
         assert_eq!(lib.unassigned().unwrap().len(), 2);
 
         let trip = lib.create_project("Trip").unwrap();
@@ -328,11 +338,27 @@ mod tests {
     fn import_batches_record_assets_that_arrived_together() {
         let tmp = tempfile::tempdir().unwrap();
         let mut lib = Library::open(tmp.path()).unwrap();
-        let path = tmp.path().join("data");
-        std::fs::write(&path, b"fixture").unwrap();
-        let a = lib.register("image", "a", &path, Some(1)).unwrap();
-        let b = lib.register("image", "b", &path, Some(2)).unwrap();
-        let c = lib.register("image", "c", &path, Some(3)).unwrap();
+        let a = lib
+            .register(
+                crate::AssetKind::Image,
+                "a",
+                &crate::test_document(tmp.path(), 1),
+            )
+            .unwrap();
+        let b = lib
+            .register(
+                crate::AssetKind::Image,
+                "b",
+                &crate::test_document(tmp.path(), 2),
+            )
+            .unwrap();
+        let c = lib
+            .register(
+                crate::AssetKind::Image,
+                "c",
+                &crate::test_document(tmp.path(), 3),
+            )
+            .unwrap();
         let first = lib.record_import(&[a.id, b.id]).unwrap();
         let second = lib.record_import(&[c.id]).unwrap();
         assert!(lib.record_import(&[a.id]).is_err());

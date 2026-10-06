@@ -39,7 +39,7 @@ impl Workspace {
             .entries
             .iter()
             .filter(|e| {
-                let kind = if e.asset.kind == "canvas" {
+                let kind = if e.asset.kind == spectrum_library::AssetKind::Canvas {
                     self.show_canvases
                 } else {
                     self.show_images
@@ -49,7 +49,7 @@ impl Workspace {
             .collect();
         match self.sort {
             1 => items.sort_by_key(|e| e.asset.name.to_lowercase()),
-            2 => items.sort_by_key(|e| (e.asset.kind.clone(), e.asset.name.to_lowercase())),
+            2 => items.sort_by_key(|e| (e.asset.kind.as_str(), e.asset.name.to_lowercase())),
             _ => items.sort_by_key(|e| (std::cmp::Reverse(e.added), e.asset.name.to_lowercase())),
         }
         items
@@ -132,10 +132,11 @@ impl Workspace {
         let Some(entry) = store.entries.iter().find(|e| e.asset.id == id) else {
             return;
         };
-        match (self.place, entry.asset.kind.as_str()) {
+        use spectrum_library::AssetKind;
+        match (self.place, entry.asset.kind) {
             (_, _) if entry.purge_after.is_some() => {}
-            (Place::Project(_), "image") => self.open_item(Open::Image(id), window, cx),
-            (Place::Project(_), "canvas") => self.open_item(Open::Canvas(id), window, cx),
+            (Place::Project(_), AssetKind::Image) => self.open_item(Open::Image(id), window, cx),
+            (Place::Project(_), AssetKind::Canvas) => self.open_item(Open::Canvas(id), window, cx),
             _ => {}
         }
     }
@@ -496,7 +497,7 @@ impl Workspace {
                 let days = ((purge_after - now) as f32 / 86_400.).ceil().max(0.) as i64;
                 format!("{days} day{} left", if days == 1 { "" } else { "s" }).into()
             }
-            None if entry.asset.kind == "canvas" => "Canvas".into(),
+            None if entry.asset.kind == spectrum_library::AssetKind::Canvas => "Canvas".into(),
             None => "Image".into(),
         };
         let bounds = self.card_bounds.clone();

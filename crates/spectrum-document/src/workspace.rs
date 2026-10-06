@@ -57,6 +57,19 @@ impl<M: Model> Workspace<M> {
         Ok(Self::durably(durable, document))
     }
 
+    /// Opens a revision file in `session_id`, first moving the session to
+    /// the newest revision so its edits build on what others last saw.
+    pub fn open_newest(path: &Path, actor: Actor, session_id: SessionId) -> Result<Self> {
+        let mut workspace = Self::open(path, actor, session_id)?;
+        let durable = workspace
+            .durable
+            .as_ref()
+            .context("opened without a file")?;
+        let newest = durable.newest()?;
+        workspace.move_to(newest)?;
+        Ok(workspace)
+    }
+
     /// Opens an existing session in a revision file, such as an agent's.
     pub fn open_session(path: &Path, session_id: SessionId) -> Result<Self> {
         let (durable, document) = Durable::open_session(path, session_id)?;

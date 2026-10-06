@@ -6,7 +6,7 @@ use crate::{
     metadata::bump_generation,
     storage_io::now_ms,
     store::{revision_id, session_in, validate_actor},
-    store_tracks::{session_on_track_in, track_id, update_legacy_default_cursor},
+    store_tracks::{session_on_track_in, track_id, update_default_cursor},
 };
 
 impl RevisionStore {
@@ -140,7 +140,7 @@ impl RevisionStore {
                 collaboration.track_id.as_bytes().as_slice()
             ],
         )?;
-        update_legacy_default_cursor(
+        update_default_cursor(
             &transaction,
             source_session,
             collaboration.track_id,

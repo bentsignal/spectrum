@@ -1,4 +1,4 @@
-use super::*;
+use clap::ValueEnum;
 
 #[derive(Clone, Copy, Default, ValueEnum)]
 pub(super) enum BenchmarkProfile {
@@ -31,41 +31,13 @@ impl BenchmarkProfile {
         }
     }
 
-    pub(super) fn command_budget_ms(self) -> f64 {
+    pub(super) fn edit_budget_ms(self) -> f64 {
         match self {
-            // A durable command atomically republishes a portable project that
-            // contains a 24 MP source asset. It runs after interaction preview,
-            // so this gate protects completion latency rather than frame time.
+            // A saved edit reopens the image's document, which embeds a
+            // 24 MP source, and publishes one revision. It runs after the
+            // preview, so this protects completion latency, not frame time.
             Self::Interactive => 100.0,
             Self::HostedCi => 175.0,
         }
-    }
-
-    pub(super) fn switch_dispatch_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 4.0,
-            Self::HostedCi => 12.0,
-        }
-    }
-
-    pub(super) fn prefetched_switch_ready_budget_ms(self) -> f64 {
-        match self {
-            Self::Interactive => 35.0,
-            Self::HostedCi => 75.0,
-        }
-    }
-
-    pub(super) fn cold_switch_ready_budget_ms(self) -> f64 {
-        match self {
-            // The deterministic 2400x1600 JPEG path measured 120 ms p95
-            // locally. Keep 46% workstation and 150% hosted-runner headroom
-            // without allowing a regression into visibly sluggish switching.
-            Self::Interactive => 175.0,
-            Self::HostedCi => 300.0,
-        }
-    }
-
-    pub(super) fn requires_incremental_publication(self) -> bool {
-        matches!(self, Self::HostedCi)
     }
 }

@@ -44,10 +44,7 @@ fn photo_document(directory: &std::path::Path) -> Result<Document> {
     let mut document = Document::new("Interactive photo", 1920, 1080);
     document.layers.push(Layer {
         id: 1,
-        kind: LayerKind::Raster {
-            path,
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path },
         transform: Transform {
             x: 180.0,
             y: 60.0,
@@ -136,7 +133,7 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
     let mut erase_image = Vec::with_capacity(frames);
     for end in (2..path.len()).step_by(2) {
         let started = Instant::now();
-        let mut local = Workspace::new(document.clone(), None);
+        let mut local = Workspace::new(document.clone());
         local.execute(Command::EraseLayer {
             id: 1,
             stroke: BrushStroke::new(erase_style, path[..end].to_vec())?,
@@ -150,7 +147,7 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
     }
 
     // Drawing a stroke over a Paint layer that already has thirty.
-    let mut workspace = Workspace::new(Document::new("Interactive paint", 1920, 1080), None);
+    let mut workspace = Workspace::new(Document::new("Interactive paint", 1920, 1080));
     let style = BrushStyle {
         size: 36.0,
         hardness: 0.7,
@@ -190,7 +187,7 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
         .collect();
     for end in (2..drawn.len()).step_by(2) {
         let started = Instant::now();
-        let mut local = Workspace::new(workspace.document.clone(), None);
+        let mut local = Workspace::new(workspace.document.clone());
         local.execute(Command::AddBrushStroke {
             id,
             stroke: BrushStroke::new(style, drawn[..end].to_vec())?,
@@ -274,7 +271,7 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
     let mut erase_text = Vec::with_capacity(frames);
     for end in (2..across.len()).step_by(2) {
         let started = Instant::now();
-        let mut local = Workspace::new(text_document.clone(), None);
+        let mut local = Workspace::new(text_document.clone());
         local.execute(Command::EraseLayer {
             id: 1,
             stroke: BrushStroke::new(erase_style, across[..end].to_vec())?,
@@ -290,7 +287,7 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
     let font_path = directory.join("imported.ttf");
     std::fs::write(&font_path, epaint_default_fonts::HACK_REGULAR)?;
     text_document.layers[0].transform.rotation = 0.0;
-    let mut sized = Workspace::new(text_document.clone(), None);
+    let mut sized = Workspace::new(text_document.clone());
     sized.execute(Command::ImportFont {
         path: font_path,
         source_name: None,
@@ -306,7 +303,7 @@ fn measure(hosted: bool) -> Result<Vec<BenchmarkMetric>> {
     let mut text_size = Vec::with_capacity(frames);
     for frame in 0..frames {
         let started = Instant::now();
-        let mut local = Workspace::new(sized.document.clone(), None);
+        let mut local = Workspace::new(sized.document.clone());
         local.execute(Command::UpdateText {
             id: 1,
             text: "Spring sale!".into(),

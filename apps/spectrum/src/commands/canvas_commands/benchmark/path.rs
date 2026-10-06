@@ -73,7 +73,7 @@ pub(super) fn measure() -> Result<PathMeasurements> {
         raster_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
 
-    let mut workspace = Workspace::new(Document::new("Path edit benchmark", 512, 512), None);
+    let mut workspace = Workspace::new(Document::new("Path edit benchmark", 512, 512));
     workspace.execute(Command::AddPath {
         name: Some("256-anchor cubic path".into()),
         geometry: geometry.clone(),
@@ -82,7 +82,6 @@ pub(super) fn measure() -> Result<PathMeasurements> {
         y: 128.0,
     })?;
     let id = workspace.document.selected.expect("added path is selected");
-    workspace.begin_interaction().unwrap();
     let mut edit_samples = Vec::with_capacity(240);
     for frame in 0..240 {
         let started = Instant::now();
@@ -90,13 +89,16 @@ pub(super) fn measure() -> Result<PathMeasurements> {
         anchor.point[0] += (frame as f32 * 0.07).sin() * 3.0;
         anchor.point[1] += (frame as f32 * 0.11).cos() * 3.0;
         let preview = geometry.replacing_anchor(frame % ANCHOR_COUNT, anchor)?;
-        workspace.preview(Command::ReplacePath {
-            id,
-            geometry: preview,
-        })?;
+        // Dragging an anchor previews on the open document without history.
+        <spectrum_canvas::CanvasModel as spectrum_document::Model>::apply(
+            &mut workspace.document,
+            Command::ReplacePath {
+                id,
+                geometry: preview,
+            },
+        )?;
         edit_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
-    workspace.commit_interaction()?;
 
     let (raster_median_ms, raster_p95_ms) = sample_summary(&mut raster_samples);
     let (edit_median_ms, edit_p95_ms) = sample_summary(&mut edit_samples);

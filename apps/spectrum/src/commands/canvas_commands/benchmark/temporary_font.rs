@@ -49,7 +49,7 @@ impl TemporaryFont {
 }
 
 fn temporary_font_path(temp_root: &Path, stamp: u128, attempt: u32) -> PathBuf {
-    temp_root.join(format!("prism-benchmark-font-{stamp}-{attempt}.ttf"))
+    temp_root.join(format!("canvas-benchmark-font-{stamp}-{attempt}.ttf"))
 }
 
 impl Drop for TemporaryFont {
@@ -69,7 +69,7 @@ mod tests {
             .as_nanos();
         let directory = std::fs::canonicalize(std::env::temp_dir())
             .unwrap()
-            .join(format!("prism-benchmark-{label}-{stamp}"));
+            .join(format!("canvas-benchmark-{label}-{stamp}"));
         std::fs::create_dir(&directory).unwrap();
         directory
     }

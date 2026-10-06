@@ -10,7 +10,7 @@ fn temporary_path(label: &str, extension: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-fallback-{label}-{stamp}.{extension}"))
+    std::env::temp_dir().join(format!("canvas-fallback-{label}-{stamp}.{extension}"))
 }
 
 fn temporary_raster(label: &str, width: u32, height: u32) -> PathBuf {
@@ -144,10 +144,7 @@ fn fallback_stats_account_for_full_decode_and_transformed_surfaces() {
                 rotation: 13.0,
                 ..Default::default()
             },
-            kind: LayerKind::Raster {
-                path,
-                original_path: None,
-            },
+            kind: LayerKind::Raster { path },
             ..Layer::default()
         });
         assert!(!document_supports_region_native_zoom(&document), "{label}");
@@ -201,10 +198,7 @@ fn adjusted_anisotropic_fallback_is_rejected_before_allocation() {
                 rotation: 45.0,
                 ..Default::default()
             },
-            kind: LayerKind::Raster {
-                path,
-                original_path: None,
-            },
+            kind: LayerKind::Raster { path },
             ..Layer::default()
         });
         let error = render_document_region_scaled_with_stats(
@@ -234,10 +228,7 @@ fn rgba16_fallback_peak_is_rejected_from_header_before_decode() {
     let path = temporary_rgba_header("bounded-rgba16", 4_096, 4_096, 16);
     let mut document = Document::new("RGBA16 fallback", 4_096, 4_096);
     document.layers.push(Layer {
-        kind: LayerKind::Raster {
-            path: path.clone(),
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path: path.clone() },
         ..Layer::default()
     });
     assert!(!document_supports_region_native_zoom(&document));
@@ -277,10 +268,7 @@ fn adjustment_intermediates_reject_near_cap_rgba16_before_decode() {
             scale_y: 0.1,
             ..Default::default()
         },
-        kind: LayerKind::Raster {
-            path: path.clone(),
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path: path.clone() },
         ..Layer::default()
     });
     let error = render_document_region_scaled_with_stats(
@@ -310,10 +298,7 @@ fn scaled_rgba16_png_uses_fallback_and_matches_export() {
             scale_y: 0.8,
             rotation: 17.0,
         },
-        kind: LayerKind::Raster {
-            path: path.clone(),
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path: path.clone() },
         ..Layer::default()
     });
     assert!(!document_supports_region_native_zoom(&document));
@@ -351,10 +336,7 @@ fn truncated_native_png_preserves_decoder_error_sources() {
             exposure: 0.1,
             ..Default::default()
         },
-        kind: LayerKind::Raster {
-            path: path.clone(),
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path: path.clone() },
         ..Layer::default()
     });
     assert!(document_supports_region_native_zoom(&document));

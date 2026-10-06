@@ -14,11 +14,11 @@ mod durable;
 mod files;
 mod workspace;
 
-pub use durable::{Durable, History};
+pub use durable::{Durable, History, remove};
 pub use files::{FileRole, is_embedded_reference};
 pub use spectrum_revisions::{
     Actor, ActorKind, Collaboration, CollaborationMode, CollaborationSync, Revision, RevisionId,
-    Session, SessionId,
+    Session, SessionId, local_session_id,
 };
 pub use workspace::Workspace;
 
@@ -79,6 +79,12 @@ pub trait Model: 'static {
     /// store a snapshot (a command whose result cannot be replayed).
     fn stored(command: &Self::Command) -> (Self::Command, bool) {
         (command.clone(), false)
+    }
+
+    /// Checks a command read from a file before it is replayed, refusing
+    /// anything only an author may submit.
+    fn check_stored(_command: &Self::Command) -> Result<()> {
+        Ok(())
     }
 
     /// Checks a document read from a file before it is used.

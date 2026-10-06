@@ -107,7 +107,7 @@ impl Workspace {
             .service
             .library
             .get(id)
-            .is_ok_and(|a| a.kind == "canvas");
+            .is_ok_and(|a| a.kind == spectrum_library::AssetKind::Canvas);
         match store
             .service
             .library
@@ -222,7 +222,7 @@ impl Workspace {
                     .iter()
                     .filter(|e| matches(&e.asset.name))
                     .map(|e| {
-                        let canvas = e.asset.kind == "canvas";
+                        let canvas = e.asset.kind == spectrum_library::AssetKind::Canvas;
                         Item {
                             tool: None,
                             icon: if canvas {
@@ -247,10 +247,16 @@ impl Workspace {
             items.extend(
                 library
                     .into_iter()
-                    .filter(|a| matches!(a.kind.as_str(), "image" | "canvas") && matches(&a.name))
+                    .filter(|a| {
+                        matches!(
+                            a.kind,
+                            spectrum_library::AssetKind::Image
+                                | spectrum_library::AssetKind::Canvas
+                        ) && matches(&a.name)
+                    })
                     .take(40)
                     .map(|a| {
-                        let canvas = a.kind == "canvas";
+                        let canvas = a.kind == spectrum_library::AssetKind::Canvas;
                         Item {
                             tool: None,
                             icon: if canvas {

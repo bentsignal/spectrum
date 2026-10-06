@@ -6,9 +6,8 @@ use std::{
 
 use crate::{
     Command, Document, FontAsset, FontEmbeddingPermission, FontSourceSnapshot, LayerKind,
-    TextAlignment, TextEffects, TextShaping, TextShapingEngine, TextTypography, Workspace,
-    analyze_all_font_usage, analyze_font_usage, font_usage, render_document,
-    render_layer_base_scaled_with_font, save_document,
+    TextAlignment, TextEffects, TextTypography, Workspace, analyze_all_font_usage,
+    analyze_font_usage, font_usage, render_document, render_layer_base_scaled_with_font,
 };
 
 fn test_directory(label: &str) -> PathBuf {
@@ -18,7 +17,7 @@ fn test_directory(label: &str) -> PathBuf {
         .as_nanos();
     fs::canonicalize(std::env::temp_dir())
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join(format!("prism-typography-{label}-{stamp}"))
+        .join(format!("canvas-typography-{label}-{stamp}"))
 }
 
 fn test_actor() -> spectrum_revisions::Actor {
@@ -50,7 +49,7 @@ fn old_text_json_migrates_without_losing_guides_or_text() {
     value.as_object_mut().unwrap().remove("font_assets");
     value.as_object_mut().unwrap().remove("next_font_id");
     let mut document: Document = serde_json::from_value(value).unwrap();
-    document.migrate().unwrap();
+    document.validate().unwrap();
     let LayerKind::Text { typography, .. } = &document.layers[0].kind else {
         panic!("legacy layer should remain text");
     };
@@ -60,149 +59,15 @@ fn old_text_json_migrates_without_losing_guides_or_text() {
 }
 
 #[test]
-fn shaping_policy_is_versioned_canonical_and_legacy_json_stays_unchanged() {
-    let legacy = TextTypography::default();
-    let legacy_json = serde_json::to_value(&legacy).unwrap();
-    assert!(
-        legacy_json.get("shaping").is_none(),
-        "legacy typography must not introduce a new serialized field"
-    );
-    assert_eq!(
-        serde_json::from_value::<TextTypography>(legacy_json).unwrap(),
-        legacy
-    );
-
-    let canonical = TextShaping::harfbuzz_v1(Some("iw-IL")).unwrap();
-    assert_eq!(canonical.engine, TextShapingEngine::HarfBuzzV1);
-    assert_eq!(canonical.language.as_deref(), Some("he-IL"));
-    assert_eq!(
-        TextShaping::harfbuzz_v1(Some("und")).unwrap().language,
-        None
-    );
-    assert!(TextShaping::harfbuzz_v1(Some("en--US")).is_err());
-    assert!(
-        TextTypography {
-            shaping: TextShaping {
-                engine: TextShapingEngine::LegacyCharV1,
-                language: Some("en".into()),
-            },
-            ..Default::default()
-        }
-        .validated_and_sanitized()
-        .is_err()
-    );
-
-    let command = Command::AddText {
-        text: "Legacy".into(),
-        name: None,
-        font_size: 12.0,
-        color: [255; 4],
-        x: 0.0,
-        y: 0.0,
-        shaping: TextShaping::default(),
-    };
-    assert!(
-        serde_json::to_value(command)
-            .unwrap()
-            .get("shaping")
-            .is_none(),
-        "legacy AddText operation bytes remain schema-compatible"
-    );
-
-    let mut forged = Document::new("Forged", 40, 40);
-    forged.version = 9;
-    forged.layers.push(crate::Layer {
-        id: 1,
-        kind: LayerKind::Text {
-            text: "new policy in old envelope".into(),
-            font_size: 12.0,
-            color: [255; 4],
-            typography: TextTypography {
-                shaping: TextShaping::harfbuzz_v1(None).unwrap(),
-                ..Default::default()
-            },
-        },
-        ..Default::default()
-    });
-    assert!(
-        forged
-            .migrate()
-            .unwrap_err()
-            .to_string()
-            .contains("version 9")
-    );
-}
-
-#[test]
-fn shaped_text_uses_v10_snapshot_and_v13_operations_and_replays_exactly() {
-    let directory = test_directory("shaped-envelopes");
-    fs::create_dir_all(&directory).unwrap();
-    let project = directory.join("shaped.prism");
-    let mut workspace = Workspace::create_durable(
-        Document::new("Shaped", 420, 240),
-        &project,
-        test_actor(),
-        spectrum_revisions::SessionId::new(),
-    )
-    .unwrap();
-    workspace
-        .execute(Command::AddText {
-            text: "office العربية A\u{301}V".into(),
-            name: None,
-            font_size: 44.0,
-            color: [240, 225, 205, 255],
-            x: 20.0,
-            y: 30.0,
-            shaping: TextShaping::harfbuzz_v1(Some("ar")).unwrap(),
-        })
-        .unwrap();
-    let text_id = workspace.document.selected.unwrap();
-    for index in 0..99 {
-        workspace
-            .execute(Command::RenameLayer {
-                id: text_id,
-                name: format!("Shaped {index}"),
-            })
-            .unwrap();
-    }
-    let expected = workspace.document.clone();
-    workspace.save(None).unwrap();
-    drop(workspace);
-
-    let connection = rusqlite::Connection::open(&project).unwrap();
-    let operation_version: u32 = connection
-        .query_row(
-            "SELECT version FROM operation_payloads WHERE instr(CAST(bytes AS TEXT), 'add_text') > 0 LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let shaped_snapshots: u32 = connection
-        .query_row(
-            "SELECT count(*) FROM snapshots WHERE version = 10",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(operation_version, 13);
-    assert_eq!(shaped_snapshots, 1);
-    drop(connection);
-
-    let reopened = Workspace::open(&project).unwrap();
-    assert_eq!(reopened.document, expected);
-    fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
 fn imported_font_and_typography_round_trip_inside_durable_project() {
     let directory = test_directory("portable-font");
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("Hack-Regular.ttf");
     fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
-    let project = directory.join("portable.prism");
-    let mut workspace = Workspace::create_durable(
-        Document::new("Portable typography", 640, 360),
+    let project = directory.join("portable.spectrum");
+    let mut workspace = Workspace::create(
         &project,
+        Document::new("Portable typography", 640, 360),
         test_actor(),
         spectrum_revisions::SessionId::new(),
     )
@@ -247,15 +112,14 @@ fn imported_font_and_typography_round_trip_inside_durable_project() {
             typography: typography.clone(),
         })
         .unwrap();
-    workspace.save(None).unwrap();
+    workspace.checkpoint().unwrap();
     drop(workspace);
     fs::remove_file(&source).unwrap();
 
-    let loaded = Workspace::load_read_only(&project).unwrap();
+    let loaded = Workspace::read(&project).unwrap();
     assert_eq!(loaded.font_assets.len(), 1);
     assert!(loaded.font_assets[0].path.exists());
     assert_ne!(loaded.font_assets[0].path, source);
-    assert!(loaded.font_assets[0].original_path.is_none());
     assert_eq!(
         loaded.font_assets[0].content_hash,
         spectrum_revisions::AssetId::for_bytes(epaint_default_fonts::HACK_REGULAR).to_string()
@@ -282,7 +146,7 @@ fn malformed_font_import_is_rejected_without_allocating_an_asset() {
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("broken.ttf");
     fs::write(&source, b"not an OpenType font").unwrap();
-    let mut workspace = Workspace::new(Document::new("Type", 320, 200), None);
+    let mut workspace = Workspace::new(Document::new("Type", 320, 200));
 
     assert!(
         workspace
@@ -335,7 +199,7 @@ fn immutable_font_source_rejects_tampering_truncation_and_unmaterialized_paths()
 }
 
 #[test]
-fn legacy_and_initial_durable_saves_reject_tampered_font_bytes() {
+fn durable_saves_reject_tampered_font_bytes() {
     let directory = test_directory("tampered-save");
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("Hack-Regular.ttf");
@@ -349,22 +213,18 @@ fn legacy_and_initial_durable_saves_reject_tampered_font_bytes() {
         vec![0x4f; epaint_default_fonts::HACK_REGULAR.len()],
     )
     .unwrap();
-    let legacy_project = directory.join("tampered-legacy.prism");
-    let durable_project = directory.join("tampered-durable.prism");
+    let durable_project = directory.join("tampered-durable.spectrum");
 
-    let legacy_error = save_document(&document, &legacy_project).unwrap_err();
-    let durable_error = Workspace::create_durable(
-        document,
+    let durable_error = Workspace::create(
         &durable_project,
+        document,
         test_actor(),
         spectrum_revisions::SessionId::new(),
     )
     .err()
     .expect("tampered initial snapshot should fail");
 
-    assert!(legacy_error.to_string().contains("content identity"));
-    assert!(durable_error.to_string().contains("content identity"));
-    assert!(!legacy_project.exists());
+    assert!(durable_error.to_string().contains("recorded content"));
     assert!(!durable_project.exists());
     fs::remove_dir_all(directory).unwrap();
 }
@@ -463,40 +323,6 @@ fn restricted_font_import_is_direct_renders_and_disables_subsetting_after_reload
     );
 }
 
-#[test]
-fn legacy_editable_font_metadata_is_hydrated_from_immutable_source_bytes() {
-    let directory = test_directory("legacy-editable-permission");
-    fs::create_dir_all(&directory).unwrap();
-    let source = directory.join("Editable.ttf");
-    let mut bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
-    set_fs_type(&mut bytes, 0x0008);
-    fs::write(&source, &bytes).unwrap();
-    let current = FontAsset::import(1, &source).unwrap();
-    assert_eq!(
-        current.embedding_permission,
-        FontEmbeddingPermission::Editable
-    );
-    let mut legacy = serde_json::to_value(&current).unwrap();
-    legacy
-        .as_object_mut()
-        .unwrap()
-        .remove("embedding_permission");
-    let mut loaded: FontAsset = serde_json::from_value(legacy).unwrap();
-    assert_eq!(
-        loaded.embedding_permission,
-        FontEmbeddingPermission::LegacyUnknown
-    );
-
-    loaded.hydrate_legacy_embedding_permission().unwrap();
-
-    assert_eq!(
-        loaded.embedding_permission,
-        FontEmbeddingPermission::Editable
-    );
-    assert_eq!(loaded.bytes().unwrap(), bytes);
-    fs::remove_dir_all(directory).unwrap();
-}
-
 fn assert_font_permission_round_trip(
     label: &str,
     source_name: &str,
@@ -509,10 +335,10 @@ fn assert_font_permission_round_trip(
     let mut source_bytes = epaint_default_fonts::HACK_REGULAR.to_vec();
     set_fs_type(&mut source_bytes, fs_type);
     fs::write(&source, &source_bytes).unwrap();
-    let project = directory.join("font-policy.prism");
-    let mut workspace = Workspace::create_durable(
-        Document::new("Preview print", 640, 360),
+    let project = directory.join("font-policy.spectrum");
+    let mut workspace = Workspace::create(
         &project,
+        Document::new("Preview print", 640, 360),
         test_actor(),
         spectrum_revisions::SessionId::new(),
     )
@@ -553,19 +379,11 @@ fn assert_font_permission_round_trip(
             },
         })
         .unwrap();
-    let subset_plan = crate::plan_font_subset(&workspace.document, font_id).unwrap();
-    assert!(!subset_plan.analysis.embedding_metadata_allows_subsetting);
-    assert!(
-        subset_plan
-            .candidate_blockers
-            .iter()
-            .any(|blocker| blocker.contains("forbids technical subsetting"))
-    );
     assert!(render_document(&workspace.document, None).is_ok());
     drop(workspace);
     fs::remove_file(&source).unwrap();
 
-    let loaded = Workspace::load_read_only(&project).unwrap();
+    let loaded = Workspace::read(&project).unwrap();
     assert_eq!(
         loaded.font_assets[0].embedding_permission,
         expected_permission
@@ -712,7 +530,7 @@ fn migration_recovers_a_missing_font_reference_to_the_bundled_face() {
         },
         ..Default::default()
     });
-    document.migrate().unwrap();
+    document.validate().unwrap();
 
     let LayerKind::Text { typography, .. } = &document.layers[0].kind else {
         panic!("layer should remain text");
@@ -722,7 +540,7 @@ fn migration_recovers_a_missing_font_reference_to_the_bundled_face() {
 
 #[test]
 fn typography_command_rejects_unknown_font_ids_and_sanitizes_metrics() {
-    let mut workspace = Workspace::new(Document::new("Type", 320, 200), None);
+    let mut workspace = Workspace::new(Document::new("Type", 320, 200));
     workspace
         .execute(Command::AddText {
             text: "Text".into(),
@@ -772,7 +590,7 @@ fn imported_font_id_changes_shared_preview_and_export_pixels() {
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("Hack-Regular.ttf");
     fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
-    let mut workspace = Workspace::new(Document::new("Rendered font", 520, 260), None);
+    let mut workspace = Workspace::new(Document::new("Rendered font", 520, 260));
     workspace
         .execute(Command::ImportFont {
             path: source.clone(),
@@ -841,7 +659,7 @@ fn font_usage_analysis_is_sorted_deduplicated_and_non_mutating() {
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("Hack-Regular.ttf");
     fs::write(&source, epaint_default_fonts::HACK_REGULAR).unwrap();
-    let mut workspace = Workspace::new(Document::new("Font usage", 520, 260), None);
+    let mut workspace = Workspace::new(Document::new("Font usage", 520, 260));
     workspace
         .execute(Command::ImportFont {
             path: source.clone(),
@@ -897,11 +715,6 @@ fn font_usage_analysis_is_sorted_deduplicated_and_non_mutating() {
         usage.variation_sequences
     );
     assert_eq!(analysis.source_name, "Hack-Regular.ttf");
-    let canonical_source = fs::canonicalize(&source).unwrap();
-    assert_eq!(
-        analysis.original_path.as_deref(),
-        Some(canonical_source.as_path())
-    );
     assert_eq!(
         analyze_all_font_usage(&workspace.document).unwrap(),
         vec![analysis]

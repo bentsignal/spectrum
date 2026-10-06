@@ -13,11 +13,10 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 spectrum-canvas = { path = "../spectrum-canvas" }
+spectrum-document = { path = "../spectrum-document" }
 spectrum-image = { path = "../spectrum-image" }
 spectrum-imaging = { path = "../spectrum-imaging" }
 spectrum-library = { path = "../spectrum-library" }
-spectrum-live-bridge = { path = "../spectrum-live-bridge" }
-spectrum-revisions = { path = "../spectrum-revisions" }
 
 [dev-dependencies]
 tempfile = "3.27"

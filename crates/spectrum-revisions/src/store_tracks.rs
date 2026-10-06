@@ -54,7 +54,7 @@ impl RevisionStore {
                 track.as_bytes().as_slice()
             ],
         )?;
-        update_legacy_default_cursor(
+        update_default_cursor(
             &transaction,
             session_id,
             track,
@@ -365,7 +365,7 @@ fn append_revision_in(
             request.track_id.as_bytes().as_slice()
         ],
     )?;
-    update_legacy_default_cursor(
+    update_default_cursor(
         transaction,
         request.session_id,
         request.track_id,
@@ -411,7 +411,7 @@ pub(crate) fn insert_session_cursor(
     Ok(())
 }
 
-pub(crate) fn update_legacy_default_cursor(
+pub(crate) fn update_default_cursor(
     transaction: &Transaction<'_>,
     session: SessionId,
     track: TrackId,

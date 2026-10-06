@@ -162,7 +162,7 @@ fn exchange_intent_decoder_rejects_noncanonical_and_impossible_records() {
 #[test]
 fn legacy_named_exchange_intent_recovers_a_pre_exchange_candidate() {
     let root = tempfile::tempdir().unwrap();
-    let canonical = root.path().join("canonical.lumen");
+    let canonical = root.path().join("canonical.spectrum");
     let cache = root.path().join("cache");
     fs::create_dir(&cache).unwrap();
     let private = private_directory(&cache);
@@ -189,7 +189,7 @@ fn legacy_named_exchange_intent_recovers_a_pre_exchange_candidate() {
     )
     .unwrap();
     drop(canonical_store);
-    let candidate_source = root.path().join("candidate.lumen");
+    let candidate_source = root.path().join("candidate.spectrum");
     fs::copy(&canonical, &candidate_source).unwrap();
     let mut candidate_store = RevisionStore::open(&candidate_source).unwrap();
     candidate_store
@@ -241,8 +241,8 @@ fn legacy_named_exchange_intent_recovers_a_pre_exchange_candidate() {
 #[test]
 fn recovery_inspection_rejects_an_ordinary_path_replacement() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("canonical.prism");
-    let replacement = directory.path().join("replacement.prism");
+    let canonical = directory.path().join("canonical.spectrum");
+    let replacement = directory.path().join("replacement.spectrum");
     let project = |application_id: &str| NewProject {
         application_id: application_id.into(),
         application_version: "1.0.0".into(),
@@ -321,7 +321,7 @@ fn private_directory_rejects_shared_modes_and_symlink_entry_points() {
 #[test]
 fn alternating_slot_two_generations_behind_publishes_only_dirty_blocks() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (mut live, info) = LiveRevisionStore::create(
         &canonical,
@@ -380,7 +380,7 @@ fn alternating_slot_two_generations_behind_publishes_only_dirty_blocks() {
 #[test]
 fn bulk_growth_catches_up_the_alternate_slot_before_the_next_small_edit() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (mut live, info) = LiveRevisionStore::create(
         &canonical,
@@ -430,8 +430,8 @@ fn bulk_growth_catches_up_the_alternate_slot_before_the_next_small_edit() {
 #[test]
 fn committed_full_copy_crash_recovers_for_an_already_open_survivor() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
-    let alias = directory.path().join("external-alias.lumen");
+    let canonical = directory.path().join("project.spectrum");
+    let alias = directory.path().join("external-alias.spectrum");
     let cache = directory.path().join("cache");
     let (mut live, info) = LiveRevisionStore::create(
         &canonical,
@@ -512,8 +512,8 @@ fn committed_full_copy_crash_recovers_for_an_already_open_survivor() {
 #[test]
 fn hardlink_created_at_exchange_is_discarded_from_private_recovery_without_alias_mutation() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
-    let alias = directory.path().join("exchange-race-alias.lumen");
+    let canonical = directory.path().join("project.spectrum");
+    let alias = directory.path().join("exchange-race-alias.spectrum");
     let cache = directory.path().join("cache");
     let (mut live, info) = LiveRevisionStore::create(
         &canonical,
@@ -589,8 +589,8 @@ fn hardlink_created_at_exchange_is_discarded_from_private_recovery_without_alias
 #[test]
 fn child_crash_after_linked_slot_unlink_recovers_without_the_slot() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
-    let alias = directory.path().join("child-race-alias.lumen");
+    let canonical = directory.path().join("project.spectrum");
+    let alias = directory.path().join("child-race-alias.spectrum");
     let cache = directory.path().join("cache");
     let (live, info) = LiveRevisionStore::create(
         &canonical,
@@ -780,7 +780,7 @@ fn every_incremental_crash_phase_recovers_actual_residual_state() {
     ];
     for (index, fault) in faults.into_iter().enumerate() {
         let directory = tempfile::tempdir().unwrap();
-        let canonical = directory.path().join("project.lumen");
+        let canonical = directory.path().join("project.spectrum");
         let cache = directory.path().join("cache");
         let session = SessionId::new();
         let (live, info) = LiveRevisionStore::create(

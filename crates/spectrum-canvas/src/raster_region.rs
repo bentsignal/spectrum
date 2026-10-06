@@ -7,7 +7,7 @@ use spectrum_imaging::{
     SourceSampleDepth,
 };
 
-const DECODER_CONTRACT_REVISION: &str = "spectrum-prism:image-0.25.10:rgba8:v1";
+const DECODER_CONTRACT_REVISION: &str = "spectrum-canvas:image-0.25.10:rgba8:v1";
 const PNG_HEADER_LIMIT_BYTES: usize = 64 * 1_024 * 1_024;
 
 #[derive(Clone, Debug)]

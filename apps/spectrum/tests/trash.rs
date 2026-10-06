@@ -113,7 +113,4 @@ fn renamed_assets_keep_their_names_after_rescans() {
         .collect();
     assert!(names.contains(&"Harbor at dusk".to_string()));
     assert!(names.contains(&"Poster".to_string()));
-    let item = imported["assets"][0]["item"].as_u64().unwrap().to_string();
-    let inspected = ok(&root, &["images", "--asset", &image, "get", &item]);
-    assert!(inspected.to_string().contains("Harbor at dusk"));
 }

@@ -2,7 +2,7 @@
 //! their content. Trashed assets keep their identity, memberships, and
 //! references, so restoring one returns it to its projects and canvases.
 //! Purged assets leave a record so canvases can draw a same-sized placeholder.
-use crate::{Asset, AssetId, Library, projects::now};
+use crate::{Asset, AssetId, AssetKind, Library, projects::now};
 use anyhow::{Result, bail};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ pub struct Trashed {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Removed {
     pub id: AssetId,
-    pub kind: String,
+    pub kind: AssetKind,
     pub name: String,
     /// Pixel size of the image as last rendered, for placeholders.
     pub size: Option<(u32, u32)>,
@@ -46,7 +46,7 @@ impl Library {
             "INSERT INTO removed VALUES(?1,?2,?3,?4,?5,?6,NULL)",
             params![
                 id.to_string(),
-                asset.kind,
+                asset.kind.as_str(),
                 asset.name,
                 size.map(|s| s.0),
                 size.map(|s| s.1),
@@ -110,9 +110,16 @@ impl Library {
                 |r| {
                     let width: Option<u32> = r.get(2)?;
                     let height: Option<u32> = r.get(3)?;
+                    let kind: String = r.get(0)?;
                     Ok(Removed {
                         id,
-                        kind: r.get(0)?,
+                        kind: kind.parse().map_err(|error: anyhow::Error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                error.into(),
+                            )
+                        })?,
                         name: r.get(1)?,
                         size: width.zip(height),
                         purged: r.get::<_, Option<i64>>(4)?.is_some(),
@@ -165,10 +172,20 @@ mod tests {
     fn trash_hides_assets_until_restored_or_purged() {
         let tmp = tempfile::tempdir().unwrap();
         let mut lib = Library::open(tmp.path()).unwrap();
-        let path = tmp.path().join("data");
-        std::fs::write(&path, b"fixture").unwrap();
-        let image = lib.register("image", "image", &path, Some(1)).unwrap();
-        let canvas = lib.register("canvas", "canvas", &path, Some(2)).unwrap();
+        let image = lib
+            .register(
+                crate::AssetKind::Image,
+                "image",
+                &crate::test_document(tmp.path(), 1),
+            )
+            .unwrap();
+        let canvas = lib
+            .register(
+                crate::AssetKind::Canvas,
+                "canvas",
+                &crate::test_document(tmp.path(), 2),
+            )
+            .unwrap();
         lib.references(canvas.id, &[("layer".into(), image.id)])
             .unwrap();
         let project = lib.create_project("Trip").unwrap();
@@ -181,8 +198,7 @@ mod tests {
         assert_eq!(lib.list().unwrap(), vec![canvas.clone()]);
         assert_eq!(lib.project(project.id).unwrap().assets, 0);
         assert!(lib.unassigned().unwrap().iter().all(|a| a.id != image.id));
-        // Rescans and canvas indexing keep working while the image is trashed.
-        lib.register("image", "image", &path, Some(1)).unwrap();
+        // Canvas indexing keeps working while the image is trashed.
         lib.references(canvas.id, &[("layer".into(), image.id)])
             .unwrap();
         assert!(lib.expired(trashed.purge_after - 1).unwrap().is_empty());

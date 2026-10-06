@@ -204,7 +204,7 @@ fn prepare_small_memory_source(
     }
     let (_, bytes) = crate::font_source::read_secure_regular_file(
         path,
-        crate::revisions::MAX_EMBEDDED_RASTER_BYTES,
+        crate::MAX_EMBEDDED_RASTER_BYTES,
         "export raster source",
     )?;
     let digest = hex_sha256(&bytes);
@@ -223,7 +223,7 @@ fn prepare_small_memory_source(
             sample_depth: SourceSampleDepth::EightBit,
             frame_index: info.descriptor.frame_index,
             page_index: info.descriptor.page_index,
-            decoder_contract: "prism-export-memory-rgba8-v1".into(),
+            decoder_contract: "canvas-export-memory-rgba8-v1".into(),
         },
         capability: RegionReadCapability::SeekableChunks,
         readiness: RegionReadiness::Ready,
@@ -263,7 +263,7 @@ mod tests {
         let temporary_root =
             fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
         tempfile::Builder::new()
-            .prefix("prism-export-provider-")
+            .prefix("canvas-export-provider-")
             .tempdir_in(temporary_root)
             .unwrap()
     }
@@ -316,14 +316,11 @@ mod tests {
             id: 1,
             visible: false,
             name: "Hidden TIFF".into(),
-            kind: LayerKind::Raster {
-                path: source,
-                original_path: None,
-            },
+            kind: LayerKind::Raster { path: source },
             ..Layer::default()
         });
         document.next_id = 2;
-        let mut workspace = Workspace::new(document, None);
+        let mut workspace = Workspace::new(document);
         workspace
             .execute(Command::SetCloneSource {
                 id: 1,
@@ -404,10 +401,7 @@ mod tests {
         document.layers.push(Layer {
             id: 1,
             name: "Masked TIFF".into(),
-            kind: LayerKind::Raster {
-                path: relative,
-                original_path: None,
-            },
+            kind: LayerKind::Raster { path: relative },
             transform: Transform {
                 x: 7.0,
                 y: 5.0,

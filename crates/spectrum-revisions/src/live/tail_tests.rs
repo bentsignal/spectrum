@@ -37,7 +37,7 @@ fn project(application_id: &str) -> NewProject {
 #[test]
 fn exchange_capability_is_probed_once_per_live_store() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (mut live, _) =
         LiveRevisionStore::create(&canonical, &cache, project("spectrum.probe-cache")).unwrap();
@@ -60,7 +60,7 @@ fn exchange_capability_is_probed_once_per_live_store() {
 #[test]
 fn abandoned_exchange_probe_entries_are_ignored_by_recovery() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
+    let canonical = directory.path().join("project.spectrum");
     let cache = directory.path().join("cache");
     let (live, info) =
         LiveRevisionStore::create(&canonical, &cache, project("spectrum.probe-residual")).unwrap();
@@ -91,8 +91,8 @@ fn abandoned_exchange_probe_entries_are_ignored_by_recovery() {
 #[test]
 fn copy_over_stale_canonical_xattr_is_non_authorizing() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
-    let stale = directory.path().join("stale.lumen");
+    let canonical = directory.path().join("project.spectrum");
+    let stale = directory.path().join("stale.spectrum");
     let cache = directory.path().join("cache");
     let (mut live, info) =
         LiveRevisionStore::create(&canonical, &cache, project("spectrum.copy-over-proof")).unwrap();
@@ -130,8 +130,8 @@ fn copy_over_stale_canonical_xattr_is_non_authorizing() {
 #[test]
 fn equal_generation_returned_copy_wins_over_stale_local_proof() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
-    let traveler = directory.path().join("traveler.lumen");
+    let canonical = directory.path().join("project.spectrum");
+    let traveler = directory.path().join("traveler.spectrum");
     let cache = directory.path().join("cache");
     let remote_cache = directory.path().join("remote-cache");
     let (mut local, _) =
@@ -177,8 +177,8 @@ fn equal_generation_returned_copy_wins_over_stale_local_proof() {
 #[test]
 fn corrupted_private_predecessor_is_reconstructed_before_exchange() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
-    let stale = directory.path().join("stale.lumen");
+    let canonical = directory.path().join("project.spectrum");
+    let stale = directory.path().join("stale.spectrum");
     let cache = directory.path().join("cache");
     let (mut live, info) =
         LiveRevisionStore::create(&canonical, &cache, project("spectrum.corrupt-predecessor"))
@@ -230,8 +230,8 @@ fn corrupted_private_predecessor_is_reconstructed_before_exchange() {
 #[test]
 fn valid_future_private_slot_is_rejected_without_mutation() {
     let directory = tempfile::tempdir().unwrap();
-    let canonical = directory.path().join("project.lumen");
-    let future = directory.path().join("future.lumen");
+    let canonical = directory.path().join("project.spectrum");
+    let future = directory.path().join("future.spectrum");
     let cache = directory.path().join("cache");
     let future_cache = directory.path().join("future-cache");
     let (mut live, info) =
@@ -283,7 +283,7 @@ fn valid_future_private_slot_is_rejected_without_mutation() {
 fn intent_removed_abrupt_death_recovers_exact_committed_state() {
     for mode in ["exit", "abort", "kill"] {
         let directory = tempfile::tempdir().unwrap();
-        let canonical = directory.path().join("project.lumen");
+        let canonical = directory.path().join("project.spectrum");
         let cache = directory.path().join("cache");
         let (live, info) = LiveRevisionStore::create(
             &canonical,

@@ -40,7 +40,7 @@ fn paint_project(label: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-paint-{label}-{stamp}.prism"))
+    std::env::temp_dir().join(format!("canvas-paint-{label}-{stamp}.spectrum"))
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn paint_erase_repaint_preserves_rgb_and_canonicalizes_transparency() {
 
 #[test]
 fn first_drag_is_one_undoable_command_and_selection_is_baked() {
-    let mut workspace = Workspace::new(Document::new("Paint", 64, 64), None);
+    let mut workspace = Workspace::new(Document::new("Paint", 64, 64));
     workspace.document.selection = Some(Selection::rectangle(8, 8, 16, 16));
     workspace
         .execute(Command::AddPaintLayerWithStroke {
@@ -133,8 +133,7 @@ fn live_preview_release_export_reopen_undo_and_redo_are_pixel_exact() {
     let session = spectrum_revisions::SessionId::new();
     let mut document = Document::new("Live Brush parity", 96, 72);
     document.background = [0; 4];
-    let mut workspace =
-        Workspace::create_durable(document, &project, actor.clone(), session).unwrap();
+    let mut workspace = Workspace::create(&project, document, actor.clone(), session).unwrap();
     let command = Command::AddPaintLayerWithStroke {
         name: Some("One drag".into()),
         width: 96,
@@ -173,7 +172,7 @@ fn live_preview_release_export_reopen_undo_and_redo_are_pixel_exact() {
     );
     drop(workspace);
 
-    let reopened = Workspace::open_as(&project, actor, session).unwrap();
+    let reopened = Workspace::open(&project, actor, session).unwrap();
     assert_eq!(
         render_document(&reopened.document, None)
             .unwrap()
@@ -186,7 +185,7 @@ fn live_preview_release_export_reopen_undo_and_redo_are_pixel_exact() {
 
 #[test]
 fn malformed_snapshot_selection_is_rejected_atomically() {
-    let mut workspace = Workspace::new(Document::new("Paint", 32, 32), None);
+    let mut workspace = Workspace::new(Document::new("Paint", 32, 32));
     let error = workspace
         .execute(Command::AddPaintLayerWithStroke {
             name: None,
@@ -204,7 +203,7 @@ fn malformed_snapshot_selection_is_rejected_atomically() {
 
 #[test]
 fn sixteen_k_diagonal_with_tiny_selection_captures_only_the_intersection() {
-    let mut workspace = Workspace::new(Document::new("Paint", 16_384, 16_384), None);
+    let mut workspace = Workspace::new(Document::new("Paint", 16_384, 16_384));
     workspace.document.selection = Some(Selection::rectangle(8_000, 8_000, 8, 8));
     workspace
         .execute(Command::AddPaintLayerWithStroke {
@@ -240,7 +239,7 @@ fn sixteen_k_diagonal_with_tiny_selection_captures_only_the_intersection() {
 
 #[test]
 fn sixteen_k_diagonal_with_select_all_uses_a_zero_byte_rectangle_clip() {
-    let mut workspace = Workspace::new(Document::new("Paint", 16_384, 16_384), None);
+    let mut workspace = Workspace::new(Document::new("Paint", 16_384, 16_384));
     workspace.document.selection = Some(Selection::rectangle(0, 0, 16_384, 16_384));
     workspace
         .execute(Command::AddPaintLayerWithStroke {
@@ -351,7 +350,7 @@ fn rotated_nonuniform_full_and_region_renders_are_exact() {
 }
 
 #[test]
-fn path_transfer_remains_v4_and_paint_v5_round_trips() {
+fn path_and_paint_transfers_round_trip() {
     let geometry = PathGeometry::new(
         32,
         24,
@@ -371,7 +370,7 @@ fn path_transfer_remains_v4_and_paint_v5_round_trips() {
     });
     assert_eq!(
         LayerTransfer::from_document(&document, 1).unwrap().version,
-        4
+        LAYER_TRANSFER_VERSION
     );
 
     let program = BrushProgram::new(64, 64)
@@ -387,7 +386,7 @@ fn path_transfer_remains_v4_and_paint_v5_round_trips() {
     paint.id = 2;
     document.layers.push(paint);
     let transfer = LayerTransfer::from_document(&document, 2).unwrap();
-    assert_eq!(transfer.version, 5);
+    assert_eq!(transfer.version, LAYER_TRANSFER_VERSION);
     assert_eq!(
         LayerTransfer::from_json(&transfer.to_json().unwrap()).unwrap(),
         transfer

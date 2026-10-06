@@ -31,7 +31,7 @@ impl PreparedRasterFixture {
         let temporary_root =
             std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
         let root = temporary_root.join(format!(
-            "prism-benchmark-derived-raster-{}-{stamp}",
+            "canvas-benchmark-derived-raster-{}-{stamp}",
             std::process::id()
         ));
         std::fs::create_dir(&root)?;

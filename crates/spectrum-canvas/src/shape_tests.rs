@@ -6,12 +6,12 @@ fn test_directory(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("prism-{label}-{stamp}"))
+    std::env::temp_dir().join(format!("canvas-{label}-{stamp}"))
 }
 
 #[test]
 fn editable_shapes_render_fill_and_inside_strokes() {
-    let mut workspace = Workspace::new(Document::new("Shapes", 64, 40), None);
+    let mut workspace = Workspace::new(Document::new("Shapes", 64, 40));
     workspace.document.background = [0, 0, 0, 0];
     workspace
         .execute(Command::AddEllipse {
@@ -47,16 +47,16 @@ fn editable_shapes_render_fill_and_inside_strokes() {
 fn durable_workspace_round_trips_ellipse_and_stroke() {
     let directory = test_directory("durable-shapes");
     std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("shapes.prism");
+    let project_path = directory.join("shapes.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let actor = spectrum_revisions::Actor {
         id: "person:shapes".into(),
         display_name: "Shape tester".into(),
         kind: spectrum_revisions::ActorKind::Human,
     };
-    let mut workspace = Workspace::create_durable(
-        Document::new("Shapes", 400, 300),
+    let mut workspace = Workspace::create(
         &project_path,
+        Document::new("Shapes", 400, 300),
         actor.clone(),
         session,
     )
@@ -83,7 +83,7 @@ fn durable_workspace_round_trips_ellipse_and_stroke() {
         .unwrap();
     drop(workspace);
 
-    let reopened = Workspace::open_as(&project_path, actor, session).unwrap();
+    let reopened = Workspace::open(&project_path, actor, session).unwrap();
     let layer = reopened.document.layer(1).unwrap();
     assert!(matches!(
         layer.kind,
@@ -103,7 +103,7 @@ fn durable_workspace_round_trips_ellipse_and_stroke() {
 fn scaled_shape_rendering_regenerates_geometry_at_output_resolution() {
     let mut document = Document::new("Scaled geometry", 80, 80);
     document.background = [0, 0, 0, 0];
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::AddEllipse {
             name: Some("Vector circle".into()),
@@ -159,7 +159,7 @@ fn scaled_shape_rendering_regenerates_geometry_at_output_resolution() {
 
 #[test]
 fn rasterize_shape_freezes_pixels_and_is_undoable() {
-    let mut workspace = Workspace::new(Document::new("Rasterize", 100, 100), None);
+    let mut workspace = Workspace::new(Document::new("Rasterize", 100, 100));
     workspace
         .execute(Command::AddRectangle {
             name: Some("Editable badge".into()),
@@ -216,7 +216,7 @@ fn rasterize_shape_freezes_pixels_and_is_undoable() {
 
 #[test]
 fn masked_shape_dimension_edits_fail_atomically() {
-    let mut workspace = Workspace::new(Document::new("Masked edits", 40, 30), None);
+    let mut workspace = Workspace::new(Document::new("Masked edits", 40, 30));
     workspace
         .execute(Command::AddRectangle {
             name: None,
@@ -266,7 +266,7 @@ fn masked_shape_dimension_edits_fail_atomically() {
 fn rasterizing_a_masked_shape_bakes_and_clears_the_mask_across_reopen() {
     let directory = test_directory("durable-masked-rasterized-shape");
     std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("masked-rasterized.prism");
+    let project_path = directory.join("masked-rasterized.spectrum");
     let actor = spectrum_revisions::Actor {
         id: "person:masked-rasterize".into(),
         display_name: "Masked rasterize tester".into(),
@@ -275,8 +275,7 @@ fn rasterizing_a_masked_shape_bakes_and_clears_the_mask_across_reopen() {
     let session = spectrum_revisions::SessionId::new();
     let mut initial = Document::new("Masked rasterize", 12, 8);
     initial.background = [0; 4];
-    let mut workspace =
-        Workspace::create_durable(initial, &project_path, actor.clone(), session).unwrap();
+    let mut workspace = Workspace::create(&project_path, initial, actor.clone(), session).unwrap();
     workspace
         .execute(Command::SetSelection {
             selection: Some(Selection::color_mask(
@@ -314,7 +313,7 @@ fn rasterizing_a_masked_shape_bakes_and_clears_the_mask_across_reopen() {
     );
     drop(workspace);
 
-    let reopened = Workspace::open_as(&project_path, actor, session).unwrap();
+    let reopened = Workspace::open(&project_path, actor, session).unwrap();
     assert!(reopened.document.layer(1).unwrap().pixel_mask.is_none());
     assert!(matches!(
         reopened.document.layer(1).unwrap().kind,
@@ -334,16 +333,16 @@ fn rasterizing_a_masked_shape_bakes_and_clears_the_mask_across_reopen() {
 fn durable_rasterization_embeds_pixels_and_replays_history() {
     let directory = test_directory("durable-rasterized-shape");
     std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("rasterized.prism");
+    let project_path = directory.join("rasterized.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let actor = spectrum_revisions::Actor {
         id: "person:rasterize".into(),
         display_name: "Rasterize tester".into(),
         kind: spectrum_revisions::ActorKind::Human,
     };
-    let mut workspace = Workspace::create_durable(
-        Document::new("Durable rasterize", 320, 240),
+    let mut workspace = Workspace::create(
         &project_path,
+        Document::new("Durable rasterize", 320, 240),
         actor.clone(),
         session,
     )
@@ -368,7 +367,7 @@ fn durable_rasterization_embeds_pixels_and_replays_history() {
         .unwrap();
     drop(workspace);
 
-    let mut reopened = Workspace::open_as(&project_path, actor, session).unwrap();
+    let mut reopened = Workspace::open(&project_path, actor, session).unwrap();
     let LayerKind::Raster { path, .. } = &reopened.document.layer(1).unwrap().kind else {
         panic!("rasterized shape did not replay");
     };
@@ -384,50 +383,5 @@ fn durable_rasterization_embeds_pixels_and_replays_history() {
         }
     ));
     drop(reopened);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn legacy_shape_json_without_stroke_keeps_editable_geometry() {
-    let directory = test_directory("legacy-shape-json");
-    std::fs::create_dir_all(&directory).unwrap();
-    let project_path = directory.join("legacy.mica");
-    std::fs::write(
-        &project_path,
-        r#"{
-            "version": 1,
-            "name": "Legacy shape",
-            "width": 320,
-            "height": 200,
-            "background": [0,0,0,0],
-            "layers": [{
-                "id": 1,
-                "name": "Old rectangle",
-                "visible": true,
-                "locked": false,
-                "opacity": 1.0,
-                "blend_mode": "normal",
-                "transform": {"x": 4.0, "y": 5.0, "scale_x": 2.0, "scale_y": 2.0, "rotation": 0.0},
-                "adjustments": {},
-                "mask": {},
-                "clip_to_below": false,
-                "kind": {"type": "rectangle", "width": 40, "height": 20, "color": [1,2,3,255], "corner_radius": 6.0}
-            }],
-            "selected": 1,
-            "next_id": 2
-        }"#,
-    )
-    .unwrap();
-    let document = load_document(&project_path).unwrap();
-    assert!(matches!(
-        document.layer(1).unwrap().kind,
-        LayerKind::Rectangle {
-            width: 40,
-            height: 20,
-            corner_radius: 6.0,
-            ..
-        }
-    ));
-    assert_eq!(document.layer(1).unwrap().stroke, ShapeStroke::default());
     std::fs::remove_dir_all(directory).unwrap();
 }

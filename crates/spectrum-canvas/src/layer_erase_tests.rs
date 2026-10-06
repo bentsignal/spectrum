@@ -3,7 +3,7 @@ use super::*;
 fn square_document() -> Workspace {
     let mut document = Document::new("Erase", 80, 80);
     document.background = [0, 0, 0, 0];
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::AddRectangle {
             name: None,
@@ -93,7 +93,7 @@ fn the_hidden_part_follows_the_layer_when_it_turns() {
 fn hiding_a_selection_on_text_keeps_the_text_editable() {
     let mut document = Document::new("Text", 400, 120);
     document.background = [0, 0, 0, 0];
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     workspace
         .execute(Command::AddText {
             text: "HHHHHH".into(),
@@ -174,14 +174,14 @@ fn erasing_a_stroke_from_a_shape_clears_under_the_brush() {
 #[test]
 fn painted_masks_survive_a_durable_round_trip() {
     let directory = std::env::temp_dir().join(format!(
-        "prism-painted-mask-{}",
+        "canvas-painted-mask-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
     std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join("erase.prism");
+    let path = directory.join("erase.spectrum");
     let session = spectrum_revisions::SessionId::new();
     let actor = spectrum_revisions::Actor {
         id: "person:erase".into(),
@@ -190,7 +190,7 @@ fn painted_masks_survive_a_durable_round_trip() {
     };
     let mut document = Document::new("Erase", 80, 80);
     document.background = [0, 0, 0, 0];
-    let mut workspace = Workspace::create_durable(document, &path, actor.clone(), session).unwrap();
+    let mut workspace = Workspace::create(&path, document, actor.clone(), session).unwrap();
     workspace
         .execute(Command::AddRectangle {
             name: None,
@@ -212,7 +212,7 @@ fn painted_masks_survive_a_durable_round_trip() {
         .unwrap()
         .to_rgba8();
     drop(workspace);
-    let reopened = Workspace::open_as(&path, actor, session).unwrap();
+    let reopened = Workspace::open(&path, actor, session).unwrap();
     let after = render_document_scaled(&reopened.document, 1.0)
         .unwrap()
         .to_rgba8();
@@ -224,7 +224,7 @@ fn painted_masks_survive_a_durable_round_trip() {
 #[test]
 fn erased_images_render_the_same_from_the_interactive_cache() {
     let directory = std::env::temp_dir().join(format!(
-        "prism-erase-image-{}",
+        "canvas-erase-image-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -241,10 +241,7 @@ fn erased_images_render_the_same_from_the_interactive_cache() {
     document.background = [0, 0, 0, 0];
     document.layers.push(Layer {
         id: 1,
-        kind: LayerKind::Raster {
-            path,
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path },
         transform: Transform {
             x: 8.0,
             y: 6.0,
@@ -255,7 +252,7 @@ fn erased_images_render_the_same_from_the_interactive_cache() {
         ..Layer::default()
     });
     document.next_id = 2;
-    let mut workspace = Workspace::new(document, None);
+    let mut workspace = Workspace::new(document);
     let style = BrushStyle {
         mode: BrushMode::Erase,
         size: 10.0,

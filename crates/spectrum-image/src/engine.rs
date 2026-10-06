@@ -1,8 +1,4 @@
-use std::{
-    fs::File,
-    io::BufWriter,
-    path::{Path, PathBuf},
-};
+use std::{fs::File, io::BufWriter, path::Path};
 
 use anyhow::{Context, Result, bail};
 use image::{DynamicImage, GrayImage, ImageEncoder, RgbImage, RgbaImage, imageops::FilterType};
@@ -12,7 +8,7 @@ use rawler::{
     imgop::develop::{Intermediate, RawDevelop},
 };
 
-use crate::{Adjustments, Photo, project::is_raw_image};
+use crate::{Adjustments, Image, is_raw_image};
 pub use spectrum_imaging::{ExportFormat, RenderOptions, render_image};
 
 const MAX_AUTHORITATIVE_RAW_PIXELS: u64 = 25_000_000;
@@ -23,10 +19,10 @@ const MAX_AUTHORITATIVE_RAW_WORKING_BYTES: u64 =
 trait PhotoDecoder {
     fn authoritative(
         &self,
-        photo: &Photo,
+        photo: &Image,
         purpose: AuthoritativeDecodePurpose,
     ) -> Result<DynamicImage>;
-    fn proxy(&self, photo: &Photo, max_size: u32) -> Result<DynamicImage>;
+    fn proxy(&self, photo: &Image, max_size: u32) -> Result<DynamicImage>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +36,7 @@ struct FilePhotoDecoder;
 impl PhotoDecoder for FilePhotoDecoder {
     fn authoritative(
         &self,
-        photo: &Photo,
+        photo: &Image,
         purpose: AuthoritativeDecodePurpose,
     ) -> Result<DynamicImage> {
         if is_raw_image(&photo.path) {
@@ -50,7 +46,7 @@ impl PhotoDecoder for FilePhotoDecoder {
         }
     }
 
-    fn proxy(&self, photo: &Photo, max_size: u32) -> Result<DynamicImage> {
+    fn proxy(&self, photo: &Image, max_size: u32) -> Result<DynamicImage> {
         if !is_raw_image(&photo.path) {
             return decode_raster(photo);
         }
@@ -71,12 +67,12 @@ impl PhotoDecoder for FilePhotoDecoder {
     }
 }
 
-pub fn render_photo(photo: &Photo, options: RenderOptions) -> Result<DynamicImage> {
-    render_photo_with_adjustments(photo, photo.adjustments.clone(), options)
+pub fn render(photo: &Image, options: RenderOptions) -> Result<DynamicImage> {
+    render_with_adjustments(photo, photo.adjustments.clone(), options)
 }
 
-pub fn render_photo_with_adjustments(
-    photo: &Photo,
+pub fn render_with_adjustments(
+    photo: &Image,
     adjustments: Adjustments,
     options: RenderOptions,
 ) -> Result<DynamicImage> {
@@ -88,7 +84,7 @@ pub fn render_photo_with_adjustments(
 /// Geometry is applied at source resolution before the long-edge limit, exactly
 /// as it is for a size-limited export.
 pub fn render_settled_preview(
-    photo: &Photo,
+    photo: &Image,
     adjustments: Adjustments,
     max_size: u32,
 ) -> Result<DynamicImage> {
@@ -102,7 +98,7 @@ pub fn render_settled_preview(
 /// in-progress edits. The settled raster applies its size limit after geometry
 /// and is the image that may be published with its histogram.
 pub fn render_settled_preview_with_source(
-    photo: &Photo,
+    photo: &Image,
     adjustments: Adjustments,
     max_size: u32,
 ) -> Result<(DynamicImage, DynamicImage)> {
@@ -111,7 +107,7 @@ pub fn render_settled_preview_with_source(
 
 #[cfg(test)]
 fn render_settled_preview_with_decoder(
-    photo: &Photo,
+    photo: &Image,
     adjustments: Adjustments,
     max_size: u32,
     decoder: &impl PhotoDecoder,
@@ -121,7 +117,7 @@ fn render_settled_preview_with_decoder(
 }
 
 fn render_settled_preview_with_source_with_decoder(
-    photo: &Photo,
+    photo: &Image,
     adjustments: Adjustments,
     max_size: u32,
     decoder: &impl PhotoDecoder,
@@ -139,7 +135,7 @@ fn render_settled_preview_with_source_with_decoder(
 }
 
 fn render_photo_with_decoder(
-    photo: &Photo,
+    photo: &Image,
     adjustments: Adjustments,
     options: RenderOptions,
     decoder: &impl PhotoDecoder,
@@ -154,7 +150,7 @@ fn render_photo_with_decoder(
 }
 
 fn render_with_decoder(
-    photo: &Photo,
+    photo: &Image,
     adjustments: Adjustments,
     options: RenderOptions,
     decoder: &impl PhotoDecoder,
@@ -168,12 +164,12 @@ fn render_with_decoder(
 ///
 /// RAW inputs are always developed through the same path used by export. Call
 /// [`render_settled_preview`] when `max_size` must be applied after geometry.
-pub fn decode_photo(photo: &Photo, max_size: Option<u32>) -> Result<DynamicImage> {
+pub fn decode_photo(photo: &Image, max_size: Option<u32>) -> Result<DynamicImage> {
     decode_photo_with_decoder(photo, max_size, &FilePhotoDecoder)
 }
 
 fn decode_photo_with_decoder(
-    photo: &Photo,
+    photo: &Image,
     max_size: Option<u32>,
     decoder: &impl PhotoDecoder,
 ) -> Result<DynamicImage> {
@@ -192,12 +188,12 @@ fn decode_photo_with_decoder(
 /// export fidelity, such as catalog-library and filmstrip thumbnails. RAW
 /// proxies may use the camera's embedded rendering and must never be used as a
 /// settled develop preview or an export source.
-pub fn decode_photo_proxy(photo: &Photo, max_size: u32) -> Result<DynamicImage> {
+pub fn decode_photo_proxy(photo: &Image, max_size: u32) -> Result<DynamicImage> {
     decode_photo_proxy_with_decoder(photo, max_size, &FilePhotoDecoder)
 }
 
 fn decode_photo_proxy_with_decoder(
-    photo: &Photo,
+    photo: &Image,
     max_size: u32,
     decoder: &impl PhotoDecoder,
 ) -> Result<DynamicImage> {
@@ -207,7 +203,7 @@ fn decode_photo_proxy_with_decoder(
     ))
 }
 
-fn decode_raster(photo: &Photo) -> Result<DynamicImage> {
+fn decode_raster(photo: &Image) -> Result<DynamicImage> {
     image::ImageReader::open(&photo.path)
         .with_context(|| format!("could not open {}", photo.path.display()))?
         .with_guessed_format()?
@@ -240,7 +236,7 @@ pub fn render_preview_source(source: DynamicImage, adjustments: Adjustments) -> 
     render_image(source, adjustments, RenderOptions::default())
 }
 
-fn develop_raw(photo: &Photo, purpose: AuthoritativeDecodePurpose) -> Result<DynamicImage> {
+fn develop_raw(photo: &Image, purpose: AuthoritativeDecodePurpose) -> Result<DynamicImage> {
     if purpose == AuthoritativeDecodePurpose::SettledPreview {
         validate_raw_develop_budget(photo.width as u64, photo.height as u64, &photo.path)?;
     }
@@ -268,7 +264,7 @@ fn validate_raw_develop_budget(width: u64, height: u64, path: &Path) -> Result<(
         .context("RAW dimensions exceed the supported range")?;
     if pixels > MAX_AUTHORITATIVE_RAW_PIXELS {
         bail!(
-            "RAW {} is {width}x{height} ({pixels} pixels), above Lumen's {}-pixel authoritative development limit ({} MiB working budget)",
+            "RAW {} is {width}x{height} ({pixels} pixels), above the {}-pixel authoritative development limit ({} MiB working budget)",
             path.display(),
             MAX_AUTHORITATIVE_RAW_PIXELS,
             MAX_AUTHORITATIVE_RAW_WORKING_BYTES / (1024 * 1024),
@@ -316,7 +312,7 @@ fn raw_u16_to_u8(value: u16) -> u8 {
     ((u32::from(value) + 128) / 257) as u8
 }
 
-fn orient_embedded_preview(image: DynamicImage, photo: &Photo) -> DynamicImage {
+fn orient_embedded_preview(image: DynamicImage, photo: &Image) -> DynamicImage {
     let expected_landscape = photo.width >= photo.height;
     let actual_landscape = image.width() >= image.height();
     if expected_landscape != actual_landscape {
@@ -345,8 +341,8 @@ fn apply_orientation(mut image: DynamicImage, orientation: Orientation) -> Dynam
     image
 }
 
-pub fn export_photo(
-    photo: &Photo,
+pub fn export(
+    photo: &Image,
     destination: &Path,
     options: RenderOptions,
     jpeg_quality: u8,
@@ -354,7 +350,7 @@ pub fn export_photo(
     if export_destination_aliases_source(&photo.path, destination) {
         bail!("export destination cannot overwrite the original photo");
     }
-    let rendered = render_photo(photo, options)?;
+    let rendered = render(photo, options)?;
     if let Some(parent) = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -388,11 +384,6 @@ fn export_destination_aliases_source(source: &Path, destination: &Path) -> bool 
     source == destination || same_file::is_same_file(source, destination).unwrap_or(false)
 }
 
-pub fn batch_destination(photo: &Photo, directory: &Path, format: ExportFormat) -> PathBuf {
-    let stem = photo.path.file_stem().unwrap_or_default().to_string_lossy();
-    directory.join(format!("{stem}-lumen-{}.{}", photo.id, format.extension()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +392,7 @@ mod tests {
     use std::{
         cell::{Cell, RefCell},
         fs,
+        path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
     };
 
@@ -412,7 +404,7 @@ mod tests {
         fn new(label: &str) -> Self {
             let unique = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "lumen-engine-{label}-{}-{unique}",
+                "image-engine-{label}-{}-{unique}",
                 std::process::id()
             ));
             fs::create_dir_all(&path).unwrap();
@@ -445,7 +437,7 @@ mod tests {
     impl PhotoDecoder for ObservableRawDecoder {
         fn authoritative(
             &self,
-            _photo: &Photo,
+            _photo: &Image,
             purpose: AuthoritativeDecodePurpose,
         ) -> Result<DynamicImage> {
             self.authoritative_calls
@@ -458,7 +450,7 @@ mod tests {
             )))
         }
 
-        fn proxy(&self, _photo: &Photo, _max_size: u32) -> Result<DynamicImage> {
+        fn proxy(&self, _photo: &Image, _max_size: u32) -> Result<DynamicImage> {
             self.proxy_calls.set(self.proxy_calls.get() + 1);
             Ok(DynamicImage::ImageRgba8(RgbaImage::from_pixel(
                 8,
@@ -473,13 +465,13 @@ mod tests {
     impl PhotoDecoder for SixThousandByFourThousandDecoder {
         fn authoritative(
             &self,
-            _photo: &Photo,
+            _photo: &Image,
             _purpose: AuthoritativeDecodePurpose,
         ) -> Result<DynamicImage> {
             Ok(DynamicImage::new_rgb8(6_000, 4_000))
         }
 
-        fn proxy(&self, _photo: &Photo, _max_size: u32) -> Result<DynamicImage> {
+        fn proxy(&self, _photo: &Image, _max_size: u32) -> Result<DynamicImage> {
             unreachable!("dimension test must use authoritative pixels")
         }
     }
@@ -569,17 +561,6 @@ mod tests {
     }
 
     #[test]
-    fn batch_names_are_unique_for_same_named_sources() {
-        let first = Photo::new(4, "a/frame.arw".into(), "frame.arw".into(), 1, 1);
-        let second = Photo::new(9, "b/frame.arw".into(), "frame.arw".into(), 1, 1);
-        let directory = Path::new("exports");
-        assert_ne!(
-            batch_destination(&first, directory, ExportFormat::Jpeg),
-            batch_destination(&second, directory, ExportFormat::Jpeg)
-        );
-    }
-
-    #[test]
     fn raw_orientation_swaps_dimensions_when_transposed() {
         let source = DynamicImage::new_rgba8(4, 2);
         assert_eq!(
@@ -590,7 +571,7 @@ mod tests {
 
     #[test]
     fn raw_settled_preview_and_export_use_authoritative_pixels_while_thumbnail_uses_proxy() {
-        let photo = Photo::new(1, "observable.arw".into(), "observable.arw".into(), 8, 6);
+        let photo = Image::new("observable.arw".into(), 8, 6);
         let decoder = ObservableRawDecoder::new();
         let adjustments = Adjustments {
             exposure: 0.25,
@@ -628,13 +609,7 @@ mod tests {
 
     #[test]
     fn max_size_is_applied_after_crop_geometry() {
-        let photo = Photo::new(
-            1,
-            "dimensions.png".into(),
-            "dimensions.png".into(),
-            6_000,
-            4_000,
-        );
+        let photo = Image::new("dimensions.png".into(), 6_000, 4_000);
         let uncropped = render_photo_with_decoder(
             &photo,
             Adjustments::default(),
@@ -697,19 +672,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual release-mode probe requiring LUMEN_RAW_PREVIEW_SAMPLE"]
+    #[ignore = "manual release-mode probe requiring SPECTRUM_RAW_PREVIEW_SAMPLE"]
     fn authoritative_raw_preview_memory_probe() {
-        let path = std::env::var_os("LUMEN_RAW_PREVIEW_SAMPLE")
+        let path = std::env::var_os("SPECTRUM_RAW_PREVIEW_SAMPLE")
             .map(PathBuf::from)
-            .expect("set LUMEN_RAW_PREVIEW_SAMPLE to an immutable 6000x4000 Sony ARW");
+            .expect("set SPECTRUM_RAW_PREVIEW_SAMPLE to an immutable 6000x4000 Sony ARW");
         let original_metadata = fs::metadata(&path).unwrap();
-        let photo = Photo::new(
-            1,
-            path.clone(),
-            path.file_name().unwrap().to_string_lossy().into_owned(),
-            6_000,
-            4_000,
-        );
+        let photo = Image::new(path.clone(), 6_000, 4_000);
 
         let preview = render_settled_preview(&photo, Adjustments::default(), 1_800).unwrap();
 
@@ -736,7 +705,7 @@ mod tests {
         });
         source.save(&original_path).unwrap();
         let original_bytes = fs::read(&original_path).unwrap();
-        let mut photo = Photo::new(1, original_path.clone(), "original.png".into(), 47, 31);
+        let mut photo = Image::new(original_path.clone(), 47, 31);
 
         for (name, adjustments) in parity_adjustments() {
             photo.adjustments = adjustments.clone();
@@ -744,7 +713,7 @@ mod tests {
                 .unwrap()
                 .to_rgba8();
             let export_path = directory.0.join(format!("{name}.png"));
-            export_photo(
+            export(
                 &photo,
                 &export_path,
                 RenderOptions { max_size: Some(29) },
@@ -776,10 +745,9 @@ mod tests {
             .unwrap();
         fs::hard_link(&original_path, &hard_link_path).unwrap();
         let original_bytes = fs::read(&original_path).unwrap();
-        let photo = Photo::new(1, original_path.clone(), "original.png".into(), 4, 3);
+        let photo = Image::new(original_path.clone(), 4, 3);
 
-        let error =
-            export_photo(&photo, &hard_link_path, RenderOptions::default(), 100).unwrap_err();
+        let error = export(&photo, &hard_link_path, RenderOptions::default(), 100).unwrap_err();
 
         assert!(
             error

@@ -174,10 +174,7 @@ fn mixed_document(png: PathBuf, jpeg: PathBuf, tiff: PathBuf) -> Document {
             y: 8_600.0,
             ..Transform::default()
         },
-        kind: LayerKind::Raster {
-            path: png,
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path: png },
         ..Layer::default()
     });
     document.layers.push(Layer {
@@ -203,10 +200,7 @@ fn mixed_document(png: PathBuf, jpeg: PathBuf, tiff: PathBuf) -> Document {
             sharpening: 2.0,
             ..Default::default()
         },
-        kind: LayerKind::Raster {
-            path: jpeg,
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path: jpeg },
         ..Layer::default()
     });
     document.layers.push(Layer {
@@ -245,10 +239,7 @@ fn mixed_document(png: PathBuf, jpeg: PathBuf, tiff: PathBuf) -> Document {
             }],
             ..Default::default()
         },
-        kind: LayerKind::Raster {
-            path: tiff,
-            original_path: None,
-        },
+        kind: LayerKind::Raster { path: tiff },
         ..Layer::default()
     });
     document
@@ -274,7 +265,7 @@ impl BenchmarkDirectory {
     fn new() -> Result<Self> {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "prism-mixed-raster-benchmark-{}-{stamp}",
+            "canvas-mixed-raster-benchmark-{}-{stamp}",
             std::process::id()
         ));
         std::fs::create_dir(&path)?;

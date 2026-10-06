@@ -288,7 +288,7 @@ fn measure_drag_preview() -> Result<LiveBrushMeasurement> {
 
     let settle_started = Instant::now();
     let final_command = live_brush_command(LIVE_BRUSH_FRAMES * LIVE_BRUSH_SAMPLES_PER_FRAME)?;
-    let mut workspace = Workspace::new(base.clone(), None);
+    let mut workspace = Workspace::new(base.clone());
     workspace.execute(final_command)?;
     let (settled, settled_stats) =
         render_document_region_scaled_with_stats(&workspace.document, 1.0, region)?;

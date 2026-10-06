@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn selection_masks_the_layer_where_it_was_drawn() {
-        let mut workspace = Workspace::new(document(), None);
+        let mut workspace = Workspace::new(document());
         let lasso = rectangle_lasso((20.0, 0.0), (40.0, 30.0)).unwrap();
         workspace
             .execute(Command::LassoSelection {

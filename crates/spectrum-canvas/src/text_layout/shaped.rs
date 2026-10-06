@@ -2,7 +2,7 @@ use std::{collections::VecDeque, ops::Range};
 
 use anyhow::{Context, Result, bail};
 use image::{Rgba, RgbaImage};
-use spectrum_fonts::{HarfBuzzShaper, Script, ShapeRequest, ShapingSample, TextDirection};
+use spectrum_fonts::{HarfBuzzShaper, Script, ShapeRequest, TextDirection};
 use unicode_bidi::BidiInfo;
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 use unicode_script::{Script as UnicodeScript, UnicodeScript as _};
@@ -206,50 +206,6 @@ pub(super) fn render_region(
         bail!("text render region exceeds the layout bounds");
     }
     render_layout_region(&layout, color, typography, region)
-}
-
-pub(crate) struct PrimaryFontShapingSample {
-    pub(crate) sample: ShapingSample,
-    pub(crate) item_text: String,
-}
-
-pub(crate) fn primary_font_shaping_samples(
-    text: &str,
-    typography: &TextTypography,
-    primary_font: &[u8],
-) -> Result<Vec<PrimaryFontShapingSample>> {
-    validate_inputs(text, 1.0, typography)?;
-    let fonts = ResolvedFonts::from_primary_bytes(primary_font)?;
-    let context = ShapingContext::new(text);
-    let mut samples = Vec::new();
-    for paragraph in &context.bidi.paragraphs {
-        if paragraph.range.is_empty() {
-            continue;
-        }
-        let (_, visual_runs) = context.bidi.visual_runs(paragraph, paragraph.range.clone());
-        for visual_run in visual_runs {
-            let direction = if context.bidi.levels[visual_run.start].is_rtl() {
-                TextDirection::RightToLeft
-            } else {
-                TextDirection::LeftToRight
-            };
-            for group in resolved_groups(text, visual_run, &fonts)? {
-                if group.face != FaceChoice::Primary {
-                    continue;
-                }
-                let script = Script::from_iso15924(group.script.as_iso15924_tag().to_be_bytes())?;
-                samples.push(PrimaryFontShapingSample {
-                    item_text: text[group.range.clone()].to_owned(),
-                    sample: ShapingSample::new(text)
-                        .item_range(group.range)
-                        .direction(direction)
-                        .script(script)
-                        .language(typography.shaping.resolved_language()),
-                });
-            }
-        }
-    }
-    Ok(samples)
 }
 
 fn layout_text(

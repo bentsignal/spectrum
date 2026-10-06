@@ -20,16 +20,16 @@ impl Fixture {
         let directory = tempfile::tempdir().unwrap();
         let human_session = SessionId::new();
         let (store, project) = RevisionStore::create(
-            &directory.path().join("project.prism"),
+            &directory.path().join("project.spectrum"),
             NewProject {
-                application_id: "spectrum.prism".into(),
+                application_id: "spectrum.spectrum".into(),
                 application_version: "1.0.0".into(),
                 actor: human("person:1", "Person"),
                 session_id: human_session,
                 root_label: Some("Created project".into()),
-                track_kind: "prism.document".into(),
+                track_kind: "test.document".into(),
                 track_label: "Document".into(),
-                initial_snapshots: vec![payload("prism.document", 1, b"root")],
+                initial_snapshots: vec![payload("test.document", 1, b"root")],
                 assets: Vec::new(),
             },
         )
@@ -52,7 +52,7 @@ impl Fixture {
                 application_version: "1.0.0".into(),
                 label: Some(label.into()),
                 command_count: 1,
-                operation_payloads: vec![payload("prism.commands", 1, label.as_bytes())],
+                operation_payloads: vec![payload("test.commands", 1, label.as_bytes())],
                 snapshots: Vec::new(),
                 assets: Vec::new(),
             })
@@ -65,13 +65,13 @@ struct V1Compatibility;
 
 impl Compatibility for V1Compatibility {
     fn supports_snapshot(&self, encoding: &Encoding) -> bool {
-        encoding.family == "prism.document"
+        encoding.family == "test.document"
             && encoding.version <= 1
             && encoding.required_capabilities.is_empty()
     }
 
     fn supports_operations(&self, encoding: &Encoding) -> bool {
-        encoding.family == "prism.commands"
+        encoding.family == "test.commands"
             && encoding.version <= 1
             && encoding.required_capabilities.is_empty()
     }
@@ -80,11 +80,11 @@ impl Compatibility for V1Compatibility {
 #[test]
 fn creates_one_portable_revision_store_and_reopens_it() {
     let mut fixture = Fixture::new();
-    let path = fixture.directory.path().join("project.prism");
+    let path = fixture.directory.path().join("project.spectrum");
     let project_id = fixture.store.project_info().unwrap().project_id;
     let latest = fixture.append(fixture.human_session, fixture.root, "Portable edit");
 
-    let portable_copy = fixture.directory.path().join("portable-copy.prism");
+    let portable_copy = fixture.directory.path().join("portable-copy.spectrum");
     fs::copy(&path, &portable_copy).unwrap();
     let copied = RevisionStore::open(&portable_copy).unwrap();
     assert_eq!(copied.project_info().unwrap().project_id, project_id);
@@ -92,12 +92,12 @@ fn creates_one_portable_revision_store_and_reopens_it() {
     drop(fixture.store);
 
     assert!(path.is_file());
-    assert!(!path.with_extension("prism-wal").exists());
+    assert!(!path.with_extension("canvas-wal").exists());
     let reopened = RevisionStore::open(&path).unwrap();
     let info = reopened.project_info().unwrap();
     assert_eq!(info.project_id, project_id);
-    assert_eq!(info.application_id, "spectrum.prism");
-    assert_eq!(info.container_format, 3);
+    assert_eq!(info.application_id, "spectrum.spectrum");
+    assert_eq!(info.container_format, 1);
     assert_eq!(info.root_revision, fixture.root);
     assert_eq!(
         reopened
@@ -110,84 +110,9 @@ fn creates_one_portable_revision_store_and_reopens_it() {
 }
 
 #[test]
-fn existing_revision_containers_gain_collaboration_metadata_on_open() {
-    let fixture = Fixture::new();
-    let path = fixture.directory.path().join("project.prism");
-    let human_session = fixture.human_session;
-    fixture.store.checkpoint().unwrap();
-    drop(fixture.store);
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    connection
-        .execute_batch("DROP TABLE collaborations;")
-        .unwrap();
-    drop(connection);
-
-    let mut reopened = RevisionStore::open(&path).unwrap();
-    let collaboration = reopened
-        .start_collaboration(
-            human_session,
-            reopened.project_info().unwrap().default_track_id,
-            Actor {
-                id: "agent:migrated".into(),
-                display_name: "Migrated Agent".into(),
-                kind: ActorKind::Agent,
-            },
-            CollaborationMode::Separate,
-        )
-        .unwrap();
-    assert_eq!(collaboration.source_session, human_session);
-}
-
-#[test]
-fn resuming_a_legacy_session_repairs_its_missing_document_cursor() {
-    let fixture = Fixture::new();
-    let path = fixture.directory.path().join("project.prism");
-    let session = fixture.human_session;
-    let root = fixture.root;
-    let track = fixture.track;
-    fixture.store.checkpoint().unwrap();
-    drop(fixture.store);
-
-    let connection = rusqlite::Connection::open(&path).unwrap();
-    connection
-        .execute(
-            "DELETE FROM session_cursors WHERE session_id = ?1",
-            [session.as_bytes().as_slice()],
-        )
-        .unwrap();
-    drop(connection);
-
-    let mut reopened = RevisionStore::open(&path).unwrap();
-    reopened
-        .resume_session(session, human("person:1", "Person"), root)
-        .unwrap();
-    assert_eq!(
-        reopened
-            .session_on_track(session, track)
-            .unwrap()
-            .unwrap()
-            .cursor,
-        root
-    );
-    reopened
-        .append(AppendRevision {
-            track_id: track,
-            session_id: session,
-            expected_parent: root,
-            application_version: "1.0.0".into(),
-            label: Some("Edit after repair".into()),
-            command_count: 1,
-            operation_payloads: vec![payload("prism.commands", 1, b"repair")],
-            snapshots: Vec::new(),
-            assets: Vec::new(),
-        })
-        .unwrap();
-}
-
-#[test]
 fn independent_connections_can_extend_the_same_project() {
     let mut fixture = Fixture::new();
-    let path = fixture.directory.path().join("project.prism");
+    let path = fixture.directory.path().join("project.spectrum");
     let mut agent_store = RevisionStore::open(&path).unwrap();
     let agent_session = SessionId::new();
     agent_store
@@ -211,7 +136,7 @@ fn independent_connections_can_extend_the_same_project() {
             application_version: "1.0.0".into(),
             label: Some("Agent text edit".into()),
             command_count: 1,
-            operation_payloads: vec![payload("prism.commands", 1, b"agent")],
+            operation_payloads: vec![payload("test.commands", 1, b"agent")],
             snapshots: Vec::new(),
             assets: Vec::new(),
         })
@@ -331,7 +256,7 @@ fn collaboration_on_one_track_ignores_human_edits_on_another_track() {
             fixture.human_session,
             "1.0.0",
             vec![NewTrack {
-                kind: "lumen.photo".into(),
+                kind: "test.photo".into(),
                 label: "photo:2".into(),
                 root_label: Some("Imported second photo".into()),
                 initial_snapshots: vec![payload("photo.snapshot", 1, b"photo-two")],
@@ -408,7 +333,7 @@ fn multi_track_append_is_atomic_when_one_cursor_is_stale() {
             fixture.human_session,
             "1.0.0",
             vec![NewTrack {
-                kind: "lumen.photo".into(),
+                kind: "test.photo".into(),
                 label: "photo:2".into(),
                 root_label: Some("Second".into()),
                 initial_snapshots: vec![payload("photo.snapshot", 1, b"second")],
@@ -439,7 +364,7 @@ fn multi_track_append_is_atomic_when_one_cursor_is_stale() {
                 application_version: "1.0.0".into(),
                 label: Some("Stale first".into()),
                 command_count: 1,
-                operation_payloads: vec![payload("prism.commands", 1, b"stale")],
+                operation_payloads: vec![payload("test.commands", 1, b"stale")],
                 snapshots: Vec::new(),
                 assets: Vec::new(),
             },
@@ -464,7 +389,7 @@ fn multi_track_append_records_one_shared_change_set() {
             fixture.human_session,
             "1.0.0",
             vec![NewTrack {
-                kind: "lumen.photo".into(),
+                kind: "test.photo".into(),
                 label: "photo:2".into(),
                 root_label: Some("Second".into()),
                 initial_snapshots: vec![payload("photo.snapshot", 1, b"second")],
@@ -585,7 +510,7 @@ fn stale_session_writes_fail_without_silently_overwriting() {
             application_version: "1.0.0".into(),
             label: Some("Stale".into()),
             command_count: 1,
-            operation_payloads: vec![payload("prism.commands", 1, b"stale")],
+            operation_payloads: vec![payload("test.commands", 1, b"stale")],
             snapshots: Vec::new(),
             assets: Vec::new(),
         })
@@ -600,7 +525,7 @@ fn stale_session_writes_fail_without_silently_overwriting() {
 #[test]
 fn failed_multi_encoding_insert_rolls_back_the_entire_revision() {
     let mut fixture = Fixture::new();
-    let duplicate = payload("prism.commands", 1, b"same");
+    let duplicate = payload("test.commands", 1, b"same");
     let error = fixture
         .store
         .append(AppendRevision {
@@ -642,7 +567,7 @@ fn compatible_snapshots_bridge_commands_an_old_app_cannot_decode() {
             label: Some("V2 action".into()),
             command_count: 1,
             operation_payloads: vec![Payload::new(
-                Encoding::new("prism.commands", 2).requiring("live_effects"),
+                Encoding::new("test.commands", 2).requiring("live_effects"),
                 b"v2".to_vec(),
             )],
             snapshots: Vec::new(),
@@ -665,7 +590,7 @@ fn compatible_snapshots_bridge_commands_an_old_app_cannot_decode() {
 
     fixture
         .store
-        .add_snapshot(second, payload("prism.document", 1, b"v1-compatible-state"))
+        .add_snapshot(second, payload("test.document", 1, b"v1-compatible-state"))
         .unwrap();
     let plan = fixture.store.replay_plan(second, &V1Compatibility).unwrap();
     assert_eq!(plan.snapshot_revision, second);
@@ -679,7 +604,7 @@ fn replay_uses_the_nearest_snapshot_and_only_the_short_tail() {
     let first = fixture.append(fixture.human_session, fixture.root, "First");
     fixture
         .store
-        .add_snapshot(first, payload("prism.document", 1, b"at-first"))
+        .add_snapshot(first, payload("test.document", 1, b"at-first"))
         .unwrap();
     let second = fixture.append(fixture.human_session, first, "Second");
     let plan = fixture.store.replay_plan(second, &V1Compatibility).unwrap();
@@ -714,7 +639,7 @@ fn assets_are_content_addressed_and_integrity_checked() {
 fn tampered_payload_is_reported_as_corruption() {
     let mut fixture = Fixture::new();
     let revision = fixture.append(fixture.human_session, fixture.root, "Action");
-    let path = fixture.directory.path().join("project.prism");
+    let path = fixture.directory.path().join("project.spectrum");
     fixture.store.checkpoint().unwrap();
     drop(fixture.store);
 
@@ -737,7 +662,7 @@ fn tampered_payload_is_reported_as_corruption() {
 #[test]
 fn arbitrary_files_are_not_mistaken_for_revision_stores() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("legacy.prism");
+    let path = directory.path().join("notes.spectrum");
     fs::write(&path, br#"{"version":1}"#).unwrap();
     assert!(RevisionStore::open(&path).is_err());
 }

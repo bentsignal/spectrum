@@ -64,7 +64,6 @@ const PUBLISH_WORKING_RECOVERY_FILE: &str = "working-recovery.ready";
 #[cfg(target_os = "linux")]
 const PUBLISH_WORKING_POISON_FILE: &str = "working-recovery.poison";
 #[cfg(target_os = "linux")]
-const LEGACY_PUBLISH_BACKUP_FILE: &str = "published-backup.sqlite";
 #[cfg(target_os = "linux")]
 const WRITE_BLOCK_BYTES: usize = 4 * 1024;
 #[cfg(target_os = "linux")]
@@ -355,14 +354,14 @@ fn make_private(_path: &Path) -> RevisionResult<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn recover_legacy_sidecars(path: &Path) -> RevisionResult<()> {
+fn recover_sidecars(path: &Path) -> RevisionResult<()> {
     if sidecar_path(path, "-wal").exists() || sidecar_path(path, "-shm").exists() {
         let store = RevisionStore::open(path)?;
         store.checkpoint()?;
         drop(store);
         if sidecar_path(path, "-shm").exists() {
             return Err(RevisionError::Invalid(
-                "project is already open by a legacy Spectrum process".into(),
+                "another program has this document open".into(),
             ));
         }
     }
@@ -376,13 +375,13 @@ fn prepare_canonical_copy(
 ) -> RevisionResult<crate::store::StoreInspection> {
     if sidecar_path(canonical_path, "-shm").exists() {
         return Err(RevisionError::Invalid(
-            "project is already open by a legacy Spectrum process".into(),
+            "another program has this document open".into(),
         ));
     }
     create_private_dir_all(cache_root)?;
     let staging = cache_root.join(format!(".canonical-prepare-{}.sqlite", SessionId::new()));
     let prepared = (|| {
-        RevisionStore::snapshot_for_migration(canonical_path, &staging)?;
+        RevisionStore::snapshot_into(canonical_path, &staging)?;
         atomic_publish(&staging, canonical_path, false)?;
         sync_parent(canonical_path)?;
         RevisionStore::inspect(canonical_path)
@@ -677,7 +676,6 @@ fn incremental_publish(
     {
         return Ok((None, false));
     }
-    remove_private_file(&directory, LEGACY_PUBLISH_BACKUP_FILE)?;
     if destination.metadata()?.dev() != directory.device()? {
         return Ok((None, false));
     }

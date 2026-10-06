@@ -116,7 +116,7 @@ pub enum PrepareDerivedBacking {
 
 /// Accounted pixel storage for one cold derived-backing preparation.
 ///
-/// Prism publication retains one decoded output surface and writes it directly,
+/// Canvas export retains one decoded output surface and writes it directly,
 /// or converts one row at a time for RGB/L/LA inputs. Decoder dependencies can
 /// own additional full-frame or input buffers while producing that surface.
 /// Those known reservations are reported separately; because dependency-private
@@ -308,7 +308,7 @@ impl DerivedBackingCache {
     /// worker coordinator, is released after crashes, and makes quota checks
     /// race-free.
     ///
-    /// Prism's publication path holds one decoded output surface and at most one
+    /// Spectrum's publication path holds one decoded output surface and at most one
     /// RGBA8 conversion row. Decoder-private memory is serialized globally and
     /// accounted conservatively where dependency behavior is known.
     pub fn prepare(&self, source: &Path) -> Result<PrepareDerivedBacking> {

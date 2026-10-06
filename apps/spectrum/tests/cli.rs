@@ -9,10 +9,6 @@ fn call(root: &Path, args: &[&str]) -> Output {
         .arg("--library")
         .arg(root)
         .args(args)
-        .env_remove("SPECTRUM_IMAGES_DOCUMENT")
-        .env_remove("SPECTRUM_CANVAS_DOCUMENT")
-        .env_remove("SPECTRUM_SESSION")
-        .env_remove("SPECTRUM_LIVE_MODE")
         .output()
         .unwrap()
 }
@@ -48,7 +44,7 @@ fn help_and_schema_cover_both_engines_without_creating_library() {
             serde_json::from_slice::<Value>(&output.stderr).unwrap()["error"]
                 .as_str()
                 .unwrap()
-                .contains("select a target")
+                .contains("--asset")
         );
     }
     assert!(!root.exists());
@@ -65,7 +61,6 @@ fn consolidated_commands_edit_export_and_keep_linked_assets_current() {
     let imported = ok(&root, &["images", "import", source.to_str().unwrap()]);
     let images = &imported["assets"];
     let image = images[0]["id"].as_str().unwrap();
-    let item = images[0]["item"].as_u64().unwrap().to_string();
     let canvas = ok(
         &root,
         &["canvas", "new", "Test", "--width", "16", "--height", "16"],
@@ -74,11 +69,19 @@ fn consolidated_commands_edit_export_and_keep_linked_assets_current() {
     ok(&root, &["canvas", "place", canvas, image]);
     ok(
         &root,
-        &["images", "--asset", image, "edit", &item, "--exposure", "1"],
+        &["images", "--asset", image, "edit", "--exposure", "1"],
     );
-    let inspected = ok(&root, &["images", "--asset", image, "get", &item]);
-    assert!(inspected.to_string().contains("exposure"));
-    ok(&root, &["images", "--asset", image, "history", &item]);
+    let inspected = ok(&root, &["images", "--asset", image, "inspect"]);
+    assert_eq!(inspected["image"]["adjustments"]["exposure"], 1.0);
+    ok(
+        &root,
+        &["images", "--asset", image, "crop", "--width", "0.5"],
+    );
+    ok(&root, &["images", "--asset", image, "undo"]);
+    let history = ok(&root, &["images", "--asset", image, "history"]);
+    assert_eq!(history["revisions"].as_array().unwrap().len(), 3);
+    let undone = ok(&root, &["images", "--asset", image, "inspect"]);
+    assert!(undone["image"]["adjustments"]["crop"].is_null());
     ok(&root, &["canvas", "--asset", canvas, "add-text", "Hello"]);
     let document = ok(&root, &["canvas", "--asset", canvas, "inspect"]);
     assert_eq!(document["document"]["layers"].as_array().unwrap().len(), 2);
@@ -120,19 +123,8 @@ fn consolidated_commands_edit_export_and_keep_linked_assets_current() {
         ],
     );
     assert!(!forbidden.status.success());
-    // Asset targeting must override an inherited terminal document, never edit it accidentally.
-    let result = Command::new(env!("CARGO_BIN_EXE_spectrum"))
-        .arg("--library")
-        .arg(&root)
-        .args(["images", "--asset", image, "get", &item])
-        .env("SPECTRUM_IMAGES_DOCUMENT", "/nonexistent/other-document")
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let library = call(&root, &["images", "--asset", image, "list"]);
+    assert!(!library.status.success());
 }
 
 #[test]

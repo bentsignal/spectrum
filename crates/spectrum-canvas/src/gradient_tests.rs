@@ -268,7 +268,7 @@ fn nonsquare_rectangle_ellipse_and_path_share_one_source_pixel_metric() {
 fn modern_gradients_match_full_export_for_arbitrary_regions_and_uneven_strips() {
     let document = gradient_document();
     let export_path = std::env::temp_dir().join(format!(
-        "prism-gradient-export-{}.png",
+        "canvas-gradient-export-{}.png",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -379,7 +379,7 @@ fn gradient_regions_match_with_a_real_exact_region_provider() {
         ])
     });
     let path = std::env::temp_dir().join(format!(
-        "prism-gradient-provider-{}-{}.png",
+        "canvas-gradient-provider-{}-{}.png",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -392,10 +392,7 @@ fn gradient_regions_match_with_a_real_exact_region_provider() {
         Layer {
             id: 4,
             name: "Provider-backed raster".into(),
-            kind: LayerKind::Raster {
-                path: path.clone(),
-                original_path: None,
-            },
+            kind: LayerKind::Raster { path: path.clone() },
             ..Default::default()
         },
     );
@@ -411,7 +408,7 @@ fn gradient_regions_match_with_a_real_exact_region_provider() {
                 sample_depth: SourceSampleDepth::EightBit,
                 frame_index: 0,
                 page_index: 0,
-                decoder_contract: "prism-gradient-test-memory:v1".into(),
+                decoder_contract: "canvas-gradient-test-memory:v1".into(),
             },
             capability: RegionReadCapability::DerivedBacking,
             readiness: RegionReadiness::Ready,
@@ -463,7 +460,7 @@ fn gradient_regions_match_with_a_real_exact_region_provider() {
 
 #[test]
 fn malformed_and_oversized_gradients_never_mutate_the_document() {
-    let mut workspace = Workspace::new(Document::new("Atomic", 64, 64), None);
+    let mut workspace = Workspace::new(Document::new("Atomic", 64, 64));
     workspace
         .execute(Command::AddRectangle {
             name: None,
@@ -526,7 +523,7 @@ fn malformed_and_oversized_gradients_never_mutate_the_document() {
 
 #[test]
 fn one_fill_command_covers_rectangle_ellipse_and_closed_path() {
-    let mut workspace = Workspace::new(gradient_document(), None);
+    let mut workspace = Workspace::new(gradient_document());
     for (id, kind) in [
         (1, GradientKind::Linear),
         (2, GradientKind::Radial),
@@ -547,133 +544,21 @@ fn one_fill_command_covers_rectangle_ellipse_and_closed_path() {
 }
 
 #[test]
-fn v15_live_envelope_is_required_and_v14_fails_closed() {
-    let command = Command::SetShapeFill {
-        id: 1,
-        fill: Some(ShapeFill::Gradient(modern_gradient(
-            GradientKind::Radial,
-            GradientSpread::Reflect,
-        ))),
-    };
-    assert_eq!(
-        required_command_operations_version(std::slice::from_ref(&command)),
-        15
-    );
-    let expectation = PrismLiveActionExpectation {
-        agent_revision: spectrum_revisions::RevisionId::new(),
-        source_revision: None,
-    };
-    assert!(
-        PrismLiveAction::ExecuteBatch {
-            expectation: expectation.clone(),
-            command_version: 14,
-            commands: vec![command.clone()],
-        }
-        .validate()
-        .is_err()
-    );
-    PrismLiveAction::ExecuteBatch {
-        expectation,
-        command_version: 15,
-        commands: vec![command],
-    }
-    .validate()
-    .unwrap();
-}
-
-#[test]
-fn required_live_v15_emits_one_ordered_revision_and_together_reopens_exactly() {
-    use spectrum_live_bridge::{BridgeEventKind, InteractionPolicy, ResponseBody};
-    use spectrum_revisions::CollaborationMode;
-
-    let mut fixture = crate::live_bridge_tests::Fixture::new(CollaborationMode::Together);
-    let mut harness = crate::live_bridge_tests::HostHarness::new(&fixture);
-    let subscription = harness.server.events().subscribe(0).unwrap();
-    let gradient = modern_gradient(GradientKind::Radial, GradientSpread::Reflect);
-    let request = harness.request(
-        &fixture,
-        PrismLiveAction::ExecuteBatch {
-            expectation: fixture.expectation(),
-            command_version: 15,
-            commands: vec![
-                Command::AddRectangle {
-                    name: Some("Live gradient".into()),
-                    width: 72,
-                    height: 48,
-                    color: [255; 4],
-                    corner_radius: 0.0,
-                    x: 4.0,
-                    y: 5.0,
-                },
-                Command::SetShapeFill {
-                    id: 1,
-                    fill: Some(ShapeFill::Gradient(gradient.clone())),
-                },
-            ],
-        },
-        InteractionPolicy::Immediate,
-    );
-    let response = harness.round_trip(
-        &mut fixture.human,
-        request.clone(),
-        PrismLiveInteractionState::Idle,
-    );
-    assert!(matches!(response.body, ResponseBody::Applied { .. }));
-    let event = subscription.try_next().unwrap().unwrap();
-    let revision_seq = event.seq;
-    let BridgeEventKind::RevisionCommitted {
-        request_id,
-        session_id,
-        cursors,
-        ..
-    } = event.event
-    else {
-        panic!("required-live gradient did not emit a revision event")
-    };
-    assert_eq!(request_id, Some(request.request_id));
-    assert_eq!(session_id, fixture.agent_session);
-    assert_eq!(
-        cursors.len(),
-        1,
-        "one durable batch emits one cursor transition"
-    );
-    let collaboration = subscription.try_next().unwrap().unwrap();
-    assert!(collaboration.seq > revision_seq);
-    assert!(matches!(
-        collaboration.event,
-        BridgeEventKind::CollaborationAdvanced {
-            agent_session_id,
-            ..
-        } if agent_session_id == fixture.agent_session
-    ));
-    assert!(subscription.try_next().unwrap().is_none());
-
-    let agent = Workspace::open_session(&fixture.path, fixture.agent_session).unwrap();
-    let fresh = Workspace::load_read_only(&fixture.path).unwrap();
-    for document in [&fixture.human.document, &agent.document, &fresh] {
-        assert_eq!(
-            document.layer(1).unwrap().shape_fill,
-            Some(ShapeFill::Gradient(gradient.clone()))
-        );
-    }
-}
-
-#[test]
 fn modern_gradient_is_one_durable_revision_with_reopen_undo_redo() {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let project = std::env::temp_dir().join(format!("prism-gradient-{stamp}.prism"));
+    let project = std::env::temp_dir().join(format!("canvas-gradient-{stamp}.spectrum"));
     let actor = spectrum_revisions::Actor {
         id: "person:gradient-test".into(),
         display_name: "Gradient test".into(),
         kind: spectrum_revisions::ActorKind::Human,
     };
     let session = spectrum_revisions::SessionId::new();
-    let mut workspace = Workspace::create_durable(
-        Document::new("Durable gradient", 80, 60),
+    let mut workspace = Workspace::create(
         &project,
+        Document::new("Durable gradient", 80, 60),
         actor.clone(),
         session,
     )
@@ -696,21 +581,10 @@ fn modern_gradient_is_one_durable_revision_with_reopen_undo_redo() {
             fill: Some(ShapeFill::Gradient(gradient.clone())),
         })
         .unwrap();
-    workspace.save(None).unwrap();
+    workspace.checkpoint().unwrap();
     drop(workspace);
 
-    let connection = rusqlite::Connection::open(&project).unwrap();
-    let v15: u32 = connection
-        .query_row(
-            "SELECT count(*) FROM operation_payloads WHERE version = 15",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(v15, 1);
-    drop(connection);
-
-    let mut reopened = Workspace::open_as(&project, actor, session).unwrap();
+    let mut reopened = Workspace::open(&project, actor, session).unwrap();
     assert_eq!(
         reopened.document.layer(1).unwrap().shape_fill,
         Some(ShapeFill::Gradient(gradient.clone()))
