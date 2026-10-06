@@ -85,8 +85,17 @@ pub struct Library {
     root: PathBuf,
     db: Connection,
 }
+/// The library's storage format. A library in another format is set aside.
+const FORMAT: i64 = 1;
+
 impl Library {
     pub fn open(root: &Path) -> Result<Self> {
+        if let Some(aside) = set_aside_other_format(root)? {
+            eprintln!(
+                "Spectrum moved a library in an older format to {}",
+                aside.display()
+            );
+        }
         std::fs::create_dir_all(root)?;
         let root = std::fs::canonicalize(root)?;
         let db = Connection::open(root.join("library.sqlite"))?;
@@ -101,6 +110,7 @@ impl Library {
         )?;
         db.execute_batch(projects::SCHEMA)?;
         db.execute_batch(trash::SCHEMA)?;
+        db.pragma_update(None, "user_version", FORMAT)?;
         Ok(Self { root, db })
     }
     pub fn root(&self) -> &Path {
@@ -250,8 +260,33 @@ fn asset_from_row((id, kind, name, document): AssetRow) -> Result<Asset> {
     })
 }
 
-/// Spectrum's per-user data directory: the library, caches, and live-bridge
-/// discovery live under it.
+/// Moves a library written in another storage format aside, beside it, so
+/// Spectrum starts a fresh library instead of failing on every asset. Nothing
+/// is deleted. Returns where the old library went.
+fn set_aside_other_format(root: &Path) -> Result<Option<PathBuf>> {
+    let index = root.join("library.sqlite");
+    if !index.exists() {
+        return Ok(None);
+    }
+    let format: i64 =
+        Connection::open(&index)?.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if format == FORMAT {
+        return Ok(None);
+    }
+    let name = root
+        .file_name()
+        .context("library path has no name")?
+        .to_string_lossy();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let aside = root.with_file_name(format!("{name} (older format {stamp})"));
+    std::fs::rename(root, &aside)
+        .with_context(|| format!("could not move the older library to {}", aside.display()))?;
+    Ok(Some(aside))
+}
+
+/// Spectrum's per-user data directory: the library and caches live under it.
 pub fn data_root() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     let base = PathBuf::from(std::env::var_os("APPDATA").context("APPDATA is unavailable")?)
@@ -293,6 +328,32 @@ pub(crate) fn test_document(root: &Path, number: u32) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_library_in_another_format_is_set_aside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("Library");
+        std::fs::create_dir_all(root.join("images")).unwrap();
+        Connection::open(root.join("library.sqlite"))
+            .unwrap()
+            .execute_batch("CREATE TABLE assets(id TEXT, item INTEGER);")
+            .unwrap();
+        std::fs::write(root.join("images/old.spectrum"), b"old").unwrap();
+        let library = Library::open(&root).unwrap();
+        assert!(library.list().unwrap().is_empty());
+        assert!(!root.join("images/old.spectrum").exists());
+        let aside: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path != &root)
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert!(aside[0].join("images/old.spectrum").exists());
+        drop(library);
+        // A current library stays put.
+        Library::open(&root).unwrap();
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 2);
+    }
     #[test]
     fn references_are_typed_transitive_and_atomic() {
         let tmp = tempfile::tempdir().unwrap();
