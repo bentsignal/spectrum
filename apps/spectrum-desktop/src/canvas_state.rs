@@ -344,6 +344,32 @@ impl Workspace {
         (!busy).then_some((canvas.id, canvas.revision))
     }
 
+    /// Whether the open canvas shows its current document sharply: loaded,
+    /// nothing rendering, and every layer drawn at the current zoom.
+    pub fn canvas_drawn(&self) -> bool {
+        self.canvas.as_ref().is_some_and(|canvas| {
+            canvas.loaded
+                && !canvas.rendering
+                && canvas.rendered == canvas.version
+                && !canvas.cache.rendering()
+                && !canvas.reload
+                // A zoom renders sharp once it settles, a frame after SETTLE.
+                && canvas.zoomed_at.is_none_or(|at| {
+                    at.elapsed() > crate::zoom::SETTLE + std::time::Duration::from_millis(80)
+                })
+                && canvas.cache.sharp_at(canvas.density)
+        })
+    }
+
+    /// Whether every edit to the open canvas is drawn and saved.
+    pub fn canvas_idle(&self) -> bool {
+        self.canvas_drawn()
+            && self
+                .canvas
+                .as_ref()
+                .is_some_and(|canvas| canvas.queue.is_empty() && !canvas.saving)
+    }
+
     /// Shows the canvas's saved document again, after following an agent.
     pub fn show_saved_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(canvas) = &mut self.canvas {
@@ -498,9 +524,12 @@ impl Workspace {
             canvas.version,
             canvas.render_doc(),
         );
-        let task = cx
-            .background_executor()
-            .spawn(async move { render_at(&root, &doc, density) });
+        let task = cx.background_executor().spawn(async move {
+            let started = std::time::Instant::now();
+            let rendered = render_at(&root, &doc, density);
+            crate::perf::record("canvas_render", started.elapsed());
+            rendered
+        });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -646,9 +675,12 @@ impl Workspace {
         let batch = std::mem::take(&mut canvas.queue);
         let (root, id, base) = (store.root.clone(), canvas.id, canvas.revision);
         let task = cx.background_executor().spawn(async move {
-            Service::open(&root)?
+            let started = std::time::Instant::now();
+            let result = Service::open(&root)?
                 .edit_canvas_from(id, base, batch)
-                .map(|(_, revision)| revision)
+                .map(|(_, revision)| revision);
+            crate::perf::record("canvas_save", started.elapsed());
+            result
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;

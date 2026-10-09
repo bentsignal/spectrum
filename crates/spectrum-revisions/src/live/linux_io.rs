@@ -1,3 +1,4 @@
+use crate::io_stats::SyncCounted as _;
 #[cfg(test)]
 use std::cell::RefCell;
 use std::{
@@ -188,7 +189,7 @@ impl PrivateDirectory {
     }
 
     pub(super) fn sync(&self) -> RevisionResult<()> {
-        self.descriptor.sync_all()?;
+        self.descriptor.sync_all_counted()?;
         Ok(())
     }
 
@@ -206,7 +207,7 @@ impl PrivateDirectory {
         let result = (|| -> RevisionResult<()> {
             let mut marker = self.create_file(&temporary)?;
             marker.write_all(bytes)?;
-            marker.sync_all()?;
+            marker.sync_all_counted()?;
             let identity = validated_identity(&marker, true)?;
             self.validate(&temporary, identity, true)?;
             self.rename(&temporary, name)?;
@@ -316,7 +317,7 @@ impl PrivateDirectory {
             return Err(io::Error::last_os_error().into());
         }
         std::thread::scope(|scope| -> RevisionResult<()> {
-            let parent_sync = scope.spawn(|| parent_descriptor.sync_all());
+            let parent_sync = scope.spawn(|| parent_descriptor.sync_all_counted());
             let cache_sync = scope.spawn(|| self.sync());
             parent_sync.join().map_err(|_| {
                 RevisionError::Invalid("canonical directory sync panicked".into())
@@ -784,7 +785,7 @@ pub(super) fn update_private_slot(
     if let Some(permissions) = update.permissions {
         mirror.set_permissions(permissions)?;
     }
-    mirror.sync_all()?;
+    mirror.sync_all_counted()?;
     validated_identity(mirror, true)?;
     mutation.finish(name, identity)?;
     Ok(Some(stats))
@@ -877,7 +878,7 @@ pub(super) fn seed_incremental_mirror(
         let mut source = super::open_nofollow(destination, false)?;
         io::copy(&mut source, &mut candidate)?;
         candidate.set_permissions(fs::Permissions::from_mode(0o600))?;
-        candidate.sync_all()?;
+        candidate.sync_all_counted()?;
         let identity = validated_identity(&candidate, true)?;
         directory.validate(&temporary, identity, true)?;
         remove_private_file(&directory, super::PUBLISH_MIRROR_FILE)?;

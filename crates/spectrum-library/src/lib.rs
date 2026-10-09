@@ -110,7 +110,10 @@ impl Library {
         )?;
         db.execute_batch(projects::SCHEMA)?;
         db.execute_batch(trash::SCHEMA)?;
-        db.pragma_update(None, "user_version", FORMAT)?;
+        let format: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if format != FORMAT {
+            db.pragma_update(None, "user_version", FORMAT)?;
+        }
         Ok(Self { root, db })
     }
     pub fn root(&self) -> &Path {
@@ -312,8 +315,12 @@ pub fn default_root() -> Result<PathBuf> {
     Ok(data_root()?.join("Library"))
 }
 
-/// Rebuildable caches, such as revision snapshots and derived rasters.
+/// Rebuildable caches, such as decoded rasters: `SPECTRUM_CACHE` if set, or
+/// `Caches` in the data root.
 pub fn cache_root() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("SPECTRUM_CACHE") {
+        return Ok(path.into());
+    }
     Ok(data_root()?.join("Caches"))
 }
 

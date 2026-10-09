@@ -77,16 +77,27 @@ the complete loop below before committing **and before handing work back**:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
+bash scripts/interaction-benchmark.sh
 ```
 
+The last step runs the real desktop app on a throwaway library with a
+24-megapixel photo and drives image and canvas editing through its handlers.
+It fails when an edit is slow to reach the screen, the main thread stalls, a
+canvas is slow to settle, or an error is shown (`software` budgets on Linux,
+`interactive` on macOS). `cargo test` also bounds the storage work each edit,
+open, and idle check does (`crates/spectrum-assets/tests/interaction_costs.rs`).
+A slow interaction is a failed run like a failing test: find and fix the
+cause. Never raise a budget to make a run pass without the user's approval.
+New editing features add their interaction to the benchmark.
+
 If any command fails, fix the cause and restart the complete loop from the
-formatter. Continue until all three commands pass. Do not commit or hand off a
+formatter. Continue until all four commands pass. Do not commit or hand off a
 failed run. The only exception is a genuine external blocker that cannot be
 fixed in the repository; record it in the relevant task file and report the
 exact failing command.
 
-For rendering or interaction performance changes, also run the affected
-release benchmark with `--strict`. For packaging changes, run the affected
+For rendering changes, also run the engine benchmarks
+(`spectrum images benchmark --strict`, `spectrum canvas benchmark --strict`). For packaging changes, run the affected
 packaging script and verify its produced application or binary before handoff.
 Only after validation succeeds should you record the outcome in the relevant
 task and update its status.

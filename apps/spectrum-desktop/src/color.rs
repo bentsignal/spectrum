@@ -78,7 +78,10 @@ impl Workspace {
         let Ok(store) = &self.store else {
             return;
         };
-        match store.service.image_view(id) {
+        let started = std::time::Instant::now();
+        let view = store.service.image_view(id);
+        crate::perf::record("load_color_main_thread", started.elapsed());
+        match view {
             Ok((photo, revision)) => {
                 self.image.adjust = photo.adjustments.clone();
                 self.image.edits.revisions.insert(id, revision);

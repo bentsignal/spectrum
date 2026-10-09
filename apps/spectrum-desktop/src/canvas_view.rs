@@ -149,7 +149,12 @@ impl Workspace {
         Some((transform, (new_min, new_max)))
     }
 
-    fn canvas_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn canvas_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.start_pan(event.position, false) {
             return cx.notify();
         }
@@ -242,7 +247,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn canvas_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn canvas_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.pan_move(event.position, window, cx) {
             return;
         }
@@ -359,7 +369,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn canvas_up(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn canvas_up(
+        &mut self,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.end_pan(cx) {
             return;
         }

@@ -28,6 +28,8 @@ pub struct Preview {
     pub histogram: Option<Arc<Histogram>>,
     pub failed: bool,
     rendering: bool,
+    /// When the oldest edit not yet on screen was made.
+    unseen_since: Option<std::time::Instant>,
 }
 
 struct Rendered {
@@ -70,6 +72,14 @@ fn load(
 }
 
 impl Workspace {
+    /// Whether the open image shows its current edits and has saved them.
+    pub fn image_idle(&self) -> bool {
+        let wanted = self.view_adjustments();
+        self.image.preview.as_ref().is_some_and(|preview| {
+            preview.image.is_some() && !preview.rendering && preview.shown.as_ref() == Some(&wanted)
+        }) && self.image.edits.idle()
+    }
+
     /// What the main area shows: the whole frame while cropping.
     fn view_adjustments(&self) -> Adjustments {
         if self.mode == Mode::Crop {
@@ -104,6 +114,7 @@ impl Workspace {
             histogram: None,
             failed: false,
             rendering: false,
+            unseen_since: None,
         });
         let root = store.root.clone();
         let task = cx
@@ -140,15 +151,24 @@ impl Workspace {
         let Some(source) = preview.source.clone() else {
             return;
         };
+        if preview.shown.as_ref() != Some(&wanted) {
+            preview
+                .unseen_since
+                .get_or_insert_with(std::time::Instant::now);
+        }
         if preview.rendering || preview.shown.as_ref() == Some(&wanted) {
             return;
         }
         preview.rendering = true;
         preview.shown = Some(wanted.clone());
+        let covers = preview.unseen_since.take();
         let id = preview.id;
-        let task = cx
-            .background_executor()
-            .spawn(async move { render(&source, wanted) });
+        let task = cx.background_executor().spawn(async move {
+            let started = std::time::Instant::now();
+            let rendered = render(&source, wanted);
+            crate::perf::record("image_preview_render", started.elapsed());
+            rendered
+        });
         cx.spawn_in(window, async move |this, cx| {
             let rendered = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -161,6 +181,10 @@ impl Workspace {
                     window.drop_image(old).ok();
                 }
                 preview.histogram = Some(Arc::new(rendered.histogram));
+                // The oldest edit this frame shows was made this long ago.
+                if let Some(since) = covers {
+                    crate::perf::record("image_edit_to_screen", since.elapsed());
+                }
                 this.render_preview(window, cx);
                 cx.notify();
             })
@@ -230,9 +254,12 @@ impl Workspace {
                     Durable::Step(_, true, _) => spectrum_image::Command::Redo,
                     Durable::Step(_, false, _) => spectrum_image::Command::Undo,
                 };
-                Service::open(&root)?
+                let started = std::time::Instant::now();
+                let result = Service::open(&root)?
                     .edit_image_from(id, base, vec![command])
-                    .map(|(_, revision)| revision)
+                    .map(|(_, revision)| revision);
+                crate::perf::record("image_save", started.elapsed());
+                result
             }
         });
         cx.spawn_in(window, async move |this, cx| {

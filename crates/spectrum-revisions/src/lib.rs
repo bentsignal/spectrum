@@ -39,6 +39,8 @@ pub use error::{RevisionError, RevisionResult};
 pub use id::{AssetId, ChangeSetId, ProjectId, RevisionId, SessionId, TrackId};
 #[cfg(feature = "storage")]
 pub use identity::local_session_id;
+mod io_stats;
+pub use io_stats::{IoStats, io_stats};
 #[cfg(feature = "storage")]
 pub use live::{LiveRevisionStore, PublishStats, PublishStrategy, PublishTimings};
 #[cfg(feature = "storage")]

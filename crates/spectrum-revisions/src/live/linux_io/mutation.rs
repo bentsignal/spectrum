@@ -1,3 +1,4 @@
+use crate::io_stats::SyncCounted as _;
 use std::{
     ffi::CString,
     fs::{self, File},
@@ -134,13 +135,13 @@ pub(super) fn recover(directory: &PrivateDirectory) -> RevisionResult<()> {
             ));
         }
         unlink_from(&gate, name)?;
-        gate.sync_all()?;
+        gate.sync_all_counted()?;
         directory.sync()?;
         return directory.validate(name, identity, true);
     }
     validated_identity(&gated, true)?;
     rename_between(&gate, name, &directory.descriptor, name)?;
-    gate.sync_all()?;
+    gate.sync_all_counted()?;
     directory.sync()?;
     directory.validate(name, identity, true)
 }
@@ -205,7 +206,7 @@ fn open_gate(directory: &PrivateDirectory, create: bool) -> RevisionResult<File>
     let descriptor = unsafe { File::from_raw_fd(descriptor) };
     validate_gate(&descriptor)?;
     if created_gate || permissions_need_repair {
-        descriptor.sync_all()?;
+        descriptor.sync_all_counted()?;
         directory.sync()?;
     }
     Ok(descriptor)

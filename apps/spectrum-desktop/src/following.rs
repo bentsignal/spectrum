@@ -43,11 +43,28 @@ impl Workspace {
             return;
         };
         let (id, shown, canvas) = target;
+        // Only a document whose file changed can hold an agent's new work;
+        // checking costs one file stat until then.
+        let stamp = store
+            .service
+            .library
+            .get(id)
+            .and_then(|asset| store.service.library.path(&asset))
+            .and_then(|path| Ok(std::fs::metadata(path)?))
+            .ok()
+            .map(|metadata| (metadata.modified().ok(), metadata.len()));
+        if stamp.is_some() && self.followed_stamp == Some((id, stamp)) {
+            return;
+        }
+        self.followed_stamp = Some((id, stamp));
         self.following = true;
         let root = store.root.clone();
-        let task = cx
-            .background_executor()
-            .spawn(async move { Service::open(&root)?.follow(id) });
+        let task = cx.background_executor().spawn(async move {
+            let started = std::time::Instant::now();
+            let result = Service::open(&root)?.follow(id);
+            crate::perf::record("follow_check", started.elapsed());
+            result
+        });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {

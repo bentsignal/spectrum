@@ -281,9 +281,12 @@ impl Workspace {
         for id in missing {
             store.thumbs.insert(id, Thumb::Loading);
             let root = store.root.clone();
-            let render = cx
-                .background_executor()
-                .spawn(async move { card_crop(&Service::open(&root)?.thumbnail(id, THUMBNAIL)?) });
+            let render = cx.background_executor().spawn(async move {
+                let started = std::time::Instant::now();
+                let result = card_crop(&Service::open(&root)?.thumbnail(id, THUMBNAIL)?);
+                crate::perf::record("thumbnail", started.elapsed());
+                result
+            });
             cx.spawn(async move |this, cx| {
                 let thumb = match render.await {
                     Ok(path) => Thumb::ready(path),

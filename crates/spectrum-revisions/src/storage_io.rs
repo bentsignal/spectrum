@@ -1,3 +1,4 @@
+use crate::io_stats::SyncCounted as _;
 use std::{
     ffi::OsString,
     fs,
@@ -24,7 +25,7 @@ pub(crate) fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 
 pub(crate) fn sync_if_present(path: &Path) -> RevisionResult<()> {
     match fs::OpenOptions::new().read(true).write(true).open(path) {
-        Ok(file) => file.sync_all().map_err(Into::into),
+        Ok(file) => file.sync_all_counted().map_err(Into::into),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(RevisionError::Io(error)),
     }

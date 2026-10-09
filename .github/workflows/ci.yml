@@ -33,6 +33,38 @@ jobs:
         run: cargo test -p workspace-guardrails --locked
       - run: cargo test --workspace --all-targets --locked
 
+  interaction:
+    name: Interaction benchmark (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          - os: macos-latest
+            label: macOS
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Linux GPUI dependencies and software rendering
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev xvfb mesa-vulkan-drivers
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Ensure Metal compiler is available
+        if: runner.os == 'macOS'
+        run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+      - name: Storage budgets for editing
+        run: cargo test -p spectrum-assets --test interaction_costs --locked
+      - name: Edits reach the screen within budget
+        run: bash scripts/interaction-benchmark.sh --profile ci --report interaction-report.json
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: interaction-report-${{ matrix.label }}
+          path: interaction-report.json
+          if-no-files-found: ignore
+
   build:
     name: Build ${{ matrix.label }}
     strategy:

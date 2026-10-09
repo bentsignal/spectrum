@@ -15,10 +15,10 @@ mod files;
 mod workspace;
 
 pub use durable::{Durable, History, remove};
-pub use files::{FileRole, is_embedded_reference};
+pub use files::{FileRole, hashed_bytes, is_embedded_reference};
 pub use spectrum_revisions::{
-    Actor, ActorKind, Collaboration, CollaborationMode, CollaborationSync, Revision, RevisionId,
-    Session, SessionId, local_session_id,
+    Actor, ActorKind, Collaboration, CollaborationMode, CollaborationSync, IoStats, Revision,
+    RevisionId, Session, SessionId, io_stats, local_session_id,
 };
 pub use workspace::Workspace;
 

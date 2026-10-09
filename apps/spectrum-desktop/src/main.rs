@@ -1,3 +1,4 @@
+mod benchmark;
 mod brush;
 mod canvas_layers;
 mod canvas_size;
@@ -41,6 +42,7 @@ mod marquee;
 mod mode_menu;
 mod palette;
 mod pen;
+mod perf;
 mod picker;
 mod prefs;
 mod preview;
@@ -127,12 +129,26 @@ fn main() -> std::process::ExitCode {
         println!("Spectrum {}", env!("CARGO_PKG_VERSION"));
         return std::process::ExitCode::SUCCESS;
     }
+    let benchmark = match benchmark::options() {
+        Some(options) => match benchmark::prepare(&options) {
+            Ok(fixtures) => Some((options, fixtures)),
+            Err(error) => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"ok": false, "error": format!("{error:#}")})
+                );
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
     prefs::load();
     // Re-renders of the same image reuse its decoded, resized pixels.
     spectrum_canvas::set_interactive_source_cache(true);
     Application::new()
         .with_assets(icons::AppAssets)
-        .run(|cx: &mut App| {
+        .run(move |cx: &mut App| {
+            perf::start(cx);
             cx.on_action(|_: &Quit, cx| cx.quit());
             // Command+S stays unbound: people press it by habit, and Spectrum saves as it goes.
             cx.bind_keys([
@@ -205,6 +221,11 @@ fn main() -> std::process::ExitCode {
                 |window, cx| {
                     titlebar::install(window);
                     let workspace = cx.new(|cx| Workspace::new(window, cx));
+                    if let Some((options, fixtures)) = benchmark.clone() {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.run_benchmark(fixtures, options, window, cx)
+                        });
+                    }
                     workspace.read(cx).focus_handle.focus(window);
                     cx.new(|cx| Root::new(workspace, window, cx))
                 },
@@ -212,5 +233,8 @@ fn main() -> std::process::ExitCode {
             .expect("could not open Spectrum");
             cx.activate(true);
         });
+    if benchmark::failed() {
+        return std::process::ExitCode::FAILURE;
+    }
     std::process::ExitCode::SUCCESS
 }

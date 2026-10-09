@@ -115,11 +115,24 @@ nothing is waiting to save. The desktop executable is also the CLI: started as
 
 ## Performance checks
 
-```sh
-spectrum images benchmark --strict
-spectrum canvas benchmark --strict
-cargo test --release -p spectrum-imaging interactive_preview_benchmark -- --ignored --nocapture
-```
+Three layers keep interaction fast, and all run in CI:
 
-`--profile hosted-ci` relaxes budgets for shared CI runners. Run the matching
-strict benchmark for rendering or interaction changes.
+- `bash scripts/interaction-benchmark.sh` runs the desktop app itself
+  (`spectrum-desktop --benchmark`) on a throwaway library with a 24-megapixel
+  photo (or `--photo <file>`, such as a camera RAW). It drives a slider scrub,
+  canvas open, layer drag, zoom steps, a text size drag, and brush strokes with
+  undo through the app's handlers, and fails when an edit is slow to reach the
+  screen, the main thread stalls, a canvas is slow to settle, or an error shows.
+  Budgets are per profile: `interactive` (a GPU), `software` (Linux with
+  software rendering), and `ci`. With `SPECTRUM_PERF_LOG=<file>` an ordinary
+  session writes the same measurements.
+- `crates/spectrum-assets/tests/interaction_costs.rs` bounds the storage work
+  (document opens, disk flushes, writes, re-hashed bytes) of each open, save,
+  idle check, and read, counted by `spectrum_document::io_stats`, so costs that
+  are slow only on some systems fail everywhere.
+- `spectrum images benchmark --strict` and `spectrum canvas benchmark --strict`
+  bound engine operations.
+
+On screen, raster layers shown at half their size or less draw from a cached
+reduced copy, large PNG sources are decoded once into a backing file, and the
+app prepares each source once per session; exports always read sources exactly.

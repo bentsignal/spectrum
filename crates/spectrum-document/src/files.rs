@@ -74,6 +74,7 @@ pub(crate) fn embed(path: &Path, role: &FileRole) -> Result<(Reference, Asset)> 
         );
     }
     let bytes = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+    hashed(bytes.len());
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -117,6 +118,18 @@ fn media_type(extension: &str) -> &'static str {
 }
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static HASHED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// Bytes of embedded files this process has read and hashed, to embed them
+/// or to check a staged copy. Interaction tests bound it: re-hashing a large
+/// photo on every edit is slow everywhere.
+pub fn hashed_bytes() -> u64 {
+    HASHED_BYTES.load(Ordering::Relaxed)
+}
+
+fn hashed(bytes: usize) {
+    HASHED_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+}
 static PROCESS_LOCKS: OnceLock<[Mutex<()>; 64]> = OnceLock::new();
 
 /// Writes an embedded file into `directory` (once; later calls reuse a copy
@@ -235,6 +248,40 @@ fn require_regular_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Staged copies already checked by this process, by path, with the file
+/// identity they had then. A copy that has not changed is not read again,
+/// so opening a document does not re-hash its large photos every time.
+type CheckedCopies = std::collections::HashMap<PathBuf, (FileIdentity, AssetId)>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    length: u64,
+    modified: Option<SystemTime>,
+    inode: u64,
+}
+
+impl FileIdentity {
+    fn of(metadata: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        let inode = std::os::unix::fs::MetadataExt::ino(metadata);
+        #[cfg(not(unix))]
+        let inode = 0;
+        Self {
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+            inode,
+        }
+    }
+}
+
+fn checked_copies() -> MutexGuard<'static, CheckedCopies> {
+    static CHECKED: OnceLock<Mutex<CheckedCopies>> = OnceLock::new();
+    CHECKED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn staged_is_valid(path: &Path, expected: AssetId) -> Result<bool> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -244,8 +291,19 @@ fn staged_is_valid(path: &Path, expected: AssetId) -> Result<bool> {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Ok(false);
     }
+    let identity = FileIdentity::of(&metadata);
+    if checked_copies().get(path) == Some(&(identity, expected)) {
+        return Ok(true);
+    }
     match fs::read(path) {
-        Ok(bytes) => Ok(AssetId::for_bytes(&bytes) == expected),
+        Ok(bytes) => {
+            hashed(bytes.len());
+            let valid = AssetId::for_bytes(&bytes) == expected;
+            if valid {
+                checked_copies().insert(path.to_path_buf(), (identity, expected));
+            }
+            Ok(valid)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }

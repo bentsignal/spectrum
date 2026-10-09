@@ -1,3 +1,4 @@
+use crate::io_stats::SyncCounted as _;
 use std::{fs, path::Path};
 
 use fs2::FileExt;
@@ -27,7 +28,7 @@ pub fn local_session_id(directory: &Path) -> RevisionResult<SessionId> {
             let temporary = directory.join(format!(".local-session-{session}.tmp"));
             let written = (|| -> std::io::Result<()> {
                 fs::write(&temporary, session.as_bytes())?;
-                fs::File::open(&temporary)?.sync_all()?;
+                fs::File::open(&temporary)?.sync_all_counted()?;
                 fs::rename(&temporary, path)
             })();
             if let Err(error) = written {

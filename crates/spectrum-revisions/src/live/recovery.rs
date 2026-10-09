@@ -18,6 +18,7 @@ impl LiveRevisionStore {
     }
 
     fn open_cached(canonical_path: &Path, cache_root: &Path) -> RevisionResult<Self> {
+        crate::io_stats::live_opened();
         let canonical_path = absolute_path(canonical_path)?;
         let canonical = if !sidecar_path(&canonical_path, "-wal").exists()
             && !sidecar_path(&canonical_path, "-shm").exists()

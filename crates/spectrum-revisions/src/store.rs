@@ -150,6 +150,7 @@ impl RevisionStore {
     }
 
     fn open_with_durability(path: &Path, durability: WriteDurability) -> RevisionResult<Self> {
+        crate::io_stats::store_opened();
         let connection = Connection::open(path)?;
         schema::configure(&connection)?;
         schema::verify_header(&connection)?;
@@ -170,6 +171,7 @@ impl RevisionStore {
     /// SQLite's immutable URI mode deliberately ignores WAL/SHM sidecars. This
     /// path never configures, migrates, checkpoints, or publishes a live cache.
     pub fn open_read_only(path: &Path) -> RevisionResult<Self> {
+        crate::io_stats::store_opened();
         let uri = url::Url::from_file_path(path)
             .map_err(|_| RevisionError::Invalid("project path is not absolute".into()))?;
         let uri = format!("{uri}?immutable=1");

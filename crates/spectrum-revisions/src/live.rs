@@ -1,3 +1,4 @@
+use crate::io_stats::SyncCounted as _;
 use std::{
     cell::{Cell, RefCell},
     fs::{self, File, OpenOptions},
@@ -460,7 +461,7 @@ fn lock_directory(path: &Path) -> RevisionResult<File> {
 fn replace_with_copy(source: &Path, destination: &Path) -> RevisionResult<()> {
     let temporary = temporary_path(destination);
     if let Err(error) = copy_or_clone(source, &temporary).and_then(|_| {
-        File::open(&temporary)?.sync_all()?;
+        File::open(&temporary)?.sync_all_counted()?;
         fs::rename(&temporary, destination)
     }) {
         let _ = fs::remove_file(&temporary);
@@ -494,7 +495,7 @@ fn atomic_publish(
                 .or_else(|_| source.metadata())
                 .map(|metadata| metadata.permissions())?;
             candidate.set_permissions(permissions)?;
-            candidate.sync_all()?;
+            candidate.sync_all_counted()?;
             if initial_no_replace {
                 publish_unnamed_no_replace(candidate, destination)?;
             } else {
@@ -521,7 +522,7 @@ fn atomic_publish_named(
         if let Some(permissions) = permissions {
             fs::set_permissions(&temporary, permissions)?;
         }
-        File::open(&temporary)?.sync_all()?;
+        File::open(&temporary)?.sync_all_counted()?;
         if initial_no_replace {
             rename_no_replace(&temporary, destination)
         } else {
@@ -543,6 +544,7 @@ fn publish_checkpoint(
     _expected_state_id: Option<StorageStateId>,
     initial_publish: bool,
 ) -> RevisionResult<PublishStats> {
+    crate::io_stats::published();
     #[cfg(target_os = "linux")]
     {
         let preparation_started = Instant::now();
@@ -857,7 +859,7 @@ fn sync_parent(path: &Path) -> RevisionResult<()> {
 
 #[cfg(target_os = "linux")]
 fn sync_directory(path: &Path) -> RevisionResult<()> {
-    File::open(path)?.sync_all()?;
+    File::open(path)?.sync_all_counted()?;
     Ok(())
 }
 

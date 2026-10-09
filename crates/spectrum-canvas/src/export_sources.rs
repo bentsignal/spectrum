@@ -64,7 +64,7 @@ pub fn prepare_export_raster_sources(
     let cache = DerivedBackingCache::new(cache_root, DerivedBackingLimits::default());
     let mut providers = HashMap::with_capacity(expected.len());
     for (canonical, requirement) in expected {
-        let source = prepare_source(&cache, &requirement.source_path)?;
+        let source = prepare_source_reusing(&cache, &requirement.source_path)?;
         if let Some(expected) = requirement.content_sha256.as_deref()
             && source.content_sha256() != Some(expected)
         {
@@ -126,9 +126,49 @@ fn aggregate_requirements(document: &Document) -> Result<HashMap<PathBuf, Aggreg
     Ok(expected)
 }
 
+/// Prepared sources kept for interactive clients, by path and file identity:
+/// a canvas re-renders its layers often, and preparing a large source
+/// hashes and checks it, so it is prepared once per session.
+type Prepared = HashMap<PathBuf, ((u64, Option<std::time::SystemTime>), ResolvedRasterSource)>;
+
+fn prepare_source_reusing(
+    cache: &DerivedBackingCache,
+    path: &Path,
+) -> Result<ResolvedRasterSource> {
+    if !crate::render_region::interactive_caches() {
+        return prepare_source(cache, path);
+    }
+    static PREPARED: std::sync::OnceLock<std::sync::Mutex<Prepared>> = std::sync::OnceLock::new();
+    let prepared = PREPARED.get_or_init(Default::default);
+    let metadata = std::fs::metadata(path)?;
+    let identity = (metadata.len(), metadata.modified().ok());
+    if let Some((known, source)) = prepared.lock().unwrap_or_else(|e| e.into_inner()).get(path)
+        && *known == identity
+    {
+        return Ok(source.clone());
+    }
+    let source = prepare_source(cache, path)?;
+    let mut prepared = prepared.lock().unwrap_or_else(|e| e.into_inner());
+    if prepared.len() >= 64 {
+        prepared.clear();
+    }
+    prepared.insert(path.to_path_buf(), (identity, source.clone()));
+    Ok(source)
+}
+
+/// PNGs larger than this read their regions from a decoded backing.
+const LARGE_SEQUENTIAL_PIXELS: u64 = 4_000_000;
+
 fn prepare_source(cache: &DerivedBackingCache, path: &Path) -> Result<ResolvedRasterSource> {
     let inspection = crate::inspect_raster_region_source(path)?;
+    let pixels =
+        u64::from(inspection.info.descriptor.width) * u64::from(inspection.info.descriptor.height);
     match inspection.info.capability {
+        // A large PNG read in regions would be decoded from its first row
+        // for every region; it is decoded once into a backing instead.
+        RegionReadCapability::SequentialBounded if pixels > LARGE_SEQUENTIAL_PIXELS => {
+            prepare_derived(cache, path)
+        }
         RegionReadCapability::SequentialBounded if inspection.info.supports_region_reads_now() => {
             let source = SequentialPngSource::open(path, SequentialPngLimits::default())?;
             ResolvedRasterSource::new_authenticated(

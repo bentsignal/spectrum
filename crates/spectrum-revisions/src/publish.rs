@@ -1,3 +1,4 @@
+use crate::io_stats::SyncCounted as _;
 use std::path::Path;
 
 #[cfg(unix)]
@@ -38,7 +39,7 @@ fn publish_noreplace_with_sync(
 
 #[cfg(unix)]
 fn sync_parent(path: &Path) -> std::io::Result<()> {
-    fs::File::open(parent(path))?.sync_all()?;
+    fs::File::open(parent(path))?.sync_all_counted()?;
     Ok(())
 }
 

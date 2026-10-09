@@ -158,6 +158,20 @@ fn key(layer: &Layer, density: f32) -> String {
     )
 }
 
+impl LayerCache {
+    /// Whether any layer is rendering.
+    pub fn rendering(&self) -> bool {
+        !self.busy.is_empty()
+    }
+
+    /// Whether every layer image is a full render at `density`.
+    pub fn sharp_at(&self, density: f32) -> bool {
+        self.images.values().all(|image| {
+            !image.key.ends_with("|draft") && (image.density - density).abs() <= density * 0.01
+        })
+    }
+}
+
 impl Workspace {
     /// Renders layers whose look, scale, or sub-pixel position changed; the
     /// previous image stays on screen until the new one arrives.
@@ -299,6 +313,9 @@ impl Workspace {
                 .detach();
             }
             cache.busy.insert(layer.id, wanted.clone());
+            // When this layer last changed, to measure how long the change
+            // takes to reach the screen.
+            let changed_at = cache.changed.get(&layer.id).map(|(_, at)| *at);
             let (root, doc, id, layer_id) =
                 (store.root.clone(), render_doc.clone(), canvas.id, layer.id);
             let at = (layer.transform.x, layer.transform.y);
@@ -310,7 +327,10 @@ impl Workspace {
                     }
                     None => doc,
                 };
-                render_alone(&root, &doc, &members, render_density)
+                let started = std::time::Instant::now();
+                let rendered = render_alone(&root, &doc, &members, render_density);
+                crate::perf::record("canvas_layer_render", started.elapsed());
+                rendered
             });
             cx.spawn_in(window, async move |this, cx| {
                 let result = task.await;
@@ -322,6 +342,9 @@ impl Workspace {
                         return;
                     };
                     canvas.cache.busy.remove(&layer_id);
+                    if let Some(at) = changed_at {
+                        crate::perf::record("canvas_edit_to_screen", at.elapsed());
+                    }
                     let (image, bounds, [pixel, extent]) = match result {
                         Ok(rendered) => rendered,
                         Err(error) => {

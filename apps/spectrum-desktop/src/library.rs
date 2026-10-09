@@ -81,6 +81,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        crate::perf::record("error_shown", std::time::Duration::ZERO);
         window.push_notification(Notification::error(format!("{error:#}")), cx);
     }
 

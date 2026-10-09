@@ -15,6 +15,8 @@ use spectrum_library::{AssetId, ProjectId};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 pub const SIDEBAR_WIDTH: f32 = 288.;
+/// A file's modification time and length, to notice when it changes.
+pub type FileStamp = (Option<std::time::SystemTime>, u64);
 pub const HEADER_HEIGHT: f32 = 52.;
 /// Room for the macOS window buttons at the top-left of the window.
 pub const TRAFFIC_LIGHTS: f32 = if cfg!(target_os = "macos") { 86. } else { 0. };
@@ -155,6 +157,9 @@ pub struct Workspace {
     pub canvas: Option<crate::canvas_state::CanvasState>,
     /// A check for an agent's newer work is running.
     pub following: bool,
+    /// The open asset's document file as of the last check, so unchanged
+    /// files are not checked again.
+    pub followed_stamp: Option<(AssetId, Option<FileStamp>)>,
     /// Keeps keyboard shortcuts working when no field has focus.
     pub focus_handle: FocusHandle,
     /// The title strip a window drag started in, if any.
@@ -393,6 +398,7 @@ impl Workspace {
             colors: crate::colors::Colors::new(window, cx),
             canvas: None,
             following: false,
+            followed_stamp: None,
             focus_handle: cx.focus_handle(),
             dragging: None,
             settle: 1,
@@ -634,7 +640,11 @@ impl Render for Workspace {
             f32::from(viewport.width) - SIDEBAR_WIDTH,
             f32::from(viewport.height) - HEADER_HEIGHT,
         );
-        self.request_thumbnails(cx);
+        // Thumbnails render only where they show, so editing never competes
+        // with redrawing grids nobody can see.
+        if matches!(self.open, Open::Overview) || self.picker_open || self.palette_open {
+            self.request_thumbnails(cx);
+        }
         self.ensure_preview(window, cx);
         self.fit_canvas_resolution(window, cx);
         let content = match (self.place, self.open) {

@@ -200,8 +200,12 @@ impl DerivedBackingCache {
     /// per-frame operation.
     pub fn identify(&self, source: &Path) -> Result<DerivedBackingIdentity> {
         let inspection = inspect_raster_region_source(source)?;
-        if inspection.info.capability != RegionReadCapability::DerivedBacking
-            || !inspection.info.descriptor.supports_exact_rgba8_backing()
+        // Large PNGs are decoded into a backing too; reading them region by
+        // region would decode from the first row every time.
+        if !matches!(
+            inspection.info.capability,
+            RegionReadCapability::DerivedBacking | RegionReadCapability::SequentialBounded
+        ) || !inspection.info.descriptor.supports_exact_rgba8_backing()
         {
             bail!("raster source does not support an exact derived RGBA8 backing plane");
         }

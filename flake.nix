@@ -30,6 +30,8 @@
               cargo rustc rustfmt clippy rust-analyzer
               pkg-config cmake
               rustPlatform.bindgenHook
+              # A private display for the interaction benchmark.
+              xorg-server
             ];
             buildInputs = runtimeLibraries;
             # Winit/glutin load these libraries dynamically. Prefer the host's

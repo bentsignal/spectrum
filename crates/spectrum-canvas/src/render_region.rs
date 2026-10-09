@@ -17,6 +17,7 @@ mod composite;
 #[cfg(test)]
 use source::sample_triangle_resize;
 mod effects_tile;
+mod reduced;
 mod resample;
 use composite::composite_staged;
 pub use resample::set_interactive_source_cache;
@@ -163,6 +164,23 @@ pub(crate) fn composite_bounded_source_region(
     let effects = effects_tile_bounds(&geometry, region, &scaled_layer.style);
     if intersection.is_none() && shadow_intersection.is_none() && effects.is_none() {
         return Ok(true);
+    }
+    // A large raster shown at half its size or less draws from a reduced
+    // copy, so zooming never re-reads every source pixel.
+    if let Some((mut source, geometry)) = reduced::level(&descriptor, geometry, stats)? {
+        resample::apply_painted(&mut source, descriptor.deferred_painted(), geometry);
+        return composite_staged(
+            canvas,
+            coverage,
+            base_layer,
+            scaled_layer,
+            clip,
+            region,
+            source,
+            geometry,
+            (intersection, shadow, shadow_intersection, effects),
+            stats,
+        );
     }
     let staging_region = if descriptor.is_unadjusted_shape() {
         SourceRegion {
