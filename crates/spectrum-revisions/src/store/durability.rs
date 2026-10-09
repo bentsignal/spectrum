@@ -3,6 +3,7 @@ use crate::{
     RevisionResult,
     storage_io::{sidecar_path, sync_if_present},
 };
+use std::fs;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 
@@ -17,9 +18,13 @@ impl RevisionStore {
     }
 
     pub(crate) fn finish_write(&self) -> RevisionResult<()> {
+        // An empty log means every write was already checkpointed and flushed,
+        // so opening or reading a document flushes nothing; flushes are slow
+        // on macOS.
+        let written = fs::metadata(sidecar_path(&self.path, "-wal")).is_ok_and(|wal| wal.len() > 0);
         self.connection
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
-        if self.syncs_checkpoint_files() {
+        if written && self.syncs_checkpoint_files() {
             self.sync_checkpoint_files()?;
         }
         Ok(())
