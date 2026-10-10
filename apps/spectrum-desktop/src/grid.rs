@@ -280,28 +280,56 @@ impl Workspace {
             .collect();
         for id in missing {
             store.thumbs.insert(id, Thumb::Loading);
-            let root = store.root.clone();
-            let render = cx.background_executor().spawn(async move {
-                let started = std::time::Instant::now();
-                let result = card_crop(&Service::open(&root)?.thumbnail(id, THUMBNAIL)?);
-                crate::perf::record("thumbnail", started.elapsed());
-                result
-            });
-            cx.spawn(async move |this, cx| {
-                let thumb = match render.await {
-                    Ok(path) => Thumb::ready(path),
-                    Err(_) => Thumb::Failed,
-                };
-                this.update(cx, |this, cx| {
-                    if let Ok(store) = &mut this.store {
-                        store.thumbs.insert(id, thumb);
-                    }
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
+            store.thumb_queue.push_back(id);
         }
+        self.render_next_thumbnail(cx);
+    }
+
+    /// Whether a grid of thumbnails is on screen.
+    pub fn thumbnails_shown(&self) -> bool {
+        matches!(self.open, crate::workspace::Open::Overview)
+            || self.picker_open
+            || self.palette_open
+    }
+
+    /// Renders queued thumbnails one at a time while a grid shows them, so
+    /// a grid of large photos and canvases never takes the cores, disk, or
+    /// memory that editing needs; leaving the grid pauses the queue.
+    fn render_next_thumbnail(&mut self, cx: &mut Context<Self>) {
+        let shown = self.thumbnails_shown();
+        let Ok(store) = &mut self.store else {
+            return;
+        };
+        if store.thumb_rendering || !shown {
+            return;
+        }
+        let Some(id) = store.thumb_queue.pop_front() else {
+            return;
+        };
+        store.thumb_rendering = true;
+        let root = store.root.clone();
+        let render = cx.background_executor().spawn(async move {
+            let started = std::time::Instant::now();
+            let result = card_crop(&Service::open(&root)?.thumbnail(id, THUMBNAIL)?);
+            crate::perf::record("thumbnail", started.elapsed());
+            result
+        });
+        cx.spawn(async move |this, cx| {
+            let thumb = match render.await {
+                Ok(path) => Thumb::ready(path),
+                Err(_) => Thumb::Failed,
+            };
+            this.update(cx, |this, cx| {
+                if let Ok(store) = &mut this.store {
+                    store.thumbs.insert(id, thumb);
+                    store.thumb_rendering = false;
+                }
+                this.render_next_thumbnail(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Right-click menu. It acts on the whole selection when the asset is part

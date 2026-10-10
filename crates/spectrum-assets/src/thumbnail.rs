@@ -28,12 +28,7 @@ impl Service {
                 ))?);
                 let path = previews.join(format!("{id}-thumb-{}.png", &key[..24]));
                 if !path.exists() {
-                    let rendered = spectrum_image::engine::render(
-                        &image,
-                        spectrum_image::engine::RenderOptions {
-                            max_size: Some(max),
-                        },
-                    )?;
+                    let rendered = spectrum_image::engine::render_thumbnail(&image, max)?;
                     save_atomically(&rendered, &path)?;
                 }
                 Ok(path)
@@ -46,7 +41,9 @@ impl Service {
                     let mut doc = self
                         .read::<spectrum_canvas::CanvasModel>(&document, true)?
                         .0;
-                    self.resolve(&mut doc)?;
+                    // Small renders of its images, made in a fraction of the
+                    // time their full renders would take.
+                    self.resolve_small(&mut doc, Some((max * 2).max(256)))?;
                     spectrum_canvas::export_document_sized(&doc, &path, 90, Some(max))?;
                 }
                 Ok(path)

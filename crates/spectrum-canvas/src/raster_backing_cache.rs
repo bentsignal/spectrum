@@ -21,7 +21,7 @@ mod maintenance;
 pub(crate) mod prepare;
 use cache_fs::{
     RetainedPlane, open_trusted_cache_file, read_bounded, read_exact_at, remove_cache_entry,
-    retain_plane, sync_directory, trusted_cache_directory, trusted_cache_directory_if_present,
+    retain_plane, trusted_cache_directory, trusted_cache_directory_if_present,
 };
 use maintenance::{CacheMaintenanceLease, EntryReadLease};
 #[cfg(test)]
@@ -89,6 +89,16 @@ pub struct DerivedBackingIdentity {
     key: String,
     source_sha256: String,
     descriptor: RegionSourceDescriptor,
+    /// The source file's stamp when it was hashed, if it was: preparing
+    /// rejects a file that changed since.
+    stamp: Option<FileStamp>,
+}
+
+/// What changes when a file is rewritten: its length and modification time.
+pub(super) type FileStamp = (u64, Option<std::time::SystemTime>);
+
+pub(super) fn file_stamp(metadata: &fs::Metadata) -> FileStamp {
+    (metadata.len(), metadata.modified().ok())
 }
 
 impl DerivedBackingIdentity {
@@ -214,11 +224,15 @@ impl DerivedBackingCache {
         {
             bail!("raster dimensions exceed the derived backing dimension limit");
         }
+        let stamp = file_stamp(&fs::metadata(source)?);
         let source_sha256 = sha256_path_bounded(
             source,
             self.limits.max_encoded_source_bytes,
             "encoded raster",
         )?;
+        if file_stamp(&fs::metadata(source)?) != stamp {
+            bail!("raster source changed while its cache identity was computed");
+        }
         let confirmed = inspect_raster_region_source(source)?;
         if confirmed.info.capability != inspection.info.capability
             || confirmed.info.descriptor != inspection.info.descriptor
@@ -234,6 +248,7 @@ impl DerivedBackingCache {
             key,
             source_sha256,
             descriptor: inspection.info.descriptor,
+            stamp: Some(stamp),
         })
     }
 
@@ -287,9 +302,7 @@ impl DerivedBackingCache {
         if plane_length != manifest.plane_bytes {
             bail!("derived raster backing plane length does not match its manifest");
         }
-        if sha256_reader_bounded(&mut plane, self.limits.max_plane_bytes, "backing plane")?
-            != manifest.plane_sha256
-        {
+        if plane_digest(&plane, plane_length)? != manifest.plane_digest {
             bail!("derived raster backing plane checksum does not match its manifest");
         }
         plane.seek(SeekFrom::Start(0))?;
@@ -365,6 +378,70 @@ impl DerivedBackingCache {
             }
         }
 
+        let backing = self.build(identity, memory_plan, &maintenance, |plane| {
+            prepare_exact_rgba8_plane(source, identity, self.limits, plane)
+        })?;
+        Ok(PrepareDerivedBacking::Ready {
+            backing,
+            created: true,
+            memory_plan,
+        })
+    }
+
+    /// Prepares a source for a client that waits for it, as a canvas being
+    /// shown does: the source decodes before the cache's build lease is
+    /// taken, so several decode at once across threads, and the lease is
+    /// held only to write and publish the plane.
+    pub fn prepare_waiting(
+        &self,
+        source: &Path,
+        identity: &DerivedBackingIdentity,
+        timeout: std::time::Duration,
+    ) -> Result<DerivedRasterBacking> {
+        let memory_plan = self.validate_identity(identity)?;
+        if let Ok(Some(backing)) = self.open_ready(identity) {
+            return Ok(backing);
+        }
+        if memory_plan.known_resident_reservation_bytes() > self.limits.max_known_resident_bytes {
+            bail!("derived raster preparation exceeds the known resident byte limit");
+        }
+        self.ensure_cache_root()?;
+        let decoded = prepare::decode_source(source, identity, self.limits)?;
+        let deadline = std::time::Instant::now() + timeout;
+        let maintenance = loop {
+            if let Some(maintenance) =
+                CacheMaintenanceLease::try_acquire(&self.root, &self.version_root(), self.limits)?
+            {
+                break maintenance;
+            }
+            if std::time::Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting to publish the raster backing of {}",
+                    source.display()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        maintenance.ensure_version_root()?;
+        maintenance.scavenge_crash_entries()?;
+        match self.open_ready(identity) {
+            Ok(Some(backing)) => return Ok(backing),
+            Ok(None) => {}
+            Err(_) => maintenance.remove_corrupt_entry(identity.key())?,
+        }
+        self.build(identity, memory_plan, &maintenance, |plane| {
+            prepare::write_plane(decoded, identity, plane)
+        })
+    }
+
+    /// Writes a plane with `write` and publishes it, holding the build lease.
+    fn build(
+        &self,
+        identity: &DerivedBackingIdentity,
+        memory_plan: DerivedBackingMemoryPlan,
+        maintenance: &CacheMaintenanceLease,
+        write: impl FnOnce(&Path) -> Result<prepare::PreparedPlane>,
+    ) -> Result<DerivedRasterBacking> {
         let plane_bytes = identity
             .descriptor
             .exact_rgba8_plane_bytes()
@@ -378,13 +455,8 @@ impl DerivedBackingCache {
             std::process::id(),
             TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        let temporary = TemporaryDirectory::create(version_root.join(temporary_name))?;
-        let prepared = prepare_exact_rgba8_plane(
-            source,
-            identity,
-            self.limits,
-            &temporary.path.join(PLANE_FILE),
-        )?;
+        let temporary = TemporaryDirectory::create(self.version_root().join(temporary_name))?;
+        let prepared = write(&temporary.path.join(PLANE_FILE))?;
         if prepared.plane_bytes != plane_bytes || prepared.memory_plan != memory_plan {
             bail!("decoded raster does not match its preparation memory contract");
         }
@@ -396,17 +468,11 @@ impl DerivedBackingCache {
             pixel_format: PIXEL_FORMAT.into(),
             row_stride: u64::from(identity.descriptor.width) * 4,
             plane_bytes,
-            plane_sha256: prepared.plane_sha256,
+            plane_digest: prepared.plane_digest,
         };
-        self.publish(identity, &manifest, temporary, &maintenance)?;
-        let backing = self
-            .open_ready(identity)?
-            .context("published derived raster backing is not ready")?;
-        Ok(PrepareDerivedBacking::Ready {
-            backing,
-            created: true,
-            memory_plan,
-        })
+        self.publish(identity, &manifest, temporary, maintenance)?;
+        self.open_ready(identity)?
+            .context("published derived raster backing is not ready")
     }
 
     fn publish(
@@ -424,7 +490,6 @@ impl DerivedBackingCache {
         )?;
         write_mutable_file(&temporary.path.join(ENTRY_LEASE_FILE), &[])?;
         write_mutable_file(&temporary.path.join(ACCESS_FILE), b"0")?;
-        sync_directory(&temporary.path)?;
         let incoming = maintenance.staged_logical_bytes(&temporary.path, identity.key())?;
         maintenance.ensure_quota(incoming, identity.key())?;
 
@@ -438,7 +503,6 @@ impl DerivedBackingCache {
                 destination.display()
             )
         })?;
-        sync_directory(&self.version_root())?;
         temporary.commit();
         Ok(())
     }
@@ -598,7 +662,8 @@ struct DerivedBackingManifest {
     pixel_format: String,
     row_stride: u64,
     plane_bytes: u64,
-    plane_sha256: String,
+    /// [`plane_digest`] of the plane.
+    plane_digest: String,
 }
 
 impl DerivedBackingManifest {
@@ -623,7 +688,7 @@ impl DerivedBackingManifest {
         {
             bail!("derived raster backing manifest does not match its source identity");
         }
-        if !is_lower_sha256(&self.plane_sha256)
+        if !is_lower_sha256(&self.plane_digest)
             || self.pixel_format != PIXEL_FORMAT
             || self.row_stride != u64::from(self.descriptor.width) * 4
         {
@@ -645,10 +710,14 @@ impl DerivedBackingManifest {
     }
 }
 
+// The cache is rebuilt from its sources, and every entry is checked when it
+// is opened (its ready marker hashes its manifest, whose digest covers the
+// plane), so a crash can leave a torn entry but never a wrong one. Nothing
+// is flushed to disk: a flush costs far more than the work it protects, and
+// on macOS it flushes the whole drive.
 fn write_immutable_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
     file.write_all(bytes)?;
-    file.sync_all()?;
     let mut permissions = file.metadata()?.permissions();
     permissions.set_readonly(true);
     fs::set_permissions(path, permissions)?;
@@ -658,8 +727,33 @@ fn write_immutable_file(path: &Path, bytes: &[u8]) -> Result<()> {
 fn write_mutable_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
     file.write_all(bytes)?;
-    file.sync_all()?;
     Ok(())
+}
+
+/// Bytes of plane each digest chunk covers.
+const DIGEST_CHUNK: u64 = 4 * 1_024 * 1_024;
+
+/// A plane's digest: the SHA-256 of its length and of each 4 MiB chunk's
+/// SHA-256, so every core hashes a chunk at once and checking a plane on
+/// open costs a few milliseconds.
+pub(super) fn plane_digest(plane: &RetainedPlane, length: u64) -> Result<String> {
+    use rayon::prelude::*;
+    let chunks = length.div_ceil(DIGEST_CHUNK);
+    let digests = (0..chunks)
+        .into_par_iter()
+        .map(|chunk| {
+            let start = chunk * DIGEST_CHUNK;
+            let mut buffer = vec![0; (length - start).min(DIGEST_CHUNK) as usize];
+            read_exact_at(plane, &mut buffer, start)?;
+            Ok(Sha256::digest(&buffer))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut digest = Sha256::new();
+    digest.update(length.to_le_bytes());
+    for chunk in digests {
+        digest.update(chunk);
+    }
+    Ok(sha256_hex(digest.finalize()))
 }
 
 fn validate_inventory_manifest(
@@ -687,6 +781,7 @@ fn validate_inventory_manifest(
         key: manifest.key.clone(),
         source_sha256: manifest.source_sha256.clone(),
         descriptor: manifest.descriptor.clone(),
+        stamp: None,
     };
     manifest.validate_schema(&identity, limits, expected_schema)
 }

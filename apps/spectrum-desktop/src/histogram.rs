@@ -7,14 +7,35 @@ pub struct Histogram {
 }
 
 impl Histogram {
-    /// Counts every other pixel, which is plenty for a sidebar graph.
+    /// Counts every other pixel, which is plenty for a sidebar graph, on
+    /// every core.
     pub fn from_rgba(image: &image::RgbaImage) -> Self {
-        let mut channels = [[0u32; 256]; 3];
-        for pixel in image.pixels().step_by(2) {
-            for (channel, value) in pixel.0[..3].iter().enumerate() {
-                channels[channel][*value as usize] += 1;
-            }
-        }
+        use rayon::prelude::*;
+        let channels = image
+            .as_raw()
+            .par_chunks(8 * 4096)
+            .fold(
+                || [[0u32; 256]; 3],
+                |mut channels, chunk| {
+                    for pixel in chunk.chunks_exact(8) {
+                        for (channel, value) in pixel[..3].iter().enumerate() {
+                            channels[channel][*value as usize] += 1;
+                        }
+                    }
+                    channels
+                },
+            )
+            .reduce(
+                || [[0u32; 256]; 3],
+                |mut total, part| {
+                    for (total, part) in total.iter_mut().zip(part) {
+                        for (total, part) in total.iter_mut().zip(part) {
+                            *total += part;
+                        }
+                    }
+                    total
+                },
+            );
         Self { channels }
     }
 

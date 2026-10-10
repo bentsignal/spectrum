@@ -79,6 +79,33 @@ pub fn render_with_adjustments(
     render_photo_with_decoder(photo, adjustments, options, &FilePhotoDecoder)
 }
 
+/// A small look at an edited photo, for library grids: the photo shrinks
+/// before its edits apply, keeping enough pixels for its crop to still fill
+/// `max_size`.
+pub fn render_thumbnail(photo: &Image, max_size: u32) -> Result<DynamicImage> {
+    let adjustments = photo.adjustments.clone().sanitized();
+    let decoded = FilePhotoDecoder.proxy(photo, max_size)?;
+    let crop = adjustments
+        .crop
+        .map_or(1.0, |crop| crop.width.min(crop.height))
+        .max(0.05);
+    // Straightening zooms in a little; leave room for it.
+    let room = if adjustments.straighten.abs() > 0.01 {
+        1.5
+    } else {
+        1.0
+    };
+    let working = (max_size as f32 / crop * room).ceil() as u32;
+    let source = spectrum_imaging::downscale(&decoded, working);
+    Ok(render_image(
+        source,
+        adjustments,
+        RenderOptions {
+            max_size: Some(max_size),
+        },
+    ))
+}
+
 /// Produce the settled, export-authoritative preview raster.
 ///
 /// Geometry is applied at source resolution before the long-edge limit, exactly
@@ -211,13 +238,12 @@ fn decode_raster(photo: &Image) -> Result<DynamicImage> {
         .with_context(|| format!("could not decode {}", photo.path.display()))
 }
 
-fn resize_to_limit(mut decoded: DynamicImage, max_size: Option<u32>) -> DynamicImage {
-    if let Some(max_size) =
-        max_size.filter(|size| *size > 0 && (decoded.width() > *size || decoded.height() > *size))
-    {
-        decoded = decoded.resize(max_size, max_size, FilterType::Triangle);
+/// Previews and thumbnails: fitted within `max_size` on every core.
+fn resize_to_limit(decoded: DynamicImage, max_size: Option<u32>) -> DynamicImage {
+    match max_size {
+        Some(max_size) => spectrum_imaging::downscale(&decoded, max_size),
+        None => decoded,
     }
-    decoded
 }
 
 fn resized_copy_to_limit(decoded: &DynamicImage, max_size: u32) -> DynamicImage {

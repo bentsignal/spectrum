@@ -42,6 +42,8 @@ pub struct CanvasState {
     )>,
     /// A text layer shown in an installed font that is not applied yet.
     pub font_preview: Option<(u64, std::path::PathBuf)>,
+    /// Images whose full renders are being made for this canvas.
+    pub full_previews: std::collections::HashSet<AssetId>,
     /// Where a dragged layer row would land in the list, top first.
     pub drop_slot: Option<usize>,
     /// The row a dragged layer would go inside instead, top first.
@@ -117,6 +119,8 @@ pub struct CanvasState {
     /// When a whole-canvas render was last asked for; renders asked for in
     /// quick succession are drafts, and a sharp one follows.
     render_asked: Option<std::time::Instant>,
+    /// When the document last changed here.
+    edited_at: Option<std::time::Instant>,
     /// Reload from the library once saving finishes (after undo or redo).
     reload: bool,
 }
@@ -169,6 +173,16 @@ impl CanvasState {
 
     /// The document to render: the saved one, with any shared image being
     /// edited drawn from its original file and the unsaved edits.
+    /// What the composite of a canvas drawn as one image is current for:
+    /// the latest reason to render, and whether that render is drawn and
+    /// edits have paused (a draft follows changes until they do).
+    pub fn composite_state(&self) -> (u64, bool) {
+        let settled = self
+            .edited_at
+            .is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(150));
+        (self.version, settled)
+    }
+
     pub fn render_doc(&self) -> Document {
         let mut doc = self.shown().clone();
         if let Some((id, transform)) = self.drag_preview
@@ -217,6 +231,8 @@ pub struct LayerDrag {
 pub struct Rendered {
     pub image: Arc<RenderImage>,
     pub bounds: Bounds2,
+    /// Images drawn from stand-ins (see `Service::resolve_for_display`).
+    pub pending: Vec<AssetId>,
 }
 
 fn queue_key(command: &Command) -> Option<(String, u64)> {
@@ -238,7 +254,7 @@ pub fn render_resolved(resolved: &Document, density: f32) -> anyhow::Result<Arc<
 
 pub fn render_at(root: &std::path::Path, doc: &Document, density: f32) -> anyhow::Result<Rendered> {
     let mut resolved = doc.clone();
-    Service::open(root)?.resolve(&mut resolved)?;
+    let pending = Service::open(root)?.resolve_for_display(&mut resolved)?;
     let bounds = resolved
         .layers
         .iter()
@@ -253,7 +269,11 @@ pub fn render_at(root: &std::path::Path, doc: &Document, density: f32) -> anyhow
     )?;
     let image = spectrum_canvas::render_document_scaled_with_sources(&resolved, density, &sources)?;
     let image = to_render_image(image).0;
-    Ok(Rendered { image, bounds })
+    Ok(Rendered {
+        image,
+        bounds,
+        pending,
+    })
 }
 
 impl Workspace {
@@ -277,6 +297,7 @@ impl Workspace {
             drop_slot: None,
             drop_inside: None,
             font_preview: None,
+            full_previews: Default::default(),
             editing: None,
             tool: Default::default(),
             creating: None,
@@ -311,6 +332,7 @@ impl Workspace {
             changed_at: None,
             save_waiting: false,
             render_asked: None,
+            edited_at: None,
             reload: true,
         });
         self.reload_canvas(window, cx);
@@ -347,6 +369,7 @@ impl Workspace {
     /// Whether the open canvas shows its current document sharply: loaded,
     /// nothing rendering, and every layer drawn at the current zoom.
     pub fn canvas_drawn(&self) -> bool {
+        let view = self.visible_canvas_area();
         self.canvas.as_ref().is_some_and(|canvas| {
             canvas.loaded
                 && !canvas.rendering
@@ -355,9 +378,10 @@ impl Workspace {
                 && !canvas.reload
                 // A zoom renders sharp once it settles, a frame after SETTLE.
                 && canvas.zoomed_at.is_none_or(|at| {
-                    at.elapsed() > crate::zoom::SETTLE + std::time::Duration::from_millis(80)
+                    at.elapsed() > crate::zoom::SETTLE + std::time::Duration::from_millis(30)
                 })
-                && canvas.cache.sharp_at(canvas.density)
+                && canvas.cache.sharp_at(canvas.density, view, &canvas.bounds)
+                && crate::layer_detail::composite_sharp(canvas, view)
         })
     }
 
@@ -416,6 +440,8 @@ impl Workspace {
                         if canvas.doc.selection.is_some() {
                             this.animate_ants(window, cx);
                         }
+                        // Fit first, so layers render once at the size shown.
+                        this.fit_canvas_resolution(window, cx);
                         this.render_canvas(window, cx);
                         this.refresh_layers(window, cx);
                         this.sync_layer_controls(window, cx);
@@ -427,6 +453,16 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// Asks for a new full render of the open canvas (for canvases that
+    /// cannot be drawn layer by layer), as after a linked image's full render
+    /// replaced its stand-in.
+    pub fn redraw_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(canvas) = &mut self.canvas {
+            canvas.version += 1;
+        }
+        self.render_canvas(window, cx);
     }
 
     /// Renders again after something outside the document changed, such as
@@ -495,11 +531,22 @@ impl Workspace {
         const RAPID: std::time::Duration = std::time::Duration::from_millis(150);
         let rapid = canvas.render_asked.is_some_and(|at| at.elapsed() < RAPID);
         canvas.render_asked = Some(std::time::Instant::now());
+        // A canvas too large to render whole at this scale renders whole at
+        // a capped one, under the sharp part on screen (`layer_detail`).
+        let whole = crate::layer_cache::whole_density(
+            Some((
+                [0., 0.],
+                [canvas.doc.width as f32, canvas.doc.height as f32],
+            )),
+            &Default::default(),
+            canvas.density,
+        );
         let density = if rapid {
             (canvas.density * 0.5).max(0.5)
         } else {
             canvas.density
-        };
+        }
+        .min(whole);
         if rapid {
             // Render sharp once the changes stop.
             cx.spawn_in(window, async move |this, cx| {
@@ -541,8 +588,10 @@ impl Workspace {
                 };
                 canvas.rendering = false;
                 canvas.rendered = version;
+                let mut pending = Vec::new();
                 match result {
                     Ok(done) => {
+                        pending = done.pending;
                         if let Some(old) = canvas.image.replace(done.image) {
                             window.drop_image(old).ok();
                         }
@@ -554,7 +603,9 @@ impl Workspace {
                     }
                     Err(error) => this.notify_error(error, window, cx),
                 }
+                this.make_full_previews(pending, window, cx);
                 this.render_canvas(window, cx);
+                this.refresh_composite_detail(window, cx);
                 cx.notify();
             })
             .ok();
@@ -611,6 +662,7 @@ impl Workspace {
             canvas.doc = doc;
             canvas.edits += 1;
             canvas.version += 1;
+            canvas.edited_at = Some(std::time::Instant::now());
             if let Some((x, y)) = crop {
                 let (dx, dy) = (-(x as f32), -(y as f32));
                 canvas.cache.shift(dx, dy);
@@ -676,9 +728,10 @@ impl Workspace {
         let (root, id, base) = (store.root.clone(), canvas.id, canvas.revision);
         let task = cx.background_executor().spawn(async move {
             let started = std::time::Instant::now();
-            let result = Service::open(&root)?
+            let mut service = Service::open(&root)?;
+            let result = service
                 .edit_canvas_from(id, base, batch)
-                .map(|(_, revision)| revision);
+                .map(|(_, revision)| (revision, crate::following::document_stamp(&service, id)));
             crate::perf::record("canvas_save", started.elapsed());
             result
         });
@@ -689,14 +742,17 @@ impl Workspace {
                     return;
                 };
                 canvas.saving = false;
-                if let Ok(revision) = &result {
-                    canvas.revision = Some(*revision);
-                }
-                if let Err(error) = result {
-                    // Show what the library really holds.
-                    canvas.reload = true;
-                    canvas.queue.clear();
-                    this.notify_error(error, window, cx);
+                match result {
+                    Ok((revision, stamp)) => {
+                        canvas.revision = Some(revision);
+                        this.saved_stamp(id, stamp);
+                    }
+                    Err(error) => {
+                        // Show what the library really holds.
+                        canvas.reload = true;
+                        canvas.queue.clear();
+                        this.notify_error(error, window, cx);
+                    }
                 }
                 if let Ok(store) = &mut this.store {
                     store.thumbs.remove(&id);

@@ -642,7 +642,7 @@ impl Render for Workspace {
         );
         // Thumbnails render only where they show, so editing never competes
         // with redrawing grids nobody can see.
-        if matches!(self.open, Open::Overview) || self.picker_open || self.palette_open {
+        if self.thumbnails_shown() {
             self.request_thumbnails(cx);
         }
         self.ensure_preview(window, cx);

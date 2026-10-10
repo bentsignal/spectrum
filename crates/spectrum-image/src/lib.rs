@@ -13,4 +13,4 @@ pub use spectrum_imaging::{
     AdjustmentPatch, Adjustments, ColorGrade, ColorGrading, CropRect, CurvePoint, HslAdjustments,
     HslBand, SpotRemoval, ToneCurve, ToneCurves,
 };
-pub use spectrum_imaging::{adjustments, render};
+pub use spectrum_imaging::{adjustments, downscale, render};

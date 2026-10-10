@@ -619,45 +619,29 @@ impl Workspace {
                         layer.visible && !crate::layer_cache::inside(shown, *index)
                     })
                     .map(|(_, layer)| layer)
-                    .filter_map(|layer| {
-                        let cached = canvas.cache.images.get(&layer.id)?;
-                        let (min, max) = current(canvas, layer.id)?;
-                        let (base_min, base_max) = cached.bounds;
-                        let factor = (max[0] - min[0]) / (base_max[0] - base_min[0]).max(0.001);
-                        let exact = (factor - 1.).abs() < 0.001
-                            && (cached.density - device).abs() <= device * 0.002;
-                        let placed = if exact {
-                            let shift = [
-                                ((min[0] - base_min[0]) * cached.density).round(),
-                                ((min[1] - base_min[1]) * cached.density).round(),
-                            ];
-                            let pixels = cached.image.size(0);
-                            (
-                                point(
-                                    px((cached.pixel[0] + shift[0]) / pixel),
-                                    px((cached.pixel[1] + shift[1]) / pixel),
-                                ),
-                                size(
-                                    px(pixels.width.0 as f32 / pixel),
-                                    px(pixels.height.0 as f32 / pixel),
-                                ),
-                            )
-                        } else {
-                            // Resizing, or rendered for another scale: map the
-                            // render's canvas area onto the layer's bounds now.
-                            let at = [
-                                min[0] + (cached.pixel[0] / cached.density - base_min[0]) * factor,
-                                min[1] + (cached.pixel[1] / cached.density - base_min[1]) * factor,
-                            ];
-                            (
-                                point(px(at[0] * scale), px(at[1] * scale)),
-                                size(
-                                    px(cached.extent[0] * factor * scale),
-                                    px(cached.extent[1] * factor * scale),
-                                ),
-                            )
+                    .flat_map(|layer| {
+                        let Some((min, max)) = current(canvas, layer.id) else {
+                            return Vec::new();
                         };
-                        Some((layer.id, cached.image.clone(), placed.0, placed.1))
+                        // The layer's image, and over it the sharp part on
+                        // screen when the layer is too large to render whole.
+                        [
+                            canvas.cache.images.get(&layer.id),
+                            canvas.cache.details.get(&layer.id),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .map(|cached| {
+                            let (at, shown) = crate::canvas_stack::place_layer_image(
+                                cached,
+                                (min, max),
+                                device,
+                                pixel,
+                                scale,
+                            );
+                            (layer.id, cached.image.clone(), at, shown)
+                        })
+                        .collect()
                     })
                     .collect::<Vec<_>>();
                 let [r, g, b, a] = canvas.doc.background;
@@ -669,6 +653,26 @@ impl Workspace {
             image
         };
         let composite = if stack.is_some() { None } else { composite };
+        // Over a canvas drawn as one image, the sharp part on screen.
+        let composite_detail =
+            self.canvas
+                .as_ref()
+                .filter(|_| image.is_some())
+                .and_then(|canvas| {
+                    let detail = canvas.cache.composite.as_ref()?;
+                    let whole = (
+                        [0., 0.],
+                        [canvas.doc.width as f32, canvas.doc.height as f32],
+                    );
+                    let (at, shown) = crate::canvas_stack::place_layer_image(
+                        detail,
+                        whole,
+                        scale * pixel,
+                        pixel,
+                        scale,
+                    );
+                    Some((detail.image.clone(), at, shown))
+                });
         let loading = image.is_none() && composite.is_none() && stack.is_none();
         // The gradient being dragged out, as a line from start to end.
         let gradient_line = self.canvas.as_ref().and_then(|c| {
@@ -798,6 +802,15 @@ impl Workspace {
                             .absolute()
                             .left(offset.x)
                             .top(offset.y)
+                            .w(shown.width)
+                            .h(shown.height)
+                            .object_fit(ObjectFit::Fill)
+                    }))
+                    .children(composite_detail.map(|(image, at, shown)| {
+                        img(image)
+                            .absolute()
+                            .left(offset.x + at.x)
+                            .top(offset.y + at.y)
                             .w(shown.width)
                             .h(shown.height)
                             .object_fit(ObjectFit::Fill)

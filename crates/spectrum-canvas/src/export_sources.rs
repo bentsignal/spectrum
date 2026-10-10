@@ -4,7 +4,7 @@ use std::{
     io::Cursor,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -16,13 +16,12 @@ use spectrum_imaging::{
 };
 
 use crate::{
-    DerivedBackingCache, DerivedBackingLimits, Document, PrepareDerivedBacking, RasterSourceEpoch,
-    RasterSourceResolver, ResolvedRasterSource, SequentialPngLimits, SequentialPngSource,
+    DerivedBackingCache, DerivedBackingLimits, Document, RasterSourceEpoch, RasterSourceResolver,
+    ResolvedRasterSource, SequentialPngLimits, SequentialPngSource,
 };
 
 const EXPORT_PREPARATION_TIMEOUT: Duration = Duration::from_secs(30);
-const EXPORT_PREPARATION_RETRY: Duration = Duration::from_millis(25);
-pub const RASTER_BACKING_CACHE_COMPATIBILITY: &str = "derived-rgba8-schema-v2";
+pub const RASTER_BACKING_CACHE_COMPATIBILITY: &str = "derived-rgba8-schema-v3";
 
 #[derive(Clone)]
 pub struct PreparedRasterSources {
@@ -126,10 +125,21 @@ fn aggregate_requirements(document: &Document) -> Result<HashMap<PathBuf, Aggreg
     Ok(expected)
 }
 
-/// Prepared sources kept for interactive clients, by path and file identity:
-/// a canvas re-renders its layers often, and preparing a large source
-/// hashes and checks it, so it is prepared once per session.
-type Prepared = HashMap<PathBuf, ((u64, Option<std::time::SystemTime>), ResolvedRasterSource)>;
+/// Sources kept for interactive clients (a canvas on screen), most recently
+/// used last: a canvas re-renders its layers often, so each source is
+/// prepared once per session. Large photos are decoded into memory rather
+/// than into the disk cache: opening a canvas decodes its photos at once
+/// across cores and writes nothing, so it never queues behind other cache
+/// work or leaves writes for the next document save to flush.
+struct Prepared {
+    path: PathBuf,
+    identity: (u64, Option<std::time::SystemTime>),
+    source: ResolvedRasterSource,
+    bytes: u64,
+}
+
+/// Decoded photo pixels kept in memory at once.
+const INTERACTIVE_BYTES: u64 = 1 << 30;
 
 fn prepare_source_reusing(
     cache: &DerivedBackingCache,
@@ -138,23 +148,52 @@ fn prepare_source_reusing(
     if !crate::render_region::interactive_caches() {
         return prepare_source(cache, path);
     }
-    static PREPARED: std::sync::OnceLock<std::sync::Mutex<Prepared>> = std::sync::OnceLock::new();
-    let prepared = PREPARED.get_or_init(Default::default);
+    static PREPARED: std::sync::Mutex<Vec<Prepared>> = std::sync::Mutex::new(Vec::new());
     let metadata = std::fs::metadata(path)?;
     let identity = (metadata.len(), metadata.modified().ok());
-    if let Some((known, source)) = prepared.lock().unwrap_or_else(|e| e.into_inner()).get(path)
-        && *known == identity
     {
-        return Ok(source.clone());
+        let mut prepared = PREPARED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(index) = prepared
+            .iter()
+            .position(|entry| entry.path == path && entry.identity == identity)
+        {
+            let entry = prepared.remove(index);
+            let source = entry.source.clone();
+            prepared.push(entry);
+            return Ok(source);
+        }
     }
-    let source = prepare_source(cache, path)?;
-    let mut prepared = prepared.lock().unwrap_or_else(|e| e.into_inner());
-    if prepared.len() >= 64 {
-        prepared.clear();
+    let inspection = crate::inspect_raster_region_source(path)?;
+    let info = inspection.info;
+    let pixels = u64::from(info.descriptor.width) * u64::from(info.descriptor.height);
+    let decoded = pixels > LARGE_SEQUENTIAL_PIXELS
+        || matches!(info.capability, RegionReadCapability::DerivedBacking);
+    let (source, bytes) = if decoded {
+        (
+            prepare_memory_source(path, info, MAX_INTERACTIVE_PIXELS)?,
+            pixels * 4,
+        )
+    } else {
+        (prepare_source(cache, path)?, 0)
+    };
+    let mut prepared = PREPARED.lock().unwrap_or_else(|e| e.into_inner());
+    prepared.retain(|entry| entry.path != path);
+    prepared.push(Prepared {
+        path: path.to_path_buf(),
+        identity,
+        source: source.clone(),
+        bytes,
+    });
+    while prepared.len() > 1
+        && prepared.iter().map(|entry| entry.bytes).sum::<u64>() > INTERACTIVE_BYTES
+    {
+        prepared.remove(0);
     }
-    prepared.insert(path.to_path_buf(), (identity, source.clone()));
     Ok(source)
 }
+
+/// The largest photo an interactive client decodes into memory.
+const MAX_INTERACTIVE_PIXELS: u64 = 200_000_000;
 
 /// PNGs larger than this read their regions from a decoded backing.
 const LARGE_SEQUENTIAL_PIXELS: u64 = 4_000_000;
@@ -188,27 +227,12 @@ fn prepare_source(cache: &DerivedBackingCache, path: &Path) -> Result<ResolvedRa
 
 fn prepare_derived(cache: &DerivedBackingCache, path: &Path) -> Result<ResolvedRasterSource> {
     let identity = cache.identify(path)?;
-    let deadline = Instant::now() + EXPORT_PREPARATION_TIMEOUT;
-    loop {
-        match cache.prepare_identified(path, &identity)? {
-            PrepareDerivedBacking::Ready { backing, .. } => {
-                return ResolvedRasterSource::new_authenticated(
-                    RasterSourceEpoch::new(backing.key().to_owned())?,
-                    identity.source_sha256().to_owned(),
-                    Arc::new(backing),
-                );
-            }
-            PrepareDerivedBacking::InProgress(_) if Instant::now() < deadline => {
-                std::thread::sleep(EXPORT_PREPARATION_RETRY);
-            }
-            PrepareDerivedBacking::InProgress(_) => {
-                bail!(
-                    "timed out waiting for bounded raster preparation of {}",
-                    path.display()
-                );
-            }
-        }
-    }
+    let backing = cache.prepare_waiting(path, &identity, EXPORT_PREPARATION_TIMEOUT)?;
+    ResolvedRasterSource::new_authenticated(
+        RasterSourceEpoch::new(backing.key().to_owned())?,
+        identity.source_sha256().to_owned(),
+        Arc::new(backing),
+    )
 }
 
 struct MemoryRegionSource {
@@ -235,8 +259,17 @@ fn prepare_small_memory_source(
     path: &Path,
     info: RegionSourceInfo,
 ) -> Result<ResolvedRasterSource> {
+    prepare_memory_source(path, info, crate::MAX_PAINT_REGION_PIXELS)
+}
+
+/// `path` decoded whole into memory, if it has at most `max_pixels`.
+fn prepare_memory_source(
+    path: &Path,
+    info: RegionSourceInfo,
+    max_pixels: u64,
+) -> Result<ResolvedRasterSource> {
     let pixels = u64::from(info.descriptor.width) * u64::from(info.descriptor.height);
-    if pixels > crate::MAX_PAINT_REGION_PIXELS {
+    if pixels > max_pixels {
         bail!(
             "large export raster {} requires a region-native prepared backing",
             path.display()
@@ -252,9 +285,9 @@ fn prepare_small_memory_source(
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(crate::MAX_CANVAS_DIMENSION);
     limits.max_image_height = Some(crate::MAX_CANVAS_DIMENSION);
-    limits.max_alloc = Some(crate::MAX_PAINT_REGION_PIXELS * 8);
+    limits.max_alloc = Some(max_pixels * 8);
     reader.limits(limits);
-    let image = reader.decode()?.to_rgba8();
+    let image = spectrum_imaging::render::to_rgba(reader.decode()?);
     let info = RegionSourceInfo {
         descriptor: RegionSourceDescriptor {
             width: image.width(),

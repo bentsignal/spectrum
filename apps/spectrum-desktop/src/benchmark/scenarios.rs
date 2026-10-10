@@ -27,15 +27,58 @@ pub(super) async fn run_all(
     }
     // Let the library load.
     pause(cx, 1200).await;
-    vec![
-        image_open(this, cx, fixtures).await,
-        image_scrub(this, cx).await,
-        canvas_open(this, cx, fixtures).await,
-        canvas_drag(this, cx, fixtures).await,
-        canvas_zoom(this, cx).await,
-        text_size(this, cx, fixtures).await,
-        brush_undo(this, cx).await,
-    ]
+    let only = super::only();
+    let wanted = |name: &str| {
+        only.as_ref()
+            .is_none_or(|only| only.iter().any(|o| o == name))
+    };
+    let mut outcomes = Vec::new();
+    if wanted("image_open") {
+        outcomes.push(image_open("image_open", this, cx, fixtures, fixtures.photo).await);
+    }
+    if wanted("image_scrub") {
+        outcomes.push(image_scrub("image_scrub", this, cx).await);
+    }
+    if wanted("edited_open") {
+        outcomes.push(image_open("edited_open", this, cx, fixtures, fixtures.edited_photo).await);
+    }
+    if wanted("edited_scrub") {
+        outcomes.push(image_scrub("edited_scrub", this, cx).await);
+    }
+    if wanted("canvas_open") {
+        outcomes.push(canvas_open("canvas_open", this, cx, fixtures, fixtures.canvas).await);
+    }
+    if wanted("canvas_drag") {
+        outcomes.push(canvas_drag("canvas_drag", this, cx, fixtures.photo_layer).await);
+    }
+    if wanted("canvas_zoom") {
+        outcomes.push(canvas_zoom("canvas_zoom", this, cx).await);
+    }
+    if wanted("text_size") {
+        outcomes.push(text_size(this, cx, fixtures).await);
+    }
+    if wanted("brush_undo") {
+        outcomes.push(brush_undo(this, cx).await);
+    }
+    if wanted("heavy_open") {
+        // The Move tool, as after painting a person picks it to arrange.
+        key(cx, "escape");
+        key(cx, "v");
+        outcomes.push(canvas_open("heavy_open", this, cx, fixtures, fixtures.heavy_canvas).await);
+    }
+    if wanted("heavy_drag") {
+        outcomes.push(canvas_drag("heavy_drag", this, cx, fixtures.heavy_layer).await);
+    }
+    if wanted("heavy_zoom") {
+        outcomes.push(canvas_zoom("heavy_zoom", this, cx).await);
+    }
+    if wanted("blend_open") {
+        outcomes.push(canvas_open("blend_open", this, cx, fixtures, fixtures.blend_canvas).await);
+    }
+    if wanted("blend_zoom") {
+        outcomes.push(canvas_zoom("blend_zoom", this, cx).await);
+    }
+    outcomes
 }
 
 async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
@@ -161,29 +204,36 @@ fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
-async fn image_open(this: &This, cx: &mut AsyncWindowContext, fixtures: &Fixtures) -> Outcome {
+async fn image_open(
+    name: &'static str,
+    this: &This,
+    cx: &mut AsyncWindowContext,
+    fixtures: &Fixtures,
+    photo: spectrum_library::AssetId,
+) -> Outcome {
     crate::perf::drain();
-    let (project, photo) = (fixtures.project, fixtures.photo);
+    let project = fixtures.project;
     this.update_in(cx, |ws, window, cx| {
         ws.enter_project(project, window, cx);
         ws.open_item(Open::Image(photo), window, cx);
     })
     .ok();
     match until(this, cx, 20_000, Workspace::image_idle).await {
-        Some(took) => outcome("image_open", vec![("elapsed", ms(took))], None),
-        None => outcome("image_open", vec![], Some("the photo never showed".into())),
+        Some(took) => outcome(name, vec![("elapsed", ms(took))], None),
+        None => outcome(name, vec![], Some("the photo never showed".into())),
     }
 }
 
 /// Drags the Exposure slider back and forth, pausing so each round saves,
 /// then sits idle while Spectrum checks for agents' work.
-async fn image_scrub(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
+async fn image_scrub(name: &'static str, this: &This, cx: &mut AsyncWindowContext) -> Outcome {
     crate::perf::drain();
+    let start = read(this, cx, |ws| ws.image.adjust.exposure).unwrap_or_default();
     // Exposure, back and forth at 60 changes a second, as a drag sends them.
     for drag in 0..4 {
         for step in 0..90 {
             let value = 1.5 * (step as f32 / 90.0 * std::f32::consts::TAU * 1.5).sin();
-            set_color(this, cx, 0, value + drag as f32 * 0.01);
+            set_color(this, cx, 0, start + value + drag as f32 * 0.01);
             pause(cx, 16).await;
         }
         pause(cx, if drag < 3 { 700 } else { 3000 }).await;
@@ -192,25 +242,32 @@ async fn image_scrub(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
     let exposure = read(this, cx, |ws| ws.image.adjust.exposure).unwrap_or_default();
     let problem = if settled.is_none() {
         Some("the photo never caught up with the edits".into())
-    } else if exposure == 0.0 {
+    } else if exposure == start {
         Some("dragging the Exposure slider did not change the photo".into())
     } else {
         None
     };
-    outcome("image_scrub", vec![], problem)
+    outcome(name, vec![], problem)
 }
 
-async fn canvas_open(this: &This, cx: &mut AsyncWindowContext, fixtures: &Fixtures) -> Outcome {
+async fn canvas_open(
+    name: &'static str,
+    this: &This,
+    cx: &mut AsyncWindowContext,
+    fixtures: &Fixtures,
+    canvas: spectrum_library::AssetId,
+) -> Outcome {
     crate::perf::drain();
-    let canvas = fixtures.canvas;
+    let project = fixtures.project;
     this.update_in(cx, |ws, window, cx| {
-        ws.open_item(Open::Canvas(canvas), window, cx)
+        ws.enter_project(project, window, cx);
+        ws.open_item(Open::Canvas(canvas), window, cx);
     })
     .ok();
     match until(this, cx, 30_000, Workspace::canvas_idle).await {
-        Some(took) => outcome("canvas_open", vec![("elapsed", ms(took))], None),
+        Some(took) => outcome(name, vec![("elapsed", ms(took))], None),
         None => outcome(
-            "canvas_open",
+            name,
             vec![],
             Some("the canvas never finished drawing".into()),
         ),
@@ -218,9 +275,13 @@ async fn canvas_open(this: &This, cx: &mut AsyncWindowContext, fixtures: &Fixtur
 }
 
 /// Drags the photo layer across the canvas and waits for it to settle.
-async fn canvas_drag(this: &This, cx: &mut AsyncWindowContext, fixtures: &Fixtures) -> Outcome {
+async fn canvas_drag(
+    name: &'static str,
+    this: &This,
+    cx: &mut AsyncWindowContext,
+    id: u64,
+) -> Outcome {
     crate::perf::drain();
-    let id = fixtures.photo_layer;
     let Some((start, before)) = read(this, cx, |ws| {
         let (min, _) = layer_bounds(ws, id)?;
         let x = ws.canvas.as_ref()?.doc.layer(id).ok()?.transform.x;
@@ -228,7 +289,7 @@ async fn canvas_drag(this: &This, cx: &mut AsyncWindowContext, fixtures: &Fixtur
     })
     .flatten() else {
         return outcome(
-            "canvas_drag",
+            name,
             vec![],
             Some("the photo layer is not on the canvas".into()),
         );
@@ -251,11 +312,11 @@ async fn canvas_drag(this: &This, cx: &mut AsyncWindowContext, fixtures: &Fixtur
     let extra = settled
         .map(|took| vec![("settle", ms(took))])
         .unwrap_or_default();
-    outcome("canvas_drag", extra, problem)
+    outcome(name, extra, problem)
 }
 
 /// Zooms in and out step by step, waiting for the canvas each time.
-async fn canvas_zoom(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
+async fn canvas_zoom(name: &'static str, this: &This, cx: &mut AsyncWindowContext) -> Outcome {
     crate::perf::drain();
     let mut settles = Vec::new();
     let mut problem = None;
@@ -278,7 +339,7 @@ async fn canvas_zoom(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
         problem = Some("the zoom keys did not zoom".into());
     }
     until(this, cx, 20_000, Workspace::canvas_idle).await;
-    outcome("canvas_zoom", settles, problem)
+    outcome(name, settles, problem)
 }
 
 /// Selects the text layer and drags its size slider.

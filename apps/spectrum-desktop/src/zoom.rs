@@ -19,7 +19,7 @@ const STEPS: [f32; 19] = [
     16., 32.,
 ];
 /// How long after the last zoom change the canvas renders at the new size.
-pub const SETTLE: Duration = Duration::from_millis(250);
+pub const SETTLE: Duration = Duration::from_millis(60);
 /// Room around a fitted canvas, in screen pixels.
 const FIT_MARGIN: f32 = 16.;
 /// The canvas stays at least this far on screen when panned.
@@ -115,6 +115,8 @@ impl Workspace {
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this.fit_canvas_resolution(window, cx);
+                this.refresh_details(window, cx);
+                this.refresh_composite_detail(window, cx);
                 cx.notify();
             })
             .ok();
@@ -152,7 +154,7 @@ impl Workspace {
             canvas.zoom = Some(scale);
             canvas.pan = pan;
         }
-        let _ = window;
+        self.refresh_details_after_pan(window, cx);
         cx.notify();
     }
 

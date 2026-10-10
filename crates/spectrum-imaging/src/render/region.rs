@@ -1,8 +1,8 @@
 use std::{error::Error, fmt};
 
-use image::{DynamicImage, Rgba, RgbaImage};
+use image::{Rgba, RgbaImage};
 
-use super::{apply_color_adjustments_region, apply_unsharp, blend_images};
+use super::{apply_color_adjustments_region, apply_unsharp, blend_images, blur};
 use crate::{Adjustments, SpotRemoval};
 
 /// A pixel-space rectangle in an adjusted image or its source.
@@ -151,9 +151,7 @@ where
     let mut pixels = geometry.materialize(noise_region, source_region, &source);
     drop(source);
     if adjustments.noise_reduction > 0.0 {
-        let blurred = DynamicImage::ImageRgba8(pixels.clone())
-            .blur(1.6)
-            .to_rgba8();
+        let blurred = blur(&pixels, 1.6);
         pixels = blend_images(
             &pixels,
             &blurred,
@@ -179,9 +177,7 @@ where
     );
     pixels = crop_region(&pixels, spot_region, sharpen_region);
     if adjustments.sharpening > 0.0 {
-        let blurred = DynamicImage::ImageRgba8(pixels.clone())
-            .blur(1.1)
-            .to_rgba8();
+        let blurred = blur(&pixels, 1.1);
         apply_unsharp(&mut pixels, &blurred, adjustments.sharpening / 100.0 * 1.8);
     }
     Ok((crop_region(&pixels, sharpen_region, region), staging_pixels))

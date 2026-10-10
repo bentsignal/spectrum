@@ -26,7 +26,7 @@ pub struct LayerImage {
     /// The layer's bounds when rendered, in canvas units.
     pub bounds: ([f32; 2], [f32; 2]),
     /// The look plus the sub-pixel position and scale it was rendered at.
-    key: String,
+    pub key: String,
 }
 
 #[derive(Default)]
@@ -37,12 +37,44 @@ pub struct LayerCache {
     /// Keys that failed to render, not retried until the layer changes.
     failed: HashMap<u64, String>,
     /// Each layer's latest full-quality key and when it last changed.
-    changed: HashMap<u64, (String, Instant)>,
+    pub changed: HashMap<u64, (String, Instant)>,
+    /// The sharp part on screen of layers too large to render whole at the
+    /// canvas's scale, drawn over their images (`layer_detail`).
+    pub details: HashMap<u64, LayerImage>,
+    pub detail_busy: HashMap<u64, String>,
+    pub detail_failed: HashMap<u64, String>,
+    /// The part on screen of a canvas drawn as one image (one that blends
+    /// layers), when that image is capped below the canvas's scale.
+    pub composite: Option<LayerImage>,
+    pub composite_busy: bool,
 }
 
 /// Changes closer together than this (a slider or resize drag) render as
 /// drafts; the full render follows once they stop.
-const RAPID: Duration = Duration::from_millis(150);
+pub const RAPID: Duration = Duration::from_millis(150);
+
+/// A layer's whole image holds at most this many device pixels. Zoomed in
+/// further, the part on screen renders sharp over it (`layer_detail`).
+const WHOLE_PIXELS: f32 = 4_000_000.;
+
+/// The density a layer's whole image renders at: the canvas's, unless that
+/// makes it larger than [`WHOLE_PIXELS`].
+pub fn whole_density(
+    bounds: Option<LayerBounds>,
+    style: &spectrum_canvas::LayerStyle,
+    density: f32,
+) -> f32 {
+    let Some((min, max)) = bounds else {
+        return density;
+    };
+    let reach = spectrum_canvas::style_reach(style);
+    let area = (max[0] - min[0] + 2. * reach) * (max[1] - min[1] + 2. * reach) * density * density;
+    if area <= WHOLE_PIXELS {
+        density
+    } else {
+        density * (WHOLE_PIXELS / area).sqrt()
+    }
+}
 
 /// Drafts render at most this many device pixels, so they stay fast for
 /// large images while small layers such as text keep their full sharpness.
@@ -158,16 +190,67 @@ fn key(layer: &Layer, density: f32) -> String {
     )
 }
 
+/// The key of the unit drawn with the layer at `index` at `density`: its
+/// look, the layers inside it and where they sit, and a font being previewed.
+pub fn unit_key(
+    doc: &Document,
+    index: usize,
+    density: f32,
+    preview: Option<&(u64, std::path::PathBuf)>,
+) -> String {
+    let layer = &doc.layers[index];
+    let members = unit(doc, index);
+    let font = preview
+        .filter(|(previewed, _)| members.contains(previewed))
+        .map_or(String::new(), |(id, path)| {
+            format!("|font:{id}:{}", path.display())
+        });
+    let inner: String = members[1..]
+        .iter()
+        .filter_map(|id| doc.layer(*id).ok())
+        .map(|m| {
+            format!(
+                "|in:{}@{:.2},{:.2}",
+                look(m),
+                m.transform.x - layer.transform.x,
+                m.transform.y - layer.transform.y
+            )
+        })
+        .collect();
+    format!("{}{inner}{font}", key(layer, density))
+}
+
 impl LayerCache {
     /// Whether any layer is rendering.
     pub fn rendering(&self) -> bool {
-        !self.busy.is_empty()
+        !self.busy.is_empty() || !self.detail_busy.is_empty()
     }
 
-    /// Whether every layer image is a full render at `density`.
-    pub fn sharp_at(&self, density: f32) -> bool {
-        self.images.values().all(|image| {
+    /// Whether every layer shows a full render at `density` wherever it is
+    /// within `view`: its whole image, or the detail over it.
+    pub fn sharp_at(
+        &self,
+        density: f32,
+        view: Option<LayerBounds>,
+        bounds: &HashMap<u64, LayerBounds>,
+    ) -> bool {
+        let sharp = |image: &LayerImage| {
             !image.key.ends_with("|draft") && (image.density - density).abs() <= density * 0.01
+        };
+        self.images.iter().all(|(id, image)| {
+            if !image.key.ends_with("|draft") && sharp(image) {
+                return true;
+            }
+            let seen = view
+                .zip(bounds.get(id))
+                .and_then(|(view, bounds)| crate::layer_detail::seen_part(*bounds, 0., view));
+            let Some(seen) = seen else {
+                // Off screen: its capped image is all it needs.
+                return !image.key.ends_with("|draft");
+            };
+            self.details
+                .get(id)
+                .is_some_and(|detail| sharp(detail) && crate::layer_detail::covers(detail, seen))
         })
     }
 }
@@ -176,6 +259,7 @@ impl Workspace {
     /// Renders layers whose look, scale, or sub-pixel position changed; the
     /// previous image stays on screen until the new one arrives.
     pub fn refresh_layers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = self.visible_canvas_area();
         let (Some(canvas), Ok(_)) = (&mut self.canvas, &self.store) else {
             return;
         };
@@ -232,24 +316,27 @@ impl Workspace {
                 .as_ref()
                 .filter(|(previewed, _)| members.contains(previewed))
                 .cloned();
-            let font = preview.as_ref().map_or(String::new(), |(id, path)| {
-                format!("|font:{id}:{}", path.display())
-            });
-            // The layers inside it, and where they sit relative to it.
-            let inner: String = members[1..]
-                .iter()
-                .filter_map(|id| render_doc.layer(*id).ok())
-                .map(|m| {
-                    format!(
-                        "|in:{}@{:.2},{:.2}",
-                        look(m),
-                        m.transform.x - layer.transform.x,
-                        m.transform.y - layer.transform.y
-                    )
-                })
-                .collect();
-            let full = format!("{}{inner}{font}", key(layer, density));
+            // A layer too large to render whole at this scale renders whole
+            // at a capped one, under the sharp part on screen.
+            let base = whole_density(canvas.bounds.get(&layer.id).copied(), &layer.style, density);
+            let full = unit_key(&render_doc, index, base, preview.as_ref());
             let current = cache.images.get(&layer.id).map(|i| i.key.as_str());
+            // A layer off screen keeps the image it has until it comes into
+            // view, so zooming renders only what is shown.
+            let off_screen =
+                view.zip(canvas.bounds.get(&layer.id))
+                    .is_some_and(|(view, bounds)| {
+                        let (width, height) = (view.1[0] - view.0[0], view.1[1] - view.0[1]);
+                        let near = (
+                            [view.0[0] - width * 0.25, view.0[1] - height * 0.25],
+                            [view.1[0] + width * 0.25, view.1[1] + height * 0.25],
+                        );
+                        let reach = spectrum_canvas::style_reach(&layer.style);
+                        crate::layer_detail::seen_part(*bounds, reach, near).is_none()
+                    });
+            if off_screen && current.is_some() {
+                continue;
+            }
             // A stroke being drawn shows as a patch; its layer renders once
             // the stroke is applied, and the patch goes when that render is in.
             let patched = canvas
@@ -287,11 +374,15 @@ impl Workspace {
             let rapid = rapid || canvas.drag.is_some_and(|d| members.contains(&d.id));
             let render_density = if rapid {
                 draft_density(canvas.bounds.get(&layer.id).copied(), &layer.style, density)
+                    .min(base)
             } else {
-                density
+                base
             };
             let wanted = if rapid {
-                format!("{}{inner}{font}|draft", key(layer, render_density))
+                format!(
+                    "{}|draft",
+                    unit_key(&render_doc, index, render_density, preview.as_ref())
+                )
             } else {
                 full
             };
@@ -328,7 +419,7 @@ impl Workspace {
                     None => doc,
                 };
                 let started = std::time::Instant::now();
-                let rendered = render_alone(&root, &doc, &members, render_density);
+                let rendered = render_alone(&root, &doc, &members, render_density, None);
                 crate::perf::record("canvas_layer_render", started.elapsed());
                 rendered
             });
@@ -345,7 +436,7 @@ impl Workspace {
                     if let Some(at) = changed_at {
                         crate::perf::record("canvas_edit_to_screen", at.elapsed());
                     }
-                    let (image, bounds, [pixel, extent]) = match result {
+                    let (image, bounds, [pixel, extent], pending) = match result {
                         Ok(rendered) => rendered,
                         Err(error) => {
                             canvas.cache.failed.insert(layer_id, wanted);
@@ -369,6 +460,7 @@ impl Workspace {
                     if let Some(old) = canvas.cache.images.insert(layer_id, entry) {
                         window.drop_image(old.image).ok();
                     }
+                    let pending_previews = pending;
                     // Bounds follow the layer if it moved meanwhile.
                     let dragging = canvas.drag.is_some_and(|d| d.id == layer_id);
                     if let Some(now) = canvas.shown().layers.iter().find(|l| l.id == layer_id)
@@ -383,6 +475,7 @@ impl Workspace {
                             ),
                         );
                     }
+                    this.make_full_previews(pending_previews, window, cx);
                     this.refresh_layers(window, cx);
                     cx.notify();
                 })
@@ -390,23 +483,35 @@ impl Workspace {
             })
             .detach();
         }
+        self.refresh_details(window, cx);
     }
 
     /// Re-renders every layer, keeping their images until replaced, after
     /// something outside the document changed (a shared image's edits).
     pub fn invalidate_layers(&mut self) {
         if let Some(canvas) = &mut self.canvas {
-            for image in canvas.cache.images.values_mut() {
+            for image in canvas
+                .cache
+                .images
+                .values_mut()
+                .chain(canvas.cache.details.values_mut())
+            {
                 image.key.clear();
             }
+            canvas.cache.detail_failed.clear();
         }
     }
 
     /// Frees every layer image.
     pub fn drop_layers(cache: &mut LayerCache, window: &mut Window) {
-        for (_, image) in cache.images.drain() {
+        for (_, image) in cache.images.drain().chain(cache.details.drain()) {
             window.drop_image(image.image).ok();
         }
+        if let Some(composite) = cache.composite.take() {
+            window.drop_image(composite.image).ok();
+        }
+        cache.composite_busy = false;
         cache.busy.clear();
+        cache.detail_busy.clear();
     }
 }

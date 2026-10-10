@@ -153,3 +153,47 @@ impl Workspace {
         Some((min, max))
     }
 }
+
+/// Where a layer image goes on screen for a layer now at `bounds`: by whole
+/// device pixels when it was rendered at this scale and size, or mapped onto
+/// the layer's bounds while it is resized or rendered for another scale.
+pub fn place_layer_image(
+    cached: &crate::layer_cache::LayerImage,
+    (min, max): ([f32; 2], [f32; 2]),
+    device: f32,
+    pixel: f32,
+    scale: f32,
+) -> (Point<Pixels>, Size<Pixels>) {
+    let (base_min, base_max) = cached.bounds;
+    let factor = (max[0] - min[0]) / (base_max[0] - base_min[0]).max(0.001);
+    let exact = (factor - 1.).abs() < 0.001 && (cached.density - device).abs() <= device * 0.002;
+    if exact {
+        let shift = [
+            ((min[0] - base_min[0]) * cached.density).round(),
+            ((min[1] - base_min[1]) * cached.density).round(),
+        ];
+        let pixels = cached.image.size(0);
+        (
+            point(
+                px((cached.pixel[0] + shift[0]) / pixel),
+                px((cached.pixel[1] + shift[1]) / pixel),
+            ),
+            size(
+                px(pixels.width.0 as f32 / pixel),
+                px(pixels.height.0 as f32 / pixel),
+            ),
+        )
+    } else {
+        let at = [
+            min[0] + (cached.pixel[0] / cached.density - base_min[0]) * factor,
+            min[1] + (cached.pixel[1] / cached.density - base_min[1]) * factor,
+        ];
+        (
+            point(px(at[0] * scale), px(at[1] * scale)),
+            size(
+                px(cached.extent[0] * factor * scale),
+                px(cached.extent[1] * factor * scale),
+            ),
+        )
+    }
+}

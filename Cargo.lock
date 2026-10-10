@@ -6208,6 +6208,7 @@ dependencies = [
  "image",
  "objc",
  "raw-window-handle",
+ "rayon",
  "serde_json",
  "spectrum",
  "spectrum-assets",

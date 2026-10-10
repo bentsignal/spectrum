@@ -1,8 +1,10 @@
 //! The interaction benchmark: `spectrum-desktop --benchmark [--strict]
-//! [--profile interactive|software] [--report <file>] [--photo <file>]`.
+//! [--profile interactive|software|ci] [--report <file>] [--photo <file>]
+//! [--only <scenario,...>]`.
 //!
 //! It makes a throwaway library holding a 24-megapixel photo (or `--photo`,
-//! such as a camera RAW file) and a canvas,
+//! such as a camera RAW file), a 45-megapixel photo with a full editing
+//! pass, and canvases from one photo to twelve,
 //! then drives the real app with synthetic mouse and keyboard input: the
 //! same handlers a person's clicks and drags reach. It measures what a person
 //! feels (how long an edit takes to reach the screen, how long the main
@@ -65,15 +67,31 @@ pub fn options() -> Option<Options> {
     })
 }
 
+/// The scenarios `--only a,b` names, for working on a few; a run with
+/// `--only` checks only those and never stands for the whole benchmark.
+fn only() -> Option<Vec<String>> {
+    let args: Vec<String> = std::env::args().collect();
+    let index = args.iter().position(|arg| arg == "--only")?;
+    Some(args.get(index + 1)?.split(',').map(str::to_owned).collect())
+}
+
 /// What the benchmark library holds.
 #[derive(Clone, Debug)]
 pub struct Fixtures {
     pub directory: PathBuf,
     pub project: ProjectId,
     pub photo: AssetId,
+    /// A larger photo with a full editing pass.
+    pub edited_photo: AssetId,
     pub canvas: AssetId,
     pub photo_layer: u64,
     pub text_layer: u64,
+    /// A 4K canvas of twelve photos, text with effects, and shapes.
+    pub heavy_canvas: AssetId,
+    /// A photo layer on it.
+    pub heavy_layer: u64,
+    /// A canvas drawn as one image: its shape blends with the photo.
+    pub blend_canvas: AssetId,
 }
 
 /// Makes the benchmark library and points this process at it. Runs before
@@ -132,37 +150,68 @@ const fn budget(
 /// How much slower shared CI machines may be than the software profile.
 const CI_SLOWDOWN: f64 = 3.0;
 
-/// Every budget, in milliseconds or counts. Before the overhaul, an image
-/// edit reached the screen in 72 ms p50 and 139 ms p95 with software
-/// rendering; these keep that bar and catch anything slower.
+/// Every budget, in milliseconds or counts. An edit reaches the screen
+/// within two or three frames, a drag never stalls the main thread, and
+/// opening or zooming finishes in a fraction of a second, for a 24-megapixel
+/// photo, a 45-megapixel one with every tab edited, and canvases from one
+/// photo to twelve. Tighten these as Spectrum gets faster; never loosen one
+/// to let a slower change in.
 const BUDGETS: &[Budget] = &[
-    budget("image_open", "elapsed", "max", 1000.0, 1500.0),
-    budget("image_scrub", "image_edit_to_screen", "p95", 60.0, 120.0),
-    budget("image_scrub", "image_edit_to_screen", "max", 150.0, 400.0),
+    budget("image_open", "elapsed", "max", 500.0, 600.0),
+    budget("image_scrub", "image_edit_to_screen", "p95", 40.0, 60.0),
+    budget("image_scrub", "image_edit_to_screen", "max", 100.0, 200.0),
     budget("image_scrub", "main_thread_lag", "p99", 20.0, 60.0),
     budget("image_scrub", "main_thread_lag", "max", 50.0, 150.0),
     // Saves run in the background beside the preview's renders, so a single
     // one can wait for a core; the typical save is held tight.
     budget("image_scrub", "image_save", "p50", 60.0, 80.0),
     budget("image_scrub", "image_save", "max", 1000.0, 1000.0),
+    // A drag's sharp frame shows soon after the drag pauses.
+    budget("image_scrub", "image_sharp", "max", 200.0, 300.0),
     budget("image_scrub", "follow_check", "count", 2.0, 2.0),
     budget("image_scrub", "error_shown", "count", 0.0, 0.0),
-    budget("canvas_open", "elapsed", "max", 2000.0, 3000.0),
+    // A larger photo with every tab edited, as after a full editing pass.
+    budget("edited_open", "elapsed", "max", 600.0, 700.0),
+    budget("edited_scrub", "image_edit_to_screen", "p95", 40.0, 60.0),
+    budget("edited_scrub", "image_edit_to_screen", "max", 100.0, 250.0),
+    budget("edited_scrub", "main_thread_lag", "p99", 20.0, 60.0),
+    budget("edited_scrub", "main_thread_lag", "max", 50.0, 150.0),
+    budget("edited_scrub", "image_sharp", "max", 200.0, 300.0),
+    budget("edited_scrub", "image_save", "p50", 60.0, 80.0),
+    budget("edited_scrub", "image_save", "max", 1000.0, 1000.0),
+    budget("edited_scrub", "error_shown", "count", 0.0, 0.0),
+    budget("canvas_open", "elapsed", "max", 500.0, 600.0),
     budget("canvas_open", "error_shown", "count", 0.0, 0.0),
     budget("canvas_drag", "main_thread_lag", "p99", 20.0, 60.0),
     budget("canvas_drag", "main_thread_lag", "max", 50.0, 150.0),
-    budget("canvas_drag", "settle", "max", 300.0, 600.0),
+    budget("canvas_drag", "settle", "max", 200.0, 300.0),
     budget("canvas_drag", "error_shown", "count", 0.0, 0.0),
-    budget("canvas_zoom", "settle", "p95", 800.0, 1200.0),
+    budget("canvas_zoom", "settle", "p95", 300.0, 450.0),
     budget("canvas_zoom", "main_thread_lag", "max", 60.0, 150.0),
     budget("canvas_zoom", "error_shown", "count", 0.0, 0.0),
-    budget("text_size", "canvas_edit_to_screen", "p95", 60.0, 120.0),
-    budget("text_size", "settle", "max", 300.0, 600.0),
+    budget("text_size", "canvas_edit_to_screen", "p95", 40.0, 60.0),
+    budget("text_size", "settle", "max", 250.0, 400.0),
     budget("text_size", "main_thread_lag", "p99", 20.0, 60.0),
     budget("text_size", "error_shown", "count", 0.0, 0.0),
-    budget("brush_undo", "settle", "max", 300.0, 600.0),
+    budget("brush_undo", "settle", "max", 150.0, 300.0),
     budget("brush_undo", "main_thread_lag", "max", 60.0, 150.0),
     budget("brush_undo", "error_shown", "count", 0.0, 0.0),
+    // A heavy canvas: twelve photos, text with effects, and shapes.
+    budget("heavy_open", "elapsed", "max", 1200.0, 1500.0),
+    budget("heavy_open", "error_shown", "count", 0.0, 0.0),
+    budget("heavy_drag", "main_thread_lag", "p99", 20.0, 60.0),
+    budget("heavy_drag", "main_thread_lag", "max", 50.0, 150.0),
+    budget("heavy_drag", "settle", "max", 300.0, 400.0),
+    budget("heavy_drag", "error_shown", "count", 0.0, 0.0),
+    budget("heavy_zoom", "settle", "p95", 300.0, 450.0),
+    budget("heavy_zoom", "main_thread_lag", "max", 60.0, 150.0),
+    budget("heavy_zoom", "error_shown", "count", 0.0, 0.0),
+    // A canvas drawn as one image, as blend modes need.
+    budget("blend_open", "elapsed", "max", 500.0, 600.0),
+    budget("blend_open", "error_shown", "count", 0.0, 0.0),
+    budget("blend_zoom", "settle", "p95", 300.0, 450.0),
+    budget("blend_zoom", "main_thread_lag", "max", 60.0, 150.0),
+    budget("blend_zoom", "error_shown", "count", 0.0, 0.0),
 ];
 
 /// One scenario's measurements.

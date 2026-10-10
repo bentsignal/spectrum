@@ -1,15 +1,20 @@
-use image::{DynamicImage, Rgba, RgbaImage, imageops::FilterType};
+use image::{DynamicImage, RgbaImage};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{Adjustments, ColorGrading, HslAdjustments, ToneCurve};
+use crate::{Adjustments, ColorGrading, CropRect, HslAdjustments, ToneCurve};
 
+mod filters;
 mod region;
+mod staged;
+pub use filters::to_rgba;
+use filters::{apply_unsharp, blend_images, blur, rotate_filled};
 use region::apply_spot_removals;
 pub use region::{
     AdjustedPixelSourceMapper, PixelRegion, RegionRenderError, adjusted_image_dimensions,
     render_image_region_at_source_resolution, render_image_region_at_source_resolution_bounded,
 };
+pub use staged::StagedRender;
 
 #[cfg(test)]
 mod region_tests;
@@ -51,128 +56,74 @@ impl ExportFormat {
 }
 
 pub fn render_image(
-    mut image: DynamicImage,
+    image: DynamicImage,
     adjustments: Adjustments,
     options: RenderOptions,
 ) -> DynamicImage {
     let adjustments = adjustments.sanitized();
-    image = match adjustments.rotation {
-        90 => image.rotate90(),
-        180 => image.rotate180(),
-        270 => image.rotate270(),
-        _ => image,
-    };
-    if adjustments.flip_horizontal {
-        image = image.fliph();
-    }
-    if adjustments.flip_vertical {
-        image = image.flipv();
-    }
-    if adjustments.straighten.abs() > 0.01 {
-        image = rotate_filled(&image, adjustments.straighten);
-    }
-    if let Some(crop) = adjustments.crop {
-        let width = image.width();
-        let height = image.height();
-        let x = ((crop.x * width as f32).round() as u32).min(width - 1);
-        let y = ((crop.y * height as f32).round() as u32).min(height - 1);
-        let w = (crop.width * width as f32).round().max(1.0) as u32;
-        let h = (crop.height * height as f32).round().max(1.0) as u32;
-        image = image.crop_imm(x, y, w.min(width - x), h.min(height - y));
-    }
+    let mut image = apply_geometry(image, &adjustments);
     if let Some(max_size) = options
         .max_size
         .filter(|size| *size > 0 && (image.width() > *size || image.height() > *size))
     {
-        image = image.resize(max_size, max_size, FilterType::Triangle);
+        image = crate::downscale(&image, max_size);
     }
     if !has_pixel_adjustments(&adjustments) {
         return image;
     }
-    let mut pixels = image.to_rgba8();
-    if adjustments.noise_reduction > 0.0 {
-        pixels = blend_images(
-            &pixels,
-            &DynamicImage::ImageRgba8(pixels.clone())
-                .blur(1.6)
-                .to_rgba8(),
-            adjustments.noise_reduction / 100.0 * 0.75,
-        );
-    }
-    apply_color_adjustments(&mut pixels, &adjustments);
-    if !adjustments.spots.is_empty() {
-        apply_spot_removals(&mut pixels, &adjustments.spots);
-    }
-    if adjustments.sharpening > 0.0 {
-        let blurred = DynamicImage::ImageRgba8(pixels.clone())
-            .blur(1.1)
-            .to_rgba8();
-        apply_unsharp(&mut pixels, &blurred, adjustments.sharpening / 100.0 * 1.8);
-    }
+    let mut pixels = reduce_noise(filters::to_rgba(image), &adjustments);
+    develop(&mut pixels, &adjustments);
     DynamicImage::ImageRgba8(pixels)
 }
 
-fn rotate_filled(image: &DynamicImage, degrees: f32) -> DynamicImage {
-    let source = image.to_rgba8();
-    let (width, height) = source.dimensions();
-    let mut output = RgbaImage::new(width, height);
-    let radians = degrees.to_radians();
-    let (sin, cos) = radians.sin_cos();
-    let aspect = width as f32 / height.max(1) as f32;
-    let zoom = (cos.abs() + aspect * sin.abs())
-        .max(cos.abs() + sin.abs() / aspect)
-        .max(1.0);
-    let cx = (width as f32 - 1.0) * 0.5;
-    let cy = (height as f32 - 1.0) * 0.5;
-    for (x, y, pixel) in output.enumerate_pixels_mut() {
-        let dx = (x as f32 - cx) / zoom;
-        let dy = (y as f32 - cy) / zoom;
-        let sx = cos * dx + sin * dy + cx;
-        let sy = -sin * dx + cos * dy + cy;
-        *pixel = sample_bilinear(&source, sx, sy);
+/// Rotation, flips, straightening, and crop, from sanitized adjustments.
+fn apply_geometry(image: DynamicImage, adjustments: &Adjustments) -> DynamicImage {
+    let flip = (adjustments.flip_horizontal, adjustments.flip_vertical);
+    let crop = |crop: CropRect, width: u32, height: u32| {
+        let x = ((crop.x * width as f32).round() as u32).min(width - 1);
+        let y = ((crop.y * height as f32).round() as u32).min(height - 1);
+        let w = (crop.width * width as f32).round().max(1.0) as u32;
+        let h = (crop.height * height as f32).round().max(1.0) as u32;
+        (x, y, w.min(width - x), h.min(height - y))
+    };
+    if adjustments.straighten.abs() > 0.01 {
+        // Straightening comes between the turn and the crop.
+        let turned = filters::rearrange(image, adjustments.rotation, flip, |_, _| None);
+        let straightened = rotate_filled(turned, adjustments.straighten);
+        return match adjustments.crop {
+            Some(rect) => filters::rearrange(straightened, 0, (false, false), |w, h| {
+                Some(crop(rect, w, h))
+            }),
+            None => straightened,
+        };
     }
-    DynamicImage::ImageRgba8(output)
+    filters::rearrange(image, adjustments.rotation, flip, |w, h| {
+        adjustments.crop.map(|rect| crop(rect, w, h))
+    })
 }
 
-fn sample_bilinear(image: &RgbaImage, x: f32, y: f32) -> Rgba<u8> {
-    let x = x.clamp(0.0, image.width().saturating_sub(1) as f32);
-    let y = y.clamp(0.0, image.height().saturating_sub(1) as f32);
-    let x0 = x.floor() as u32;
-    let y0 = y.floor() as u32;
-    let x1 = (x0 + 1).min(image.width() - 1);
-    let y1 = (y0 + 1).min(image.height() - 1);
-    let tx = x - x0 as f32;
-    let ty = y - y0 as f32;
-    let mut out = [0; 4];
-    for (channel, value) in out.iter_mut().enumerate() {
-        let top = image.get_pixel(x0, y0)[channel] as f32 * (1.0 - tx)
-            + image.get_pixel(x1, y0)[channel] as f32 * tx;
-        let bottom = image.get_pixel(x0, y1)[channel] as f32 * (1.0 - tx)
-            + image.get_pixel(x1, y1)[channel] as f32 * tx;
-        *value = (top * (1.0 - ty) + bottom * ty + 0.5) as u8;
+/// Noise reduction, the one pixel step before color.
+fn reduce_noise(pixels: RgbaImage, adjustments: &Adjustments) -> RgbaImage {
+    if adjustments.noise_reduction > 0.0 {
+        blend_images(
+            &pixels,
+            &blur(&pixels, 1.6),
+            adjustments.noise_reduction / 100.0 * 0.75,
+        )
+    } else {
+        pixels
     }
-    Rgba(out)
 }
 
-fn blend_images(source: &RgbaImage, blurred: &RgbaImage, amount: f32) -> RgbaImage {
-    let mut output = source.clone();
-    for (pixel, blur) in output.pixels_mut().zip(blurred.pixels()) {
-        for channel in 0..3 {
-            pixel[channel] = (pixel[channel] as f32 * (1.0 - amount)
-                + blur[channel] as f32 * amount
-                + 0.5) as u8;
-        }
+/// Color and tone, spot removal, and sharpening.
+fn develop(pixels: &mut RgbaImage, adjustments: &Adjustments) {
+    apply_color_adjustments(pixels, adjustments);
+    if !adjustments.spots.is_empty() {
+        apply_spot_removals(pixels, &adjustments.spots);
     }
-    output
-}
-
-fn apply_unsharp(image: &mut RgbaImage, blurred: &RgbaImage, amount: f32) {
-    for (pixel, blur) in image.pixels_mut().zip(blurred.pixels()) {
-        for channel in 0..3 {
-            let value =
-                pixel[channel] as f32 + (pixel[channel] as f32 - blur[channel] as f32) * amount;
-            pixel[channel] = value.clamp(0.0, 255.0) as u8;
-        }
+    if adjustments.sharpening > 0.0 {
+        let blurred = blur(pixels, 1.1);
+        apply_unsharp(pixels, &blurred, adjustments.sharpening / 100.0 * 1.8);
     }
 }
 
@@ -210,6 +161,8 @@ fn apply_color_adjustments_region(
     let vibrance = a.vibrance / 100.0;
     let vignette = a.vignette / 100.0;
     let grading_active = !a.color_grading.is_identity();
+    let grades = grade_ranges(&a.color_grading);
+    let bands = hsl_bands(&a.hsl);
     let hsl_active = !a.hsl.is_identity();
     let master_curve = (!a.curves.master.is_identity()).then_some(&a.curves.master);
     let red_curve = (!a.curves.red.is_identity()).then_some(&a.curves.red);
@@ -217,11 +170,17 @@ fn apply_color_adjustments_region(
     let blue_curve = (!a.curves.blue.is_identity()).then_some(&a.curves.blue);
     image
         .as_mut()
-        .par_chunks_mut(4)
+        .par_chunks_mut(width_pixels * 4)
         .enumerate()
-        .for_each(|(index, pixel)| {
-            let x = origin_x as usize + index % width_pixels;
-            let y = origin_y as usize + index / width_pixels;
+        .flat_map_iter(|(row, pixels)| {
+            pixels
+                .chunks_exact_mut(4)
+                .enumerate()
+                .map(move |(column, pixel)| (row, column, pixel))
+        })
+        .for_each(|(row, column, pixel)| {
+            let x = origin_x as usize + column;
+            let y = origin_y as usize + row;
             let alpha = pixel[3];
             let mut rgb = [
                 pixel[0] as f32 / 255.0,
@@ -254,7 +213,7 @@ fn apply_color_adjustments_region(
             }
             if hsl_active {
                 let (mut hue, mut sat, mut light) = rgb_to_hsl(rgb);
-                apply_hsl_mixer(&mut hue, &mut sat, &mut light, &a.hsl);
+                apply_hsl_mixer(&mut hue, &mut sat, &mut light, &bands);
                 rgb = hsl_to_rgb(hue, sat, light);
             }
             luma = luminance(rgb);
@@ -266,7 +225,7 @@ fn apply_color_adjustments_region(
                 *channel = luma + (*channel - luma) * saturation_factor;
             }
             if grading_active {
-                apply_color_grading(&mut rgb, &a.color_grading);
+                apply_color_grading(&mut rgb, a.color_grading.balance, &grades);
             }
             apply_curves(&mut rgb, master_curve, [red_curve, green_curve, blue_curve]);
             if vignette != 0.0 {
@@ -310,22 +269,36 @@ fn has_color_adjustments(a: &Adjustments) -> bool {
         || !a.color_grading.is_identity()
 }
 
-fn apply_color_grading(rgb: &mut [f32; 3], grading: &ColorGrading) {
+/// One color grading range, with its tint worked out once per frame.
+#[derive(Clone, Copy)]
+struct GradeRange {
+    saturation: f32,
+    luminance: f32,
+    tint: [f32; 3],
+}
+
+fn grade_ranges(grading: &ColorGrading) -> [GradeRange; 3] {
+    [grading.shadows, grading.midtones, grading.highlights].map(|grade| GradeRange {
+        saturation: grade.saturation,
+        luminance: grade.luminance,
+        tint: hsl_to_rgb(grade.hue / 360.0, 1.0, 0.5),
+    })
+}
+
+fn apply_color_grading(rgb: &mut [f32; 3], balance: f32, ranges: &[GradeRange; 3]) {
     let luma = luminance(*rgb).clamp(0.0, 1.0);
-    let balance = grading.balance / 100.0 * 0.3;
+    let balance = balance / 100.0 * 0.3;
     let shadow_weight = ((1.0 - luma + balance).clamp(0.0, 1.0)).powi(2);
     let highlight_weight = ((luma - balance).clamp(0.0, 1.0)).powi(2);
     let midtone_weight = (4.0 * luma * (1.0 - luma)).clamp(0.0, 1.0);
-    for (grade, weight) in [
-        (&grading.shadows, shadow_weight),
-        (&grading.midtones, midtone_weight),
-        (&grading.highlights, highlight_weight),
-    ] {
+    for (grade, weight) in ranges
+        .iter()
+        .zip([shadow_weight, midtone_weight, highlight_weight])
+    {
         let strength = grade.saturation / 100.0 * weight * 0.42;
         if strength > 0.0 {
-            let tint = hsl_to_rgb(grade.hue / 360.0, 1.0, 0.5);
-            for channel in 0..3 {
-                rgb[channel] += (tint[channel] - 0.5) * strength;
+            for (channel, tint) in rgb.iter_mut().zip(grade.tint) {
+                *channel += (tint - 0.5) * strength;
             }
         }
         let lift = grade.luminance / 100.0 * weight * 0.24;
@@ -335,7 +308,24 @@ fn apply_color_grading(rgb: &mut [f32; 3], grading: &ColorGrading) {
     }
 }
 
-fn apply_hsl_mixer(hue: &mut f32, saturation: &mut f32, lightness: &mut f32, hsl: &HslAdjustments) {
+/// Each HSL band's shifts, scaled once per frame.
+fn hsl_bands(hsl: &HslAdjustments) -> [[f32; 3]; 8] {
+    std::array::from_fn(|index| {
+        let band = hsl.band(index);
+        [
+            band.hue / 100.0 * (15.0 / 360.0),
+            band.saturation / 100.0,
+            band.luminance / 100.0,
+        ]
+    })
+}
+
+fn apply_hsl_mixer(
+    hue: &mut f32,
+    saturation: &mut f32,
+    lightness: &mut f32,
+    bands: &[[f32; 3]; 8],
+) {
     const CENTERS: [f32; 8] = [
         0.0,
         30.0 / 360.0,
@@ -350,14 +340,17 @@ fn apply_hsl_mixer(hue: &mut f32, saturation: &mut f32, lightness: &mut f32, hsl
     let mut sat_shift = 0.0;
     let mut light_shift = 0.0;
     let mut total = 0.0;
-    for (index, center) in CENTERS.into_iter().enumerate() {
+    for (band, center) in bands.iter().zip(CENTERS) {
         let distance = ((*hue - center).abs()).min(1.0 - (*hue - center).abs());
         let weight = (1.0 - distance / 0.125).clamp(0.0, 1.0);
-        let band = hsl.band(index);
+        // Bands out of reach add nothing.
+        if weight == 0.0 {
+            continue;
+        }
         total += weight;
-        hue_shift += band.hue / 100.0 * (15.0 / 360.0) * weight;
-        sat_shift += band.saturation / 100.0 * weight;
-        light_shift += band.luminance / 100.0 * weight;
+        hue_shift += band[0] * weight;
+        sat_shift += band[1] * weight;
+        light_shift += band[2] * weight;
     }
     if total > 0.0 {
         *hue = (*hue + hue_shift / total).rem_euclid(1.0);

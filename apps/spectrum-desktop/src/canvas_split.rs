@@ -95,21 +95,25 @@ fn around(doc: &Document, layer: u64, above: bool) -> Document {
 /// Renders `layer` alone on a clear document around its bounds, so none of
 /// it is lost outside the canvas. It renders at the canvas's scale and starts
 /// on a whole pixel of the canvas's own render, so its pixels line up exactly
-/// with the full render's. Returns the render, the layer's bounds, its
-/// top-left pixel on the canvas render's grid, and its size in canvas units.
+/// with the full render's. With `clip`, only the part of it within `clip`
+/// (in canvas units) renders, as for the part of a large layer on screen.
+/// Returns the render, the layer's bounds, its top-left pixel on the canvas
+/// render's grid, its size in canvas units, and the images it drew from
+/// stand-ins (see `Service::resolve_for_display`).
 pub fn render_alone(
     root: &std::path::Path,
     doc: &Document,
     layers: &[u64],
     density: f32,
-) -> anyhow::Result<(Arc<RenderImage>, LayerBounds, [[f32; 2]; 2])> {
+    clip: Option<LayerBounds>,
+) -> anyhow::Result<Rendered> {
     // The first layer, and any layers inside it, which show only within it.
     let layer = layers.first().copied().unwrap_or_default();
     let mut alone = doc.clone();
     alone.background = [0, 0, 0, 0];
     alone.layers.retain(|l| layers.contains(&l.id));
     let mut resolved = alone.clone();
-    Service::open(root)?.resolve(&mut resolved)?;
+    let pending = Service::open(root)?.resolve_for_display(&mut resolved)?;
     let first = resolved
         .layers
         .first()
@@ -118,14 +122,19 @@ pub fn render_alone(
     let (min, max) = (geometry.min, geometry.max);
     // Room for effects that reach past the layer, such as a drop shadow.
     let reach = spectrum_canvas::style_reach(&first.style);
-    let pixel = [
-        ((min[0] - reach) * density).floor(),
-        ((min[1] - reach) * density).floor(),
-    ];
-    let end = [
-        ((max[0] + reach) * density).ceil(),
-        ((max[1] + reach) * density).ceil(),
-    ];
+    let (mut from, mut to) = (
+        [min[0] - reach, min[1] - reach],
+        [max[0] + reach, max[1] + reach],
+    );
+    if let Some((clip_min, clip_max)) = clip {
+        from = [from[0].max(clip_min[0]), from[1].max(clip_min[1])];
+        to = [to[0].min(clip_max[0]), to[1].min(clip_max[1])];
+        if to[0] <= from[0] || to[1] <= from[1] {
+            anyhow::bail!("layer {layer} is not within the area to render");
+        }
+    }
+    let pixel = [(from[0] * density).floor(), (from[1] * density).floor()];
+    let end = [(to[0] * density).ceil(), (to[1] * density).ceil()];
     let origin = [pixel[0] / density, pixel[1] / density];
     let (width, height) = (
         ((end[0] - pixel[0]) / density).ceil().max(1.),
@@ -143,8 +152,17 @@ pub fn render_alone(
         crate::canvas_state::render_resolved(&alone, density)?,
         (min, max),
         [pixel, [width, height]],
+        pending,
     ))
 }
+
+/// A layer render: see [`render_alone`].
+pub type Rendered = (
+    Arc<RenderImage>,
+    LayerBounds,
+    [[f32; 2]; 2],
+    Vec<spectrum_library::AssetId>,
+);
 
 impl Workspace {
     /// Renders the canvas around `layer`, replacing any other split.
@@ -234,7 +252,7 @@ impl Workspace {
         let (root, layer) = (store.root.clone(), split.layer);
         let task = cx
             .background_executor()
-            .spawn(async move { render_alone(&root, &doc, &[layer], density) });
+            .spawn(async move { render_alone(&root, &doc, &[layer], density, None) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -250,7 +268,14 @@ impl Workspace {
                 };
                 split.busy = false;
                 let stale = split.stale;
-                if let Ok((image, bounds, [pixel, extent])) = result {
+                if let Ok((image, bounds, [pixel, extent], pending)) = result {
+                    this.make_full_previews(pending, window, cx);
+                    let Some(canvas) = this.canvas.as_mut() else {
+                        return;
+                    };
+                    let Some(split) = canvas.split.as_mut() else {
+                        return;
+                    };
                     if let Some(old) = split.parts[1].replace(image) {
                         window.drop_image(old).ok();
                     }

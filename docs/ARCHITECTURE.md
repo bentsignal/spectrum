@@ -118,14 +118,16 @@ nothing is waiting to save. The desktop executable is also the CLI: started as
 Three layers keep interaction fast, and all run in CI:
 
 - `bash scripts/interaction-benchmark.sh` runs the desktop app itself
-  (`spectrum-desktop --benchmark`) on a throwaway library with a 24-megapixel
-  photo (or `--photo <file>`, such as a camera RAW). It drives a slider scrub,
-  canvas open, layer drag, zoom steps, a text size drag, and brush strokes with
-  undo through the app's handlers, and fails when an edit is slow to reach the
-  screen, the main thread stalls, a canvas is slow to settle, or an error shows.
-  Budgets are per profile: `interactive` (a GPU), `software` (Linux with
-  software rendering), and `ci`. With `SPECTRUM_PERF_LOG=<file>` an ordinary
-  session writes the same measurements.
+  (`spectrum-desktop --benchmark`) on a throwaway library: a 24-megapixel
+  photo (or `--photo <file>`, such as a camera RAW), a 45-megapixel photo with
+  every tab edited, and canvases of one photo, twelve photos with text effects,
+  and a blend mode. It drives slider scrubs, opens, layer drags, zoom steps, a
+  text size drag, and brush strokes with undo through the app's handlers, and
+  fails when an edit is slow to reach the screen, the main thread stalls, a
+  canvas is slow to settle, or an error shows. Budgets are per profile:
+  `interactive` (a GPU), `software` (Linux with software rendering), and `ci`.
+  `--only <scenario,...>` runs a few while working on them. With
+  `SPECTRUM_PERF_LOG=<file>` an ordinary session writes the same measurements.
 - `crates/spectrum-assets/tests/interaction_costs.rs` bounds the storage work
   (document opens, disk flushes, writes, re-hashed bytes) of each open, save,
   idle check, and read, counted by `spectrum_document::io_stats`, so costs that
@@ -133,6 +135,22 @@ Three layers keep interaction fast, and all run in CI:
 - `spectrum images benchmark --strict` and `spectrum canvas benchmark --strict`
   bound engine operations.
 
-On screen, raster layers shown at half their size or less draw from a cached
-reduced copy, large PNG sources are decoded once into a backing file, and the
-app prepares each source once per session; exports always read sources exactly.
+What keeps it fast:
+
+- **Image editor.** The open photo is decoded once at 2560 px (and at two
+  smaller sizes). Geometry and noise reduction are kept between frames, so a
+  slider frame redoes only color, spots, and sharpening, on every core. A drag
+  shows the largest size that renders within a 60 Hz frame on this computer,
+  and the full-size frame follows as soon as the drag pauses.
+- **Canvas.** A layer renders whole only up to 4 megapixels; zoomed in
+  further, only the part on screen renders sharp over it, and layers off
+  screen keep their images. Canvases drawn as one image (blend modes) do the
+  same for the whole canvas. Photos decode into memory once per session
+  (within 1 GiB) and draw from reduced copies at small sizes; nothing is
+  written to disk to show a canvas. An image edited since its canvas last
+  showed it draws from a 2048 px stand-in while its full render is made in
+  the background.
+- **Background work** (thumbnails) runs one item at a time and only while a
+  grid shows it. Exports always read sources exactly, through the verified
+  raster cache, which never flushes to disk.
+

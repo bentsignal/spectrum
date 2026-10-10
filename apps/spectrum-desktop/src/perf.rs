@@ -64,7 +64,8 @@ pub fn start(cx: &mut App) {
             if cx.update(|_| ()).is_err() {
                 break;
             }
-            record("main_thread_lag", asked.elapsed().saturating_sub(TICK));
+            let lag = asked.elapsed().saturating_sub(TICK);
+            record("main_thread_lag", lag);
             if written.elapsed() > Duration::from_millis(500) {
                 write();
                 written = Instant::now();

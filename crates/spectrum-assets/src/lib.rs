@@ -10,6 +10,7 @@ use spectrum_library::{Asset, AssetId, AssetKind, ImportBatch, Library, ProjectI
 use std::path::{Path, PathBuf};
 
 pub use spectrum_library::default_root;
+mod display;
 mod export;
 mod sessions;
 pub mod thumbnail;
@@ -158,8 +159,21 @@ impl Service {
     /// The rendered image a canvas draws for `id`. Trashed and purged images
     /// resolve to a same-sized placeholder.
     pub fn preview(&self, id: AssetId) -> Result<PathBuf> {
+        match self.preview_target(id)? {
+            Preview::Ready(path) => Ok(path),
+            Preview::Missing { path, image, stamp } => {
+                let rendered = spectrum_image::engine::render(&image, Default::default())?;
+                save_atomically(&rendered, &path)?;
+                self.previews.borrow_mut().insert(id, (stamp, path.clone()));
+                Ok(path)
+            }
+        }
+    }
+
+    /// Where `id`'s render is, and whether it still has to be made.
+    fn preview_target(&self, id: AssetId) -> Result<Preview> {
         if let Some(removed) = self.library.removed(id)? {
-            return self.placeholder(removed.size);
+            return self.placeholder(removed.size).map(Preview::Ready);
         }
         let document = self.document(id, AssetKind::Image)?;
         let stamp = file_stamp(&document)?;
@@ -167,21 +181,32 @@ impl Service {
             && *cached_stamp == stamp
             && path.exists()
         {
-            return Ok(path.clone());
+            return Ok(Preview::Ready(path.clone()));
         }
         let image = self.image(id)?;
+        // An unedited photo the canvas can read is its own render: placing
+        // or showing it renders nothing.
+        if image.adjustments.is_identity() && !spectrum_image::is_raw_image(&image.path) {
+            self.previews
+                .borrow_mut()
+                .insert(id, (stamp, image.path.clone()));
+            return Ok(Preview::Ready(image.path));
+        }
         let key = hex(&serde_json::to_vec(&(&image.path, &image.adjustments))?);
         let path = self
             .library
             .root()
             .join("previews")
             .join(format!("{id}-{key}.png"));
-        if !path.exists() {
-            let rendered = spectrum_image::engine::render(&image, Default::default())?;
-            save_atomically(&rendered, &path)?;
+        if path.exists() {
+            self.previews.borrow_mut().insert(id, (stamp, path.clone()));
+            return Ok(Preview::Ready(path));
         }
-        self.previews.borrow_mut().insert(id, (stamp, path.clone()));
-        Ok(path)
+        Ok(Preview::Missing {
+            path,
+            image: Box::new(image),
+            stamp,
+        })
     }
 
     /// Points a canvas's linked image layers at their images' current renders.
@@ -288,12 +313,46 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Writes a render beside its final name, then moves it into place, so
 /// readers never see a partial file.
+/// An image's render for canvases: on disk, or still to make.
+enum Preview {
+    Ready(PathBuf),
+    Missing {
+        path: PathBuf,
+        image: Box<spectrum_image::Image>,
+        stamp: (std::time::SystemTime, u64),
+    },
+}
+
+/// Saves a render as a quickly written PNG: a canvas reads it back once into
+/// its own cache, so speed matters more than size.
 fn save_atomically(image: &image::DynamicImage, path: &Path) -> Result<()> {
+    use image::{
+        ImageEncoder,
+        codecs::png::{CompressionType, FilterType, PngEncoder},
+    };
     let temporary = path.with_file_name(format!("{}.png", AssetId::new_v4()));
-    let result = image
-        .save(&temporary)
-        .map_err(anyhow::Error::from)
-        .and_then(|()| Ok(std::fs::rename(&temporary, path)?));
+    let write = || -> Result<()> {
+        let file = std::io::BufWriter::new(std::fs::File::create(&temporary)?);
+        let encoder =
+            PngEncoder::new_with_quality(file, CompressionType::Fast, FilterType::Adaptive);
+        let image = match image {
+            image::DynamicImage::ImageRgb8(_) | image::DynamicImage::ImageRgba8(_) => {
+                std::borrow::Cow::Borrowed(image)
+            }
+            other if other.color().has_alpha() => {
+                std::borrow::Cow::Owned(image::DynamicImage::ImageRgba8(other.to_rgba8()))
+            }
+            other => std::borrow::Cow::Owned(image::DynamicImage::ImageRgb8(other.to_rgb8())),
+        };
+        encoder.write_image(
+            image.as_bytes(),
+            image.width(),
+            image.height(),
+            image.color().into(),
+        )?;
+        Ok(std::fs::rename(&temporary, path)?)
+    };
+    let result = write();
     if result.is_err() {
         let _ = std::fs::remove_file(temporary);
     }

@@ -4,7 +4,8 @@
 #   bash scripts/interaction-benchmark.sh [--profile interactive|software|ci]
 #                                         [--report <file>] [--photo <file>]
 #
-# The app makes a throwaway library with a 24-megapixel photo and a canvas,
+# The app makes a throwaway library with large photos (one fully edited) and
+# canvases from one photo to twelve,
 # drives image and canvas editing through its real handlers, and exits
 # nonzero when an edit is slow to reach the screen, the main thread stalls,
 # the canvas is slow to settle, or an error is shown. On Linux it runs on a

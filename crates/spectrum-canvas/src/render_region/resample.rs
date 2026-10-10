@@ -137,8 +137,10 @@ pub(crate) fn interactive_caches() -> bool {
     CACHE_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The most entries and bytes kept.
-const ENTRIES: usize = 6;
+/// The most entries and bytes kept. Every raster layer on a canvas keeps
+/// two (its reduced copy and that copy at the layer's scale), so the count
+/// allows a canvas of many photos; the bytes bound the memory.
+const ENTRIES: usize = 512;
 const BYTES: usize = 384 << 20;
 
 struct Entry {

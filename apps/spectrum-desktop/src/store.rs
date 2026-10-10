@@ -35,6 +35,9 @@ pub struct Store {
     pub projects: Vec<Project>,
     pub entries: Vec<Entry>,
     pub thumbs: HashMap<AssetId, Thumb>,
+    /// Thumbnails waiting to render, one at a time, and whether one is.
+    pub thumb_queue: std::collections::VecDeque<AssetId>,
+    pub thumb_rendering: bool,
     /// Each project's most recently added asset, used as its cover.
     pub covers: HashMap<ProjectId, AssetId>,
 }
@@ -79,6 +82,8 @@ impl Store {
             projects: Vec::new(),
             entries: Vec::new(),
             thumbs: HashMap::new(),
+            thumb_queue: Default::default(),
+            thumb_rendering: false,
             covers: HashMap::new(),
         })
     }

@@ -1,26 +1,61 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufReader, Seek, SeekFrom, Write},
+    io::{BufReader, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{Condvar, Mutex, OnceLock},
 };
 
 use anyhow::{Context, Result, bail};
 use image::{DynamicImage, GenericImageView, ImageDecoder};
-use sha2::{Digest, Sha256};
 use spectrum_imaging::RegionSourceDescriptor;
 
 use super::{
     DerivedBackingIdentity, DerivedBackingLimits, DerivedBackingMemoryPlan, decoder_contract_for,
-    sha256_hex, sha256_reader_bounded,
 };
 
-static FULL_RASTER_DECODE: OnceLock<Mutex<()>> = OnceLock::new();
+/// Full-raster decodes resident at once anywhere in this process.
+const DECODE_PERMITS: usize = 3;
+
+struct DecodePermits {
+    available: Mutex<usize>,
+    freed: Condvar,
+}
+
+static FULL_RASTER_DECODE: OnceLock<DecodePermits> = OnceLock::new();
+
+/// Leave to hold `count` decoded full rasters; given back when dropped.
+pub(super) struct DecodePermit(usize);
+
+impl Drop for DecodePermit {
+    fn drop(&mut self) {
+        let permits = decode_permits();
+        *permits
+            .available
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += self.0;
+        permits.freed.notify_all();
+    }
+}
+
+fn decode_permits() -> &'static DecodePermits {
+    FULL_RASTER_DECODE.get_or_init(|| DecodePermits {
+        available: Mutex::new(DECODE_PERMITS),
+        freed: Condvar::new(),
+    })
+}
+
+/// A source decoded and checked against its identity, still holding its
+/// decode permit until its plane is written.
+pub(super) struct DecodedSource {
+    decoded: DynamicImage,
+    plan: DerivedBackingMemoryPlan,
+    _permit: DecodePermit,
+}
 const TIFF_COMPRESSED_SEGMENT_OVERHEAD_BYTES: u64 = 64 * 1_024;
 
 pub(super) struct PreparedPlane {
     pub plane_bytes: u64,
-    pub plane_sha256: String,
+    pub plane_digest: String,
     pub memory_plan: DerivedBackingMemoryPlan,
 }
 
@@ -107,28 +142,53 @@ pub(super) fn memory_plan(
     })
 }
 
-/// Decoder construction, decode, and publication share one process-wide permit
-/// so only one dependency full-raster workload is resident anywhere in Spectrum.
+/// Decoder construction, decode, and publication share a process-wide permit
+/// so at most [`DECODE_PERMITS`] dependency full-raster workloads are
+/// resident anywhere in Spectrum.
 pub(super) fn prepare_exact_rgba8_plane(
     source: &Path,
     identity: &DerivedBackingIdentity,
     limits: DerivedBackingLimits,
     plane_path: &Path,
 ) -> Result<PreparedPlane> {
+    write_plane(
+        decode_source(source, identity, limits)?,
+        identity,
+        plane_path,
+    )
+}
+
+/// Writes a decoded source's plane, then gives back its decode permit.
+pub(super) fn write_plane(
+    decoded: DecodedSource,
+    identity: &DerivedBackingIdentity,
+    plane_path: &Path,
+) -> Result<PreparedPlane> {
+    let DecodedSource {
+        decoded,
+        plan,
+        _permit,
+    } = decoded;
+    write_decoded_surface(decoded, identity, plane_path, plan)
+}
+
+/// Decodes a source, checking it against its identity before and after.
+pub(super) fn decode_source(
+    source: &Path,
+    identity: &DerivedBackingIdentity,
+    limits: DerivedBackingLimits,
+) -> Result<DecodedSource> {
     let mut source_file =
         File::open(source).with_context(|| format!("could not open {}", source.display()))?;
     if !source_file.metadata()?.is_file() {
         bail!("encoded raster source is not a regular file");
     }
-    if sha256_reader_bounded(
-        &mut source_file,
-        limits.max_encoded_source_bytes,
-        "encoded raster",
-    )? != identity.source_sha256
-    {
+    // The source was hashed into `identity` just before; its stamp shows it
+    // is still that file, before and after its decode.
+    let before = super::file_stamp(&source_file.metadata()?);
+    if identity.stamp.is_some_and(|stamp| stamp != before) {
         bail!("raster source changed before its derived backing was prepared");
     }
-    source_file.seek(SeekFrom::Start(0))?;
     if source_file.metadata()?.len() > limits.max_encoded_source_bytes {
         bail!("encoded raster exceeds the derived backing source byte limit");
     }
@@ -157,7 +217,7 @@ pub(super) fn prepare_exact_rgba8_plane(
     );
     // Decoder construction is inside the process-wide permit: image 0.25.10's
     // JPEG constructor buffers the complete encoded stream before read_image.
-    let _decode_permit = acquire_full_raster_decode_permit();
+    let permit = acquire_full_raster_decode_permit(1);
     let mut decoder = reader
         .into_decoder()
         .with_context(|| format!("could not inspect {}", source.display()))?;
@@ -171,15 +231,9 @@ pub(super) fn prepare_exact_rgba8_plane(
     let decoded = DynamicImage::from_decoder(decoder)
         .with_context(|| format!("could not decode {}", source.display()))?;
 
-    // Keep the decoded surface alive while rehashing the same opened source.
-    // A changed file is rejected before any cache entry can be published.
-    source_file.seek(SeekFrom::Start(0))?;
-    if sha256_reader_bounded(
-        &mut source_file,
-        limits.max_encoded_source_bytes,
-        "encoded raster",
-    )? != identity.source_sha256
-    {
+    // A file changed while it was decoded is rejected before any cache
+    // entry can be published.
+    if super::file_stamp(&fs::metadata(source)?) != before {
         bail!("raster source changed while its derived backing was prepared");
     }
     if decoded.dimensions() != (identity.descriptor.width, identity.descriptor.height)
@@ -189,7 +243,11 @@ pub(super) fn prepare_exact_rgba8_plane(
         bail!("decoded raster changed its backing pixel layout");
     }
 
-    write_decoded_surface(decoded, identity, plane_path, expected_plan)
+    Ok(DecodedSource {
+        decoded,
+        plan: expected_plan,
+        _permit: permit,
+    })
 }
 
 fn write_decoded_surface(
@@ -238,13 +296,13 @@ fn write_decoded_surface(
         }
         _ => bail!("decoder produced an unsupported dynamic pixel layout"),
     }
-    let (plane_bytes, plane_sha256) = sink.finish()?;
+    let (plane_bytes, plane_digest) = sink.finish()?;
     if plane_bytes != expected_bytes {
         bail!("decoded raster byte count does not match its backing descriptor");
     }
     Ok(PreparedPlane {
         plane_bytes,
-        plane_sha256,
+        plane_digest,
         memory_plan,
     })
 }
@@ -276,25 +334,27 @@ fn write_converted_rows(
 }
 
 struct PlaneSink {
-    file: File,
+    file: std::io::BufWriter<File>,
     path: PathBuf,
-    digest: Sha256,
     bytes: u64,
 }
 
 impl PlaneSink {
     fn create(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
         Ok(Self {
-            file: OpenOptions::new().create_new(true).write(true).open(path)?,
+            file: std::io::BufWriter::with_capacity(1 << 20, file),
             path: path.to_owned(),
-            digest: Sha256::new(),
             bytes: 0,
         })
     }
 
     fn write_row(&mut self, row: &[u8]) -> Result<()> {
         self.file.write_all(row)?;
-        self.digest.update(row);
         self.bytes = self
             .bytes
             .checked_add(row.len() as u64)
@@ -302,24 +362,36 @@ impl PlaneSink {
         Ok(())
     }
 
+    /// The plane's length and digest. Not flushed: see `write_immutable_file`.
     fn finish(self) -> Result<(u64, String)> {
-        self.file.sync_all()?;
-        let mut permissions = self.file.metadata()?.permissions();
+        let file = self.file.into_inner().map_err(|error| error.into_error())?;
+        let digest = super::plane_digest(&file, self.bytes)?;
+        let mut permissions = file.metadata()?.permissions();
         permissions.set_readonly(true);
         fs::set_permissions(&self.path, permissions)?;
-        Ok((self.bytes, sha256_hex(self.digest.finalize())))
+        Ok((self.bytes, digest))
     }
 }
 
-fn acquire_full_raster_decode_permit() -> MutexGuard<'static, ()> {
-    FULL_RASTER_DECODE
-        .get_or_init(|| Mutex::new(()))
+fn acquire_full_raster_decode_permit(count: usize) -> DecodePermit {
+    let permits = decode_permits();
+    let mut available = permits
+        .available
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while *available < count {
+        available = permits
+            .freed
+            .wait(available)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    *available -= count;
+    DecodePermit(count)
 }
 
+/// Runs `operation` holding every decode permit, so no decode can start.
 #[cfg(test)]
 pub(crate) fn with_full_raster_decode_permit_for_test<T>(operation: impl FnOnce() -> T) -> T {
-    let _permit = acquire_full_raster_decode_permit();
+    let _permit = acquire_full_raster_decode_permit(DECODE_PERMITS);
     operation()
 }
