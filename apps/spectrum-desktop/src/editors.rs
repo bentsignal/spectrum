@@ -31,6 +31,8 @@ pub struct ImageEditor {
     pub photo_info: Option<spectrum_image::Image>,
     /// Shows the unedited image beside the edited one.
     pub compare: bool,
+    /// The open image's zoom and pan.
+    pub view: crate::image_zoom::ImageView,
 }
 
 pub struct CanvasControls {

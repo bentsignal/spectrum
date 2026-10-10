@@ -6,8 +6,15 @@ use gpui::{prelude::*, *};
 use spectrum_canvas::Transform;
 use std::sync::Arc;
 
-/// A layer's image and where it is drawn: id, image, origin, and size.
-pub type PlacedLayer = (u64, Arc<RenderImage>, Point<Pixels>, Size<Pixels>);
+/// A layer's image and where it is drawn: id, image, origin, size, and the
+/// box it is clipped to, if any.
+pub type PlacedLayer = (
+    u64,
+    Arc<RenderImage>,
+    Point<Pixels>,
+    Size<Pixels>,
+    Option<Bounds<Pixels>>,
+);
 
 /// Whether a paint stroke passes within its brush's reach of a canvas point.
 pub fn painted_at(
@@ -73,7 +80,7 @@ impl Workspace {
         });
         let mut elements = Vec::new();
         let mut patched = false;
-        for (id, image, at, shown) in layers {
+        for (id, image, at, shown, clip) in layers {
             match (patch, patch_rect) {
                 (Some(p), Some(r)) if p.layer == id => {
                     patched = true;
@@ -108,7 +115,20 @@ impl Workspace {
                     }
                     elements.push(place(p.image.clone(), r.origin, r.size).into_any_element());
                 }
-                _ => elements.push(place(image, at, shown).into_any_element()),
+                _ => match clip {
+                    Some(clip) => elements.push(
+                        div()
+                            .absolute()
+                            .left(clip.origin.x)
+                            .top(clip.origin.y)
+                            .w(clip.size.width)
+                            .h(clip.size.height)
+                            .overflow_hidden()
+                            .child(place(image, at - clip.origin, shown))
+                            .into_any_element(),
+                    ),
+                    None => elements.push(place(image, at, shown).into_any_element()),
+                },
             }
         }
         // A new Paint layer has no image yet; the patch is all of it.
@@ -116,6 +136,70 @@ impl Workspace {
             elements.push(place(p.image.clone(), r.origin, r.size).into_any_element());
         }
         elements
+    }
+
+    /// Every layer image of a stackable canvas, in stacking order, placed
+    /// where its layer is now (`scale` points per canvas unit, `pixel`
+    /// device pixels per point).
+    pub fn stack_entries(
+        &self,
+        canvas: &crate::canvas_state::CanvasState,
+        scale: f32,
+        pixel: f32,
+    ) -> Vec<PlacedLayer> {
+        let device = scale * pixel;
+        let shown = canvas.shown();
+        let current = |id: u64| self.bounds_now(id);
+        shown
+            .layers
+            .iter()
+            .enumerate()
+            // Layers inside another are drawn in its image.
+            .filter(|(index, layer)| layer.visible && !crate::layer_cache::inside(shown, *index))
+            .map(|(_, layer)| layer)
+            .flat_map(|layer| {
+                let Some((min, max)) = current(layer.id) else {
+                    return Vec::new();
+                };
+                let place = |part: &crate::layer_cache::LayerImage, bounds| {
+                    place_layer_image(part, bounds, device, pixel, scale)
+                };
+                // A layer moving inside this one: the rest of the unit, then
+                // the moving layer clipped to this box.
+                if let Some(drag) = canvas
+                    .cache
+                    .unit_drag
+                    .as_ref()
+                    .filter(|drag| drag.holder == layer.id && drag.ready() && drag.moved)
+                    && let (Some(rest), Some(alone), Some(moved)) =
+                        (&drag.rest, &drag.alone, current(drag.member))
+                {
+                    let clip = Bounds::from_corners(
+                        point(px(min[0] * scale), px(min[1] * scale)),
+                        point(px(max[0] * scale), px(max[1] * scale)),
+                    );
+                    let (rest_at, rest_size) = place(rest, (min, max));
+                    let (at, size) = place(alone, moved);
+                    return vec![
+                        (layer.id, rest.image.clone(), rest_at, rest_size, None),
+                        (layer.id, alone.image.clone(), at, size, Some(clip)),
+                    ];
+                }
+                // The layer's image, and over it the sharp part on screen
+                // when the layer is too large to render whole.
+                [
+                    canvas.cache.images.get(&layer.id),
+                    canvas.cache.details.get(&layer.id),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|cached| {
+                    let (at, size) = place(cached, (min, max));
+                    (layer.id, cached.image.clone(), at, size, None)
+                })
+                .collect()
+            })
+            .collect()
     }
 
     /// Where a layer sits now in canvas space, following any drag: moved,

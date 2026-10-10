@@ -250,7 +250,7 @@ impl Workspace {
                 committed: false,
             })
         {
-            window.drop_image(old.image).ok();
+            crate::retire::drop_later(old.image);
         }
         canvas.live_doc = Some(doc);
         // Canvases drawn as one render show the stroke through it instead.

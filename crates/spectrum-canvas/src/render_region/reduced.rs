@@ -67,6 +67,24 @@ pub(super) fn level<'a>(
     if let Some(found) = resample::cached(&at_scale, geometry) {
         return Ok(Some(found));
     }
+    // Bands of one render run at once; one makes the copy, the rest wait for
+    // it rather than each making it again.
+    let building = {
+        type Locks = std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>;
+        static BUILDING: std::sync::OnceLock<std::sync::Mutex<Locks>> = std::sync::OnceLock::new();
+        let mut building = BUILDING
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if building.len() > 256 {
+            building.retain(|_, lock| std::sync::Arc::strong_count(lock) > 1);
+        }
+        building.entry(key.clone()).or_default().clone()
+    };
+    let _building = building.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(found) = resample::cached(&at_scale, geometry) {
+        return Ok(Some(found));
+    }
     let level = match resample::cached(&key, level_geometry) {
         Some((level, _)) => Some(level),
         None => make(descriptor, (width, height), shift, stats)?.inspect(|level| {

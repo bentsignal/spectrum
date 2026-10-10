@@ -11,6 +11,7 @@ use crate::{
     text_render::{measure_text_geometry_with_typography, render_text},
 };
 
+mod prepared;
 mod tiles;
 use tiles::render_document_region_scaled_impl;
 mod stats;
@@ -296,66 +297,102 @@ pub(super) fn render_document_region_scaled_untiled(
         } else {
             None
         };
-        let source = render_layer_preview_scaled_with_font_limits(
-            &render_layer,
-            None,
-            shape_scale,
-            font_asset,
-            fallback_allocation.map(|_| MAX_REGION_FALLBACK_PEAK_BYTES),
-        )?;
-        if let Some(fallback_allocation) = fallback_allocation {
-            stats.fallback_decode_bytes = stats
-                .fallback_decode_bytes
-                .saturating_add(fallback_allocation.source_bytes);
-            stats.fallback_peak_bytes = stats
-                .fallback_peak_bytes
-                .max(fallback_allocation.estimated_peak_bytes);
-        }
-        if let Some(bounds) = crate::paths::path_source_bounds(layer) {
-            scaled_layer.transform.x +=
-                bounds.origin[0] * shape_scale[0] * scaled_layer.transform.scale_x;
-            scaled_layer.transform.y +=
-                bounds.origin[1] * shape_scale[1] * scaled_layer.transform.scale_y;
-        }
-        let source = if matches!(render_layer.kind, LayerKind::Text { .. }) {
-            let LayerKind::Text {
-                text: base_text,
-                font_size: base_font_size,
-                typography: base_typography,
-                ..
-            } = &layer.kind
-            else {
-                unreachable!("render layer kind mirrors its source layer");
-            };
-            let base_geometry = measure_text_geometry_with_typography(
-                base_text,
-                *base_font_size,
-                base_typography,
+        // Drawn whole and placed: once per layer and scale when unbounded,
+        // shared by every region and band of the render that needs it.
+        let before = (scaled_layer.transform.x, scaled_layer.transform.y);
+        let mut place = |scaled_layer: &mut Layer| -> Result<RgbaImage> {
+            let source = render_layer_preview_scaled_with_font_limits(
+                &render_layer,
+                None,
+                shape_scale,
                 font_asset,
+                fallback_allocation.map(|_| MAX_REGION_FALLBACK_PEAK_BYTES),
             )?;
-            let base_pivot = base_geometry.visual_center();
-            let transformed_width = (source.width() as f32 * scaled_layer.transform.scale_x)
-                .round()
-                .max(1.0);
-            let transformed_height = (source.height() as f32 * scaled_layer.transform.scale_y)
-                .round()
-                .max(1.0);
-            let pivot = (
-                base_pivot.0 * layer.transform.scale_x * scale * source.width() as f32
-                    / transformed_width,
-                base_pivot.1 * layer.transform.scale_y * scale * source.height() as f32
-                    / transformed_height,
-            );
-            let (source, offset) =
-                crate::text_rotation::transform_text_layer(source, scaled_layer.transform, pivot);
-            scaled_layer.transform.x += offset.0;
-            scaled_layer.transform.y += offset.1;
-            source
+            if let Some(fallback_allocation) = fallback_allocation {
+                stats.fallback_decode_bytes = stats
+                    .fallback_decode_bytes
+                    .saturating_add(fallback_allocation.source_bytes);
+                stats.fallback_peak_bytes = stats
+                    .fallback_peak_bytes
+                    .max(fallback_allocation.estimated_peak_bytes);
+            }
+            if let Some(bounds) = crate::paths::path_source_bounds(layer) {
+                scaled_layer.transform.x +=
+                    bounds.origin[0] * shape_scale[0] * scaled_layer.transform.scale_x;
+                scaled_layer.transform.y +=
+                    bounds.origin[1] * shape_scale[1] * scaled_layer.transform.scale_y;
+            }
+            let source = if matches!(render_layer.kind, LayerKind::Text { .. }) {
+                let LayerKind::Text {
+                    text: base_text,
+                    font_size: base_font_size,
+                    typography: base_typography,
+                    ..
+                } = &layer.kind
+                else {
+                    unreachable!("render layer kind mirrors its source layer");
+                };
+                let base_geometry = measure_text_geometry_with_typography(
+                    base_text,
+                    *base_font_size,
+                    base_typography,
+                    font_asset,
+                )?;
+                let base_pivot = base_geometry.visual_center();
+                let transformed_width = (source.width() as f32 * scaled_layer.transform.scale_x)
+                    .round()
+                    .max(1.0);
+                let transformed_height = (source.height() as f32 * scaled_layer.transform.scale_y)
+                    .round()
+                    .max(1.0);
+                let pivot = (
+                    base_pivot.0 * layer.transform.scale_x * scale * source.width() as f32
+                        / transformed_width,
+                    base_pivot.1 * layer.transform.scale_y * scale * source.height() as f32
+                        / transformed_height,
+                );
+                let (source, offset) = crate::text_rotation::transform_text_layer(
+                    source,
+                    scaled_layer.transform,
+                    pivot,
+                );
+                scaled_layer.transform.x += offset.0;
+                scaled_layer.transform.y += offset.1;
+                source
+            } else {
+                let (source, offset) = transform_layer(source, scaled_layer.transform);
+                scaled_layer.transform.x += offset.0;
+                scaled_layer.transform.y += offset.1;
+                source
+            };
+            Ok(source)
+        };
+        let (placed, placed_owned);
+        let source: &RgbaImage = if fallback_allocation.is_none() {
+            let key = prepared::key(&(
+                &render_layer,
+                &scaled_layer,
+                shape_scale,
+                scale.to_bits(),
+                font_asset.map(|font| &font.content_hash),
+            ));
+            placed = prepared::placed(key, || {
+                let mut placing = scaled_layer.clone();
+                let image = place(&mut placing)?;
+                Ok(prepared::Placed {
+                    image,
+                    offset: (
+                        placing.transform.x - before.0,
+                        placing.transform.y - before.1,
+                    ),
+                })
+            })?;
+            scaled_layer.transform.x += placed.offset.0;
+            scaled_layer.transform.y += placed.offset.1;
+            &placed.image
         } else {
-            let (source, offset) = transform_layer(source, scaled_layer.transform);
-            scaled_layer.transform.x += offset.0;
-            scaled_layer.transform.y += offset.1;
-            source
+            placed_owned = place(&mut scaled_layer)?;
+            &placed_owned
         };
         if let Some(fallback_allocation) = fallback_allocation {
             let rotated_pixels = if scaled_layer.transform.rotation.abs() >= 0.01 {
@@ -373,7 +410,7 @@ pub(super) fn render_document_region_scaled_untiled(
         if let Some(shadow) = scaled_layer.style.drop_shadow {
             composite_shadow_region(
                 &mut canvas,
-                &source,
+                source,
                 &scaled_layer,
                 previous_coverage.as_ref(),
                 region,
@@ -383,7 +420,7 @@ pub(super) fn render_document_region_scaled_untiled(
         }
         let effects = crate::layer_effects::has_effects(&scaled_layer.style).then(|| {
             let reach = crate::layer_effects::effects_reach(&scaled_layer.style);
-            let tile = crate::effects_render::source_alpha_tile(&source, &scaled_layer, reach);
+            let tile = crate::effects_render::source_alpha_tile(source, &scaled_layer, reach);
             let passes = crate::layer_effects::effect_passes(&scaled_layer.style, &tile);
             let origin = (
                 scaled_layer.transform.x.round() as i64,
@@ -408,7 +445,7 @@ pub(super) fn render_document_region_scaled_untiled(
         composite_layer_region(
             &mut canvas,
             &mut coverage,
-            &source,
+            source,
             &scaled_layer,
             previous_coverage.as_ref(),
             region,

@@ -47,6 +47,8 @@ pub struct LayerCache {
     /// layers), when that image is capped below the canvas's scale.
     pub composite: Option<LayerImage>,
     pub composite_busy: bool,
+    /// A unit drawn in parts while one of its layers moves inside it.
+    pub unit_drag: Option<crate::unit_drag::UnitDrag>,
 }
 
 /// Changes closer together than this (a slider or resize drag) render as
@@ -280,12 +282,20 @@ impl Workspace {
         // A move inside a unit changes how the unit looks, so it renders
         // with the layer where the drag has it. Moving the holder moves the
         // whole unit, whose image just follows.
-        let moving = canvas.drag.and_then(|drag| {
+        // Once its parts are drawn apart (`unit_drag`), the unit waits for
+        // the drop instead.
+        let apart = canvas.cache.unit_drag.as_ref().is_some_and(|parts| {
+            parts.ready() && canvas.drag.is_some_and(|drag| drag.id == parts.member)
+        });
+        let moving = canvas.drag.filter(|_| !apart).and_then(|drag| {
             let unit = holder_of(&canvas.doc, drag.id).filter(|unit| *unit != drag.id)?;
             let index = canvas.doc.layers.iter().position(|l| l.id == unit)?;
             let members = unit_members(&canvas.doc, index);
             (members > 1 && drag.corner.is_none() && !drag.rotate).then_some(drag.id)
         });
+        let moved_delta = moving
+            .and_then(|_| self.drag_delta())
+            .map(|(_, dx, dy)| (dx, dy));
         let moved = moving.and_then(|id| {
             let (_, dx, dy) = self.drag_delta()?;
             let mut layer = self.canvas.as_ref()?.doc.layer(id).ok()?.clone();
@@ -349,7 +359,7 @@ impl Workspace {
                 if patched == Some(true)
                     && let Some(patch) = canvas.stroke_patch.take()
                 {
-                    window.drop_image(patch.image).ok();
+                    crate::retire::drop_later(patch.image);
                 }
                 continue;
             }
@@ -410,6 +420,11 @@ impl Workspace {
             let changed_at = cache.changed.get(&layer.id).map(|(_, at)| *at);
             let (root, doc, id, layer_id) =
                 (store.root.clone(), render_doc.clone(), canvas.id, layer.id);
+            // The move this render shows a layer moving inside this unit at.
+            let drag_shown = moved
+                .as_ref()
+                .filter(|moved| members.contains(&moved.id))
+                .and(moved_delta);
             let at = (layer.transform.x, layer.transform.y);
             let previewed = preview.as_ref().map(|(_, path)| path.clone());
             let task = cx.background_executor().spawn(async move {
@@ -429,8 +444,8 @@ impl Workspace {
                 this.update_in(cx, |this, window, cx| {
                     let _timer = crate::perf::Timer::new("main_layer_done");
                     let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
-                        if let Ok((image, ..)) = result {
-                            window.drop_image(image).ok();
+                        if let Ok(crate::canvas_split::LayerRender { image, .. }) = result {
+                            crate::retire::drop_later(image);
                         }
                         return;
                     };
@@ -438,7 +453,14 @@ impl Workspace {
                     if let Some(at) = changed_at {
                         crate::perf::record("canvas_edit_to_screen", at.elapsed());
                     }
-                    let (image, bounds, [pixel, extent], pending) = match result {
+                    let crate::canvas_split::LayerRender {
+                        image,
+                        bounds,
+                        pixel,
+                        extent,
+                        pending,
+                        members: inside_bounds,
+                    } = match result {
                         Ok(rendered) => rendered,
                         Err(error) => {
                             canvas.cache.failed.insert(layer_id, wanted);
@@ -459,8 +481,24 @@ impl Workspace {
                         bounds,
                         key: wanted,
                     };
+                    if drag_shown.is_some() {
+                        canvas.drawn_drag = drag_shown;
+                    }
+                    let whole = !entry.key.ends_with("|draft");
                     if let Some(old) = canvas.cache.images.insert(layer_id, entry) {
-                        window.drop_image(old.image).ok();
+                        crate::retire::drop_later(old.image);
+                    }
+                    // A unit drawn in parts for a move inside it is whole
+                    // again once dropped and rendered.
+                    if whole
+                        && canvas.drag.is_none()
+                        && canvas
+                            .cache
+                            .unit_drag
+                            .as_ref()
+                            .is_some_and(|parts| parts.holder == layer_id)
+                    {
+                        Self::drop_unit_drag(canvas);
                     }
                     let pending_previews = pending;
                     // Bounds follow the layer if it moved meanwhile.
@@ -476,6 +514,12 @@ impl Workspace {
                                 [bounds.1[0] + dx, bounds.1[1] + dy],
                             ),
                         );
+                    }
+                    // The layers inside it, so they can be picked and moved.
+                    for (inside, bounds) in inside_bounds {
+                        if canvas.drag.is_none_or(|drag| drag.id != inside) {
+                            canvas.bounds.insert(inside, bounds);
+                        }
                     }
                     this.make_full_previews(pending_previews, window, cx);
                     this.refresh_layers(window, cx);
@@ -505,12 +549,17 @@ impl Workspace {
     }
 
     /// Frees every layer image.
-    pub fn drop_layers(cache: &mut LayerCache, window: &mut Window) {
+    pub fn drop_layers(cache: &mut LayerCache) {
         for (_, image) in cache.images.drain().chain(cache.details.drain()) {
-            window.drop_image(image.image).ok();
+            crate::retire::drop_later(image.image);
         }
         if let Some(composite) = cache.composite.take() {
-            window.drop_image(composite.image).ok();
+            crate::retire::drop_later(composite.image);
+        }
+        if let Some(drag) = cache.unit_drag.take() {
+            for part in drag.rest.into_iter().chain(drag.alone) {
+                crate::retire::drop_later(part.image);
+            }
         }
         cache.composite_busy = false;
         cache.busy.clear();

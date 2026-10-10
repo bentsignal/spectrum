@@ -97,16 +97,13 @@ fn around(doc: &Document, layer: u64, above: bool) -> Document {
 /// on a whole pixel of the canvas's own render, so its pixels line up exactly
 /// with the full render's. With `clip`, only the part of it within `clip`
 /// (in canvas units) renders, as for the part of a large layer on screen.
-/// Returns the render, the layer's bounds, its top-left pixel on the canvas
-/// render's grid, its size in canvas units, and the images it drew from
-/// stand-ins (see `Service::resolve_for_display`).
 pub fn render_alone(
     root: &std::path::Path,
     doc: &Document,
     layers: &[u64],
     density: f32,
     clip: Option<LayerBounds>,
-) -> anyhow::Result<Rendered> {
+) -> anyhow::Result<LayerRender> {
     // The first layer, and any layers inside it, which show only within it.
     let layer = layers.first().copied().unwrap_or_default();
     let mut alone = doc.clone();
@@ -140,6 +137,13 @@ pub fn render_alone(
         ((end[0] - pixel[0]) / density).ceil().max(1.),
         ((end[1] - pixel[1]) / density).ceil().max(1.),
     );
+    let members = resolved.layers[1..]
+        .iter()
+        .filter_map(|member| {
+            let geometry = spectrum_canvas::document_layer_geometry(&resolved, member).ok()?;
+            Some((member.id, (geometry.min, geometry.max)))
+        })
+        .collect();
     // Render the resolved copy, so the library is read once.
     let mut alone = resolved;
     alone.width = width as u32;
@@ -148,21 +152,30 @@ pub fn render_alone(
         each.transform.x -= origin[0];
         each.transform.y -= origin[1];
     }
-    Ok((
-        crate::canvas_state::render_resolved(&alone, density)?,
-        (min, max),
-        [pixel, [width, height]],
+    Ok(LayerRender {
+        image: crate::canvas_state::render_resolved(&alone, density)?,
+        bounds: (min, max),
+        pixel,
+        extent: [width, height],
         pending,
-    ))
+        members,
+    })
 }
 
-/// A layer render: see [`render_alone`].
-pub type Rendered = (
-    Arc<RenderImage>,
-    LayerBounds,
-    [[f32; 2]; 2],
-    Vec<spectrum_library::AssetId>,
-);
+/// A layer rendered alone ([`render_alone`]).
+pub struct LayerRender {
+    pub image: Arc<RenderImage>,
+    /// The layer's bounds, in canvas units.
+    pub bounds: LayerBounds,
+    /// The render's top-left pixel on the canvas render's grid, and its size
+    /// in canvas units.
+    pub pixel: [f32; 2],
+    pub extent: [f32; 2],
+    /// Images drawn from stand-ins (see `Service::resolve_for_display`).
+    pub pending: Vec<spectrum_library::AssetId>,
+    /// The bounds of the layers drawn inside it.
+    pub members: Vec<(u64, LayerBounds)>,
+}
 
 impl Workspace {
     /// Renders the canvas around `layer`, replacing any other split.
@@ -170,14 +183,22 @@ impl Workspace {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;
         };
-        // Stackable canvases draw every layer from its own image, and the
-        // others re-render whole as a layer is dragged (`drag_preview`):
-        // drawing one layer apart cannot show it inside another layer or
-        // blending with what is under it.
-        let _ = (&store, layer, &window);
-        if canvas.loaded {
+        // Stackable canvases draw every layer from its own image. The others
+        // draw a moving layer apart over the rest, so it keeps up with the
+        // pointer; a layer that blends with what is under it shows unblended
+        // until the drop renders the canvas whole.
+        if !canvas.loaded || crate::layer_cache::stackable(&canvas.doc) {
             return;
         }
+        // Drawn apart at the scale the whole canvas renders at.
+        let density = canvas.density.min(crate::layer_cache::whole_density(
+            Some((
+                [0., 0.],
+                [canvas.doc.width as f32, canvas.doc.height as f32],
+            )),
+            &Default::default(),
+            canvas.density,
+        ));
         if canvas.split.as_ref().is_some_and(|s| s.layer == layer) {
             return;
         }
@@ -186,29 +207,29 @@ impl Workspace {
         };
         if let Some(old) = canvas.split.take() {
             for image in old.images() {
-                window.drop_image(image).ok();
+                crate::retire::drop_later(image);
             }
         }
         canvas.split = Some(Split {
             layer,
             base,
-            pixel: [base.0[0] * canvas.density, base.0[1] * canvas.density],
+            pixel: [base.0[0] * density, base.0[1] * density],
             extent: [base.1[0] - base.0[0], base.1[1] - base.0[1]],
-            density: canvas.density,
+            density,
             parts: [None, None, None],
             busy: false,
             stale: false,
         });
         let id = canvas.id;
         for above in [false, true] {
-            let (doc, density) = (around(&canvas.doc, layer, above), canvas.density);
+            let doc = around(&canvas.doc, layer, above);
             let root = store.root.clone();
             let task = cx
                 .background_executor()
                 .spawn(async move { render_at(&root, &doc, density) });
             cx.spawn_in(window, async move |this, cx| {
                 let result = task.await;
-                this.update_in(cx, |this, window, cx| {
+                this.update_in(cx, |this, _, cx| {
                     let Ok(done) = result else {
                         return;
                     };
@@ -219,11 +240,11 @@ impl Workspace {
                         .and_then(|c| c.split.as_mut())
                         .filter(|s| s.layer == layer);
                     let Some(split) = split else {
-                        window.drop_image(done.image).ok();
+                        crate::retire::drop_later(done.image);
                         return;
                     };
                     if let Some(old) = split.parts[if above { 2 } else { 0 }].replace(done.image) {
-                        window.drop_image(old).ok();
+                        crate::retire::drop_later(old);
                     }
                     cx.notify();
                 })
@@ -239,10 +260,11 @@ impl Workspace {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;
         };
-        let (id, doc, density) = (canvas.id, canvas.render_doc(), canvas.density);
+        let (id, doc) = (canvas.id, canvas.render_doc());
         let Some(split) = &mut canvas.split else {
             return;
         };
+        let density = split.density;
         if split.busy {
             split.stale = true;
             return;
@@ -261,14 +283,22 @@ impl Workspace {
                 };
                 let dragging = canvas.drag.is_some();
                 let Some(split) = canvas.split.as_mut().filter(|s| s.layer == layer) else {
-                    if let Ok((image, ..)) = result {
-                        window.drop_image(image).ok();
+                    if let Ok(LayerRender { image, .. }) = result {
+                        crate::retire::drop_later(image);
                     }
                     return;
                 };
                 split.busy = false;
                 let stale = split.stale;
-                if let Ok((image, bounds, [pixel, extent], pending)) = result {
+                if let Ok(LayerRender {
+                    image,
+                    bounds,
+                    pixel,
+                    extent,
+                    pending,
+                    ..
+                }) = result
+                {
                     this.make_full_previews(pending, window, cx);
                     let Some(canvas) = this.canvas.as_mut() else {
                         return;
@@ -277,7 +307,7 @@ impl Workspace {
                         return;
                     };
                     if let Some(old) = split.parts[1].replace(image) {
-                        window.drop_image(old).ok();
+                        crate::retire::drop_later(old);
                     }
                     split.base = bounds;
                     split.pixel = pixel;
@@ -299,7 +329,7 @@ impl Workspace {
 
     /// Sorts `commands` against the split before they apply, dropping the
     /// split when they change more than its layer.
-    pub fn split_edit(&mut self, commands: &[Command], window: &mut Window) -> SplitEdit {
+    pub fn split_edit(&mut self, commands: &[Command]) -> SplitEdit {
         let Some(canvas) = &mut self.canvas else {
             return SplitEdit::None;
         };
@@ -325,7 +355,7 @@ impl Workspace {
         };
         if !keep && let Some(split) = canvas.split.take() {
             for image in split.images() {
-                window.drop_image(image).ok();
+                crate::retire::drop_later(image);
             }
             canvas.settling = false;
         }

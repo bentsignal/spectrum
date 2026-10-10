@@ -23,6 +23,7 @@ use std::{
 };
 
 mod fixtures;
+mod image_zoom;
 mod scenarios;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,6 +93,10 @@ pub struct Fixtures {
     pub heavy_layer: u64,
     /// A canvas drawn as one image: its shape blends with the photo.
     pub blend_canvas: AssetId,
+    /// A poster: the photo clipped inside a frame under a title.
+    pub poster_canvas: AssetId,
+    /// The photo's layer on it.
+    pub poster_layer: u64,
 }
 
 /// Makes the benchmark library and points this process at it. Runs before
@@ -188,6 +193,8 @@ const BUDGETS: &[Budget] = &[
     budget("canvas_drag", "main_thread_lag", "p99", 20.0, 60.0),
     budget("canvas_drag", "main_thread_lag", "max", 50.0, 150.0),
     budget("canvas_drag", "settle", "max", 200.0, 300.0),
+    // The dragged layer's pixels stay under its outline, in points.
+    budget("canvas_drag", "drag_lag", "max", 1.0, 1.0),
     budget("canvas_drag", "error_shown", "count", 0.0, 0.0),
     budget("canvas_zoom", "settle", "p95", 300.0, 600.0),
     budget("canvas_zoom", "main_thread_lag", "max", 60.0, 150.0),
@@ -206,6 +213,7 @@ const BUDGETS: &[Budget] = &[
     budget("heavy_drag", "main_thread_lag", "p99", 20.0, 60.0),
     budget("heavy_drag", "main_thread_lag", "max", 50.0, 150.0),
     budget("heavy_drag", "settle", "max", 300.0, 400.0),
+    budget("heavy_drag", "drag_lag", "max", 1.0, 1.0),
     budget("heavy_drag", "error_shown", "count", 0.0, 0.0),
     budget("heavy_zoom", "settle", "p95", 300.0, 600.0),
     budget("heavy_zoom", "main_thread_lag", "max", 60.0, 150.0),
@@ -217,6 +225,26 @@ const BUDGETS: &[Budget] = &[
     budget("blend_zoom", "settle", "p95", 300.0, 600.0),
     budget("blend_zoom", "main_thread_lag", "max", 60.0, 150.0),
     budget("blend_zoom", "error_shown", "count", 0.0, 0.0),
+    // A poster: the photo, edited, clipped inside a frame under a title.
+    budget("poster_open", "elapsed", "max", 500.0, 600.0),
+    budget("poster_open", "main_thread_lag", "max", 60.0, 150.0),
+    budget("poster_open", "error_shown", "count", 0.0, 0.0),
+    budget("poster_drag", "drag_lag", "p95", 1.0, 1.0),
+    // The first frames of a drag can trail a little while the layer's parts
+    // are drawn apart; after that the layer stays under its outline.
+    budget("poster_drag", "drag_lag", "max", 6.0, 6.0),
+    budget("poster_drag", "main_thread_lag", "p99", 20.0, 60.0),
+    budget("poster_drag", "main_thread_lag", "max", 50.0, 150.0),
+    budget("poster_drag", "settle", "max", 200.0, 300.0),
+    budget("poster_drag", "error_shown", "count", 0.0, 0.0),
+    // The header's zoom from fit to 100% and back arrives sharp.
+    budget("poster_zoom", "settle", "p95", 300.0, 450.0),
+    budget("poster_zoom", "main_thread_lag", "max", 60.0, 150.0),
+    budget("poster_zoom", "error_shown", "count", 0.0, 0.0),
+    // The image editor's zoom to 100% and pan show sharp.
+    budget("image_zoom", "settle", "p95", 400.0, 700.0),
+    budget("image_zoom", "main_thread_lag", "max", 60.0, 150.0),
+    budget("image_zoom", "error_shown", "count", 0.0, 0.0),
 ];
 
 /// One scenario's measurements.

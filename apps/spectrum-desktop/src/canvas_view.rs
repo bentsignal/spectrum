@@ -14,8 +14,18 @@ pub fn whole_pixels(delta: f32, density: f32) -> f32 {
 }
 
 impl Workspace {
-    /// Where the canvas is drawn: fitted and centered, and its scale.
+    /// Where the canvas is drawn: fitted and centered, and its scale; on
+    /// the way there while a zoom from the keys or the header moves.
     pub fn canvas_rect(&self) -> (Bounds<Pixels>, f32) {
+        let target = self.canvas_rect_target();
+        let Some(anim) = self.canvas.as_ref().and_then(|c| c.zoom_anim) else {
+            return target;
+        };
+        anim.at(target, *self.image.image_bounds.borrow())
+    }
+
+    /// Where the canvas is drawn once any zoom in progress arrives.
+    pub fn canvas_rect_target(&self) -> (Bounds<Pixels>, f32) {
         let area = *self.image.image_bounds.borrow();
         let Some(canvas) = &self.canvas else {
             return (area, 1.);
@@ -231,6 +241,10 @@ impl Workspace {
         self.stop_editing_text(window, cx);
         if let Some(id) = hit {
             self.prepare_split(id, window, cx);
+            // A layer inside another is ready to move drawn apart.
+            if corner.is_none() {
+                self.prepare_unit_drag(id, false, window, cx);
+            }
         }
         if let Some(canvas) = &mut self.canvas {
             canvas.selected = hit;
@@ -325,8 +339,14 @@ impl Workspace {
         drag.constrain = event.modifiers.shift;
         let drag = *drag;
         // Canvases drawn as one render re-render with the layer where the
-        // drag has it.
-        if !crate::layer_cache::stackable(&canvas.doc) {
+        // drag has it, until the layer can move drawn apart (`canvas_split`).
+        let apart = drag.corner.is_none()
+            && !drag.rotate
+            && canvas
+                .split
+                .as_ref()
+                .is_some_and(|split| split.layer == drag.id && split.ready().is_some());
+        if !crate::layer_cache::stackable(&canvas.doc) && !apart {
             let shaped = Self::resize_transform(canvas, drag)
                 .map(|(transform, _)| transform)
                 .or_else(|| Self::rotate_transform(canvas, drag));
@@ -363,7 +383,13 @@ impl Workspace {
                     .position(|l| l.id == holder)
                     .is_some_and(|i| crate::layer_cache::unit(&canvas.doc, i).len() > 1)
         });
-        if drag.corner.is_some() || drag.rotate || in_unit {
+        // A move inside a unit draws the moving layer apart once its parts
+        // are rendered; until then the unit renders with it each step.
+        let (member, reshaping) = (drag.id, drag.corner.is_some() || drag.rotate);
+        if in_unit && !reshaping {
+            self.prepare_unit_drag(member, true, window, cx);
+        }
+        if reshaping || (in_unit && !self.unit_drag_ready(member)) {
             self.refresh_layers(window, cx);
         }
         cx.notify();
@@ -388,6 +414,7 @@ impl Workspace {
         let moved = self.drag_delta();
         if let Some(canvas) = &mut self.canvas {
             canvas.drag_preview = None;
+            canvas.drawn_drag = None;
         }
         if let Some(canvas) = &mut self.canvas
             && let Some((start, end)) = canvas.creating.take()
@@ -525,6 +552,9 @@ impl Workspace {
         let bounds_slot = self.image.image_bounds.clone();
         let area = *self.image.image_bounds.borrow();
         let (rect, scale) = self.canvas_rect();
+        if crate::perf::enabled() {
+            self.record_drag_lag(scale);
+        }
         let offset = rect.origin - area.origin;
         let offset = point(snap(f32::from(offset.x)), snap(f32::from(offset.y)));
         // A whole-canvas render at its own pixel size, so it shows pixel for
@@ -608,42 +638,7 @@ impl Workspace {
                 if !crate::layer_cache::stackable(&canvas.doc) {
                     return None;
                 }
-                let device = scale * pixel;
-                let shown = canvas.shown();
-                let layers = shown
-                    .layers
-                    .iter()
-                    .enumerate()
-                    // Layers inside another are drawn in its image.
-                    .filter(|(index, layer)| {
-                        layer.visible && !crate::layer_cache::inside(shown, *index)
-                    })
-                    .map(|(_, layer)| layer)
-                    .flat_map(|layer| {
-                        let Some((min, max)) = current(canvas, layer.id) else {
-                            return Vec::new();
-                        };
-                        // The layer's image, and over it the sharp part on
-                        // screen when the layer is too large to render whole.
-                        [
-                            canvas.cache.images.get(&layer.id),
-                            canvas.cache.details.get(&layer.id),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .map(|cached| {
-                            let (at, shown) = crate::canvas_stack::place_layer_image(
-                                cached,
-                                (min, max),
-                                device,
-                                pixel,
-                                scale,
-                            );
-                            (layer.id, cached.image.clone(), at, shown)
-                        })
-                        .collect()
-                    })
-                    .collect::<Vec<_>>();
+                let layers = self.stack_entries(canvas, scale, pixel);
                 let [r, g, b, a] = canvas.doc.background;
                 Some((rgba(u32::from_be_bytes([r, g, b, a])), layers))
             });

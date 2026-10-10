@@ -83,6 +83,7 @@ pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Re
     let (heavy_canvas, heavy_layer) =
         heavy(&mut service, directory, project, &[photo, edited_photo])?;
     let blend_canvas = blend(&mut service, project, photo, photo_width)?;
+    let (poster_canvas, poster_layer) = poster(&mut service, project, photo, photo_width)?;
     Ok(Fixtures {
         directory: directory.to_path_buf(),
         project,
@@ -94,7 +95,98 @@ pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Re
         heavy_canvas,
         heavy_layer,
         blend_canvas,
+        poster_canvas,
+        poster_layer,
     })
+}
+
+/// A movie poster: a tall canvas with the photo in a frame, a color grade
+/// that multiplies over it (so the poster draws as one image), and a title
+/// with a shadow. Returns it and the photo's layer.
+fn poster(
+    service: &mut Service,
+    project: spectrum_library::ProjectId,
+    photo: spectrum_library::AssetId,
+    photo_width: u32,
+) -> Result<(spectrum_library::AssetId, u64)> {
+    let canvas = service.create_canvas("Poster".into(), 2400, 3600)?;
+    service.library.add_to_project(project, &[canvas.id])?;
+    service.edit_canvas(
+        canvas.id,
+        vec![Command::AddRectangle {
+            name: Some("Frame".into()),
+            width: 2000,
+            height: 1600,
+            color: [30, 30, 36, 255],
+            corner_radius: 0.,
+            x: 200.,
+            y: 700.,
+        }],
+    )?;
+    let layer = service.place(canvas.id, photo)?;
+    let scale = 1900. / photo_width as f32;
+    let outputs = service.edit_canvas(
+        canvas.id,
+        vec![
+            Command::SetTransform {
+                id: layer,
+                transform: Transform {
+                    x: 250.,
+                    y: 750.,
+                    scale_x: scale,
+                    scale_y: scale,
+                    rotation: 0.,
+                },
+            },
+            Command::AddRectangle {
+                name: Some("Grade".into()),
+                width: 2400,
+                height: 3600,
+                color: [255, 214, 170, 255],
+                corner_radius: 0.,
+                x: 0.,
+                y: 0.,
+            },
+            Command::AddText {
+                text: "THE LONG LIGHT".into(),
+                name: None,
+                font_size: 230.,
+                color: [255, 255, 255, 255],
+                x: 260.,
+                y: 2500.,
+                shaping: Default::default(),
+            },
+        ],
+    )?;
+    let added: Vec<u64> = outputs
+        .iter()
+        .flat_map(|output| output.layer_ids.iter().copied())
+        .collect();
+    let [.., grade, title] = added[..] else {
+        anyhow::bail!("the poster's grade and title were not added");
+    };
+    service.edit_canvas(
+        canvas.id,
+        vec![
+            Command::SetBlendMode {
+                id: grade,
+                blend_mode: BlendMode::Multiply,
+            },
+            // Locked, as a designer locks a grade so clicks reach the photo.
+            Command::SetLocked {
+                id: grade,
+                locked: true,
+            },
+            Command::SetLayerStyle {
+                id: title,
+                style: LayerStyle {
+                    drop_shadow: Some(DropShadow::default()),
+                    ..LayerStyle::default()
+                },
+            },
+        ],
+    )?;
+    Ok((canvas.id, layer))
 }
 
 /// A canvas drawn as one image: the photo under a shape that multiplies
@@ -175,9 +267,33 @@ fn heavy(
     let mut commands = Vec::new();
     let mut layers = Vec::new();
     for (index, source) in sources.iter().enumerate() {
-        let layer = service.place(canvas.id, *source)?;
-        let width = service.image(*source)?.width as f32;
         let (column, row) = ((index % 4) as f32, (index / 4) as f32);
+        // One photo sits clipped inside a frame, as in a layout.
+        if index == 5 {
+            service.edit_canvas(
+                canvas.id,
+                vec![Command::AddRectangle {
+                    name: Some("Frame".into()),
+                    width: 860,
+                    height: 600,
+                    color: [40, 40, 44, 255],
+                    corner_radius: 30.,
+                    x: column * 960. + 50.,
+                    y: row * 720. + 60.,
+                }],
+            )?;
+        }
+        let layer = service.place(canvas.id, *source)?;
+        if index == 5 {
+            service.edit_canvas(
+                canvas.id,
+                vec![Command::SetClipping {
+                    id: layer,
+                    enabled: true,
+                }],
+            )?;
+        }
+        let width = service.image(*source)?.width as f32;
         commands.push(Command::SetTransform {
             id: layer,
             transform: Transform {

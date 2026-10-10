@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-type This = WeakEntity<Workspace>;
+pub(super) type This = WeakEntity<Workspace>;
 
 pub(super) async fn run_all(
     this: &This,
@@ -28,9 +28,16 @@ pub(super) async fn run_all(
     // Let the library load.
     pause(cx, 1200).await;
     let only = super::only();
+    // Each scenario names itself on stderr as it starts, so a crash shows
+    // where it happened.
     let wanted = |name: &str| {
-        only.as_ref()
-            .is_none_or(|only| only.iter().any(|o| o == name))
+        let wanted = only
+            .as_ref()
+            .is_none_or(|only| only.iter().any(|o| o == name));
+        if wanted {
+            eprintln!("benchmark: {name}");
+        }
+        wanted
     };
     let mut outcomes = Vec::new();
     if wanted("image_open") {
@@ -78,17 +85,53 @@ pub(super) async fn run_all(
     if wanted("blend_zoom") {
         outcomes.push(canvas_zoom("blend_zoom", this, cx).await);
     }
+    if wanted("poster_open") {
+        outcomes.push(canvas_open("poster_open", this, cx, fixtures, fixtures.poster_canvas).await);
+    }
+    if wanted("poster_drag") {
+        outcomes.push(canvas_drag("poster_drag", this, cx, fixtures.poster_layer).await);
+    }
+    if wanted("poster_zoom") {
+        outcomes.push(zoom_toggle("poster_zoom", this, cx, Workspace::canvas_drawn).await);
+    }
+    if wanted("image_zoom") {
+        outcomes.push(super::image_zoom::image_zoom(this, cx, fixtures).await);
+    }
     outcomes
 }
 
-async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
+/// Clicks the header's zoom six times: from fit to 100% and back, waiting
+/// each time for the view to be drawn sharp.
+async fn zoom_toggle(
+    name: &'static str,
+    this: &This,
+    cx: &mut AsyncWindowContext,
+    drawn: fn(&Workspace) -> bool,
+) -> Outcome {
+    until(this, cx, 20_000, drawn).await;
+    crate::perf::drain();
+    let mut settles = Vec::new();
+    let mut problem = None;
+    for round in 0..6 {
+        let zoom = (round % 2 == 0).then_some(1.);
+        this.update_in(cx, |ws, window, cx| ws.zoom_any(zoom, window, cx))
+            .ok();
+        match until(this, cx, 20_000, drawn).await {
+            Some(took) => settles.push(("settle", ms(took))),
+            None => problem = Some("the view never came back sharp after zooming".into()),
+        }
+    }
+    outcome(name, settles, problem)
+}
+
+pub(super) async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor()
         .timer(Duration::from_millis(ms))
         .await;
 }
 
 /// Waits until `ready`, returning how long that took, or `None` after `limit_ms`.
-async fn until(
+pub(super) async fn until(
     this: &This,
     cx: &mut AsyncWindowContext,
     limit_ms: u64,
@@ -184,7 +227,7 @@ fn layer_bounds(ws: &Workspace, id: u64) -> Option<([f32; 2], [f32; 2])> {
     ws.canvas.as_ref()?.bounds.get(&id).copied()
 }
 
-fn outcome(
+pub(super) fn outcome(
     name: &'static str,
     extra: Vec<(&'static str, f64)>,
     problem: Option<String>,
@@ -200,7 +243,7 @@ fn outcome(
     }
 }
 
-fn ms(duration: Duration) -> f64 {
+pub(super) fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 

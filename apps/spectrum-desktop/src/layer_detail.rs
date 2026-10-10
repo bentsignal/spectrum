@@ -61,7 +61,8 @@ impl Workspace {
         if area.size.width <= px(1.) || area.size.height <= px(1.) {
             return None;
         }
-        let (rect, scale) = self.canvas_rect();
+        // A zoom on its way shows what it is going to.
+        let (rect, scale) = self.canvas_rect_target();
         let to_canvas = |at: Point<Pixels>| {
             [
                 f32::from(at.x - rect.origin.x) / scale,
@@ -166,14 +167,20 @@ impl Workspace {
                 let result = task.await;
                 this.update_in(cx, |this, window, cx| {
                     let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
-                        if let Ok((image, ..)) = result {
-                            window.drop_image(image).ok();
+                        if let Ok(crate::canvas_split::LayerRender { image, .. }) = result {
+                            crate::retire::drop_later(image);
                         }
                         return;
                     };
                     canvas.cache.detail_busy.remove(&layer_id);
                     match result {
-                        Ok((image, bounds, [pixel, extent], _)) => {
+                        Ok(crate::canvas_split::LayerRender {
+                            image,
+                            bounds,
+                            pixel,
+                            extent,
+                            ..
+                        }) => {
                             let detail = LayerImage {
                                 image,
                                 pixel,
@@ -183,7 +190,7 @@ impl Workspace {
                                 key,
                             };
                             if let Some(old) = canvas.cache.details.insert(layer_id, detail) {
-                                window.drop_image(old.image).ok();
+                                crate::retire::drop_later(old.image);
                             }
                         }
                         Err(_) => {
@@ -200,7 +207,7 @@ impl Workspace {
         }
         for id in stale {
             if let Some(old) = canvas.cache.details.remove(&id) {
-                window.drop_image(old.image).ok();
+                crate::retire::drop_later(old.image);
             }
         }
         // Come back once the changing layers settle.
@@ -249,7 +256,7 @@ impl Workspace {
             .is_some_and(|detail| !wanted || detail.key != key)
             && let Some(old) = canvas.cache.composite.take()
         {
-            window.drop_image(old.image).ok();
+            crate::retire::drop_later(old.image);
         }
         if wanted && !settled {
             // Come back once the canvas's render catches up with its edits.
@@ -303,7 +310,7 @@ impl Workspace {
             this.update_in(cx, |this, window, cx| {
                 let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
                     if let Ok((image, ..)) = result {
-                        window.drop_image(image).ok();
+                        crate::retire::drop_later(image);
                     }
                     return;
                 };
@@ -319,7 +326,7 @@ impl Workspace {
                             key,
                         };
                         if let Some(old) = canvas.cache.composite.replace(detail) {
-                            window.drop_image(old.image).ok();
+                            crate::retire::drop_later(old.image);
                         }
                     }
                     Err(error) => return this.notify_error(error, window, cx),

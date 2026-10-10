@@ -1,0 +1,199 @@
+//! Moving a layer inside another (one clipped to the layer below it).
+//! The two draw as one image, which would have to render again for every
+//! step of the drag; instead, when the drag starts, the rest of the unit
+//! and the moving layer render apart, and each frame draws the moving
+//! layer where the drag has it, clipped to its holder's box, so it keeps up
+//! with the pointer and its outline. The unit renders whole once dropped.
+use crate::{
+    canvas_split::render_alone,
+    layer_cache::{LayerImage, holder_of, unit},
+    workspace::Workspace,
+};
+use gpui::*;
+
+/// The parts of a unit drawn apart while one of its layers moves.
+pub struct UnitDrag {
+    pub member: u64,
+    pub holder: u64,
+    /// The unit without the moving layer.
+    pub rest: Option<LayerImage>,
+    /// The moving layer alone, not clipped.
+    pub alone: Option<LayerImage>,
+    /// The layer has moved, so the parts show instead of the unit's image.
+    pub moved: bool,
+}
+
+impl UnitDrag {
+    pub fn ready(&self) -> bool {
+        self.rest.is_some() && self.alone.is_some()
+    }
+
+    fn images(self) -> impl Iterator<Item = std::sync::Arc<RenderImage>> {
+        self.rest
+            .into_iter()
+            .chain(self.alone)
+            .map(|part| part.image)
+    }
+}
+
+impl Workspace {
+    /// Whether `member` moves inside its unit with its parts drawn apart.
+    pub fn unit_drag_ready(&self, member: u64) -> bool {
+        self.canvas.as_ref().is_some_and(|canvas| {
+            canvas
+                .cache
+                .unit_drag
+                .as_ref()
+                .is_some_and(|drag| drag.member == member && drag.ready())
+        })
+    }
+
+    /// Starts rendering the parts for moving `member` inside its unit, and
+    /// with `moving`, shows them from now on.
+    pub fn prepare_unit_drag(
+        &mut self,
+        member: u64,
+        moving: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
+            return;
+        };
+        let doc = canvas.render_doc();
+        let Some(holder) = holder_of(&doc, member).filter(|holder| *holder != member) else {
+            return;
+        };
+        // A press renders the parts afresh; the drag's moves then show them.
+        if moving
+            && let Some(drag) = canvas
+                .cache
+                .unit_drag
+                .as_mut()
+                .filter(|drag| drag.member == member)
+        {
+            drag.moved = true;
+            return;
+        }
+        Self::drop_unit_drag(canvas);
+        let Some(index) = doc.layers.iter().position(|layer| layer.id == holder) else {
+            return;
+        };
+        let rest: Vec<u64> = unit(&doc, index)
+            .into_iter()
+            .filter(|id| *id != member)
+            .collect();
+        let density = canvas
+            .cache
+            .images
+            .get(&holder)
+            .map_or(canvas.density, |image| image.density);
+        canvas.cache.unit_drag = Some(UnitDrag {
+            member,
+            holder,
+            rest: None,
+            alone: None,
+            moved: moving,
+        });
+        let mut unclipped = doc.clone();
+        if let Some(layer) = unclipped.layers.iter_mut().find(|layer| layer.id == member) {
+            layer.clip_to_below = false;
+        }
+        let id = canvas.id;
+        for (alone, render, layers) in [(false, doc, rest), (true, unclipped, vec![member])] {
+            let root = store.root.clone();
+            let task = cx
+                .background_executor()
+                .spawn(async move { render_alone(&root, &render, &layers, density, None) });
+            cx.spawn_in(window, async move |this, cx| {
+                let result = task.await;
+                this.update_in(cx, |this, _, cx| {
+                    let Ok(crate::canvas_split::LayerRender {
+                        image,
+                        bounds,
+                        pixel,
+                        extent,
+                        ..
+                    }) = result
+                    else {
+                        return;
+                    };
+                    let part = LayerImage {
+                        image,
+                        pixel,
+                        extent,
+                        density,
+                        bounds,
+                        key: String::new(),
+                    };
+                    let drag = this
+                        .canvas
+                        .as_mut()
+                        .filter(|canvas| canvas.id == id)
+                        .and_then(|canvas| canvas.cache.unit_drag.as_mut())
+                        .filter(|drag| drag.member == member);
+                    let Some(drag) = drag else {
+                        crate::retire::drop_later(part.image);
+                        return;
+                    };
+                    let slot = if alone {
+                        &mut drag.alone
+                    } else {
+                        &mut drag.rest
+                    };
+                    if let Some(old) = slot.replace(part) {
+                        crate::retire::drop_later(old.image);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// Frees the parts of a unit drawn apart.
+    pub fn drop_unit_drag(canvas: &mut crate::canvas_state::CanvasState) {
+        if let Some(drag) = canvas.cache.unit_drag.take() {
+            for image in drag.images() {
+                crate::retire::drop_later(image);
+            }
+        }
+    }
+
+    /// For the interaction benchmark: how far, in points, the dragged
+    /// layer's pixels trail its outline this frame.
+    pub fn record_drag_lag(&self, scale: f32) {
+        let Some(canvas) = &self.canvas else {
+            return;
+        };
+        let Some(drag) = canvas
+            .drag
+            .filter(|drag| drag.corner.is_none() && !drag.rotate)
+        else {
+            return;
+        };
+        let Some((_, dx, dy)) = self
+            .drag_delta()
+            .filter(|(_, dx, dy)| *dx != 0. || *dy != 0.)
+        else {
+            return;
+        };
+        let synced = if crate::layer_cache::stackable(&canvas.doc) {
+            holder_of(&canvas.doc, drag.id).is_none_or(|holder| holder == drag.id)
+                || self.unit_drag_ready(drag.id)
+        } else {
+            canvas
+                .split
+                .as_ref()
+                .is_some_and(|split| split.layer == drag.id && split.ready().is_some())
+        };
+        let lag = if synced {
+            0.
+        } else {
+            let (shown_x, shown_y) = canvas.drawn_drag.unwrap_or((0., 0.));
+            (dx - shown_x).hypot(dy - shown_y) * scale
+        };
+        crate::perf::record_value("drag_lag", f64::from(lag));
+    }
+}

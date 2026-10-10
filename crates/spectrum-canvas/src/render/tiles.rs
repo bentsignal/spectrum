@@ -15,18 +15,32 @@ pub(super) fn render_document_region_scaled_impl(
 ) -> Result<DynamicImage> {
     validate_render_region(document, scale, region, bound_fallback_layers)?;
     let Some(tile_size) = paint_output_tile_size(document, scale) else {
-        // One pass when every layer's visible source fits the staging budget;
-        // otherwise smaller regions, as a large photo shown scaled down needs.
-        let (image, tile_stats) = render_document_tile_adaptive(
-            document,
-            scale,
-            region,
-            bound_fallback_layers,
-            raster_sources,
-        )?;
+        // Bands of rows rendered at once across cores; each band is a region
+        // render, so the result is the same as one pass. Each band falls back
+        // to smaller regions when its sources exceed the staging budget, as a
+        // large photo shown scaled down needs.
+        let bands = band_regions(region);
+        let rendered = render_each(&bands, |band| {
+            render_document_tile_adaptive(
+                document,
+                scale,
+                *band,
+                bound_fallback_layers,
+                raster_sources,
+            )
+        })?;
         stats.output_pixels = u64::from(region.width) * u64::from(region.height);
-        merge_region_stats(stats, tile_stats);
-        return Ok(DynamicImage::ImageRgba8(image));
+        if rendered.len() == 1 {
+            let (image, band_stats) = rendered.into_iter().next().expect("one band");
+            merge_region_stats(stats, band_stats);
+            return Ok(DynamicImage::ImageRgba8(image));
+        }
+        let mut output = RgbaImage::new(region.width, region.height);
+        for (band, (image, band_stats)) in bands.iter().zip(rendered) {
+            image::imageops::replace(&mut output, &image, 0, i64::from(band.y - region.y));
+            merge_region_stats(stats, band_stats);
+        }
+        return Ok(DynamicImage::ImageRgba8(output));
     };
     if region.width <= tile_size && region.height <= tile_size {
         let (image, tile_stats) = render_document_tile_adaptive(
@@ -42,26 +56,101 @@ pub(super) fn render_document_region_scaled_impl(
     }
     let mut output = RgbaImage::new(region.width, region.height);
     stats.output_pixels = u64::from(region.width) * u64::from(region.height);
-    for offset_y in (0..region.height).step_by(tile_size as usize) {
-        for offset_x in (0..region.width).step_by(tile_size as usize) {
-            let tile_region = RenderRegion {
-                x: region.x + offset_x,
-                y: region.y + offset_y,
-                width: tile_size.min(region.width - offset_x),
-                height: tile_size.min(region.height - offset_y),
-            };
-            let (tile, tile_stats) = render_document_tile_adaptive(
-                document,
-                scale,
-                tile_region,
-                bound_fallback_layers,
-                raster_sources,
-            )?;
-            image::imageops::replace(&mut output, &tile, i64::from(offset_x), i64::from(offset_y));
-            merge_region_stats(stats, tile_stats);
-        }
+    let tiles: Vec<(u32, u32, RenderRegion)> = (0..region.height)
+        .step_by(tile_size as usize)
+        .flat_map(|offset_y| {
+            (0..region.width)
+                .step_by(tile_size as usize)
+                .map(move |offset_x| {
+                    let tile_region = RenderRegion {
+                        x: region.x + offset_x,
+                        y: region.y + offset_y,
+                        width: tile_size.min(region.width - offset_x),
+                        height: tile_size.min(region.height - offset_y),
+                    };
+                    (offset_x, offset_y, tile_region)
+                })
+        })
+        .collect();
+    // Tiles render at once across cores.
+    let rendered = render_each(&tiles, |(_, _, tile_region)| {
+        render_document_tile_adaptive(
+            document,
+            scale,
+            *tile_region,
+            bound_fallback_layers,
+            raster_sources,
+        )
+    })?;
+    for ((offset_x, offset_y, _), (tile, tile_stats)) in tiles.iter().zip(rendered) {
+        image::imageops::replace(
+            &mut output,
+            &tile,
+            i64::from(*offset_x),
+            i64::from(*offset_y),
+        );
+        merge_region_stats(stats, tile_stats);
     }
     Ok(DynamicImage::ImageRgba8(output))
+}
+
+/// `render` for every item, on threads of their own, in order. Not on the
+/// shared pool: a band waits for another band's work (one makes a reduced
+/// copy of a photo while the rest wait for it), and a pool thread waiting
+/// inside a lock picks up other bands, which then wait on themselves.
+fn render_each<T: Sync, R: Send>(
+    items: &[T],
+    render: impl Fn(&T) -> Result<R> + Sync,
+) -> Result<Vec<R>> {
+    if items.len() <= 1 {
+        return items.iter().map(&render).collect();
+    }
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |cores| cores.get())
+        .min(items.len());
+    let render = &render;
+    let mut results: Vec<Option<Result<R>>> = (0..items.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|first| {
+                scope.spawn(move || {
+                    (first..items.len())
+                        .step_by(threads)
+                        .map(|index| (index, render(&items[index])))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for worker in workers {
+            let done = worker
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            for (index, result) in done {
+                results[index] = Some(result);
+            }
+        }
+    });
+    results
+        .into_iter()
+        .map(|result| result.expect("every item renders"))
+        .collect()
+}
+
+/// Rows rendered as one band: enough that per-band work stays small.
+const MIN_BAND_ROWS: u32 = 64;
+
+/// `region` cut into bands of rows, one per core or fewer.
+fn band_regions(region: RenderRegion) -> Vec<RenderRegion> {
+    let cores = rayon::current_num_threads().max(1) as u32;
+    let rows = region.height.div_ceil(cores).max(MIN_BAND_ROWS);
+    (0..region.height)
+        .step_by(rows as usize)
+        .map(|offset| RenderRegion {
+            y: region.y + offset,
+            height: rows.min(region.height - offset),
+            ..region
+        })
+        .collect()
 }
 
 fn validate_render_region(
@@ -241,4 +330,93 @@ fn merge_region_stats(total: &mut RegionRenderStats, tile: RegionRenderStats) {
     total.max_shadow_alpha_tile_bytes = total
         .max_shadow_alpha_tile_bytes
         .max(tile.max_shadow_alpha_tile_bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BlendMode, Command, DropShadow, Glow, LayerStyle, Workspace};
+
+    /// Rendering bands of rows at once gives exactly what one pass gives.
+    #[test]
+    fn bands_render_exactly_as_one_pass() {
+        let mut workspace = Workspace::new(Document::new("Bands", 320, 520));
+        let commands = vec![
+            Command::AddRectangle {
+                name: None,
+                width: 260,
+                height: 300,
+                color: [40, 120, 200, 255],
+                corner_radius: 18.0,
+                x: 30.0,
+                y: 40.0,
+            },
+            Command::AddText {
+                text: "Bands of rows".into(),
+                name: None,
+                font_size: 42.0,
+                color: [255, 255, 255, 255],
+                x: 20.0,
+                y: 150.0,
+                shaping: Default::default(),
+            },
+            Command::AddEllipse {
+                name: None,
+                width: 200,
+                height: 160,
+                color: [250, 180, 60, 255],
+                x: 60.0,
+                y: 300.0,
+            },
+        ];
+        workspace.execute_batch(commands).unwrap();
+        let ids: Vec<u64> = workspace.document.layers.iter().map(|l| l.id).collect();
+        workspace
+            .execute_batch(vec![
+                Command::SetLayerStyle {
+                    id: ids[1],
+                    style: LayerStyle {
+                        drop_shadow: Some(DropShadow::default()),
+                        outer_glow: Some(Glow {
+                            size: 14.0,
+                            ..Glow::default()
+                        }),
+                        ..LayerStyle::default()
+                    },
+                },
+                Command::SetBlendMode {
+                    id: ids[2],
+                    blend_mode: BlendMode::Multiply,
+                },
+            ])
+            .unwrap();
+        let document = workspace.document;
+        for scale in [0.75, 1.0, 1.6] {
+            let (width, height) = scaled_document_dimensions(&document, scale).unwrap();
+            let whole = RenderRegion {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            };
+            let mut stats = RegionRenderStats::default();
+            let one_pass = render_document_region_scaled_untiled(
+                &document, scale, whole, false, None, &mut stats,
+            )
+            .unwrap()
+            .to_rgba8();
+            for band in band_regions(whole) {
+                let mut stats = RegionRenderStats::default();
+                let rendered = render_document_region_scaled_untiled(
+                    &document, scale, band, false, None, &mut stats,
+                )
+                .unwrap()
+                .to_rgba8();
+                let expected =
+                    image::imageops::crop_imm(&one_pass, 0, band.y, band.width, band.height)
+                        .to_image();
+                assert!(rendered == expected, "band at row {} scale {scale}", band.y);
+            }
+        }
+    }
 }

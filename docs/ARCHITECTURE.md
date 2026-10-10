@@ -120,11 +120,13 @@ Three layers keep interaction fast, and all run in CI:
 - `bash scripts/interaction-benchmark.sh` runs the desktop app itself
   (`spectrum-desktop --benchmark`) on a throwaway library: a 24-megapixel
   photo (or `--photo <file>`, such as a camera RAW), a 45-megapixel photo with
-  every tab edited, and canvases of one photo, twelve photos with text effects,
-  and a blend mode. It drives slider scrubs, opens, layer drags, zoom steps, a
-  text size drag, and brush strokes with undo through the app's handlers, and
-  fails when an edit is slow to reach the screen, the main thread stalls, a
-  canvas is slow to settle, or an error shows. Budgets are per profile:
+  every tab edited, and canvases of one photo, twelve photos with text effects
+  (one clipped in a frame), a blend mode, and a poster. It drives slider
+  scrubs, opens, layer drags, zoom steps and header zooms, image zoom and pan,
+  a text size drag, and brush strokes with undo through the app's handlers,
+  and fails when an edit is slow to reach the screen, the main thread stalls,
+  a dragged layer trails its outline, a canvas or image is slow to come back
+  sharp, or an error shows. Budgets are per profile:
   `interactive` (a GPU), `software` (Linux with software rendering), and `ci`.
   `--only <scenario,...>` runs a few while working on them. With
   `SPECTRUM_PERF_LOG=<file>` an ordinary session writes the same measurements.
@@ -150,6 +152,15 @@ What keeps it fast:
   written to disk to show a canvas. An image edited since its canvas last
   showed it draws from a 2048 px stand-in while its full render is made in
   the background.
+- **Compositing.** Canvases drawn as one image render in bands of rows on
+  every core; shapes and text drawn whole are kept between bands and renders,
+  and shadows and vector masks give the same pixels however a render is split.
+- **Drags and zooms.** A layer moving inside another, or on a canvas drawn as
+  one image, draws apart from the rest so it stays under its outline; the
+  exact render follows the drop. Zooms from the keys or the header move over
+  140 ms while the new size renders. In the image editor, zoomed past the
+  preview's pixels, the part on screen renders from the full-resolution photo.
+  A two-finger gesture pans or zooms by how it starts, until the fingers lift.
 - **Background work** (thumbnails) runs one item at a time and only while a
   grid shows it. Exports always read sources exactly, through the verified
   raster cache, which never flushes to disk.

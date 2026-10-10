@@ -42,4 +42,12 @@ what is shown.
    GPU (GPUI's `metal_renderer.rs`). Check it on a real Mac with
    `spectrum-desktop --benchmark --strict --only heavy_open`.
 
+9. **Dragging on a canvas drawn as one image** (one with blend modes) draws
+   the moving layer apart over the rest: a layer that blends, or layers
+   above it that blend with it, show unblended until the drop. The first
+   frames of the drag trail by a few points while its parts render.
+10. **GPUI frees a texture under a pending upload** if an image is dropped
+    the frame after it is first drawn (`blade_atlas.rs`); Spectrum frees
+    images 250 ms after they stop showing (`retire.rs`) to avoid it.
+
 The history tree view is next, in [revision lifecycle](revision-lifecycle.md).

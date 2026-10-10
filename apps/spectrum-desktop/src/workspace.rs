@@ -160,6 +160,10 @@ pub struct Workspace {
     /// The open asset's document file as of the last check, so unchanged
     /// files are not checked again.
     pub followed_stamp: Option<(AssetId, Option<FileStamp>)>,
+    /// Two-finger scrolls on the canvas or the open image.
+    pub gestures: crate::gesture::ScrollGestures,
+    /// A render is coming to free retired images (`retire`).
+    retire_scheduled: bool,
     /// Keeps keyboard shortcuts working when no field has focus.
     pub focus_handle: FocusHandle,
     /// The title strip a window drag started in, if any.
@@ -355,6 +359,7 @@ impl Workspace {
                 color_busy: false,
                 color_dirty: false,
                 photo_info: None,
+                view: Default::default(),
                 compare: false,
             },
             canvas_ui: crate::editors::CanvasControls {
@@ -399,6 +404,8 @@ impl Workspace {
             canvas: None,
             following: false,
             followed_stamp: None,
+            gestures: Default::default(),
+            retire_scheduled: false,
             focus_handle: cx.focus_handle(),
             dragging: None,
             settle: 1,
@@ -649,6 +656,24 @@ impl Render for Workspace {
         }
         self.ensure_preview(window, cx);
         self.fit_canvas_resolution(window, cx);
+        self.step_zoom_animation(window, cx);
+        self.step_image_animation(window);
+        crate::retire::flush(window);
+        if crate::retire::waiting() && !self.retire_scheduled {
+            // Come back to free the images still waiting.
+            self.retire_scheduled = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(300))
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.retire_scheduled = false;
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
         let content = match (self.place, self.open) {
             (Place::Home, _) if self.mode == Mode::Projects => {
                 self.projects_grid(area.width, cx).into_any_element()
@@ -657,7 +682,7 @@ impl Render for Workspace {
                 self.asset_grid(area.width, cx).into_any_element()
             }
             (_, Open::Image(_)) if self.mode == Mode::Crop => self.crop_view(cx).into_any_element(),
-            (_, Open::Image(_)) => self.image_view(cx).into_any_element(),
+            (_, Open::Image(_)) => self.image_view(window, cx).into_any_element(),
             (_, Open::Canvas(_)) => self.canvas_main(window, cx).into_any_element(),
         };
         let main = div()
@@ -666,7 +691,7 @@ impl Render for Workspace {
             .h_full()
             .flex()
             .flex_col()
-            .child(self.header(cx))
+            .child(self.header(window, cx))
             .child(div().flex_1().min_h_0().child(content))
             .drag_over::<ExternalPaths>(|el, _, _, _| el.bg(rgb(0x141414)))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {

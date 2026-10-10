@@ -434,7 +434,10 @@ fn spotted_provider_matches_export_without_redecoding_or_full_source_staging() {
     assert!(document_supports_region_native_zoom_with_sources(
         &document, &resolver
     ));
-    for expected_reads in 1..=2 {
+    // Each render reads bounded regions of the source (one per band of rows
+    // rendered at once), the same reads every time, never the whole source.
+    let mut per_render = None;
+    for render in 1..=2 {
         let (actual, stats) =
             render_document_region_scaled_with_sources_and_stats(&document, 1.5, region, &resolver)
                 .unwrap();
@@ -445,7 +448,10 @@ fn spotted_provider_matches_export_without_redecoding_or_full_source_staging() {
         assert_eq!(stats.fallback_decode_bytes, 0);
         assert_eq!(stats.transformed_surface_pixels, 0);
         assert!(stats.max_source_staging_pixels < 512 * 384);
-        assert_eq!(reads.load(Ordering::Relaxed), expected_reads);
+        let reads = reads.load(Ordering::Relaxed);
+        let per_render = *per_render.get_or_insert(reads);
+        assert!(per_render >= 1);
+        assert_eq!(reads, render * per_render);
     }
     let _ = std::fs::remove_file(path);
 }

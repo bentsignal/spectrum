@@ -611,27 +611,47 @@ pub(crate) fn apply_vector_path_to_image(
         bail!("vector mask alpha tile exceeds the 64 MiB limit");
     }
     let path = tiny_path(&vector_mask.path)?;
-    let transform = Transform::from_row(
+    let (scale_x, scale_y) = (
         full_width as f32 / vector_mask.path.width() as f32,
-        0.0,
-        0.0,
         full_height as f32 / vector_mask.path.height() as f32,
-        -(region_x as f32),
-        -(region_y as f32),
     );
-    let mut alpha = Mask::new(image.width(), image.height())
-        .ok_or_else(|| anyhow::anyhow!("could not allocate vector mask alpha tile"))?;
-    alpha.fill_path(&path, FillRule::EvenOdd, true, transform);
-    for (pixel, coverage) in image.pixels_mut().zip(alpha.data().iter().copied()) {
-        let coverage = if vector_mask.invert {
-            255 - coverage
-        } else {
-            coverage
-        };
-        pixel[3] = multiply_alpha(pixel[3], coverage);
+    // Coverage comes from tiles on one grid anchored at the source's corner,
+    // so a pixel's coverage never depends on which region asked for it:
+    // tiles and bands of one render join without seams.
+    let first = (region_x / MASK_TILE, region_y / MASK_TILE);
+    let last = ((right - 1) / MASK_TILE, (bottom - 1) / MASK_TILE);
+    for tile_y in first.1..=last.1 {
+        for tile_x in first.0..=last.0 {
+            let (x0, y0) = (tile_x * MASK_TILE, tile_y * MASK_TILE);
+            let (w, h) = (
+                MASK_TILE.min(full_width - x0),
+                MASK_TILE.min(full_height - y0),
+            );
+            let transform =
+                Transform::from_row(scale_x, 0.0, 0.0, scale_y, -(x0 as f32), -(y0 as f32));
+            let mut alpha = Mask::new(w, h)
+                .ok_or_else(|| anyhow::anyhow!("could not allocate vector mask alpha tile"))?;
+            alpha.fill_path(&path, FillRule::EvenOdd, true, transform);
+            let data = alpha.data();
+            for y in y0.max(region_y)..(y0 + h).min(bottom) {
+                for x in x0.max(region_x)..(x0 + w).min(right) {
+                    let coverage = data[((y - y0) * w + (x - x0)) as usize];
+                    let coverage = if vector_mask.invert {
+                        255 - coverage
+                    } else {
+                        coverage
+                    };
+                    let pixel = image.get_pixel_mut(x - region_x, y - region_y);
+                    pixel[3] = multiply_alpha(pixel[3], coverage);
+                }
+            }
+        }
     }
     Ok(())
 }
+
+/// The side of the tiles vector mask coverage is made in.
+const MASK_TILE: u32 = 256;
 
 fn tiny_path(geometry: &PathGeometry) -> Result<tiny_skia::Path> {
     let anchors = geometry.anchors();

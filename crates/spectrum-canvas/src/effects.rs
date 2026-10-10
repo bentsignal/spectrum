@@ -302,29 +302,37 @@ pub(crate) fn shadow_reach(radius: f32) -> i64 {
 
 /// Blurs an alpha tile in place with three box passes each way, treating
 /// pixels outside the tile as clear. The cost does not grow with the radius;
-/// rows run in parallel, and columns as rows of the transposed tile.
+/// rows run in parallel, and columns as rows of the transposed tile. Every
+/// pass keeps exact integer sums, divided once at the end, so a pixel's
+/// value never depends on where its tile starts: tiles and bands of one
+/// render join without seams.
 pub(crate) fn blur_shadow_alpha(pixels: &mut [u8], width: usize, height: usize, radius: f32) {
     use rayon::prelude::*;
     let halves = shadow_box_halves(radius);
     if halves == [0; 3] || width == 0 || height == 0 {
         return;
     }
-    let mut values: Vec<f32> = pixels.par_iter().map(|&a| f32::from(a)).collect();
-    let mut scratch = vec![0f32; values.len()];
+    let mut values: Vec<u64> = pixels.par_iter().map(|&a| u64::from(a)).collect();
+    let mut scratch = vec![0u64; values.len()];
     blur_rows(&mut values, &mut scratch, width, halves);
-    let mut prefix = vec![0f32; (height + 1) * width];
+    let mut prefix = vec![0u64; (height + 1) * width];
     for half in halves {
         box_columns(&values, &mut scratch, &mut prefix, width, half);
         std::mem::swap(&mut values, &mut scratch);
     }
+    // Each pass summed `2 * half + 1` values without dividing.
+    let total: u64 = halves
+        .iter()
+        .map(|half| (2 * *half as u64 + 1).pow(2))
+        .product();
     pixels
         .par_iter_mut()
         .zip(values.par_iter())
-        .for_each(|(pixel, value)| *pixel = crate::render::round_byte(*value));
+        .for_each(|(pixel, value)| *pixel = ((value + total / 2) / total).min(255) as u8);
 }
 
 /// Runs each box pass along every row of `values`, in parallel.
-fn blur_rows(values: &mut Vec<f32>, scratch: &mut Vec<f32>, width: usize, halves: [usize; 3]) {
+fn blur_rows(values: &mut Vec<u64>, scratch: &mut Vec<u64>, width: usize, halves: [usize; 3]) {
     use rayon::prelude::*;
     for half in halves {
         scratch
@@ -335,12 +343,12 @@ fn blur_rows(values: &mut Vec<f32>, scratch: &mut Vec<f32>, width: usize, halves
     }
 }
 
-/// One box average down every column: running sums down the rows, then
-/// each output row from two of them, in parallel.
-fn box_columns(input: &[f32], output: &mut [f32], prefix: &mut [f32], width: usize, half: usize) {
+/// One box sum down every column: running sums down the rows, then each
+/// output row from two of them, in parallel.
+fn box_columns(input: &[u64], output: &mut [u64], prefix: &mut [u64], width: usize, half: usize) {
     use rayon::prelude::*;
     let height = input.len() / width;
-    prefix[..width].fill(0.0);
+    prefix[..width].fill(0);
     for row in 0..height {
         let (done, rest) = prefix.split_at_mut((row + 1) * width);
         let above = &done[row * width..];
@@ -349,7 +357,6 @@ fn box_columns(input: &[f32], output: &mut [f32], prefix: &mut [f32], width: usi
             *sum = previous + value;
         }
     }
-    let span = (2 * half + 1) as f32;
     let prefix = &*prefix;
     output
         .par_chunks_mut(width)
@@ -358,7 +365,7 @@ fn box_columns(input: &[f32], output: &mut [f32], prefix: &mut [f32], width: usi
             let low = &prefix[row.saturating_sub(half) * width..][..width];
             let high = &prefix[(row + half + 1).min(height) * width..][..width];
             for ((value, high), low) in out.iter_mut().zip(high).zip(low) {
-                *value = (high - low) / span;
+                *value = high - low;
             }
         });
 }
@@ -394,15 +401,15 @@ pub(crate) fn transpose<T: Copy + Default + Send + Sync>(
 }
 
 /// One sliding-window box average along a line.
-fn box_line(input: &[f32], output: &mut [f32], half: usize) {
+/// The sum of each value's `2 * half + 1` neighbors along a line.
+fn box_line(input: &[u64], output: &mut [u64], half: usize) {
     let length = input.len();
-    let span = (2 * half + 1) as f32;
-    let mut sum = 0f32;
+    let mut sum = 0u64;
     for value in &input[..=half.min(length - 1)] {
         sum += value;
     }
     for i in 0..length {
-        output[i] = sum / span;
+        output[i] = sum;
         if i + half + 1 < length {
             sum += input[i + half + 1];
         }

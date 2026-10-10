@@ -77,6 +77,9 @@ pub struct CanvasState {
     /// A layer's transform mid-drag, for canvases drawn as one render
     /// (blend modes, layers inside others), so the render follows the drag.
     pub drag_preview: Option<(u64, spectrum_canvas::Transform)>,
+    /// The move a dragged layer's pixels show, when they come from a render
+    /// made for the drag (its unit's, or the whole canvas's).
+    pub drawn_drag: Option<(f32, f32)>,
     /// The part of a Paint layer under the stroke being drawn, rendered as
     /// it goes and drawn over the layer's image.
     pub stroke_patch: Option<StrokePatch>,
@@ -88,6 +91,8 @@ pub struct CanvasState {
     pub pan: (f32, f32),
     /// When the zoom last changed; it renders sharp once it settles.
     pub zoomed_at: Option<std::time::Instant>,
+    /// A zoom from the keys or the header moving to `zoom` and `pan`.
+    pub zoom_anim: Option<crate::zoom::ZoomAnim>,
     /// A pan drag: where it started and the pan then.
     pub panning: Option<(gpui::Point<gpui::Pixels>, (f32, f32))>,
     /// Space is held: drags pan.
@@ -280,7 +285,7 @@ impl Workspace {
     /// Opens a canvas asset: loads and renders it in the background.
     pub fn load_canvas(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
         let _timer = crate::perf::Timer::new("main_load_canvas");
-        self.close_canvas(window);
+        self.close_canvas();
         self.canvas = Some(CanvasState {
             id,
             doc: Document::new("", 1, 1),
@@ -313,11 +318,13 @@ impl Workspace {
             hover_guide: None,
             live_doc: None,
             drag_preview: None,
+            drawn_drag: None,
             stroke_patch: None,
             erase_target: None,
             zoom: None,
             pan: (0., 0.),
             zoomed_at: None,
+            zoom_anim: None,
             panning: None,
             space_held: false,
             pixels: None,
@@ -340,15 +347,15 @@ impl Workspace {
     }
 
     /// Frees the open canvas's images.
-    pub fn close_canvas(&mut self, window: &mut Window) {
+    pub fn close_canvas(&mut self) {
         if let Some(mut old) = self.canvas.take() {
-            Self::drop_layers(&mut old.cache, window);
+            Self::drop_layers(&mut old.cache);
             let split = old
                 .split
                 .into_iter()
                 .flat_map(crate::canvas_split::Split::images);
             for image in old.image.into_iter().chain(split) {
-                window.drop_image(image).ok();
+                crate::retire::drop_later(image);
             }
         }
     }
@@ -378,6 +385,7 @@ impl Workspace {
                 && !canvas.cache.rendering()
                 && !canvas.reload
                 // A zoom renders sharp once it settles, a frame after SETTLE.
+                && canvas.zoom_anim.is_none()
                 && canvas.zoomed_at.is_none_or(|at| {
                     at.elapsed() > crate::zoom::SETTLE + std::time::Duration::from_millis(30)
                 })
@@ -473,7 +481,7 @@ impl Workspace {
         if let Some(canvas) = &mut self.canvas {
             canvas.version += 1;
         }
-        self.split_edit(&[Command::Undo], window);
+        self.split_edit(&[Command::Undo]);
         self.invalidate_layers();
         self.render_canvas(window, cx);
         self.refresh_layers(window, cx);
@@ -483,7 +491,8 @@ impl Workspace {
     /// again when the window or canvas size changes it.
     pub fn fit_canvas_resolution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let _timer = crate::perf::Timer::new("main_fit_canvas");
-        let (_, scale) = self.canvas_rect();
+        // A zoom on its way renders for where it is going.
+        let (_, scale) = self.canvas_rect_target();
         let fit = self.fit_scale() * window.scale_factor();
         let Some(canvas) = &mut self.canvas else {
             return;
@@ -568,6 +577,11 @@ impl Workspace {
             })
             .detach();
         }
+        // The move this render shows the dragged layer at.
+        let drag_shown = canvas.drag_preview.and_then(|(layer, transform)| {
+            let saved = canvas.doc.layer(layer).ok()?.transform;
+            Some((transform.x - saved.x, transform.y - saved.y))
+        });
         let (root, id, version, doc) = (
             store.root.clone(),
             canvas.id,
@@ -585,18 +599,21 @@ impl Workspace {
             this.update_in(cx, |this, window, cx| {
                 let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
                     if let Ok(done) = result {
-                        window.drop_image(done.image).ok();
+                        crate::retire::drop_later(done.image);
                     }
                     return;
                 };
                 canvas.rendering = false;
                 canvas.rendered = version;
+                if drag_shown.is_some() {
+                    canvas.drawn_drag = drag_shown;
+                }
                 let mut pending = Vec::new();
                 match result {
                     Ok(done) => {
                         pending = done.pending;
                         if let Some(old) = canvas.image.replace(done.image) {
-                            window.drop_image(old).ok();
+                            crate::retire::drop_later(old);
                         }
                         // Older renders keep the bounds later edits moved.
                         if canvas.rendered == canvas.version && canvas.drag.is_none() {
@@ -623,7 +640,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let edit = self.split_edit(&commands, window);
+        let edit = self.split_edit(&commands);
         let Some(canvas) = &mut self.canvas else {
             return;
         };

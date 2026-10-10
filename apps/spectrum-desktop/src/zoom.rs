@@ -20,6 +20,62 @@ const STEPS: [f32; 19] = [
 ];
 /// How long after the last zoom change the canvas renders at the new size.
 pub const SETTLE: Duration = Duration::from_millis(60);
+/// How long a zoom from the keys or the header takes to arrive.
+const ANIMATION: Duration = Duration::from_millis(140);
+
+/// A zoom from the keys or the header on its way: it moves smoothly about
+/// the point both views share while the canvas renders for where it is
+/// going, so it arrives sharp instead of blurring and then snapping.
+#[derive(Clone, Copy)]
+pub struct ZoomAnim {
+    from: (Bounds<Pixels>, f32),
+    started: Instant,
+}
+
+impl ZoomAnim {
+    /// A zoom starting from where something is drawn now.
+    pub fn new(from: (Bounds<Pixels>, f32)) -> Self {
+        Self {
+            from,
+            started: Instant::now(),
+        }
+    }
+
+    /// The canvas's place and scale now, on the way to `target`.
+    pub fn at(
+        &self,
+        target: (Bounds<Pixels>, f32),
+        _area: Bounds<Pixels>,
+    ) -> (Bounds<Pixels>, f32) {
+        let t = (self.started.elapsed().as_secs_f32() / ANIMATION.as_secs_f32()).min(1.);
+        let eased = 1. - (1. - t).powi(3);
+        let ((from, from_scale), (to, to_scale)) = (self.from, target);
+        let scale = from_scale * (to_scale / from_scale).powf(eased);
+        let origin = if (from_scale - to_scale).abs() > 1e-4 {
+            // The canvas point that stays put, and where it is on screen.
+            let anchor = |a: Pixels, b: Pixels| {
+                let point = f32::from(b - a) / (from_scale - to_scale);
+                f32::from(a) + point * from_scale - point * scale
+            };
+            point(
+                px(anchor(from.origin.x, to.origin.x)),
+                px(anchor(from.origin.y, to.origin.y)),
+            )
+        } else {
+            from.origin + (to.origin - from.origin) * eased
+        };
+        let size = size(
+            to.size.width * (scale / to_scale),
+            to.size.height * (scale / to_scale),
+        );
+        (Bounds::new(origin, size), scale)
+    }
+
+    pub fn done(&self) -> bool {
+        self.started.elapsed() >= ANIMATION
+    }
+}
+
 /// Room around a fitted canvas, in screen pixels.
 const FIT_MARGIN: f32 = 16.;
 /// The canvas stays at least this far on screen when panned.
@@ -52,17 +108,58 @@ impl Workspace {
         (pan.0.clamp(-rx, rx), pan.1.clamp(-ry, ry))
     }
 
-    /// Zooms to `zoom`, or to fit for `None`, keeping the canvas point under
-    /// `about` (the middle of the view by default) where it is.
-    pub fn zoom_to(
+    /// Zooms to `zoom`, or to fit for `None`, about the middle of the view,
+    /// moving there smoothly: the keys and the header's zoom.
+    pub fn zoom_to(&mut self, zoom: Option<f32>, window: &mut Window, cx: &mut Context<Self>) {
+        let from = self.canvas_rect();
+        self.place_zoom(zoom, None);
+        if let Some(canvas) = &mut self.canvas {
+            canvas.zoom_anim = Some(ZoomAnim::new(from));
+            canvas.zoomed_at = None;
+        }
+        // Render for where the zoom is going at once.
+        self.fit_canvas_resolution(window, cx);
+        self.refresh_layers(window, cx);
+        self.refresh_composite_detail(window, cx);
+        cx.notify();
+    }
+
+    /// Ends a finished zoom animation, rendering what came into view.
+    pub fn step_zoom_animation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(anim) = self.canvas.as_ref().and_then(|c| c.zoom_anim) else {
+            return;
+        };
+        if !anim.done() {
+            window.request_animation_frame();
+            return;
+        }
+        if let Some(canvas) = &mut self.canvas {
+            canvas.zoom_anim = None;
+        }
+        self.refresh_layers(window, cx);
+        self.refresh_composite_detail(window, cx);
+    }
+
+    /// Zooms to `zoom` at once, keeping the canvas point under `about` where
+    /// it is: a scroll or two-finger gesture.
+    fn zoom_about(
         &mut self,
-        zoom: Option<f32>,
-        about: Option<Point<Pixels>>,
+        zoom: f32,
+        about: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(canvas) = &mut self.canvas {
+            canvas.zoom_anim = None;
+        }
+        self.place_zoom(Some(zoom), Some(about));
+        self.settle_zoom(window, cx);
+    }
+
+    /// Sets the zoom and pan for `zoom` (fit for `None`) about `about`.
+    fn place_zoom(&mut self, zoom: Option<f32>, about: Option<Point<Pixels>>) {
         let area = *self.image.image_bounds.borrow();
-        let (rect, scale) = self.canvas_rect();
+        let (rect, scale) = self.canvas_rect_target();
         let Some(canvas) = &self.canvas else {
             return;
         };
@@ -101,7 +198,6 @@ impl Workspace {
                 canvas.pan = (0., 0.);
             }
         }
-        self.settle_zoom(window, cx);
     }
 
     /// Renders sharp at the new size once the zoom stops changing.
@@ -127,20 +223,23 @@ impl Workspace {
 
     /// Steps to the next zoom in (`1`) or out (`-1`).
     pub fn zoom_step(&mut self, direction: i32, window: &mut Window, cx: &mut Context<Self>) {
-        let (_, now) = self.canvas_rect();
+        let (_, now) = self.canvas_rect_target();
         let next = if direction > 0 {
             STEPS.iter().copied().find(|step| *step > now * 1.01)
         } else {
             STEPS.iter().rev().copied().find(|step| *step < now * 0.99)
         };
         if let Some(zoom) = next {
-            self.zoom_to(Some(zoom), None, window, cx);
+            self.zoom_to(Some(zoom), window, cx);
         }
     }
 
     /// Moves the canvas by a screen distance.
     pub fn pan_by(&mut self, dx: f32, dy: f32, window: &mut Window, cx: &mut Context<Self>) {
-        let (_, scale) = self.canvas_rect();
+        let (_, scale) = self.canvas_rect_target();
+        if let Some(canvas) = &mut self.canvas {
+            canvas.zoom_anim = None;
+        }
         let Some(canvas) = &self.canvas else {
             return;
         };
@@ -166,24 +265,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A wheel notch is a line or a few; a trackpad gives pixels.
-        let (dx, dy, factor) = match event.delta {
-            ScrollDelta::Pixels(delta) => {
-                let dy = f32::from(delta.y);
-                (f32::from(delta.x), dy, (dy * 0.004).exp())
-            }
-            ScrollDelta::Lines(lines) => (lines.x * 40., lines.y * 40., 1.1_f32.powf(lines.y)),
-        };
         cx.stop_propagation();
-        if event.modifiers.secondary() || dx.abs() > dy.abs() {
-            return self.pan_by(dx, dy, window, cx);
-        }
-        if dy == 0. {
+        let Some(scroll) = self.gestures.read(event) else {
             return;
+        };
+        match scroll.gesture {
+            crate::gesture::Gesture::Pan => self.pan_by(scroll.dx, scroll.dy, window, cx),
+            crate::gesture::Gesture::Zoom => {
+                let (_, scale) = self.canvas_rect_target();
+                self.zoom_about(scale * scroll.factor, event.position, window, cx);
+            }
         }
-        let (_, scale) = self.canvas_rect();
-        let zoom = scale * factor.clamp(0.5, 2.);
-        self.zoom_to(Some(zoom), Some(event.position), window, cx);
     }
 
     /// Starts a pan drag from `position` when Space is held or `always`.
@@ -243,10 +335,32 @@ impl Workspace {
         }
     }
 
-    /// The header's zoom: out, the zoom (click for 100%, again to fit), in.
-    pub fn zoom_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (_, zoom) = self.canvas_rect();
-        let actual = (zoom - 1.).abs() < 0.001;
+    /// Whether the canvas shows whole, fitted to its area.
+    fn canvas_fitted(&self) -> bool {
+        let (_, zoom) = self.canvas_rect_target();
+        self.canvas.as_ref().is_some_and(|canvas| {
+            canvas.zoom.is_none()
+                || ((zoom - self.fit_scale()).abs() < 0.001
+                    && canvas.pan.0.abs() < 0.5
+                    && canvas.pan.1.abs() < 0.5)
+        })
+    }
+
+    /// The header's zoom for the open canvas or image: out, the zoom (click
+    /// to fit, and from fit to 100%), in.
+    pub fn zoom_control(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (zoom, fitted, what) = if self.image_zooms() {
+            let zoom = self
+                .image
+                .view
+                .zoom
+                .or_else(|| self.image_fit_zoom(window))
+                .unwrap_or(1.);
+            (zoom, self.image.view.zoom.is_none(), "image")
+        } else {
+            let (_, zoom) = self.canvas_rect_target();
+            (zoom, self.canvas_fitted(), "canvas")
+        };
         div()
             .flex()
             .items_center()
@@ -256,7 +370,7 @@ impl Workspace {
                     .small()
                     .icon(IconName::Minus)
                     .tooltip("Zoom out (⌘−)")
-                    .on_click(cx.listener(|this, _, window, cx| this.zoom_step(-1, window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.zoom_by(-1, window, cx))),
             )
             .child(
                 Button::new("zoom-level")
@@ -264,14 +378,16 @@ impl Workspace {
                     .small()
                     .w(px(56.))
                     .label(format!("{:.0}%", zoom * 100.))
-                    .tooltip(if actual {
-                        "Fit the canvas (⌘0)"
-                    } else {
+                    .tooltip(if fitted {
                         "Show at 100% (⌘⌥0)"
+                    } else if what == "image" {
+                        "Fit the image (⌘0)"
+                    } else {
+                        "Fit the canvas (⌘0)"
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        let zoom = (!actual).then_some(1.);
-                        this.zoom_to(zoom, None, window, cx)
+                        let zoom = fitted.then_some(1.);
+                        this.zoom_any(zoom, window, cx)
                     })),
             )
             .child(
@@ -280,19 +396,40 @@ impl Workspace {
                     .small()
                     .icon(IconName::Plus)
                     .tooltip("Zoom in (⌘=)")
-                    .on_click(cx.listener(|this, _, window, cx| this.zoom_step(1, window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.zoom_by(1, window, cx))),
             )
+    }
+
+    /// Steps the open image's or canvas's zoom.
+    pub(crate) fn zoom_by(&mut self, direction: i32, window: &mut Window, cx: &mut Context<Self>) {
+        if self.image_zooms() {
+            self.image_zoom_step(direction, window, cx);
+        } else {
+            self.zoom_step(direction, window, cx);
+        }
+    }
+
+    /// Zooms the open image or canvas to `zoom`, or to fit for `None`.
+    pub(crate) fn zoom_any(
+        &mut self,
+        zoom: Option<f32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.image_zooms() {
+            self.image_zoom_to(zoom, None, true, window, cx);
+        } else {
+            self.zoom_to(zoom, window, cx);
+        }
     }
 
     /// The zoom shortcuts, on the workspace's root.
     pub fn zoom_actions(&self, root: Div, cx: &mut Context<Self>) -> Div {
-        root.on_action(cx.listener(|this, _: &ZoomIn, window, cx| this.zoom_step(1, window, cx)))
-            .on_action(cx.listener(|this, _: &ZoomOut, window, cx| this.zoom_step(-1, window, cx)))
+        root.on_action(cx.listener(|this, _: &ZoomIn, window, cx| this.zoom_by(1, window, cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, window, cx| this.zoom_by(-1, window, cx)))
+            .on_action(cx.listener(|this, _: &ZoomFit, window, cx| this.zoom_any(None, window, cx)))
             .on_action(
-                cx.listener(|this, _: &ZoomFit, window, cx| this.zoom_to(None, None, window, cx)),
+                cx.listener(|this, _: &ZoomActual, window, cx| this.zoom_any(Some(1.), window, cx)),
             )
-            .on_action(cx.listener(|this, _: &ZoomActual, window, cx| {
-                this.zoom_to(Some(1.), None, window, cx)
-            }))
     }
 }

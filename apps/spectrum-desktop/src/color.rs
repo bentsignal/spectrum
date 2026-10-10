@@ -446,7 +446,7 @@ impl Workspace {
     }
 
     /// The open image, fitted to the main area.
-    pub fn image_view(&self, _: &mut Context<Self>) -> impl IntoElement {
+    pub fn image_view(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let preview = self.image.preview.as_ref();
         let image = preview.and_then(|p| p.image.clone());
         if self.image.compare {
@@ -460,27 +460,86 @@ impl Workspace {
                     preview.and_then(|p| p.original.clone()),
                     "Original",
                 ))
-                .child(Self::compare_half(image, "Edited"));
+                .child(Self::compare_half(image, "Edited"))
+                .into_any_element();
         }
-        let content = match image {
-            Some(image) => img(image)
+        if preview.is_some_and(|p| p.failed) {
+            return div()
                 .size_full()
-                .object_fit(ObjectFit::Contain)
-                .into_any_element(),
-            None if preview.is_some_and(|p| p.failed) => div()
+                .flex()
+                .items_center()
+                .justify_center()
                 .text_sm()
                 .text_color(rgb(FAINT))
                 .child("This image could not be rendered.")
-                .into_any_element(),
-            None => div().into_any_element(),
+                .into_any_element();
+        }
+        let area = *self.image.image_bounds.borrow();
+        let bounds_slot = self.image.image_bounds.clone();
+        let placed = |at: Bounds<Pixels>| {
+            (
+                at.origin.x - area.origin.x,
+                at.origin.y - area.origin.y,
+                at.size,
+            )
         };
+        let shown = image
+            .zip(self.image_rect(window))
+            .map(|(image, (rect, _))| {
+                let (x, y, size) = placed(rect);
+                img(image)
+                    .absolute()
+                    .left(x)
+                    .top(y)
+                    .w(size.width)
+                    .h(size.height)
+                    .object_fit(ObjectFit::Fill)
+            });
+        let detail = self.image_detail_shown(window).map(|(image, rect)| {
+            let (x, y, size) = placed(rect);
+            img(image)
+                .absolute()
+                .left(x)
+                .top(y)
+                .w(size.width)
+                .h(size.height)
+                .object_fit(ObjectFit::Fill)
+        });
+        let zoomed = self.image.view.zoom.is_some();
         div()
+            .id("image-view")
+            .relative()
             .size_full()
-            .p_8()
-            .pb(px(40.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(content)
+            .overflow_hidden()
+            .when(zoomed, |el| el.cursor_grab())
+            .child(
+                canvas(
+                    move |bounds, _, _| *bounds_slot.borrow_mut() = bounds,
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .children(shown)
+            .children(detail)
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                this.image_scroll(event, window, cx)
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, _| this.image_press(event.position)),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if event.pressed_button == Some(MouseButton::Left) {
+                    this.image_drag(event.position, window, cx);
+                } else {
+                    this.image_release();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.image_release()),
+            )
+            .into_any_element()
     }
 }

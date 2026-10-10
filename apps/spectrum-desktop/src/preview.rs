@@ -134,6 +134,18 @@ impl Workspace {
         }) && self.image.edits.idle()
     }
 
+    /// Whether the open image shows its current edits at full size, saved
+    /// or not.
+    pub fn image_idle_view(&self) -> bool {
+        let wanted = self.view_adjustments();
+        self.image.preview.as_ref().is_some_and(|preview| {
+            preview.image.is_some()
+                && preview.sharp
+                && !preview.rendering
+                && preview.shown.as_ref() == Some(&wanted)
+        })
+    }
+
     /// What the main area shows: the whole frame while cropping.
     fn view_adjustments(&self) -> Adjustments {
         if self.mode == Mode::Crop {
@@ -156,9 +168,10 @@ impl Workspace {
         }
         if let Some(old) = self.image.preview.take() {
             for image in old.image.into_iter().chain(old.original) {
-                window.drop_image(image).ok();
+                crate::retire::drop_later(image);
             }
         }
+        self.image.view.reset();
         self.image.preview = Some(Preview {
             id,
             sources: None,
@@ -256,7 +269,7 @@ impl Workspace {
             let (rendered, cost) = task.await;
             this.update_in(cx, |this, window, cx| {
                 let Some(preview) = this.image.preview.as_mut().filter(|p| p.id == id) else {
-                    window.drop_image(rendered.image).ok();
+                    crate::retire::drop_later(rendered.image);
                     return;
                 };
                 preview.rendering = false;
@@ -276,7 +289,7 @@ impl Workspace {
                     cost,
                 );
                 if let Some(old) = preview.image.replace(rendered.image) {
-                    window.drop_image(old).ok();
+                    crate::retire::drop_later(old);
                 }
                 preview.histogram = Some(Arc::new(rendered.histogram));
                 // The oldest edit this frame shows was made this long ago.
@@ -291,6 +304,10 @@ impl Workspace {
                     crate::perf::record("image_sharp", edited.elapsed());
                 }
                 this.render_preview(window, cx);
+                // Zoomed in, the part on screen renders sharp for these edits.
+                if !draft {
+                    this.refresh_image_detail(window, cx);
+                }
                 cx.notify();
             })
             .ok();

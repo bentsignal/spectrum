@@ -10,7 +10,7 @@ use gpui_component::{
 };
 
 impl Workspace {
-    pub fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = |n: usize, noun: &str| -> SharedString {
             format!("{n} {noun}{}", if n == 1 { "" } else { "s" }).into()
         };
@@ -59,6 +59,9 @@ impl Workspace {
                     .child(div().text_sm().text_color(rgb(FAINT)).child(detail)),
             )
             .when(grid, |el| el.child(self.grid_controls(cx)))
+            .when(self.image_zooms(), |el| {
+                el.child(self.zoom_control(window, cx))
+            })
             .when(matches!(self.open, Open::Image(_)), |el| {
                 el.child(
                     Button::new("compare")
@@ -76,7 +79,7 @@ impl Workspace {
                 matches!(self.open, Open::Canvas(_)) && self.canvas.is_some(),
                 |el| {
                     let snapping = self.canvas.as_ref().is_some_and(|c| c.doc.snapping_enabled);
-                    el.child(self.zoom_control(cx))
+                    el.child(self.zoom_control(window, cx))
                         .child(
                             Button::new("snapping")
                                 .ghost()

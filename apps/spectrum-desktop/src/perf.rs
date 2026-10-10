@@ -38,6 +38,15 @@ pub fn enabled() -> bool {
     log().is_some()
 }
 
+/// Records one measurement that is not a time, such as a distance, under
+/// `kind`.
+pub fn record_value(kind: &'static str, value: f64) {
+    if let Some(log) = log() {
+        let mut log = log.lock().unwrap_or_else(|e| e.into_inner());
+        log.samples.entry(kind).or_default().push(value);
+    }
+}
+
 /// Records one measurement, in milliseconds, under `kind`.
 pub fn record(kind: &'static str, elapsed: Duration) {
     if let Some(log) = log() {
