@@ -289,8 +289,11 @@ fn report(outcomes: &[Outcome], options: &Options) -> bool {
                     let limit = match options.profile {
                         Profile::Interactive => budget.interactive,
                         Profile::Software => budget.software,
-                        // Counts stay strict; times allow slower machines.
-                        Profile::Ci if budget.stat == "count" => budget.software,
+                        // Counts and distances stay strict; times allow
+                        // slower machines.
+                        Profile::Ci if budget.stat == "count" || budget.metric == "drag_lag" => {
+                            budget.software
+                        }
                         Profile::Ci => budget.software * CI_SLOWDOWN,
                     };
                     let value = statistic(outcome.samples.get(budget.metric), budget.stat);
