@@ -74,7 +74,7 @@ pub fn to_render_image(image: DynamicImage) -> (Arc<RenderImage>, image::RgbaIma
 /// Swaps RGBA to BGRA in place, on every core, and wraps it as a frame.
 fn frame(mut pixels: image::RgbaImage) -> Arc<RenderImage> {
     pixels.par_chunks_mut(4 * 4096).for_each(|chunk| {
-        for pixel in chunk.chunks_exact_mut(4) {
+        for pixel in chunk.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
     });

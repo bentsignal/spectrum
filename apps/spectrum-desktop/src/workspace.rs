@@ -523,6 +523,7 @@ impl Workspace {
 
     /// Shows an item in the main area and picks the mode that fits it.
     pub fn open_item(&mut self, open: Open, window: &mut Window, cx: &mut Context<Self>) {
+        let _timer = crate::perf::Timer::new("main_open_item");
         self.save_now(window, cx);
         self.open = open;
         self.settle = 1;
@@ -631,6 +632,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _timer = crate::perf::Timer::new("main_render");
         if self.settle > 0 {
             self.settle -= 1;
             window.request_animation_frame();

@@ -113,7 +113,7 @@ pub fn render_alone(
     alone.background = [0, 0, 0, 0];
     alone.layers.retain(|l| layers.contains(&l.id));
     let mut resolved = alone.clone();
-    let pending = Service::open(root)?.resolve_for_display(&mut resolved)?;
+    let pending = Service::open(root)?.resolve_for_display(&mut resolved, density)?;
     let first = resolved
         .layers
         .first()

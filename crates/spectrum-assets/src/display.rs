@@ -13,13 +13,18 @@ use std::path::PathBuf;
 const STAND_IN: u32 = 2048;
 
 impl Service {
-    /// Points a canvas's linked image layers at renders it can show now: each
-    /// image's full render when it is made, or else a stand-in scaled to the
-    /// same size. Layers with masks, which are sized to the full render,
-    /// wait for it. Returns the images whose full renders are still to make
-    /// with [`Service::preview`].
-    pub fn resolve_for_display(&self, document: &mut Document) -> Result<Vec<AssetId>> {
-        self.resolve_small(document, None)
+    /// Points a canvas drawn at `density` device pixels per canvas unit at
+    /// renders it can show now: each image's full render when it is made, or
+    /// else a stand-in scaled to the same size. Layers with masks, which are
+    /// sized to the full render, wait for it. Returns the images shown larger
+    /// than their stand-ins, whose full renders are still to make with
+    /// [`Service::preview`].
+    pub fn resolve_for_display(
+        &self,
+        document: &mut Document,
+        density: f32,
+    ) -> Result<Vec<AssetId>> {
+        self.resolve_small(document, None, density)
     }
 
     /// As [`Service::resolve_for_display`], or with `small`, every image as
@@ -29,6 +34,7 @@ impl Service {
         &self,
         document: &mut Document,
         small: Option<u32>,
+        density: f32,
     ) -> Result<Vec<AssetId>> {
         let mut pending = Vec::new();
         for layer in &mut document.layers {
@@ -62,7 +68,14 @@ impl Service {
                     *path = stand_in;
                     layer.transform.scale_x *= scale.0;
                     layer.transform.scale_y *= scale.1;
-                    if !pending.contains(&id) {
+                    // Drawn no larger than the stand-in, it is all that shows.
+                    let shown = layer
+                        .transform
+                        .scale_x
+                        .abs()
+                        .max(layer.transform.scale_y.abs())
+                        * density;
+                    if shown > 1.0 && !pending.contains(&id) {
                         pending.push(id);
                     }
                 }

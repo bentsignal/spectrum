@@ -75,6 +75,7 @@ impl Workspace {
     /// unless the detail it has already covers it; drops details of layers
     /// that changed, moved apart, or shrank to render whole.
     pub fn refresh_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _timer = crate::perf::Timer::new("main_refresh_details");
         let view = self.visible_canvas_area();
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;

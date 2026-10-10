@@ -49,6 +49,24 @@ pub fn record(kind: &'static str, elapsed: Duration) {
     }
 }
 
+/// Records how long it lives under `kind`, when measuring: put one at the
+/// top of main-thread work so a stall in the report names its cause.
+pub struct Timer(&'static str, Option<Instant>);
+
+impl Timer {
+    pub fn new(kind: &'static str) -> Self {
+        Self(kind, enabled().then(Instant::now))
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        if let Some(started) = self.1 {
+            record(self.0, started.elapsed());
+        }
+    }
+}
+
 /// Measures main-thread lateness and writes the report while the app runs.
 pub fn start(cx: &mut App) {
     if !enabled() {

@@ -310,7 +310,9 @@ impl Workspace {
         let root = store.root.clone();
         let render = cx.background_executor().spawn(async move {
             let started = std::time::Instant::now();
-            let result = card_crop(&Service::open(&root)?.thumbnail(id, THUMBNAIL)?);
+            let result = crate::stand_ins::background(|| {
+                card_crop(&Service::open(&root)?.thumbnail(id, THUMBNAIL)?)
+            });
             crate::perf::record("thumbnail", started.elapsed());
             result
         });

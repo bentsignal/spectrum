@@ -49,7 +49,12 @@ pub(crate) fn blend_images(source: &RgbaImage, blurred: &RgbaImage, amount: f32)
         .par_chunks_mut(4 * 1024)
         .zip(blurred.as_raw().par_chunks(4 * 1024))
         .for_each(|(pixels, blurs)| {
-            for (pixel, blur) in pixels.chunks_exact_mut(4).zip(blurs.chunks_exact(4)) {
+            for (pixel, blur) in pixels
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(blurs.as_chunks::<4>().0)
+            {
                 for channel in 0..3 {
                     pixel[channel] = (pixel[channel] as f32 * (1.0 - amount)
                         + blur[channel] as f32 * amount
@@ -66,7 +71,12 @@ pub(crate) fn apply_unsharp(image: &mut RgbaImage, blurred: &RgbaImage, amount: 
         .par_chunks_mut(4 * 1024)
         .zip(blurred.as_raw().par_chunks(4 * 1024))
         .for_each(|(pixels, blurs)| {
-            for (pixel, blur) in pixels.chunks_exact_mut(4).zip(blurs.chunks_exact(4)) {
+            for (pixel, blur) in pixels
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(blurs.as_chunks::<4>().0)
+            {
                 for channel in 0..3 {
                     let value = pixel[channel] as f32
                         + (pixel[channel] as f32 - blur[channel] as f32) * amount;
@@ -95,7 +105,7 @@ pub(crate) fn rotate_filled(image: DynamicImage, degrees: f32) -> DynamicImage {
         .par_chunks_mut(width as usize * 4)
         .enumerate()
         .for_each(|(y, row)| {
-            for (x, pixel) in row.chunks_exact_mut(4).enumerate() {
+            for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let dx = (x as f32 - cx) / zoom;
                 let dy = (y as f32 - cy) / zoom;
                 let sx = cos * dx + sin * dy + cx;
@@ -223,7 +233,12 @@ pub fn to_rgba(image: DynamicImage) -> RgbaImage {
         .par_chunks_mut(4 * 4096)
         .zip(rgb.as_raw().par_chunks(3 * 4096))
         .for_each(|(out, source)| {
-            for (pixel, from) in out.chunks_exact_mut(4).zip(source.chunks_exact(3)) {
+            for (pixel, from) in out
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(source.as_chunks::<3>().0)
+            {
                 pixel[..3].copy_from_slice(from);
                 pixel[3] = u8::MAX;
             }

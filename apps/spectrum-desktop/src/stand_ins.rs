@@ -6,6 +6,24 @@ use gpui::*;
 use spectrum_assets::Service;
 use spectrum_library::AssetId;
 
+/// Work nobody is waiting on (thumbnails) runs on a quarter of the cores, so
+/// it never slows what a person is doing.
+pub fn background<R: Send>(work: impl FnOnce() -> R + Send) -> R {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    let pool = POOL.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(4, |cores| cores.get());
+        rayon::ThreadPoolBuilder::new()
+            .num_threads((cores / 4).max(1))
+            .thread_name(|index| format!("background-{index}"))
+            .build()
+            .ok()
+    });
+    match pool {
+        Some(pool) => pool.install(work),
+        None => work(),
+    }
+}
+
 impl Workspace {
     /// Makes the full renders of `images`, unless already underway, then
     /// renders the open canvas again from them.
@@ -25,6 +43,8 @@ impl Workspace {
             let (root, id) = (store.root.clone(), canvas.id);
             let task = cx.background_executor().spawn(async move {
                 let started = std::time::Instant::now();
+                // Made only once the image shows larger than its stand-in,
+                // so the person is waiting for it: every core.
                 let made = Service::open(&root)?.preview(image);
                 crate::perf::record("full_preview", started.elapsed());
                 made

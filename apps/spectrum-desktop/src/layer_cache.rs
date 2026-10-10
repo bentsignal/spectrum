@@ -259,6 +259,7 @@ impl Workspace {
     /// Renders layers whose look, scale, or sub-pixel position changed; the
     /// previous image stays on screen until the new one arrives.
     pub fn refresh_layers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _timer = crate::perf::Timer::new("main_refresh_layers");
         let view = self.visible_canvas_area();
         let (Some(canvas), Ok(_)) = (&mut self.canvas, &self.store) else {
             return;
@@ -426,6 +427,7 @@ impl Workspace {
             cx.spawn_in(window, async move |this, cx| {
                 let result = task.await;
                 this.update_in(cx, |this, window, cx| {
+                    let _timer = crate::perf::Timer::new("main_layer_done");
                     let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
                         if let Ok((image, ..)) = result {
                             window.drop_image(image).ok();

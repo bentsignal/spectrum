@@ -17,7 +17,7 @@ impl Histogram {
             .fold(
                 || [[0u32; 256]; 3],
                 |mut channels, chunk| {
-                    for pixel in chunk.chunks_exact(8) {
+                    for pixel in chunk.as_chunks::<8>().0 {
                         for (channel, value) in pixel[..3].iter().enumerate() {
                             channels[channel][*value as usize] += 1;
                         }

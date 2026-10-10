@@ -30,5 +30,12 @@ what is shown.
    when a new one is made.
 6. **Startup of large canvases** decodes every photo once per session. Keep
    the reduced copies on disk so a canvas reopened later starts from them.
+7. **Zooming into an edited photo on a canvas** waits for the photo's
+   full-size render the first time after each edit (about 0.5 s for 24 MP,
+   longer for larger ones). Render the part on screen from the original with
+   its edits instead (`render_image_region_at_source_resolution`).
+8. **macOS main-thread stall on opening a heavy canvas** (737 ms on the CI
+   runner, under 60 ms on Linux). The benchmark now times each main-thread
+   handler (`main_*` in the report) to find it.
 
 The history tree view is next, in [revision lifecycle](revision-lifecycle.md).

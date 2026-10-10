@@ -254,7 +254,7 @@ pub fn render_resolved(resolved: &Document, density: f32) -> anyhow::Result<Arc<
 
 pub fn render_at(root: &std::path::Path, doc: &Document, density: f32) -> anyhow::Result<Rendered> {
     let mut resolved = doc.clone();
-    let pending = Service::open(root)?.resolve_for_display(&mut resolved)?;
+    let pending = Service::open(root)?.resolve_for_display(&mut resolved, density)?;
     let bounds = resolved
         .layers
         .iter()
@@ -279,6 +279,7 @@ pub fn render_at(root: &std::path::Path, doc: &Document, density: f32) -> anyhow
 impl Workspace {
     /// Opens a canvas asset: loads and renders it in the background.
     pub fn load_canvas(&mut self, id: AssetId, window: &mut Window, cx: &mut Context<Self>) {
+        let _timer = crate::perf::Timer::new("main_load_canvas");
         self.close_canvas(window);
         self.canvas = Some(CanvasState {
             id,
@@ -419,6 +420,7 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
+                let _timer = crate::perf::Timer::new("main_canvas_loaded");
                 let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
                     return;
                 };
@@ -480,6 +482,7 @@ impl Workspace {
     /// Matches the render size to the canvas's size on screen, rendering
     /// again when the window or canvas size changes it.
     pub fn fit_canvas_resolution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _timer = crate::perf::Timer::new("main_fit_canvas");
         let (_, scale) = self.canvas_rect();
         let fit = self.fit_scale() * window.scale_factor();
         let Some(canvas) = &mut self.canvas else {

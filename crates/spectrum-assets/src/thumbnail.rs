@@ -43,7 +43,7 @@ impl Service {
                         .0;
                     // Small renders of its images, made in a fraction of the
                     // time their full renders would take.
-                    self.resolve_small(&mut doc, Some((max * 2).max(256)))?;
+                    self.resolve_small(&mut doc, Some((max * 2).max(256)), 1.0)?;
                     spectrum_canvas::export_document_sized(&doc, &path, 90, Some(max))?;
                 }
                 Ok(path)

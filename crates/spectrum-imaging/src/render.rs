@@ -174,7 +174,9 @@ fn apply_color_adjustments_region(
         .enumerate()
         .flat_map_iter(|(row, pixels)| {
             pixels
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
                 .enumerate()
                 .map(move |(column, pixel)| (row, column, pixel))
         })

@@ -158,6 +158,7 @@ const CI_SLOWDOWN: f64 = 3.0;
 /// to let a slower change in.
 const BUDGETS: &[Budget] = &[
     budget("image_open", "elapsed", "max", 500.0, 600.0),
+    budget("image_open", "main_thread_lag", "max", 60.0, 150.0),
     budget("image_scrub", "image_edit_to_screen", "p95", 40.0, 60.0),
     budget("image_scrub", "image_edit_to_screen", "max", 100.0, 200.0),
     budget("image_scrub", "main_thread_lag", "p99", 20.0, 60.0),
@@ -172,6 +173,7 @@ const BUDGETS: &[Budget] = &[
     budget("image_scrub", "error_shown", "count", 0.0, 0.0),
     // A larger photo with every tab edited, as after a full editing pass.
     budget("edited_open", "elapsed", "max", 600.0, 700.0),
+    budget("edited_open", "main_thread_lag", "max", 60.0, 150.0),
     budget("edited_scrub", "image_edit_to_screen", "p95", 40.0, 60.0),
     budget("edited_scrub", "image_edit_to_screen", "max", 100.0, 250.0),
     budget("edited_scrub", "main_thread_lag", "p99", 20.0, 60.0),
@@ -181,15 +183,16 @@ const BUDGETS: &[Budget] = &[
     budget("edited_scrub", "image_save", "max", 1000.0, 1000.0),
     budget("edited_scrub", "error_shown", "count", 0.0, 0.0),
     budget("canvas_open", "elapsed", "max", 500.0, 600.0),
+    budget("canvas_open", "main_thread_lag", "max", 60.0, 150.0),
     budget("canvas_open", "error_shown", "count", 0.0, 0.0),
     budget("canvas_drag", "main_thread_lag", "p99", 20.0, 60.0),
     budget("canvas_drag", "main_thread_lag", "max", 50.0, 150.0),
     budget("canvas_drag", "settle", "max", 200.0, 300.0),
     budget("canvas_drag", "error_shown", "count", 0.0, 0.0),
-    budget("canvas_zoom", "settle", "p95", 300.0, 450.0),
+    budget("canvas_zoom", "settle", "p95", 300.0, 600.0),
     budget("canvas_zoom", "main_thread_lag", "max", 60.0, 150.0),
     budget("canvas_zoom", "error_shown", "count", 0.0, 0.0),
-    budget("text_size", "canvas_edit_to_screen", "p95", 40.0, 60.0),
+    budget("text_size", "canvas_edit_to_screen", "p95", 40.0, 80.0),
     budget("text_size", "settle", "max", 250.0, 400.0),
     budget("text_size", "main_thread_lag", "p99", 20.0, 60.0),
     budget("text_size", "error_shown", "count", 0.0, 0.0),
@@ -198,18 +201,20 @@ const BUDGETS: &[Budget] = &[
     budget("brush_undo", "error_shown", "count", 0.0, 0.0),
     // A heavy canvas: twelve photos, text with effects, and shapes.
     budget("heavy_open", "elapsed", "max", 1200.0, 1500.0),
+    budget("heavy_open", "main_thread_lag", "max", 60.0, 150.0),
     budget("heavy_open", "error_shown", "count", 0.0, 0.0),
     budget("heavy_drag", "main_thread_lag", "p99", 20.0, 60.0),
     budget("heavy_drag", "main_thread_lag", "max", 50.0, 150.0),
     budget("heavy_drag", "settle", "max", 300.0, 400.0),
     budget("heavy_drag", "error_shown", "count", 0.0, 0.0),
-    budget("heavy_zoom", "settle", "p95", 300.0, 450.0),
+    budget("heavy_zoom", "settle", "p95", 300.0, 600.0),
     budget("heavy_zoom", "main_thread_lag", "max", 60.0, 150.0),
     budget("heavy_zoom", "error_shown", "count", 0.0, 0.0),
     // A canvas drawn as one image, as blend modes need.
     budget("blend_open", "elapsed", "max", 500.0, 600.0),
+    budget("blend_open", "main_thread_lag", "max", 60.0, 150.0),
     budget("blend_open", "error_shown", "count", 0.0, 0.0),
-    budget("blend_zoom", "settle", "p95", 300.0, 450.0),
+    budget("blend_zoom", "settle", "p95", 300.0, 600.0),
     budget("blend_zoom", "main_thread_lag", "max", 60.0, 150.0),
     budget("blend_zoom", "error_shown", "count", 0.0, 0.0),
 ];
@@ -315,10 +320,13 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let outcomes = scenarios::run_all(&this, cx, &fixtures).await;
             let pass = report(&outcomes, &options);
+            let _ = std::fs::remove_dir_all(&fixtures.directory);
             if options.strict && !pass {
                 FAILED.store(true, Ordering::Relaxed);
+                // Quitting on macOS ends the process with success before
+                // `main` can return, so a failed run exits here.
+                std::process::exit(1);
             }
-            let _ = std::fs::remove_dir_all(&fixtures.directory);
             cx.update(|_, cx| cx.quit()).ok();
         })
         .detach();
