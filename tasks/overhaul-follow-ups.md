@@ -34,8 +34,12 @@ what is shown.
    full-size render the first time after each edit (about 0.5 s for 24 MP,
    longer for larger ones). Render the part on screen from the original with
    its edits instead (`render_image_region_at_source_resolution`).
-8. **macOS main-thread stall on opening a heavy canvas** (737 ms on the CI
-   runner, under 60 ms on Linux). The benchmark now times each main-thread
-   handler (`main_*` in the report) to find it.
+8. **macOS main-thread stall on opening a heavy canvas** fails the macOS
+   interaction job: 737 ms and 984 ms on the CI runner (a virtual machine),
+   under 60 ms on Linux. Spectrum's own main-thread handlers (`main_*` in the
+   report) take under 5 ms, so the time is inside GPUI's drawing; a stall of
+   about one second matches `CAMetalLayer.nextDrawable` waiting for a busy
+   GPU (GPUI's `metal_renderer.rs`). Check it on a real Mac with
+   `spectrum-desktop --benchmark --strict --only heavy_open`.
 
 The history tree view is next, in [revision lifecycle](revision-lifecycle.md).
