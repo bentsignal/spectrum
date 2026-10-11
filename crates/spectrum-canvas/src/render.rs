@@ -257,11 +257,21 @@ pub(super) fn render_document_region_scaled_untiled(
         scaled_layer.transform.scale_y = source_scales.outer_transform[1];
         scaled_layer.style = layer.style.scaled(scale);
         let mut coverage = RgbaImage::new(region.width, region.height);
-        // Paths always use the same global-coordinate tiled sampler, including
-        // complete exports. Rasterizing a full intermediate here would put AA
-        // through a second transform and could differ at viewport tile edges.
+        // Paths, paint, shapes, and text always use the same global-coordinate
+        // region sampler, including complete exports. Rasterizing a full
+        // intermediate here would put AA through a second transform and could
+        // differ at viewport tile edges, and would draw the whole layer at the
+        // render's scale for every region: a full-page shape zoomed in on a
+        // Retina screen is tens of megapixels.
         if (bound_fallback_layers
-            || matches!(layer.kind, LayerKind::Path { .. } | LayerKind::Paint { .. })
+            || matches!(
+                layer.kind,
+                LayerKind::Path { .. }
+                    | LayerKind::Paint { .. }
+                    | LayerKind::Rectangle { .. }
+                    | LayerKind::Ellipse { .. }
+                    | LayerKind::Text { .. }
+            )
             || (raster_sources.is_some() && matches!(layer.kind, LayerKind::Raster { .. })))
             && crate::render_region::composite_bounded_source_region(
                 &mut canvas,

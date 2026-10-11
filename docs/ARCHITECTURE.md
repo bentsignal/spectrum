@@ -133,6 +133,8 @@ Three layers keep interaction fast, and all run in CI:
   `interactive` (a GPU), `software` (Linux with software rendering), and `ci`.
   `--only <scenario,...>` runs a few while working on them. With
   `SPECTRUM_PERF_LOG=<file>` an ordinary session writes the same measurements.
+  The terminal shows pass or fail and where the full report went: the
+  Desktop, or `--report <file>`.
 - `crates/spectrum-assets/tests/interaction_costs.rs` bounds the storage work
   (document opens, disk flushes, writes, re-hashed bytes) of each open, save,
   idle check, and read, counted by `spectrum_document::io_stats`, so costs that
@@ -156,8 +158,11 @@ What keeps it fast:
   showed it draws from a 2048 px stand-in while its full render is made in
   the background.
 - **Compositing.** Canvases drawn as one image render in bands of rows on
-  every core; shapes and text drawn whole are kept between bands and renders,
-  and shadows and vector masks give the same pixels however a render is split.
+  every core. Shapes, text, paths, and paint draw only the part each band
+  needs, so a full-page shape zoomed in on a Retina screen never draws whole;
+  shadows and vector masks give the same pixels however a render is split.
+  `SPECTRUM_BENCHMARK_SCREEN=2880x1800 GPUI_X11_SCALE_FACTOR=2` runs the
+  Linux benchmark at a Retina screen's scale.
 - **Drags and zooms.** A layer moving inside another, or on a canvas drawn as
   one image, draws apart from the rest so it stays under its outline; the
   exact render follows the drop. Zooms from the keys or the header move over

@@ -373,10 +373,30 @@ fn report(outcomes: &[Outcome], options: &Options) -> bool {
         "failures": failures,
         "scenarios": scenarios,
     });
+    // The terminal gets a short summary; the full report goes to a file,
+    // the Desktop unless `--report` names one, to send on as it is.
     let text = serde_json::to_string_pretty(&report).unwrap_or_default();
-    println!("{text}");
-    if let Some(path) = &options.report {
-        let _ = std::fs::write(path, &text);
+    let path = options.report.clone().unwrap_or_else(|| {
+        let desktop = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Desktop"));
+        desktop
+            .filter(|desktop| desktop.is_dir())
+            .unwrap_or_else(std::env::temp_dir)
+            .join("spectrum-benchmark.json")
+    });
+    println!(
+        "{}",
+        if pass {
+            "Benchmark passed."
+        } else {
+            "Benchmark failed:"
+        }
+    );
+    for failure in &failures {
+        println!("  {failure}");
+    }
+    match std::fs::write(&path, &text) {
+        Ok(()) => println!("Full report: {}", path.display()),
+        Err(error) => println!("Could not write the report to {}: {error}", path.display()),
     }
     pass
 }

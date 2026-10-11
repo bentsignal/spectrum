@@ -23,7 +23,9 @@ case "$(uname -s)" in
   Linux)
     profile=software
     display=":$((300 + RANDOM % 600))"
-    Xvfb "$display" -screen 0 1600x1000x24 >/dev/null 2>&1 &
+    # SPECTRUM_BENCHMARK_SCREEN=2880x1800 with GPUI_X11_SCALE_FACTOR=2
+    # stands in for a Retina Mac's screen.
+    Xvfb "$display" -screen 0 "${SPECTRUM_BENCHMARK_SCREEN:-1600x1000}x24" >/dev/null 2>&1 &
     xvfb=$!
     trap 'kill "$xvfb" 2>/dev/null || true' EXIT
     sleep 1

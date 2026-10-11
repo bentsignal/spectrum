@@ -314,8 +314,11 @@ pub fn render_resolved(resolved: &Document, density: f32) -> anyhow::Result<Arc<
 }
 
 pub fn render_at(root: &std::path::Path, doc: &Document, density: f32) -> anyhow::Result<Rendered> {
+    // Each step is timed, so a slow render shows where its time went.
+    let started = std::time::Instant::now();
     let mut resolved = doc.clone();
     let pending = Service::open(root)?.resolve_for_display(&mut resolved, density)?;
+    crate::perf::record("render_resolve", started.elapsed());
     let bounds = resolved
         .layers
         .iter()
@@ -324,12 +327,18 @@ pub fn render_at(root: &std::path::Path, doc: &Document, density: f32) -> anyhow
             Some((layer.id, (geometry.min, geometry.max)))
         })
         .collect();
+    let started = std::time::Instant::now();
     let sources = spectrum_canvas::prepare_export_raster_sources(
         &resolved,
         &spectrum_canvas::default_raster_backing_cache_root()?,
     )?;
+    crate::perf::record("render_sources", started.elapsed());
+    let started = std::time::Instant::now();
     let image = spectrum_canvas::render_document_scaled_with_sources(&resolved, density, &sources)?;
+    crate::perf::record("render_composite", started.elapsed());
+    let started = std::time::Instant::now();
     let image = to_render_image(image).0;
+    crate::perf::record("render_upload_prep", started.elapsed());
     Ok(Rendered {
         image,
         bounds,
