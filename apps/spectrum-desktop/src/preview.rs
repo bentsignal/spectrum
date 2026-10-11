@@ -27,8 +27,10 @@ const LEVELS: [u32; 3] = [SOURCE, SOURCE / 2, SOURCE / 3];
 const FRAME: Duration = Duration::from_millis(16);
 /// Edits closer together than this are one drag.
 const DRAG_GAP: Duration = Duration::from_millis(250);
-/// Quiet time after a drag before its full-size frame renders.
+/// Quiet time after a drag before its full-size frame renders, and the
+/// most it backs off to when drags resume before those frames are in.
 const SHARP_AFTER: Duration = Duration::from_millis(60);
+const SHARP_AFTER_MOST: Duration = Duration::from_millis(180);
 /// Quiet time after the last edit before it is saved to the library.
 const SAVE_AFTER: Duration = Duration::from_millis(400);
 
@@ -45,6 +47,13 @@ pub struct Preview {
     shown: Option<Adjustments>,
     /// Whether the latest render is full size.
     sharp: bool,
+    /// Full-size frames rendering after a drag (`sharpen_frame`), and the
+    /// edits each is for.
+    sharpening: Vec<Adjustments>,
+    /// The quiet time a drag waits before its full-size frame: longer each
+    /// time the drag went on and one was let go, back to the shortest once
+    /// one shows.
+    sharp_after: Duration,
     /// How long the latest frame at each level took.
     costs: [Option<Duration>; LEVELS.len()],
     /// The newest adjustments asked for, when, and the gap before them.
@@ -58,6 +67,39 @@ pub struct Preview {
     rendering: bool,
     /// When the oldest edit not yet on screen was made.
     unseen_since: Option<Instant>,
+}
+
+impl Preview {
+    /// Notes what a frame at `level` cost and that it was a full or draft
+    /// frame. A fresh full-size cost re-estimates the smaller levels, as
+    /// edits may have grown lighter or heavier since they ran.
+    fn record_cost(&mut self, level: usize, cost: Duration) {
+        if level == 0 {
+            self.costs = [None; LEVELS.len()];
+        }
+        self.costs[level] = Some(cost);
+        crate::perf::record(
+            if level == 0 {
+                "image_preview_render"
+            } else {
+                "image_draft_render"
+            },
+            cost,
+        );
+    }
+}
+
+/// The threads that render frames for edits on screen. Full-size frames
+/// after a drag render on the shared threads, so a drag's next frame never
+/// waits in line behind one: the system shares the cores between them.
+fn frames() -> &'static rayon::ThreadPool {
+    static FRAMES: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    FRAMES.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .thread_name(|index| format!("frames-{index}"))
+            .build()
+            .expect("a thread pool for frames")
+    })
 }
 
 struct Rendered {
@@ -178,6 +220,8 @@ impl Workspace {
             image: None,
             shown: None,
             sharp: false,
+            sharpening: Vec::new(),
+            sharp_after: SHARP_AFTER,
             costs: [None; LEVELS.len()],
             requested: None,
             last_edit: None,
@@ -221,9 +265,6 @@ impl Workspace {
         let Some(preview) = &mut self.image.preview else {
             return;
         };
-        let Some(sources) = preview.sources.clone() else {
-            return;
-        };
         let now = Instant::now();
         if preview.requested.as_ref() != Some(&wanted) {
             preview.edit_gap = preview.last_edit.map_or(Duration::MAX, |last| now - last);
@@ -233,28 +274,52 @@ impl Workspace {
         let current = preview.shown.as_ref() == Some(&wanted);
         if !current {
             preview.unseen_since.get_or_insert(now);
+            if preview.rendering {
+                return;
+            }
+            // A drag shows frames at the size this computer keeps up with.
+            let level = if preview.edit_gap < DRAG_GAP {
+                drag_level(&preview.costs)
+            } else {
+                0
+            };
+            return self.render_frame(wanted, level, window, cx);
         }
-        if preview.rendering || (current && preview.sharp) {
+        // One already rendering these edits is enough; one for edits since
+        // replaced is let go, and two at once at most.
+        if preview.sharp || preview.sharpening.contains(&wanted) || preview.sharpening.len() >= 2 {
             return;
         }
-        let dragging = preview.edit_gap < DRAG_GAP;
-        let level = if !current && dragging {
-            drag_level(&preview.costs)
-        } else {
-            0
-        };
-        let draft = level > 0;
         // The full-size frame after a drag waits for the drag to pause.
-        let quiet = preview.last_edit.map_or(SHARP_AFTER, |last| now - last);
-        if current && quiet < SHARP_AFTER {
+        let wait = preview.sharp_after;
+        let quiet = preview.last_edit.map_or(wait, |last| now - last);
+        if quiet < wait {
             cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor().timer(SHARP_AFTER - quiet).await;
+                cx.background_executor().timer(wait - quiet).await;
                 this.update_in(cx, |this, window, cx| this.render_preview(window, cx))
                     .ok();
             })
             .detach();
             return;
         }
+        self.sharpen_frame(wanted, window, cx);
+    }
+
+    /// Renders a frame for edits not yet on screen, one at a time; the next
+    /// starts when it is in.
+    fn render_frame(
+        &mut self,
+        wanted: Adjustments,
+        level: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(preview) = &mut self.image.preview else {
+            return;
+        };
+        let Some(sources) = preview.sources.clone() else {
+            return;
+        };
         preview.rendering = true;
         preview.shown = Some(wanted.clone());
         let covers = preview.unseen_since.take();
@@ -262,7 +327,7 @@ impl Workspace {
         let id = preview.id;
         let task = cx.background_executor().spawn(async move {
             let started = Instant::now();
-            let rendered = render(&sources.levels[level], wanted);
+            let rendered = frames().install(|| render(&sources.levels[level], wanted));
             (rendered, started.elapsed())
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -273,21 +338,9 @@ impl Workspace {
                     return;
                 };
                 preview.rendering = false;
+                let draft = level > 0;
                 preview.sharp = !draft;
-                // A fresh full-size cost re-estimates the smaller levels, as
-                // edits may have grown lighter or heavier since they ran.
-                if level == 0 {
-                    preview.costs = [None; LEVELS.len()];
-                }
-                preview.costs[level] = Some(cost);
-                crate::perf::record(
-                    if draft {
-                        "image_draft_render"
-                    } else {
-                        "image_preview_render"
-                    },
-                    cost,
-                );
+                preview.record_cost(level, cost);
                 if let Some(old) = preview.image.replace(rendered.image) {
                     crate::retire::drop_later(old);
                 }
@@ -308,6 +361,61 @@ impl Workspace {
                 if !draft {
                     this.refresh_image_detail(window, cx);
                 }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Renders the full-size frame for the edits on screen as a draft once
+    /// a drag pauses. It never holds up the drag's frames: if the drag goes
+    /// on meanwhile, they render beside it and this one is let go.
+    fn sharpen_frame(&mut self, wanted: Adjustments, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(preview) = &mut self.image.preview else {
+            return;
+        };
+        let Some(sources) = preview.sources.clone() else {
+            return;
+        };
+        preview.sharpening.push(wanted.clone());
+        let (id, edited) = (preview.id, preview.last_edit);
+        let task = cx.background_executor().spawn({
+            let wanted = wanted.clone();
+            async move {
+                let started = Instant::now();
+                let rendered = render(&sources.levels[0], wanted);
+                (rendered, started.elapsed())
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let (rendered, cost) = task.await;
+            this.update_in(cx, |this, window, cx| {
+                let Some(preview) = this.image.preview.as_mut().filter(|p| p.id == id) else {
+                    crate::retire::drop_later(rendered.image);
+                    return;
+                };
+                if let Some(index) = preview.sharpening.iter().position(|w| *w == wanted) {
+                    preview.sharpening.remove(index);
+                }
+                preview.record_cost(0, cost);
+                let still = preview.shown.as_ref() == Some(&wanted)
+                    && preview.requested.as_ref() == Some(&wanted);
+                if !still {
+                    preview.sharp_after = (preview.sharp_after * 2).min(SHARP_AFTER_MOST);
+                    crate::retire::drop_later(rendered.image);
+                    return this.render_preview(window, cx);
+                }
+                preview.sharp_after = SHARP_AFTER;
+                preview.sharp = true;
+                if let Some(old) = preview.image.replace(rendered.image) {
+                    crate::retire::drop_later(old);
+                }
+                preview.histogram = Some(Arc::new(rendered.histogram));
+                if let Some(edited) = edited {
+                    crate::perf::record("image_sharp", edited.elapsed());
+                }
+                this.refresh_image_detail(window, cx);
                 cx.notify();
             })
             .ok();

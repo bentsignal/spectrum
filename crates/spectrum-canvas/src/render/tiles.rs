@@ -139,8 +139,16 @@ fn render_each<T: Sync, R: Send>(
 /// Rows rendered as one band: enough that per-band work stays small.
 const MIN_BAND_ROWS: u32 = 64;
 
+/// Renders smaller than this many pixels go in one pass: starting threads
+/// costs more than bands save, as for a text layer re-rendered as a slider
+/// moves.
+const MIN_BANDED_PIXELS: u64 = 512 * 512;
+
 /// `region` cut into bands of rows, one per core or fewer.
 fn band_regions(region: RenderRegion) -> Vec<RenderRegion> {
+    if u64::from(region.width) * u64::from(region.height) < MIN_BANDED_PIXELS {
+        return vec![region];
+    }
     let cores = rayon::current_num_threads().max(1) as u32;
     let rows = region.height.div_ceil(cores).max(MIN_BAND_ROWS);
     (0..region.height)

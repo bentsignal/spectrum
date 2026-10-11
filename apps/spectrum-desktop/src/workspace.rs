@@ -664,7 +664,7 @@ impl Render for Workspace {
             self.retire_scheduled = true;
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(300))
+                    .timer(std::time::Duration::from_millis(50))
                     .await;
                 this.update(cx, |this, cx| {
                     this.retire_scheduled = false;

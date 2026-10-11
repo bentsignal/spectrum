@@ -80,6 +80,11 @@ pub struct CanvasState {
     /// The move a dragged layer's pixels show, when they come from a render
     /// made for the drag (its unit's, or the whole canvas's).
     pub drawn_drag: Option<(f32, f32)>,
+    /// The last renders of a canvas drawn as one image, by its edits and
+    /// render scale, so zooming back to a size shows it at once.
+    composites: Vec<((u64, u32), Arc<RenderImage>)>,
+    /// Counts changes from outside the document (a linked image's render).
+    outside: u64,
     /// The part of a Paint layer under the stroke being drawn, rendered as
     /// it goes and drawn over the layer's image.
     pub stroke_patch: Option<StrokePatch>,
@@ -185,7 +190,39 @@ impl CanvasState {
         let settled = self
             .edited_at
             .is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(150));
-        (self.version, settled)
+        // What the pixels depend on: the document's edits and anything
+        // outside it since (`forget_composites`), but not the zoom.
+        (self.edits.wrapping_mul(1 << 20) ^ self.outside, settled)
+    }
+
+    /// Keeps a render of the canvas drawn as one image, the last two only.
+    fn keep_composite(&mut self, key: (u64, u32), image: Arc<RenderImage>) {
+        self.composites.retain(|(kept, _)| *kept != key);
+        self.composites.push((key, image));
+        while self.composites.len() > 2 {
+            let (_, old) = self.composites.remove(0);
+            if !self
+                .image
+                .as_ref()
+                .is_some_and(|shown| Arc::ptr_eq(shown, &old))
+            {
+                crate::retire::drop_later(old);
+            }
+        }
+    }
+
+    /// Forgets kept renders after something outside the document changed.
+    pub fn forget_composites(&mut self) {
+        self.outside += 1;
+        for (_, old) in std::mem::take(&mut self.composites) {
+            if !self
+                .image
+                .as_ref()
+                .is_some_and(|shown| Arc::ptr_eq(shown, &old))
+            {
+                crate::retire::drop_later(old);
+            }
+        }
     }
 
     pub fn render_doc(&self) -> Document {
@@ -319,6 +356,8 @@ impl Workspace {
             live_doc: None,
             drag_preview: None,
             drawn_drag: None,
+            composites: Vec::new(),
+            outside: 0,
             stroke_patch: None,
             erase_target: None,
             zoom: None,
@@ -471,6 +510,7 @@ impl Workspace {
     pub fn redraw_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(canvas) = &mut self.canvas {
             canvas.version += 1;
+            canvas.forget_composites();
         }
         self.render_canvas(window, cx);
     }
@@ -480,6 +520,7 @@ impl Workspace {
     pub fn rerender_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(canvas) = &mut self.canvas {
             canvas.version += 1;
+            canvas.forget_composites();
         }
         self.split_edit(&[Command::Undo]);
         self.invalidate_layers();
@@ -521,7 +562,12 @@ impl Workspace {
             return;
         }
         canvas.density = wanted;
-        self.rerender_canvas(window, cx);
+        // Layers key their renders by scale; the canvas drawn as one image
+        // renders again, from a kept render when it has one at this size.
+        canvas.version += 1;
+        self.split_edit(&[Command::Undo]);
+        self.render_canvas(window, cx);
+        self.refresh_layers(window, cx);
     }
 
     /// Renders the local document unless a render is running; the running
@@ -559,6 +605,25 @@ impl Workspace {
             canvas.density
         }
         .min(whole);
+        // A size shown a moment ago, as zooming back and forth shows it.
+        let kept_key = (canvas.edits, density.to_bits());
+        let keeps = canvas.drag_preview.is_none();
+        if keeps && let Some((_, kept)) = canvas.composites.iter().find(|(key, _)| *key == kept_key)
+        {
+            let kept = kept.clone();
+            canvas.rendering = false;
+            canvas.rendered = canvas.version;
+            if let Some(old) = canvas.image.replace(kept)
+                && !canvas
+                    .composites
+                    .iter()
+                    .any(|(_, image)| Arc::ptr_eq(image, &old))
+            {
+                crate::retire::drop_later(old);
+            }
+            cx.notify();
+            return;
+        }
         if rapid {
             // Render sharp once the changes stop.
             cx.spawn_in(window, async move |this, cx| {
@@ -612,7 +677,15 @@ impl Workspace {
                 match result {
                     Ok(done) => {
                         pending = done.pending;
-                        if let Some(old) = canvas.image.replace(done.image) {
+                        if keeps {
+                            canvas.keep_composite(kept_key, done.image.clone());
+                        }
+                        if let Some(old) = canvas.image.replace(done.image)
+                            && !canvas
+                                .composites
+                                .iter()
+                                .any(|(_, image)| Arc::ptr_eq(image, &old))
+                        {
                             crate::retire::drop_later(old);
                         }
                         // Older renders keep the bounds later edits moved.

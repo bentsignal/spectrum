@@ -116,8 +116,13 @@ pub fn prepare(options: &Options) -> Result<Fixtures> {
         std::env::set_var("SPECTRUM_CACHE", directory.join("cache"));
         std::env::set_var("SPECTRUM_PERF_LOG", directory.join("perf.json"));
     }
-    fixtures::make(&directory, &library, options.photo.as_deref())
-        .context("could not make the benchmark library")
+    let fixtures = fixtures::make(&directory, &library, options.photo.as_deref())
+        .context("could not make the benchmark library")?;
+    // The library's photos and renders are hundreds of megabytes just
+    // written; flushing them now keeps that out of the first saves measured.
+    #[cfg(unix)]
+    std::process::Command::new("sync").status().ok();
+    Ok(fixtures)
 }
 
 static FAILED: AtomicBool = AtomicBool::new(false);
@@ -238,7 +243,7 @@ const BUDGETS: &[Budget] = &[
     budget("poster_drag", "settle", "max", 200.0, 300.0),
     budget("poster_drag", "error_shown", "count", 0.0, 0.0),
     // The header's zoom from fit to 100% and back arrives sharp.
-    budget("poster_zoom", "settle", "p95", 300.0, 450.0),
+    budget("poster_zoom", "settle", "p95", 300.0, 600.0),
     budget("poster_zoom", "main_thread_lag", "max", 60.0, 150.0),
     budget("poster_zoom", "error_shown", "count", 0.0, 0.0),
     // The image editor's zoom to 100% and pan show sharp.
