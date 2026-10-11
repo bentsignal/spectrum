@@ -37,15 +37,30 @@ pub struct CropDrag {
 
 impl Workspace {
     /// Pixel size of the uncropped frame the preview shows while cropping.
+    /// The whole frame's size: the photo turned, flipped, and straightened,
+    /// before cropping. Worked out from the edits, not from the frame on
+    /// screen, which may still be the cropped one.
     fn frame_size(&self) -> (u32, u32) {
-        self.image
-            .preview
-            .as_ref()
-            .and_then(|p| p.image.as_ref())
-            .map_or((1, 1), |image| {
-                let size = image.size(0);
-                (size.width.0.max(1) as u32, size.height.0.max(1) as u32)
-            })
+        let whole = spectrum_image::Adjustments {
+            crop: None,
+            ..self.image.adjust.clone()
+        };
+        let worked_out = self.image.photo_info.as_ref().and_then(|photo| {
+            spectrum_image::render::adjusted_image_dimensions(photo.width, photo.height, &whole)
+        });
+        worked_out.map_or_else(
+            || {
+                self.image
+                    .preview
+                    .as_ref()
+                    .and_then(|p| p.image.as_ref())
+                    .map_or((1, 1), |image| {
+                        let size = image.size(0);
+                        (size.width.0.max(1) as u32, size.height.0.max(1) as u32)
+                    })
+            },
+            |(width, height)| (width.max(1), height.max(1)),
+        )
     }
 
     /// Where the frame is drawn: fitted and centered in the main area.
@@ -298,6 +313,18 @@ impl Workspace {
             frame.origin.y - area.origin.y,
         );
         let (fw, fh) = (frame.size.width, frame.size.height);
+        // A cropped frame still on screen (just come from another mode)
+        // draws where its crop sits until the whole frame arrives.
+        let shown_crop = self
+            .image
+            .preview
+            .as_ref()
+            .and_then(|p| p.displayed.as_ref())
+            .and_then(|shown| shown.crop);
+        let (ix, iy, iw, ih) = match shown_crop {
+            Some(c) => (fx + fw * c.x, fy + fh * c.y, fw * c.width, fh * c.height),
+            None => (fx, fy, fw, fh),
+        };
         let box_ = Bounds::new(
             point(fx + fw * r.x, fy + fh * r.y),
             size(fw * r.width, fh * r.height),
@@ -337,10 +364,10 @@ impl Workspace {
                 .children(image.map(|image| {
                     img(image)
                         .absolute()
-                        .left(fx)
-                        .top(fy)
-                        .w(fw)
-                        .h(fh)
+                        .left(ix)
+                        .top(iy)
+                        .w(iw)
+                        .h(ih)
                         .object_fit(ObjectFit::Fill)
                 }))
                 .child(dim(fx, fy, fw, by - fy))

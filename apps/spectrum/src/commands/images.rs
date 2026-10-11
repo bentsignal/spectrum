@@ -128,8 +128,8 @@ enum CliCommand {
         #[arg(long, conflicts_with = "revision")]
         to_session: Option<spectrum_document::SessionId>,
     },
-    /// Name a revision, which marks a checkpoint and names its branch, or
-    /// clear its name. Not an edit: no one moves.
+    /// Name the branch holding a revision, or clear its name. Not an edit:
+    /// no one moves.
     HistoryName {
         revision: spectrum_document::RevisionId,
         name: Option<String>,

@@ -30,12 +30,15 @@ fn fails(root: &Path, args: &[&str]) {
 
 /// Names, search, previews, and jumps on one asset of either kind, after
 /// `edit` has made two edits on it.
-fn check(root: &Path, domain: &str, asset: &str) {
+fn check(root: &Path, domain: &str, asset: &str, edit: &[&str]) {
     let history = ok(root, &[domain, "--asset", asset, "history"]);
     let revisions = history["revisions"].as_array().unwrap().clone();
     assert_eq!(revisions.len(), 3, "{history}");
     assert!(history["names"].as_object().unwrap().is_empty());
     let first = revisions[1]["id"].as_str().unwrap().to_string();
+    // The first line of work begins at the first revision, so naming any
+    // revision on it names the branch there.
+    let start = revisions[0]["id"].as_str().unwrap().to_string();
     let current = history["current"].as_str().unwrap().to_string();
 
     // A name is not an edit: no revision is added and no one moves.
@@ -53,14 +56,14 @@ fn check(root: &Path, domain: &str, asset: &str) {
     let named = ok(root, &[domain, "--asset", asset, "history"]);
     assert_eq!(named["revisions"].as_array().unwrap().len(), 3);
     assert_eq!(named["current"], current.as_str());
-    assert_eq!(named["names"][&first], "Warm look");
+    assert_eq!(named["names"][&start], "Warm look");
 
     // Search finds names, ignoring case, and edit descriptions.
     let found = ok(
         root,
         &[domain, "--asset", asset, "history", "--search", "warm"],
     );
-    assert_eq!(found["matches"], serde_json::json!([first]));
+    assert_eq!(found["matches"], serde_json::json!([start]));
     let nothing = ok(
         root,
         &[domain, "--asset", asset, "history", "--search", "no such"],
@@ -73,7 +76,7 @@ fn check(root: &Path, domain: &str, asset: &str) {
         &[domain, "--asset", asset, "history-name", &first, "Final"],
     );
     let renamed = ok(root, &[domain, "--asset", asset, "history"]);
-    assert_eq!(renamed["names"][&first], "Final");
+    assert_eq!(renamed["names"][&start], "Final");
     ok(
         root,
         &[domain, "--asset", asset, "history-name", &first, "--clear"],
@@ -112,6 +115,26 @@ fn check(root: &Path, domain: &str, asset: &str) {
     ok(root, &[domain, "--asset", asset, "history-jump", &first]);
     let moved = ok(root, &[domain, "--asset", asset, "history"]);
     assert_eq!(moved["current"], first.as_str());
+
+    // Editing there branches; naming the new branch names only it.
+    let mut args = vec![domain, "--asset", asset];
+    args.extend_from_slice(edit);
+    ok(root, &args);
+    let branched = ok(root, &[domain, "--asset", asset, "history"]);
+    let side = branched["current"].as_str().unwrap().to_string();
+    ok(
+        root,
+        &[domain, "--asset", asset, "history-name", &side, "Side"],
+    );
+    ok(
+        root,
+        &[domain, "--asset", asset, "history-name", &first, "Main"],
+    );
+    let both = ok(root, &[domain, "--asset", asset, "history"]);
+    assert_eq!(both["names"][&side], "Side");
+    assert_eq!(both["names"][&start], "Main");
+    assert_eq!(both["names"].as_object().unwrap().len(), 2);
+    ok(root, &[domain, "--asset", asset, "history-jump", &first]);
     ok(
         root,
         &[
@@ -152,7 +175,7 @@ fn image_and_canvas_revisions_are_named_searched_previewed_and_joined() {
         &root,
         &["images", "--asset", &image, "edit", "--contrast", "20"],
     );
-    check(&root, "images", &image);
+    check(&root, "images", &image, &["edit", "--exposure", "2"]);
 
     let canvas = ok(
         &root,
@@ -161,5 +184,5 @@ fn image_and_canvas_revisions_are_named_searched_previewed_and_joined() {
     let canvas = canvas["id"].as_str().unwrap().to_string();
     ok(&root, &["canvas", "--asset", &canvas, "add-text", "Hello"]);
     ok(&root, &["canvas", "--asset", &canvas, "add-text", "Again"]);
-    check(&root, "canvas", &canvas);
+    check(&root, "canvas", &canvas, &["add-text", "Branch"]);
 }

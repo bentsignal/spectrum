@@ -44,7 +44,8 @@ pub(super) fn output(history: &History, search: Option<&str>) -> Value {
     value
 }
 
-/// `history-name <revision> [name] [--clear]`.
+/// `history-name <revision> [name] [--clear]`: names the branch holding
+/// the revision.
 pub(super) fn name(service: &mut Service, id: AssetId, args: &clap::ArgMatches) -> Result<Value> {
     let revision = *args
         .get_one::<RevisionId>("revision")
@@ -54,8 +55,8 @@ pub(super) fn name(service: &mut Service, id: AssetId, args: &clap::ArgMatches) 
     if name.is_none() && !args.get_flag("clear") {
         anyhow::bail!("give a name, or --clear to remove one");
     }
-    service.name_revision(id, revision, name)?;
-    Ok(json!({"ok": true, "action": "history_name", "revision": revision, "name": name}))
+    let start = service.name_branch(id, revision, name)?;
+    Ok(json!({"ok": true, "action": "history_name", "branch_start": start, "name": name}))
 }
 
 /// `history-preview <revision> [--size N]`: renders it once and prints

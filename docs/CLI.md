@@ -34,8 +34,9 @@ spectrum canvas --asset <canvas> history-preview <revision> [--size 256]
 A separate session never moves the person. `SPECTRUM_SESSION` can stand in for
 `--session`. `history-jump` moves only the session running the command; with
 `--to-session` it goes to where that session is, and editing there branches.
-A name marks a checkpoint and names the branch it is on; naming is not an
-edit, so it adds no revision. Search matches names, edit descriptions, and
+`history-name` names the branch holding the revision: the name goes on the
+revision that began it, so it names the branch however long it grows. Naming
+is not an edit, so it adds no revision. Search matches names, edit descriptions, and
 who made them. `history-preview` renders a revision once, without moving
 anyone, and prints the file. The same commands work on `images`.
 

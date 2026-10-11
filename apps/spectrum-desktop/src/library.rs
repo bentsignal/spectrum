@@ -82,6 +82,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         crate::perf::record("error_shown", std::time::Duration::ZERO);
+        // Also on stderr, so a benchmark or a terminal session says what.
+        eprintln!("spectrum: {error:#}");
         window.push_notification(Notification::error(format!("{error:#}")), cx);
     }
 

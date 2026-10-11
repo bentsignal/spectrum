@@ -307,7 +307,7 @@ impl Workspace {
             window,
             |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                    this.name_selected_revision(window, cx);
+                    this.name_current_branch(window, cx);
                 }
             },
         ));
@@ -474,7 +474,7 @@ impl Workspace {
         }
         self.mode = mode;
         // Crop shows the whole frame; other modes show the crop.
-        self.render_preview(window, cx);
+        self.switch_image_view(window, cx);
         if mode == Mode::Color && matches!(self.open, Open::Canvas(_)) {
             self.load_layer_color(window, cx);
         }

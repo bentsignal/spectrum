@@ -31,18 +31,22 @@ impl Workspace {
 
     pub fn start_following(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
+            // Ticks often, so watching starts at once, but checks only
+            // every `EVERY` unless watching.
+            let mut last = std::time::Instant::now();
             loop {
-                let watching = this
-                    .update(cx, |this, _| this.history.watching.is_some())
-                    .unwrap_or(false);
-                cx.background_executor()
-                    .timer(if watching { WATCHING } else { EVERY })
-                    .await;
-                if this
-                    .update_in(cx, |this, window, cx| this.check_following(window, cx))
-                    .is_err()
-                {
+                cx.background_executor().timer(WATCHING).await;
+                let Ok(checked) = this.update_in(cx, |this, window, cx| {
+                    if this.history.watching.is_none() && last.elapsed() < EVERY {
+                        return false;
+                    }
+                    this.check_following(window, cx);
+                    true
+                }) else {
                     break;
+                };
+                if checked {
+                    last = std::time::Instant::now();
                 }
             }
         })

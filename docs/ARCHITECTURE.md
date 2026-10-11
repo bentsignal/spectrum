@@ -59,14 +59,18 @@ Two ways to work with an agent (`spectrum-assets/src/sessions.rs`):
 - **Separate** (`spectrum agent start --mode separate`, then `--session`): the
   person never moves. They can jump to the agent's revisions later.
 
-Names on revisions live in the document's metadata (`revision_name:<id>`,
-`spectrum-revisions/src/store/names.rs`): naming is not an edit and moves no
-one. The desktop's History mode (`history_view.rs`, `history_layout.rs`,
-`history_paint.rs`, `history_panel.rs`) draws the tree a column per step and a
-row per branch, so lines never cross; only what is on screen is drawn, with
-previews (`Service::revision_preview`, cached under `previews/`) once zoomed
-in. Watching a session moves the person along with it while the document's
-file changes, until the person edits or moves on their own.
+A branch runs from the revision that began it along each revision's oldest
+later one (`History::branch_of`); later ones begin branches of their own.
+Branch names go on the revision that began the branch, in the document's
+metadata (`revision_name:<id>`, `spectrum-revisions/src/store/names.rs`):
+naming is not an edit and moves no one. The desktop's History mode
+(`history_view.rs`, `history_layout.rs`, `history_paint.rs`,
+`history_panel.rs`) draws the tree a column per step and a row per branch,
+so lines never cross; only what is on screen is drawn, with previews
+(`Service::revision_preview`, cached under `previews/`) once zoomed in.
+Clicking a revision or a branch goes there; Back and Forward retrace the
+revisions visited. Watching a session moves the person along with it as the
+document's file changes, until the person edits or moves on their own.
 
 `Model` hooks let an engine resolve state-dependent commands before storing them
 (a Clone Stamp source, a magic wand's selection, the selection a stroke paints

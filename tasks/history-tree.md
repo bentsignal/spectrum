@@ -26,11 +26,11 @@ tree and work with it.
 
 Engine and CLI first, then the app on top of the same service calls.
 
-1. **Names.** A name on a revision marks a checkpoint and names the branch
-   it is on, until the next named revision or fork. Naming is not an edit
-   and adds no revision. Stored with the history; `history` output includes
-   names. CLI: `history-name <revision> <name>` and `--clear`, for images and
-   canvases.
+1. **Names.** People name branches, not single revisions: the name goes on
+   the revision that began the branch. Naming is not an edit and adds no
+   revision. Stored with the history; `history` output includes names. CLI:
+   `history-name <revision> <name>` (the branch holding it) and `--clear`,
+   for images and canvases.
 2. **Search.** `history --search <text>` matches names, edit descriptions,
    and who made them.
 3. **Previews.** A small preview of any revision, rendered without moving
@@ -57,8 +57,13 @@ Engine and CLI first, then the app on top of the same service calls.
   `apps/spectrum/tests/history_cli.rs`). App: History mode (⌘4 on images,
   ⌘6 on canvases) with the tree, search, names, going to a revision, and
   watching; the benchmark's `history` scenario covers it on 1,200 revisions.
-  Next: the person's own review, then polish (keyboard navigation, previews
-  when a canvas's linked images change, very wide histories).
+- 2026-10-11, after the person's first review: clicking a revision or a
+  branch goes there; Back and Forward; names are on branches (the revision
+  that began each); the sidebar shows the person's revision whole and sharp,
+  keeping the last preview until the next is ready; watching starts at once
+  (about 200 ms to show an agent's edit).
+  Next: keyboard navigation, previews when a canvas's linked images change,
+  very wide histories.
 
 ## Acceptance
 

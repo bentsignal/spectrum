@@ -287,10 +287,16 @@ const BUDGETS: &[Budget] = &[
     budget("image_sliders", "error_shown", "count", 0.0, 0.0),
     // The History mode on 1,200 revisions: open, previews, going to another
     // branch, and a watched agent's edit arriving; pans and zooms stay smooth.
+    // Crop and Color switch without showing the other view's frame (a
+    // problem fails the run); the full-size frame of the 45-megapixel,
+    // fully edited photo then renders and the crop saves.
+    budget("crop_switch", "settle", "max", 500.0, 650.0),
+    budget("crop_switch", "main_thread_lag", "max", 60.0, 150.0),
+    budget("crop_switch", "error_shown", "count", 0.0, 0.0),
     budget("history", "settle", "max", 300.0, 400.0),
     budget("history", "preview", "max", 500.0, 700.0),
     budget("history", "jump", "max", 300.0, 400.0),
-    budget("history", "watch", "max", 500.0, 700.0),
+    budget("history", "watch", "max", 400.0, 500.0),
     budget("history", "main_thread_lag", "max", 60.0, 150.0),
     budget("history", "error_shown", "count", 0.0, 0.0),
 ];

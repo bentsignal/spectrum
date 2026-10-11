@@ -99,9 +99,9 @@ their own choice. Working together, the person follows the agent's revisions
 and watches them land until they edit, which branches. Working separately,
 the person never moves. The person can jump to any revision, an agent's
 included, and editing there branches from it. The History mode shows each
-image's and canvas's tree, where each session is, names on revisions
-(checkpoints that also name their branch), and search; the person can watch
-a session live and go back to their own work. Remaining work is in
+image's and canvas's tree and where each session is; clicking a revision or
+branch goes there. People name branches, not single revisions, and search
+them; the person can watch a session live and go back to their own work. Remaining work is in
 [history tree](../tasks/history-tree.md) and
 [revision lifecycle](../tasks/revision-lifecycle.md).
 

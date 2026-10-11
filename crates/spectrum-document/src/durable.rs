@@ -60,6 +60,35 @@ pub struct History {
     pub names: Vec<(RevisionId, String)>,
 }
 
+impl History {
+    /// The revisions of the branch holding `revision`, from where it began
+    /// to its newest: a revision's oldest later one continues its branch,
+    /// and later ones begin branches of their own.
+    pub fn branch_of(&self, revision: RevisionId) -> Vec<RevisionId> {
+        let mut first_child = std::collections::HashMap::new();
+        let mut parent_of = std::collections::HashMap::new();
+        // Revisions come oldest first, so the first child seen is the oldest.
+        for found in &self.revisions {
+            if let Some(parent) = found.parent_id {
+                first_child.entry(parent).or_insert(found.id);
+                parent_of.insert(found.id, parent);
+            }
+        }
+        let mut start = revision;
+        while let Some(parent) = parent_of.get(&start) {
+            if first_child.get(parent) != Some(&start) {
+                break;
+            }
+            start = *parent;
+        }
+        let mut branch = vec![start];
+        while let Some(next) = first_child.get(branch.last().unwrap_or(&start)) {
+            branch.push(*next);
+        }
+        branch
+    }
+}
+
 struct Families<M>(PhantomData<M>);
 
 impl<M: Model> Families<M> {

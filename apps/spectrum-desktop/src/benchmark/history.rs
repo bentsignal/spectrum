@@ -1,8 +1,9 @@
 //! The History mode on a long history: the 24-megapixel photo edited 1,200
 //! times across a dozen branches, with an agent working in its own session.
 //! Opens the tree, pans and zooms it with two fingers, zooms in until
-//! previews show, names a revision and finds it by searching, goes to a
-//! revision on another branch, and watches the agent's next edit arrive.
+//! previews show, names the branch and finds it by searching, goes to a
+//! revision on another branch and back and forward, and watches the agent's
+//! next edit arrive.
 use super::{
     Outcome,
     scenarios::{This, ms, outcome, pause, until},
@@ -184,30 +185,29 @@ pub(super) async fn history(
         None => problems.push("zoomed in, no preview showed".into()),
     }
 
-    // Name the person's revision, then find it by searching.
+    // Name the person's branch, then find it by searching.
     let named = this
         .update_in(cx, |ws, window, cx| {
-            let current = ws.history.shown.as_ref()?.history.current;
-            ws.select_revision(current, window, cx);
             ws.history.name.update(cx, |input, cx| {
                 input.set_value("Benchmark pick", window, cx)
             });
-            ws.name_selected_revision(window, cx);
-            Some(current)
+            ws.name_current_branch(window, cx);
+            ws.history.shown.as_ref().map(|s| s.history.current)
         })
         .ok()
         .flatten();
-    let found = until(this, cx, 10_000, |ws| {
+    let branch_named = |ws: &Workspace| {
         ws.history.shown.as_ref().is_some_and(|s| {
-            s.history
-                .names
-                .iter()
-                .any(|(id, name)| Some(*id) == named && name == "Benchmark pick")
+            let Some(lane) = s.layout.node(s.history.current).map(|n| n.lane) else {
+                return false;
+            };
+            s.layout.branches.iter().any(|b| {
+                s.layout.nodes[b.tip].lane == lane && b.name.as_deref() == Some("Benchmark pick")
+            })
         })
-    })
-    .await;
-    if found.is_none() {
-        problems.push("naming a revision did not show its name".into());
+    };
+    if until(this, cx, 10_000, branch_named).await.is_none() {
+        problems.push("naming the branch did not show its name".into());
     }
     this.update_in(cx, |ws, window, cx| {
         ws.history.search.update(cx, |input, cx| {
@@ -217,10 +217,10 @@ pub(super) async fn history(
     })
     .ok();
     let matches = this
-        .read_with(cx, |ws, _| ws.history.matches.clone())
-        .unwrap_or_default();
-    if named.is_none() || matches != named.into_iter().collect::<Vec<_>>() {
-        problems.push(format!("searching for the name found {matches:?}"));
+        .read_with(cx, |ws, _| ws.history.matches.len())
+        .unwrap_or(0);
+    if named.is_none() || matches != 1 {
+        problems.push(format!("searching for the branch's name found {matches}"));
     }
 
     // Go to a revision on another branch: the image shows it.
@@ -235,6 +235,29 @@ pub(super) async fn history(
     {
         Some(_) => samples.push(("jump", ms(started.elapsed()))),
         None => problems.push("going to a revision did not show it".into()),
+    }
+
+    // Back returns to where the person was, Forward to the branch again.
+    let before = named;
+    this.update_in(cx, |ws, window, cx| ws.history_back(window, cx))
+        .ok();
+    if until(this, cx, 20_000, |ws| {
+        shown_revision(ws, image) == before && ws.image_idle()
+    })
+    .await
+    .is_none()
+    {
+        problems.push("Back did not return to the revision before".into());
+    }
+    this.update_in(cx, |ws, window, cx| ws.history_forward(window, cx))
+        .ok();
+    if until(this, cx, 20_000, |ws| {
+        shown_revision(ws, image) == Some(target) && ws.image_idle()
+    })
+    .await
+    .is_none()
+    {
+        problems.push("Forward did not return to the branch".into());
     }
 
     // Watch the agent: its next edit arrives without the person asking.

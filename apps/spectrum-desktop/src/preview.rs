@@ -45,6 +45,13 @@ pub struct Preview {
     /// The latest render, and the adjustments it shows.
     pub image: Option<Arc<RenderImage>>,
     shown: Option<Adjustments>,
+    /// The adjustments `image` was rendered with: `shown` is set when its
+    /// render starts.
+    pub displayed: Option<Adjustments>,
+    /// The other view's last full-size frame (the whole frame while not
+    /// cropping, the cropped picture while cropping) and its adjustments, so
+    /// switching between Crop and the other modes shows it at once.
+    pub other: Option<(Adjustments, Arc<RenderImage>)>,
     /// Whether the latest render is full size.
     sharp: bool,
     /// Full-size frames rendering after a drag (`sharpen_frame`), and the
@@ -123,6 +130,26 @@ fn frame(mut pixels: image::RgbaImage) -> Arc<RenderImage> {
     Arc::new(RenderImage::new(vec![image::Frame::new(pixels)]))
 }
 
+/// The part of a rendered frame inside `crop` (in shares of the frame),
+/// as its own frame: a cropped picture straight from the whole one.
+fn cut(image: &RenderImage, crop: spectrum_image::CropRect) -> Option<Arc<RenderImage>> {
+    let size = image.size(0);
+    let (width, height) = (size.width.0 as u32, size.height.0 as u32);
+    let bytes = image.as_bytes(0)?;
+    let x = ((crop.x * width as f32).round() as u32).min(width.saturating_sub(1));
+    let y = ((crop.y * height as f32).round() as u32).min(height.saturating_sub(1));
+    let w = ((crop.width * width as f32).round() as u32).clamp(1, width - x);
+    let h = ((crop.height * height as f32).round() as u32).clamp(1, height - y);
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for row in y..y + h {
+        let start = ((row * width + x) * 4) as usize;
+        out.extend_from_slice(&bytes[start..start + (w * 4) as usize]);
+    }
+    // Already in the frame's byte order, so it is wrapped as it is.
+    let pixels = image::RgbaImage::from_raw(w, h, out)?;
+    Some(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])))
+}
+
 fn render(source: &StagedRender, adjustments: Adjustments) -> Rendered {
     let pixels = source.render(adjustments);
     let histogram = Histogram::from_rgba(&pixels);
@@ -189,7 +216,7 @@ impl Workspace {
     }
 
     /// What the main area shows: the whole frame while cropping.
-    fn view_adjustments(&self) -> Adjustments {
+    pub fn view_adjustments(&self) -> Adjustments {
         if self.mode == Mode::Crop {
             Adjustments {
                 crop: None,
@@ -198,6 +225,60 @@ impl Workspace {
         } else {
             self.image.adjust.clone()
         }
+    }
+
+    /// Switching to or from Crop changes whether the view shows the whole
+    /// frame. What can show at once does: the other view's last frame if it
+    /// still matches (sharp, nothing to render), or else, coming back from
+    /// Crop with a new crop, that crop cut from the whole frame on screen.
+    /// The exact frame renders after. The crop view draws a cropped frame
+    /// where its crop sits until the whole frame arrives.
+    pub fn switch_image_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self.view_adjustments();
+        let Some(preview) = &mut self.image.preview else {
+            return;
+        };
+        if preview.displayed.as_ref() == Some(&wanted) {
+            return self.render_preview(window, cx);
+        }
+        let current = preview.displayed.clone().zip(preview.image.clone());
+        // Only a full-size frame is kept to show sharp later.
+        let keep = current.clone().filter(|_| preview.sharp);
+        let stored = preview.other.take();
+        match stored {
+            Some((adjustments, image)) if adjustments == wanted => {
+                preview.image = Some(image);
+                preview.displayed = Some(wanted.clone());
+                preview.shown = Some(wanted.clone());
+                preview.requested = Some(wanted);
+                preview.sharp = true;
+                preview.other = keep;
+            }
+            stored => {
+                if let Some((_, image)) = stored {
+                    crate::retire::drop_later(image);
+                }
+                let whole = current
+                    .as_ref()
+                    .filter(|(shown, _)| {
+                        shown.crop.is_none()
+                            && Adjustments {
+                                crop: None,
+                                ..wanted.clone()
+                            } == *shown
+                    })
+                    .and_then(|(_, image)| Some(cut(image, wanted.crop?)));
+                if let Some(cropped) = whole.flatten() {
+                    preview.image = Some(cropped);
+                    preview.displayed = Some(wanted.clone());
+                    preview.shown = Some(wanted.clone());
+                    preview.sharp = false;
+                }
+                preview.other = keep;
+            }
+        }
+        self.render_preview(window, cx);
+        cx.notify();
     }
 
     /// Starts decoding the open image when it changes.
@@ -209,7 +290,8 @@ impl Workspace {
             return;
         }
         if let Some(old) = self.image.preview.take() {
-            for image in old.image.into_iter().chain(old.original) {
+            let other = old.other.map(|(_, image)| image);
+            for image in old.image.into_iter().chain(old.original).chain(other) {
                 crate::retire::drop_later(image);
             }
         }
@@ -219,6 +301,8 @@ impl Workspace {
             sources: None,
             image: None,
             shown: None,
+            displayed: None,
+            other: None,
             sharp: false,
             sharpening: Vec::new(),
             sharp_after: SHARP_AFTER,
@@ -322,6 +406,7 @@ impl Workspace {
         };
         preview.rendering = true;
         preview.shown = Some(wanted.clone());
+        let for_display = wanted.clone();
         let covers = preview.unseen_since.take();
         let edited = preview.last_edit;
         let id = preview.id;
@@ -344,6 +429,7 @@ impl Workspace {
                 if let Some(old) = preview.image.replace(rendered.image) {
                     crate::retire::drop_later(old);
                 }
+                preview.displayed = Some(for_display);
                 preview.histogram = Some(Arc::new(rendered.histogram));
                 // The oldest edit this frame shows was made this long ago.
                 if let Some(since) = covers {
@@ -411,6 +497,7 @@ impl Workspace {
                 if let Some(old) = preview.image.replace(rendered.image) {
                     crate::retire::drop_later(old);
                 }
+                preview.displayed = Some(wanted);
                 preview.histogram = Some(Arc::new(rendered.histogram));
                 if let Some(edited) = edited {
                     crate::perf::record("image_sharp", edited.elapsed());

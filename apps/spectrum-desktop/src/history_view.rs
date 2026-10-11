@@ -1,7 +1,8 @@
 //! The History mode: the open image's or canvas's tree of revisions, which
 //! one the person is on, and where each session (theirs, an agent's) is.
-//! Clicking a revision selects it; going there moves the person, and their
-//! next edit branches from it. Watching a session follows it as it works.
+//! Clicking a revision goes there (the person's next edit branches from
+//! it); Back and Forward retrace the revisions visited. Branches have names.
+//! Watching a session follows it as it works.
 //! The tree pans and zooms like a canvas; zoomed in, revisions show
 //! previews.
 use crate::{
@@ -26,6 +27,9 @@ pub const PREVIEWS_FROM: f32 = 96.;
 pub const PREVIEW: u32 = 192;
 /// Previews kept at once.
 const PREVIEWS_KEPT: usize = 400;
+/// The sidebar's preview of the person's revision, in pixels on the long
+/// edge: sharp at the sidebar's width on a Retina screen.
+pub const PREVIEW_LARGE: u32 = 720;
 
 /// The shown asset's history and how it lays out.
 pub struct Shown {
@@ -66,6 +70,16 @@ pub struct HistoryView {
     preview_busy: bool,
     pub bounds: Rc<RefCell<Bounds<Pixels>>>,
     pub watching: Option<Watching>,
+    /// Revisions visited before and after this one, for Back and Forward.
+    pub back: Vec<RevisionId>,
+    pub forward: Vec<RevisionId>,
+    /// The sidebar's large preview: kept until the next one is ready, so
+    /// moving between revisions never flickers.
+    pub large: Option<(RevisionId, Arc<RenderImage>)>,
+    large_busy: bool,
+    /// A watching check is running; one at a time, so two never race to
+    /// move the person.
+    watch_busy: bool,
 }
 
 impl HistoryView {
@@ -87,6 +101,11 @@ impl HistoryView {
             preview_busy: false,
             bounds: Rc::new(RefCell::new(Bounds::default())),
             watching: None,
+            back: Vec::new(),
+            forward: Vec::new(),
+            large: None,
+            large_busy: false,
+            watch_busy: false,
         }
     }
 
@@ -96,6 +115,11 @@ impl HistoryView {
             crate::retire::drop_later(image);
         }
         self.preview_order.clear();
+        if let Some((_, image)) = self.large.take() {
+            crate::retire::drop_later(image);
+        }
+        self.back.clear();
+        self.forward.clear();
         self.shown = None;
         self.placed = false;
         self.selected = None;
@@ -157,11 +181,11 @@ impl Workspace {
                         });
                         if !this.history.placed {
                             this.history.placed = true;
-                            this.history.selected = Some(current);
                             this.center_on_revision(current);
-                            this.sync_history_name(window, cx);
-                            this.request_history_preview(current, window, cx);
                         }
+                        this.history.selected = Some(current);
+                        this.sync_history_name(window, cx);
+                        this.request_large_preview(window, cx);
                         this.update_history_matches(cx);
                     }
                     Ok(_) => {}
@@ -217,21 +241,21 @@ impl Workspace {
         );
     }
 
-    /// Selects a revision, showing its details in the sidebar.
-    pub fn select_revision(&mut self, id: RevisionId, window: &mut Window, cx: &mut Context<Self>) {
-        self.history.selected = Some(id);
-        self.sync_history_name(window, cx);
-        self.request_history_preview(id, window, cx);
-        cx.notify();
-    }
-
-    /// Fills the name field with the selected revision's name.
+    /// Fills the name field with the name of the branch the person is on.
     pub fn sync_history_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self
             .history
-            .selected
-            .zip(self.history.shown.as_ref())
-            .and_then(|(id, shown)| shown.layout.node(id).and_then(|n| n.name.clone()))
+            .shown
+            .as_ref()
+            .and_then(|shown| {
+                let lane = shown.layout.node(shown.history.current)?.lane;
+                let branch = shown
+                    .layout
+                    .branches
+                    .iter()
+                    .find(|b| shown.layout.nodes[b.tip].lane == lane)?;
+                branch.name.clone()
+            })
             .unwrap_or_default();
         self.history
             .name
@@ -239,13 +263,57 @@ impl Workspace {
     }
 
     /// Moves the person to a revision; the editor shows it, and their next
-    /// edit branches from it. Ends any watching.
+    /// edit branches from it. Back returns to where they were. Ends any
+    /// watching.
     pub fn go_to_revision(&mut self, id: RevisionId, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.history.shown.as_ref().map(|s| s.history.current);
+        if current == Some(id) {
+            return;
+        }
+        if let Some(current) = current {
+            self.history.back.push(current);
+        }
+        self.history.forward.clear();
+        self.move_in_history(id, window, cx);
+    }
+
+    /// Back to the revision visited before this one.
+    pub fn history_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.history.back.pop() else {
+            return;
+        };
+        if let Some(current) = self.history.shown.as_ref().map(|s| s.history.current) {
+            self.history.forward.push(current);
+        }
+        self.center_on_revision(id);
+        self.move_in_history(id, window, cx);
+    }
+
+    /// Forward again, after going back.
+    pub fn history_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.history.forward.pop() else {
+            return;
+        };
+        if let Some(current) = self.history.shown.as_ref().map(|s| s.history.current) {
+            self.history.back.push(current);
+        }
+        self.center_on_revision(id);
+        self.move_in_history(id, window, cx);
+    }
+
+    fn move_in_history(&mut self, id: RevisionId, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(asset), Ok(store)) = (self.history_asset(), &self.store) else {
             return;
         };
-        self.history.watching = None;
         let root = store.root.clone();
+        self.history.watching = None;
+        // Shown at once; the move saves off the main thread.
+        self.history.selected = Some(id);
+        if let Some(shown) = &mut self.history.shown {
+            shown.history.current = id;
+        }
+        self.request_large_preview(window, cx);
+        cx.notify();
         let task = cx.background_executor().spawn(async move {
             let started = std::time::Instant::now();
             Service::open(&root)?.move_to(asset, id)?;
@@ -280,10 +348,12 @@ impl Workspace {
         }
     }
 
-    /// Names the selected revision from the name field (blank clears it).
-    pub fn name_selected_revision(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Names the branch the person is on from the name field (blank clears
+    /// it).
+    pub fn name_current_branch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let revision = self.history.shown.as_ref().map(|s| s.history.current);
         let (Some(asset), Some(revision), Ok(store)) =
-            (self.history_asset(), self.history.selected, &self.store)
+            (self.history_asset(), revision, &self.store)
         else {
             return;
         };
@@ -292,8 +362,16 @@ impl Workspace {
             .history
             .shown
             .as_ref()
-            .and_then(|s| s.layout.node(revision))
-            .and_then(|node| node.name.clone())
+            .and_then(|shown| {
+                let lane = shown.layout.node(revision)?.lane;
+                shown
+                    .layout
+                    .branches
+                    .iter()
+                    .find(|b| shown.layout.nodes[b.tip].lane == lane)?
+                    .name
+                    .clone()
+            })
             .unwrap_or_default();
         if name == had {
             return;
@@ -301,7 +379,9 @@ impl Workspace {
         let root = store.root.clone();
         let task = cx.background_executor().spawn(async move {
             let name = (!name.is_empty()).then_some(name);
-            Service::open(&root)?.name_revision(asset, revision, name.as_deref())
+            Service::open(&root)?
+                .name_branch(asset, revision, name.as_deref())
+                .map(|_| ())
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
@@ -336,7 +416,7 @@ impl Workspace {
             .collect();
     }
 
-    /// Selects and centers the next match after the selected revision.
+    /// Centers the next match after the person's revision and goes there.
     pub fn next_history_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let matches = &self.history.matches;
         if matches.is_empty() {
@@ -349,7 +429,7 @@ impl Workspace {
             .map_or(0, |at| (at + 1) % matches.len());
         let id = matches[at];
         self.center_on_revision(id);
-        self.select_revision(id, window, cx);
+        self.go_to_revision(id, window, cx);
     }
 
     /// Starts following a session: the person goes where it is now, and
@@ -389,6 +469,10 @@ impl Workspace {
             self.history.watching = None;
             return;
         }
+        if self.history.watch_busy {
+            return;
+        }
+        self.history.watch_busy = true;
         let root = store.root.clone();
         let task = cx.background_executor().spawn(async move {
             let mut service = Service::open(&root)?;
@@ -406,6 +490,7 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
+                this.history.watch_busy = false;
                 let Some(current) = this.history.watching.as_mut() else {
                     return;
                 };
@@ -472,6 +557,42 @@ impl Workspace {
                     }
                 }
                 this.request_visible_previews(window, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Renders the sidebar's large preview of the person's revision. The
+    /// last one stays on screen until it is ready.
+    pub fn request_large_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self.history.shown.as_ref().map(|s| s.history.current);
+        let (Some(asset), Some(id), Ok(store)) = (self.history_asset(), wanted, &self.store) else {
+            return;
+        };
+        let view = &mut self.history;
+        if view.large_busy || view.large.as_ref().is_some_and(|(shown, _)| *shown == id) {
+            return;
+        }
+        view.large_busy = true;
+        let root = store.root.clone();
+        let task = cx.background_executor().spawn(async move {
+            let path = Service::open(&root)?.revision_preview(asset, id, PREVIEW_LARGE)?;
+            anyhow::Ok(crate::preview::to_render_image(image::open(path)?).0)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| {
+                this.history.large_busy = false;
+                if let Ok(image) = result
+                    && this.history_asset() == Some(asset)
+                    && let Some((_, old)) = this.history.large.replace((id, image))
+                {
+                    crate::retire::drop_later(old);
+                }
+                // The person may have moved on meanwhile.
+                this.request_large_preview(window, cx);
                 cx.notify();
             })
             .ok();
@@ -566,8 +687,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A click (a press that did not move) selects the revision under it;
-    /// a double click goes there.
+    /// A click (a press that did not move) goes to the revision under it.
     pub fn history_release(
         &mut self,
         event: &MouseUpEvent,
@@ -581,13 +701,8 @@ impl Workspace {
             self.request_visible_previews(window, cx);
             return;
         }
-        let Some(id) = self.revision_at(event.position) else {
-            return;
-        };
-        if event.click_count >= 2 {
+        if let Some(id) = self.revision_at(event.position) {
             self.go_to_revision(id, window, cx);
-        } else {
-            self.select_revision(id, window, cx);
         }
     }
 

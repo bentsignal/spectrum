@@ -43,6 +43,27 @@ impl Service {
         }
     }
 
+    /// Names the branch holding `revision`, or with `None` clears its name.
+    /// The name goes on the revision that began the branch, so it names the
+    /// branch however long it grows; other names along it are cleared.
+    pub fn name_branch(
+        &mut self,
+        id: AssetId,
+        revision: RevisionId,
+        name: Option<&str>,
+    ) -> Result<RevisionId> {
+        let history = self.history(id)?;
+        let branch = history.branch_of(revision);
+        let start = branch[0];
+        for (named, _) in &history.names {
+            if *named != start && branch.contains(named) {
+                self.name_revision(id, *named, None)?;
+            }
+        }
+        self.name_revision(id, start, name)?;
+        Ok(start)
+    }
+
     /// A render of an asset at one revision, no larger than `max` pixels on
     /// its long edge, made without moving anyone and kept with the other
     /// previews. A revision never changes, so it renders once (a canvas's

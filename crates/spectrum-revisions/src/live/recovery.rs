@@ -20,16 +20,14 @@ impl LiveRevisionStore {
     fn open_cached(canonical_path: &Path, cache_root: &Path) -> RevisionResult<Self> {
         crate::io_stats::live_opened();
         let canonical_path = absolute_path(canonical_path)?;
-        let canonical = if !sidecar_path(&canonical_path, "-wal").exists()
-            && !sidecar_path(&canonical_path, "-shm").exists()
-        {
-            RevisionStore::inspect(&canonical_path).ok()
-        } else {
-            None
+        // The document read directly, when it has no write-ahead files.
+        let read_directly = || {
+            (!sidecar_path(&canonical_path, "-wal").exists()
+                && !sidecar_path(&canonical_path, "-shm").exists())
+            .then(|| RevisionStore::inspect(&canonical_path).ok())
+            .flatten()
         };
-        let canonical = if let Some(canonical) = canonical {
-            canonical
-        } else {
+        let read_canonical = || {
             #[cfg(target_os = "linux")]
             {
                 let _canonical_lock = lock_directory(
@@ -38,7 +36,7 @@ impl LiveRevisionStore {
                         .filter(|parent| !parent.as_os_str().is_empty())
                         .unwrap_or_else(|| Path::new(".")),
                 )?;
-                prepare_canonical_copy(&canonical_path, cache_root)?
+                prepare_canonical_copy(&canonical_path, cache_root)
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -49,7 +47,12 @@ impl LiveRevisionStore {
                 canonical_store.checkpoint()?;
                 drop(canonical_store);
                 RevisionStore::inspect(&canonical_path)
-            }?
+            }
+        };
+        // Read first to find the project's cache.
+        let (canonical, direct) = match read_directly() {
+            Some(canonical) => (canonical, true),
+            None => (read_canonical()?, false),
         };
         create_private_dir_all(cache_root)?;
         let project_directory = cache_root.join(canonical.info.project_id.to_string());
@@ -60,6 +63,21 @@ impl LiveRevisionStore {
         let lock = lock_private(&lock_path)?;
         #[cfg(not(target_os = "linux"))]
         let lock = lock(&lock_path)?;
+        // Writers publish under this lock, so what the document holds is read
+        // again now that none can be part-way through: a writer that finished
+        // after the first read would otherwise look like a stale or foreign
+        // cache to this open.
+        // (A document with write-ahead files was read under its directory's
+        // lock instead.)
+        let canonical = match read_directly().filter(|_| direct) {
+            Some(again) if again.info.project_id != canonical.info.project_id => {
+                return Err(RevisionError::Corrupt(
+                    "the document changed to another project while it opened".into(),
+                ));
+            }
+            Some(again) => again,
+            None => canonical,
+        };
         #[cfg(target_os = "linux")]
         let private_directory = PrivateDirectory::open(&project_directory)?;
         #[cfg(target_os = "linux")]
