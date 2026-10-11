@@ -1,7 +1,7 @@
-//! The History mode's sidebar: Back and Forward, search, the revision the
-//! person is on (a sharp preview of all of it, what it did, who and when),
-//! the name of their branch, the agents they can watch, and every branch,
-//! newest first. Clicking a branch goes to its newest revision.
+//! The History mode's sidebar: Back and Forward, finding a branch (the
+//! palette, ⌘P), the revision the person is on (a sharp preview of all of
+//! it, what it did, who and when), the name of their branch, and the agents
+//! they can watch.
 use crate::{
     controls::group,
     history_paint::AGENT,
@@ -110,37 +110,12 @@ impl Workspace {
                         ),
                 ),
         );
-        let matches = self.history.matches.len();
-        let searching = !self.history.search.read(cx).value().trim().is_empty();
         panel = panel.child(
-            group("Search", None)
-                .child(Input::new(&self.history.search).small())
-                .when(searching, |el| {
-                    el.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .text_xs()
-                            .text_color(rgb(MUTED))
-                            .child(match matches {
-                                0 => "No revisions match".to_string(),
-                                1 => "1 revision".to_string(),
-                                n => format!("{n} revisions"),
-                            })
-                            .when(matches > 0, |el| {
-                                el.child(
-                                    Button::new("next-match")
-                                        .ghost()
-                                        .xsmall()
-                                        .label("Next")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.next_history_match(window, cx)
-                                        })),
-                                )
-                            }),
-                    )
-                }),
+            Button::new("find-branch")
+                .small()
+                .w_full()
+                .label("Find a branch…   ⌘P")
+                .on_click(cx.listener(|this, _, window, cx| this.open_branches(window, cx))),
         );
         let Some(shown) = &self.history.shown else {
             return panel;
@@ -247,54 +222,6 @@ impl Workspace {
                 group("Agents", None).child(div().flex().flex_col().gap_2().children(agents)),
             );
         }
-        // Branches, newest first; the person's is the one in their row.
-        let mut branches: Vec<_> = shown.layout.branches.iter().collect();
-        branches.sort_by_key(|b| std::cmp::Reverse(shown.layout.nodes[b.tip].at_ms));
-        let current_lane = shown.layout.node(current).map(|n| n.lane);
-        let rows: Vec<AnyElement> = branches
-            .into_iter()
-            .take(200)
-            .map(|branch| {
-                let tip = &shown.layout.nodes[branch.tip];
-                let id = tip.id;
-                let here = current_lane == Some(tip.lane);
-                div()
-                    .id(SharedString::from(format!("branch-{id}")))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .hover(|el| el.bg(rgb(HOVER)))
-                    .when(here, |el| el.bg(rgb(SELECTED)))
-                    .child(dot(if tip.agent { AGENT } else { TEXT }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .truncate()
-                                    .child(shown.layout.branch_title(branch)),
-                            )
-                            .child(div().text_xs().text_color(rgb(MUTED)).child(format!(
-                                "{}{}",
-                                when(tip.at_ms),
-                                if here { " · you are on it" } else { "" }
-                            ))),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.center_on_revision(id);
-                        this.go_to_revision(id, window, cx);
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-        panel.child(group("Branches", None).child(div().flex().flex_col().gap_1().children(rows)))
+        panel
     }
 }

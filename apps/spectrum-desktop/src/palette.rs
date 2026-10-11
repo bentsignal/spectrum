@@ -26,6 +26,8 @@ enum Choice {
     NewProject,
     Create(String),
     Tool(Tool),
+    /// A branch: go to its newest revision.
+    Branch(spectrum_document::RevisionId),
 }
 
 struct Item {
@@ -41,16 +43,30 @@ impl Workspace {
     pub fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_adding.clear();
         self.palette_tools = false;
+        self.palette_branches = false;
         self.show_palette(window, cx);
     }
 
-    /// Command+P or the tool button: the palette lists canvas tools.
+    /// Command+P or the tool button: the palette lists canvas tools, or in
+    /// History, the branches.
     pub fn open_tools(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == Mode::History && self.history.shown.is_some() {
+            return self.open_branches(window, cx);
+        }
         if self.canvas.is_none() {
             return;
         }
         self.palette_adding.clear();
         self.palette_tools = true;
+        self.palette_branches = false;
+        self.show_palette(window, cx);
+    }
+
+    /// The palette lists the open asset's branches, to go to one.
+    pub fn open_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette_adding.clear();
+        self.palette_tools = false;
+        self.palette_branches = true;
         self.show_palette(window, cx);
     }
 
@@ -136,7 +152,9 @@ impl Workspace {
     fn show_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = true;
         self.palette_index = 0;
-        let placeholder = if self.palette_tools {
+        let placeholder = if self.palette_branches {
+            "Find a branch by name or who made it"
+        } else if self.palette_tools {
             "Choose a tool"
         } else {
             "Go to a project, asset, or place"
@@ -176,6 +194,19 @@ impl Workspace {
             return Vec::new();
         };
         let mut items = Vec::new();
+        if self.palette_branches {
+            return self
+                .branch_choices(&query)
+                .into_iter()
+                .map(|(tip, title, detail)| Item {
+                    tool: None,
+                    icon: IconName::GalleryVerticalEnd,
+                    label: title.into(),
+                    detail: Some(detail.into()),
+                    choice: Choice::Branch(tip),
+                })
+                .collect();
+        }
         if self.palette_tools {
             return TOOLS
                 .iter()
@@ -351,6 +382,10 @@ impl Workspace {
             Choice::Open(open) => self.open_item(open, window, cx),
             Choice::Reveal(id) => self.reveal(id, window, cx),
             Choice::Tool(tool) => self.set_tool(tool, window, cx),
+            Choice::Branch(tip) => {
+                self.center_on_revision(tip);
+                self.go_to_revision(tip, window, cx);
+            }
             Choice::AddTo(project, name) => {
                 let ids = std::mem::take(&mut self.palette_adding);
                 self.change(window, cx, |store| {

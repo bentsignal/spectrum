@@ -62,9 +62,7 @@ pub struct HistoryView {
     /// A press on the tree: where, the pan then, and whether it moved.
     pressed: Option<(Point<Pixels>, (f32, f32), bool)>,
     pub selected: Option<RevisionId>,
-    pub search: Entity<InputState>,
     pub name: Entity<InputState>,
-    pub matches: Vec<RevisionId>,
     pub previews: HashMap<RevisionId, Arc<RenderImage>>,
     preview_order: Vec<RevisionId>,
     preview_busy: bool,
@@ -83,7 +81,7 @@ pub struct HistoryView {
 }
 
 impl HistoryView {
-    pub fn new(search: Entity<InputState>, name: Entity<InputState>) -> Self {
+    pub fn new(name: Entity<InputState>) -> Self {
         Self {
             shown: None,
             loading: false,
@@ -93,9 +91,7 @@ impl HistoryView {
             placed: false,
             pressed: None,
             selected: None,
-            search,
             name,
-            matches: Vec::new(),
             previews: HashMap::new(),
             preview_order: Vec::new(),
             preview_busy: false,
@@ -123,7 +119,6 @@ impl HistoryView {
         self.shown = None;
         self.placed = false;
         self.selected = None;
-        self.matches.clear();
         self.zoom = 1.;
         self.pan = (0., 0.);
     }
@@ -186,7 +181,6 @@ impl Workspace {
                         this.history.selected = Some(current);
                         this.sync_history_name(window, cx);
                         this.request_large_preview(window, cx);
-                        this.update_history_matches(cx);
                     }
                     Ok(_) => {}
                     Err(error) => this.notify_error(error, window, cx),
@@ -241,8 +235,19 @@ impl Workspace {
         );
     }
 
-    /// Fills the name field with the name of the branch the person is on.
+    /// Fills the name field with the name of the branch the person is on,
+    /// unless the person is typing in it: the history reloads whenever the
+    /// document changes, and must never replace what they type.
     pub fn sync_history_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .history
+            .name
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            return;
+        }
         let name = self
             .history
             .shown
@@ -394,42 +399,45 @@ impl Workspace {
         .detach();
     }
 
-    /// Revisions matching the search: by name, description, or who.
-    pub fn update_history_matches(&mut self, cx: &mut Context<Self>) {
-        let query = self.history.search.read(cx).value().trim().to_lowercase();
-        let view = &mut self.history;
-        view.matches.clear();
-        let (Some(shown), false) = (&view.shown, query.is_empty()) else {
-            return;
+    /// The branches matching `query` by name or who made them, newest
+    /// first: each branch's newest revision, its title, and a detail line.
+    pub fn branch_choices(&self, query: &str) -> Vec<(RevisionId, String, String)> {
+        let Some(shown) = &self.history.shown else {
+            return Vec::new();
         };
-        let found = |text: &str| text.to_lowercase().contains(&query);
-        view.matches = shown
-            .layout
-            .nodes
+        let query = query.trim().to_lowercase();
+        let layout = &shown.layout;
+        let current = layout.node(shown.history.current).map(|n| n.lane);
+        let mut branches: Vec<_> = layout
+            .branches
             .iter()
-            .filter(|node| {
-                node.name.as_deref().is_some_and(found)
-                    || node.label.as_deref().is_some_and(found)
-                    || found(&node.actor)
+            .map(|branch| {
+                let tip = &layout.nodes[branch.tip];
+                (branch, tip, layout.branch_title(branch))
             })
-            .map(|node| node.id)
+            .filter(|(_, tip, title)| {
+                query.is_empty()
+                    || title.to_lowercase().contains(&query)
+                    || tip.actor.to_lowercase().contains(&query)
+            })
             .collect();
-    }
-
-    /// Centers the next match after the person's revision and goes there.
-    pub fn next_history_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let matches = &self.history.matches;
-        if matches.is_empty() {
-            return;
-        }
-        let at = self
-            .history
-            .selected
-            .and_then(|selected| matches.iter().position(|m| *m == selected))
-            .map_or(0, |at| (at + 1) % matches.len());
-        let id = matches[at];
-        self.center_on_revision(id);
-        self.go_to_revision(id, window, cx);
+        branches.sort_by_key(|(_, tip, _)| std::cmp::Reverse(tip.at_ms));
+        branches
+            .into_iter()
+            .map(|(_, tip, title)| {
+                let here = if current == Some(tip.lane) {
+                    " · you are on it"
+                } else {
+                    ""
+                };
+                let detail = format!(
+                    "{} · {}{here}",
+                    tip.actor,
+                    crate::history_panel::when(tip.at_ms)
+                );
+                (tip.id, title, detail)
+            })
+            .collect()
     }
 
     /// Starts following a session: the person goes where it is now, and

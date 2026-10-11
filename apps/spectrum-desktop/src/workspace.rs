@@ -118,6 +118,8 @@ pub struct Workspace {
     pub palette_scroll: ScrollHandle,
     /// The palette lists canvas tools instead of places.
     pub palette_tools: bool,
+    /// The palette lists the open asset's branches (History).
+    pub palette_branches: bool,
     /// Assets the palette is adding to a project; empty when it navigates.
     pub palette_adding: Vec<AssetId>,
     /// Edits copied from an image, ready to paste onto others.
@@ -212,7 +214,6 @@ impl Workspace {
         let rename_input = input("Name", cx);
         let text_input = input("Text", cx);
         let font_query = input("Search fonts", cx);
-        let history_search = input("Search names, edits, and people", cx);
         let history_name = input("Name this revision", cx);
         let opacity = in_sidebar(slider(cx, 0., 100., 1., 100.));
         let text_size = in_sidebar(slider(cx, 8., 400., 1., 48.));
@@ -291,18 +292,6 @@ impl Workspace {
             ),
         ];
         subscriptions.push(cx.subscribe_in(
-            &history_search,
-            window,
-            |this, _, event: &InputEvent, window, cx| match event {
-                InputEvent::Change => {
-                    this.update_history_matches(cx);
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.next_history_match(window, cx),
-                _ => {}
-            },
-        ));
-        subscriptions.push(cx.subscribe_in(
             &history_name,
             window,
             |this, _, event: &InputEvent, window, cx| {
@@ -350,6 +339,7 @@ impl Workspace {
             palette_index: 0,
             palette_scroll: ScrollHandle::new(),
             palette_tools: false,
+            palette_branches: false,
             palette_adding: Vec::new(),
             copied_edits: None,
             pending_add: Vec::new(),
@@ -434,10 +424,7 @@ impl Workspace {
             following: false,
             followed_stamp: None,
             gestures: Default::default(),
-            history: crate::history_view::HistoryView::new(
-                history_search.clone(),
-                history_name.clone(),
-            ),
+            history: crate::history_view::HistoryView::new(history_name.clone()),
             retire_scheduled: false,
             focus_handle: cx.focus_handle(),
             dragging: None,

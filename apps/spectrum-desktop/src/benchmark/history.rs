@@ -1,7 +1,7 @@
 //! The History mode on a long history: the 24-megapixel photo edited 1,200
 //! times across a dozen branches, with an agent working in its own session.
 //! Opens the tree, pans and zooms it with two fingers, zooms in until
-//! previews show, names the branch and finds it by searching, goes to a
+//! previews show, names the branch and finds it with the branch finder, goes to a
 //! revision on another branch and back and forward, and watches the agent's
 //! next edit arrive.
 use super::{
@@ -185,6 +185,31 @@ pub(super) async fn history(
         None => problems.push("zoomed in, no preview showed".into()),
     }
 
+    // Typing a name while the history reloads underneath (anyone saving
+    // reloads it) keeps what is typed.
+    this.update_in(cx, |ws, window, cx| {
+        ws.history.name.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.set_value("Typed so f", window, cx);
+        });
+        ws.load_history(window, cx);
+    })
+    .ok();
+    pause(cx, 300).await;
+    let typed = this
+        .read_with(cx, |ws, cx| ws.history.name.read(cx).value().to_string())
+        .unwrap_or_default();
+    if typed != "Typed so f" {
+        problems.push(format!(
+            "a reload replaced the name being typed with {typed:?}"
+        ));
+    }
+    this.update_in(cx, |ws, window, cx| {
+        ws.focus_handle.focus(window);
+        ws.sync_history_name(window, cx);
+    })
+    .ok();
+
     // Name the person's branch, then find it by searching.
     let named = this
         .update_in(cx, |ws, window, cx| {
@@ -209,18 +234,20 @@ pub(super) async fn history(
     if until(this, cx, 10_000, branch_named).await.is_none() {
         problems.push("naming the branch did not show its name".into());
     }
-    this.update_in(cx, |ws, window, cx| {
-        ws.history.search.update(cx, |input, cx| {
-            input.set_value("benchmark pick", window, cx)
-        });
-        ws.update_history_matches(cx);
-    })
-    .ok();
-    let matches = this
-        .read_with(cx, |ws, _| ws.history.matches.len())
-        .unwrap_or(0);
-    if named.is_none() || matches != 1 {
-        problems.push(format!("searching for the branch's name found {matches}"));
+    // The branch finder (the palette, ⌘P) finds it by name.
+    let found = this
+        .update_in(cx, |ws, window, cx| {
+            ws.open_branches(window, cx);
+            let found = ws.branch_choices("benchmark pick");
+            ws.close_palette(cx);
+            found
+        })
+        .unwrap_or_default();
+    if named.is_none() || found.len() != 1 {
+        problems.push(format!(
+            "finding the branch by name found {} branches",
+            found.len()
+        ));
     }
 
     // Go to a revision on another branch: the image shows it.

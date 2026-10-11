@@ -64,8 +64,8 @@ impl Workspace {
     }
 
     /// Where the frame is drawn: fitted and centered in the main area.
-    fn frame_rect(&self) -> Bounds<Pixels> {
-        let area = *self.image.image_bounds.borrow();
+    pub fn frame_rect(&self) -> Bounds<Pixels> {
+        let area = self.image_box();
         let (w, h) = self.frame_size();
         let scale =
             (f32::from(area.size.width) / w as f32).min(f32::from(area.size.height) / h as f32);
@@ -306,7 +306,9 @@ impl Workspace {
         let bounds_slot = self.image.image_bounds.clone();
         let image = self.image.preview.as_ref().and_then(|p| p.image.clone());
         let frame = self.frame_rect();
-        let area = *self.image.image_bounds.borrow();
+        // Measured over the whole main area, as the image view measures it,
+        // so the first frame after switching is already in place.
+        let area = self.image_box();
         let r = self.crop_rect();
         let (fx, fy) = (
             frame.origin.x - area.origin.x,
@@ -348,59 +350,67 @@ impl Workspace {
             box_.size.width,
             box_.size.height,
         );
-        div().size_full().p_8().pb(px(40.)).child(
-            div()
-                .id("crop-area")
-                .relative()
-                .size_full()
-                .child(
-                    canvas(
-                        move |bounds, _, _| *bounds_slot.borrow_mut() = bounds,
-                        |_, _, _, _| {},
-                    )
+        // Measured over the whole area; the crop area sits inset to match
+        // the image view's box (`image_box`).
+        div()
+            .relative()
+            .size_full()
+            .child(
+                canvas(
+                    move |bounds, _, _| *bounds_slot.borrow_mut() = bounds,
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                div()
+                    .id("crop-area")
                     .absolute()
-                    .size_full(),
-                )
-                .children(image.map(|image| {
-                    img(image)
-                        .absolute()
-                        .left(ix)
-                        .top(iy)
-                        .w(iw)
-                        .h(ih)
-                        .object_fit(ObjectFit::Fill)
-                }))
-                .child(dim(fx, fy, fw, by - fy))
-                .child(dim(fx, by + bh, fw, fy + fh - by - bh))
-                .child(dim(fx, by, bx - fx, bh))
-                .child(dim(bx + bw, by, fx + fw - bx - bw, bh))
-                .child(
-                    div()
-                        .absolute()
-                        .left(bx)
-                        .top(by)
-                        .w(bw)
-                        .h(bh)
-                        .border_1()
-                        .border_color(hsla(0., 0., 1., 0.85)),
-                )
-                .child(handle(bx, by))
-                .child(handle(bx + bw, by))
-                .child(handle(bx, by + bh))
-                .child(handle(bx + bw, by + bh))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, event, _, cx| this.crop_down(event, cx)),
-                )
-                .on_mouse_move(cx.listener(|this, event, _, cx| this.crop_move(event, cx)))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.crop_up(window, cx)),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.crop_up(window, cx)),
-                ),
-        )
+                    .left(px(32.))
+                    .top(px(32.))
+                    .right(px(32.))
+                    .bottom(px(40.))
+                    .children(image.map(|image| {
+                        img(image)
+                            .absolute()
+                            .left(ix)
+                            .top(iy)
+                            .w(iw)
+                            .h(ih)
+                            .object_fit(ObjectFit::Fill)
+                    }))
+                    .child(dim(fx, fy, fw, by - fy))
+                    .child(dim(fx, by + bh, fw, fy + fh - by - bh))
+                    .child(dim(fx, by, bx - fx, bh))
+                    .child(dim(bx + bw, by, fx + fw - bx - bw, bh))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(bx)
+                            .top(by)
+                            .w(bw)
+                            .h(bh)
+                            .border_1()
+                            .border_color(hsla(0., 0., 1., 0.85)),
+                    )
+                    .child(handle(bx, by))
+                    .child(handle(bx + bw, by))
+                    .child(handle(bx, by + bh))
+                    .child(handle(bx + bw, by + bh))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event, _, cx| this.crop_down(event, cx)),
+                    )
+                    .on_mouse_move(cx.listener(|this, event, _, cx| this.crop_move(event, cx)))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| this.crop_up(window, cx)),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| this.crop_up(window, cx)),
+                    ),
+            )
     }
 }

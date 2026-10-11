@@ -112,6 +112,29 @@ fn shows_right_frame(ws: &Workspace) -> bool {
     }
 }
 
+/// Where the picture sits on screen: the whole frame in Crop, the image in
+/// the other modes.
+fn placement(ws: &Workspace, window: &Window) -> Option<Bounds<Pixels>> {
+    if ws.mode == Mode::Crop {
+        Some(ws.frame_rect())
+    } else {
+        ws.image_rect(window).map(|(rect, _)| rect)
+    }
+}
+
+fn moved(a: Option<Bounds<Pixels>>, b: Option<Bounds<Pixels>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let far = |x: Pixels, y: Pixels| f32::from(x - y).abs() > 1.;
+            far(a.origin.x, b.origin.x)
+                || far(a.origin.y, b.origin.y)
+                || far(a.size.width, b.size.width)
+                || far(a.size.height, b.size.height)
+        }
+        _ => true,
+    }
+}
+
 pub(super) async fn crop_switch(
     this: &This,
     cx: &mut AsyncWindowContext,
@@ -130,7 +153,7 @@ pub(super) async fn crop_switch(
     for round in 0..3 {
         for (mode, recrop) in [(Mode::Crop, false), (Mode::Color, true)] {
             let started = Instant::now();
-            let right = this
+            let first = this
                 .update_in(cx, |ws, window, cx| {
                     if recrop {
                         // A new crop made in Crop, as a drag of its corner does.
@@ -140,9 +163,10 @@ pub(super) async fn crop_switch(
                         ws.schedule_color_edit(window, cx);
                     }
                     ws.set_mode(mode, window, cx);
-                    shows_right_frame(ws)
+                    (shows_right_frame(ws), placement(ws, window))
                 })
-                .unwrap_or(false);
+                .ok();
+            let (right, placed) = first.unwrap_or((false, None));
             if !right {
                 problems.push(format!(
                     "switching to {} showed a frame drawn for the other view",
@@ -152,6 +176,18 @@ pub(super) async fn crop_switch(
             match until(this, cx, 20_000, Workspace::image_idle).await {
                 Some(_) => settles.push(("settle", ms(started.elapsed()))),
                 None => problems.push(format!("{} never showed sharp", mode.label())),
+            }
+            // Drawn where it ends up from the first frame: nothing shifts.
+            pause(cx, 50).await;
+            let settled = this
+                .update_in(cx, |ws, window, _| placement(ws, window))
+                .ok()
+                .flatten();
+            if moved(placed, settled) {
+                problems.push(format!(
+                    "switching to {} placed the picture at {placed:?}, then moved it to {settled:?}",
+                    mode.label()
+                ));
             }
         }
     }

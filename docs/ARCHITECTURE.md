@@ -68,7 +68,8 @@ naming is not an edit and moves no one. The desktop's History mode
 `history_panel.rs`) draws the tree a column per step and a row per branch,
 so lines never cross; only what is on screen is drawn, with previews
 (`Service::revision_preview`, cached under `previews/`) once zoomed in.
-Clicking a revision or a branch goes there; Back and Forward retrace the
+Clicking a revision goes there, as does choosing a branch in the branch
+finder (the palette, ⌘P, in History); Back and Forward retrace the
 revisions visited. Watching a session moves the person along with it as the
 document's file changes, until the person edits or moves on their own.
 

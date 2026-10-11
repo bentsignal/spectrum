@@ -90,8 +90,9 @@ impl Workspace {
             .map(|(w, h)| (w as f32, h as f32))
     }
 
-    /// The box the image fits in: the view less its padding.
-    fn image_box(&self) -> Bounds<Pixels> {
+    /// The box the image fits in: the view less its padding. The crop view
+    /// fits the whole frame in the same box, so switching moves nothing.
+    pub fn image_box(&self) -> Bounds<Pixels> {
         let area = *self.image.image_bounds.borrow();
         Bounds::new(
             area.origin + point(px(PAD), px(PAD)),

@@ -1,6 +1,6 @@
 //! Drawing the History view's tree: a line from each revision to the next,
 //! a dot for each revision (a preview once zoomed in far enough), the
-//! person's revision and the selected one marked, search matches lit, and
+//! person's revision and the selected one marked, and
 //! labels for each branch and for where each session is. Only what is on
 //! screen is drawn, so a history of thousands stays quick.
 use crate::{
@@ -9,13 +9,12 @@ use crate::{
     workspace::Workspace,
 };
 use gpui::{prelude::FluentBuilder, *};
-use spectrum_document::RevisionId;
-use std::collections::HashSet;
 
 /// Agents' revisions and places are drawn in this color; the person's in
 /// the text color.
 pub const AGENT: u32 = 0x8ab4f8;
-const MATCH: u32 = 0xf2c94c;
+/// The ring around the selected revision.
+const PICKED: u32 = 0xf2c94c;
 
 /// A revision's dot, in points.
 pub fn node_radius(zoom: f32) -> f32 {
@@ -71,7 +70,6 @@ impl Workspace {
         let (pan, zoom) = (view.pan, view.zoom);
         let current = shown.history.current;
         let selected = view.selected;
-        let matches: HashSet<RevisionId> = view.matches.iter().copied().collect();
         let cards = COLUMN * zoom >= PREVIEWS_FROM;
         let area = *self.history.bounds.borrow();
         let (width, height) = (f32::from(area.size.width), f32::from(area.size.height));
@@ -79,7 +77,6 @@ impl Workspace {
             (-margin..width + margin).contains(&x) && (-margin..height + margin).contains(&y)
         };
         let paint_layout = layout.clone();
-        let paint_matches = matches.clone();
         let tree = canvas(
             |_, _, _| {},
             move |bounds, _, window, _| {
@@ -137,9 +134,7 @@ impl Workspace {
                     {
                         continue;
                     }
-                    let color = if paint_matches.contains(&node.id) {
-                        rgb(MATCH)
-                    } else if node.agent {
+                    let color = if node.agent {
                         rgb(AGENT)
                     } else if node.name.is_some() {
                         rgb(TEXT)
@@ -159,7 +154,7 @@ impl Workspace {
                         ring(3., rgb(0xffffff), window);
                     }
                     if Some(node.id) == selected {
-                        ring(6., rgb(MATCH), window);
+                        ring(6., rgb(PICKED), window);
                     }
                 }
             },
@@ -177,11 +172,9 @@ impl Workspace {
                     continue;
                 }
                 let border = if Some(node.id) == selected {
-                    rgb(MATCH)
+                    rgb(PICKED)
                 } else if node.id == current {
                     rgb(0xffffff)
-                } else if matches.contains(&node.id) {
-                    rgb(MATCH)
                 } else if node.agent {
                     rgb(AGENT)
                 } else {

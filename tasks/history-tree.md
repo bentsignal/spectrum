@@ -62,6 +62,10 @@ Engine and CLI first, then the app on top of the same service calls.
   that began each); the sidebar shows the person's revision whole and sharp,
   keeping the last preview until the next is ready; watching starts at once
   (about 200 ms to show an agent's edit).
+- Second review: branches are found in the palette (⌘P in History, or "Find
+  a branch") instead of a sidebar list and search; typing a branch name is
+  never overwritten by a reload; Crop and Color draw in place from the first
+  frame (the crop view measures the same area as the image view).
   Next: keyboard navigation, previews when a canvas's linked images change,
   very wide histories.
 
