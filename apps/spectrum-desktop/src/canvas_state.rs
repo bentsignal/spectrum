@@ -55,6 +55,8 @@ pub struct CanvasState {
     pub creating: Option<((f32, f32), (f32, f32))>,
     /// Points of a lasso or brush stroke being drawn, in canvas space.
     pub points: Vec<(f32, f32)>,
+    /// How many of `points` the screen shows, for the interaction benchmark.
+    pub stroke_shown: usize,
     /// How the selection being drawn combines with the current one.
     pub select_mode: spectrum_canvas::SelectionCombineMode,
     /// The selection's outline, keyed by the selection it was traced from.
@@ -191,8 +193,14 @@ impl CanvasState {
             .edited_at
             .is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(150));
         // What the pixels depend on: the document's edits and anything
-        // outside it since (`forget_composites`), but not the zoom.
-        (self.edits.wrapping_mul(1 << 20) ^ self.outside, settled)
+        // outside it since (`forget_composites`), but not the zoom; while a
+        // stroke, drag, or linked image's edits show, every render.
+        let key = if self.transient() {
+            u64::MAX - self.version
+        } else {
+            self.edits.wrapping_mul(1 << 20) ^ self.outside
+        };
+        (key, settled)
     }
 
     /// Keeps a render of the canvas drawn as one image, the last two only.
@@ -223,6 +231,13 @@ impl CanvasState {
                 crate::retire::drop_later(old);
             }
         }
+    }
+
+    /// Whether what is drawn differs from the document for now: a stroke
+    /// being painted, a layer being dragged, or a linked image's unsaved
+    /// edits. Renders of these are never kept for reuse.
+    pub fn transient(&self) -> bool {
+        self.live_doc.is_some() || self.drag_preview.is_some() || self.shared_edit.is_some()
     }
 
     pub fn render_doc(&self) -> Document {
@@ -345,6 +360,7 @@ impl Workspace {
             tool: Default::default(),
             creating: None,
             points: Vec::new(),
+            stroke_shown: 0,
             select_mode: Default::default(),
             ants: Default::default(),
             ants_running: false,
@@ -607,7 +623,7 @@ impl Workspace {
         .min(whole);
         // A size shown a moment ago, as zooming back and forth shows it.
         let kept_key = (canvas.edits, density.to_bits());
-        let keeps = canvas.drag_preview.is_none();
+        let keeps = !canvas.transient();
         if keeps && let Some((_, kept)) = canvas.composites.iter().find(|(key, _)| *key == kept_key)
         {
             let kept = kept.clone();
@@ -643,6 +659,8 @@ impl Workspace {
             .detach();
         }
         // The move this render shows the dragged layer at.
+        // The points of a stroke being painted this render shows.
+        let stroke_shown = canvas.live_doc.as_ref().map(|_| canvas.points.len());
         let drag_shown = canvas.drag_preview.and_then(|(layer, transform)| {
             let saved = canvas.doc.layer(layer).ok()?.transform;
             Some((transform.x - saved.x, transform.y - saved.y))
@@ -672,6 +690,9 @@ impl Workspace {
                 canvas.rendered = version;
                 if drag_shown.is_some() {
                     canvas.drawn_drag = drag_shown;
+                }
+                if let Some(shown) = stroke_shown {
+                    canvas.stroke_shown = shown;
                 }
                 let mut pending = Vec::new();
                 match result {

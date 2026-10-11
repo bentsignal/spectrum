@@ -381,3 +381,55 @@ impl Workspace {
         }
     }
 }
+
+/// Where the split's moving layer is drawn for a layer now at `now`, in
+/// points from the canvas's corner (`scale` points per canvas unit, `pixel`
+/// device pixels per point): its render moved whole, or scaled about the
+/// layer while resizing. Rendered at the screen's own scale, a move shifts
+/// it by whole pixels and shows it pixel for pixel, exactly as the full
+/// render will place it; rendered at another scale (a capped render of a
+/// large canvas zoomed in), it is mapped by canvas units.
+pub fn place_split_layer(
+    split: &Split,
+    (min, max): LayerBounds,
+    scale: f32,
+    pixel: f32,
+) -> (Point<Pixels>, Size<Pixels>) {
+    let (base_min, base_max) = split.base;
+    let factor = (max[0] - min[0]) / (base_max[0] - base_min[0]).max(0.001);
+    let d = split.density;
+    let device = scale * pixel;
+    let pixels = split.parts[1]
+        .as_ref()
+        .map_or(size(DevicePixels(1), DevicePixels(1)), |alone| {
+            alone.size(0)
+        });
+    if (factor - 1.).abs() < 0.0005 && (d - device).abs() <= device * 0.002 {
+        let shift = [
+            ((min[0] - base_min[0]) * d).round(),
+            ((min[1] - base_min[1]) * d).round(),
+        ];
+        return (
+            point(
+                px((split.pixel[0] + shift[0]) / pixel),
+                px((split.pixel[1] + shift[1]) / pixel),
+            ),
+            size(
+                px(pixels.width.0 as f32 / pixel),
+                px(pixels.height.0 as f32 / pixel),
+            ),
+        );
+    }
+    let snap = |value: f32| px((value * pixel).round() / pixel);
+    let at = [
+        min[0] + (split.pixel[0] / d - base_min[0]) * factor,
+        min[1] + (split.pixel[1] / d - base_min[1]) * factor,
+    ];
+    (
+        point(snap(at[0] * scale), snap(at[1] * scale)),
+        size(
+            px(pixels.width.0 as f32 / d * factor * scale),
+            px(pixels.height.0 as f32 / d * factor * scale),
+        ),
+    )
+}

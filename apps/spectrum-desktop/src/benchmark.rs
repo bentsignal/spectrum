@@ -211,6 +211,13 @@ const BUDGETS: &[Budget] = &[
     budget("brush_undo", "settle", "max", 150.0, 300.0),
     budget("brush_undo", "main_thread_lag", "max", 60.0, 150.0),
     budget("brush_undo", "error_shown", "count", 0.0, 0.0),
+    // A stroke shows as it is painted: points not on screen yet.
+    budget("brush_undo", "stroke_lag", "p95", 4.0, 6.0),
+    // The same on a canvas drawn as one image.
+    budget("poster_brush", "stroke_lag", "p95", 8.0, 12.0),
+    budget("poster_brush", "settle", "max", 300.0, 450.0),
+    budget("poster_brush", "main_thread_lag", "max", 60.0, 150.0),
+    budget("poster_brush", "error_shown", "count", 0.0, 0.0),
     // A heavy canvas: twelve photos, text with effects, and shapes.
     budget("heavy_open", "elapsed", "max", 1200.0, 1500.0),
     budget("heavy_open", "main_thread_lag", "max", 60.0, 150.0),
@@ -242,6 +249,15 @@ const BUDGETS: &[Budget] = &[
     budget("poster_drag", "main_thread_lag", "max", 50.0, 150.0),
     budget("poster_drag", "settle", "max", 200.0, 300.0),
     budget("poster_drag", "error_shown", "count", 0.0, 0.0),
+    // The same zoomed in to 100%, where the poster renders at a capped size.
+    budget("poster_zoom_drag", "drag_lag", "p95", 2.0, 4.0),
+    // Zoomed in, a frame's move covers more of the screen, so the first
+    // frames trail a little further.
+    budget("poster_zoom_drag", "drag_lag", "max", 12.0, 16.0),
+    budget("poster_zoom_drag", "main_thread_lag", "p99", 20.0, 60.0),
+    budget("poster_zoom_drag", "main_thread_lag", "max", 50.0, 150.0),
+    budget("poster_zoom_drag", "settle", "max", 300.0, 450.0),
+    budget("poster_zoom_drag", "error_shown", "count", 0.0, 0.0),
     // The header's zoom from fit to 100% and back arrives sharp.
     budget("poster_zoom", "settle", "p95", 300.0, 600.0),
     budget("poster_zoom", "main_thread_lag", "max", 60.0, 150.0),
@@ -294,9 +310,14 @@ fn report(outcomes: &[Outcome], options: &Options) -> bool {
                     let limit = match options.profile {
                         Profile::Interactive => budget.interactive,
                         Profile::Software => budget.software,
-                        // Counts and distances stay strict; times allow
-                        // slower machines.
-                        Profile::Ci if budget.stat == "count" || budget.metric == "drag_lag" => {
+                        // Counts, and how far a dragged layer usually trails,
+                        // stay strict; times, and the first frames of a drag
+                        // (they trail while its parts render), allow slower
+                        // machines.
+                        Profile::Ci
+                            if budget.stat == "count"
+                                || (budget.metric == "drag_lag" && budget.stat != "max") =>
+                        {
                             budget.software
                         }
                         Profile::Ci => budget.software * CI_SLOWDOWN,

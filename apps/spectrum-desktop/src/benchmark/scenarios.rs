@@ -65,7 +65,7 @@ pub(super) async fn run_all(
         outcomes.push(text_size(this, cx, fixtures).await);
     }
     if wanted("brush_undo") {
-        outcomes.push(brush_undo(this, cx).await);
+        outcomes.push(brush_undo("brush_undo", this, cx).await);
     }
     if wanted("heavy_open") {
         // The Move tool, as after painting a person picks it to arrange.
@@ -93,6 +93,22 @@ pub(super) async fn run_all(
     }
     if wanted("poster_zoom") {
         outcomes.push(zoom_toggle("poster_zoom", this, cx, Workspace::canvas_drawn).await);
+    }
+    if wanted("poster_brush") {
+        outcomes.push(brush_undo("poster_brush", this, cx).await);
+        key(cx, "escape");
+        key(cx, "v");
+    }
+    if wanted("poster_zoom_drag") {
+        // At 100% the poster renders whole at a capped size; the photo is
+        // dragged over it from the middle of the view.
+        this.update_in(cx, |ws, window, cx| ws.zoom_any(Some(1.), window, cx))
+            .ok();
+        until(this, cx, 20_000, Workspace::canvas_drawn).await;
+        outcomes.push(canvas_drag("poster_zoom_drag", this, cx, fixtures.poster_layer).await);
+        this.update_in(cx, |ws, window, cx| ws.zoom_any(None, window, cx))
+            .ok();
+        until(this, cx, 20_000, Workspace::canvas_drawn).await;
     }
     if wanted("image_zoom") {
         outcomes.push(super::image_zoom::image_zoom(this, cx, fixtures).await);
@@ -328,7 +344,16 @@ async fn canvas_drag(
     let Some((start, before)) = read(this, cx, |ws| {
         let (min, _) = layer_bounds(ws, id)?;
         let x = ws.canvas.as_ref()?.doc.layer(id).ok()?.transform.x;
-        Some((on_screen(ws, min[0] + 60.0, min[1] + 60.0), x))
+        // Near the layer's corner, or zoomed in with that off screen, the
+        // middle of the view.
+        let corner = on_screen(ws, min[0] + 60.0, min[1] + 60.0);
+        let view = *ws.image.image_bounds.borrow();
+        let start = if view.contains(&corner) {
+            corner
+        } else {
+            view.center()
+        };
+        Some((start, x))
     })
     .flatten() else {
         return outcome(
@@ -441,7 +466,7 @@ async fn text_size(this: &This, cx: &mut AsyncWindowContext, fixtures: &Fixtures
 }
 
 /// Paints a stroke and undoes it, twice.
-async fn brush_undo(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
+async fn brush_undo(name: &'static str, this: &This, cx: &mut AsyncWindowContext) -> Outcome {
     crate::perf::drain();
     key(cx, "escape");
     key(cx, "b");
@@ -454,7 +479,7 @@ async fn brush_undo(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
     .unwrap_or(false);
     if !brush {
         return outcome(
-            "brush_undo",
+            name,
             vec![],
             Some("pressing B did not choose the Brush".into()),
         );
@@ -486,5 +511,5 @@ async fn brush_undo(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
             }
         }
     }
-    outcome("brush_undo", settles, problem)
+    outcome(name, settles, problem)
 }

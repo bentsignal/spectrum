@@ -163,7 +163,7 @@ impl Workspace {
 
     /// For the interaction benchmark: how far, in points, the dragged
     /// layer's pixels trail its outline this frame.
-    pub fn record_drag_lag(&self, scale: f32) {
+    pub fn record_drag_lag(&self, scale: f32, pixel: f32) {
         let Some(canvas) = &self.canvas else {
             return;
         };
@@ -179,21 +179,54 @@ impl Workspace {
         else {
             return;
         };
-        let synced = if crate::layer_cache::stackable(&canvas.doc) {
-            holder_of(&canvas.doc, drag.id).is_none_or(|holder| holder == drag.id)
-                || self.unit_drag_ready(drag.id)
+        let shown = canvas.drawn_drag.unwrap_or((0., 0.));
+        let behind = (dx - shown.0).hypot(dy - shown.1) * scale;
+        let lag = if crate::layer_cache::stackable(&canvas.doc) {
+            let apart = holder_of(&canvas.doc, drag.id).is_none_or(|holder| holder == drag.id)
+                || self.unit_drag_ready(drag.id);
+            if apart { 0. } else { behind }
         } else {
-            canvas
+            match canvas
                 .split
                 .as_ref()
-                .is_some_and(|split| split.layer == drag.id && split.ready().is_some())
-        };
-        let lag = if synced {
-            0.
-        } else {
-            let (shown_x, shown_y) = canvas.drawn_drag.unwrap_or((0., 0.));
-            (dx - shown_x).hypot(dy - shown_y) * scale
+                .filter(|split| split.layer == drag.id && split.ready().is_some())
+            {
+                // Drawn apart: how far the drawn render is from where the
+                // layer is, and how far its size is off.
+                Some(split) => self.bounds_now(drag.id).map_or(0., |(min, max)| {
+                    let (at, size) =
+                        crate::canvas_split::place_split_layer(split, (min, max), scale, pixel);
+                    let d = split.density;
+                    let expected = [
+                        (min[0] + split.pixel[0] / d - split.base.0[0]) * scale,
+                        (min[1] + split.pixel[1] / d - split.base.0[1]) * scale,
+                    ];
+                    let pixels = split.parts[1]
+                        .as_ref()
+                        .map_or(0., |alone| alone.size(0).width.0 as f32);
+                    let width = pixels / d * scale;
+                    (f32::from(at.x) - expected[0]).hypot(f32::from(at.y) - expected[1])
+                        + (f32::from(size.width) - width).abs()
+                }),
+                None => behind,
+            }
         };
         crate::perf::record_value("drag_lag", f64::from(lag));
+    }
+
+    /// For the interaction benchmark: how many points of the stroke being
+    /// painted are not on screen yet this frame.
+    pub fn record_stroke_lag(&self) {
+        let Some(canvas) = &self.canvas else {
+            return;
+        };
+        let painting = matches!(
+            canvas.tool,
+            crate::tools::Tool::Brush | crate::tools::Tool::Eraser
+        );
+        if painting && canvas.points.len() >= 2 {
+            let behind = canvas.points.len().saturating_sub(canvas.stroke_shown);
+            crate::perf::record_value("stroke_lag", behind as f64);
+        }
     }
 }

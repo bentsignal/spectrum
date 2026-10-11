@@ -553,7 +553,8 @@ impl Workspace {
         let area = *self.image.image_bounds.borrow();
         let (rect, scale) = self.canvas_rect();
         if crate::perf::enabled() {
-            self.record_drag_lag(scale);
+            self.record_drag_lag(scale, pixel);
+            self.record_stroke_lag();
         }
         let offset = rect.origin - area.origin;
         let offset = point(snap(f32::from(offset.x)), snap(f32::from(offset.y)));
@@ -589,43 +590,8 @@ impl Workspace {
             let moving = canvas.drag.is_some_and(|d| d.id == split.layer) || canvas.settling;
             let [below, alone, above] = split.ready().filter(|_| moving)?;
             let (min, max) = current(canvas, split.layer)?;
-            // Map the layer's render from where it was rendered to where the
-            // layer is now: moved whole, or scaled while resizing.
-            let (base_min, base_max) = split.base;
-            let factor = (max[0] - min[0]) / (base_max[0] - base_min[0]).max(0.001);
-            let d = split.density;
-            let (origin, layer_size) = if (factor - 1.).abs() < 0.0005 {
-                // Moving: shift the render by whole pixels and show it pixel
-                // for pixel, exactly as the full render will place it.
-                let shift = [
-                    ((min[0] - base_min[0]) * d).round(),
-                    ((min[1] - base_min[1]) * d).round(),
-                ];
-                let pixels = alone.size(0);
-                (
-                    point(
-                        px((split.pixel[0] + shift[0]) / pixel),
-                        px((split.pixel[1] + shift[1]) / pixel),
-                    ),
-                    size(
-                        px(pixels.width.0 as f32 / pixel),
-                        px(pixels.height.0 as f32 / pixel),
-                    ),
-                )
-            } else {
-                // Resizing: scale the render about the layer's bounds.
-                let at = [
-                    min[0] + (split.pixel[0] / d - base_min[0]) * factor,
-                    min[1] + (split.pixel[1] / d - base_min[1]) * factor,
-                ];
-                (
-                    point(snap(at[0] * scale), snap(at[1] * scale)),
-                    size(
-                        px(split.extent[0] * factor * scale),
-                        px(split.extent[1] * factor * scale),
-                    ),
-                )
-            };
+            let (origin, layer_size) =
+                crate::canvas_split::place_split_layer(split, (min, max), scale, pixel);
             Some(([below, alone, above], origin, layer_size))
         });
         // Stackable canvases: the background, then every layer from its own

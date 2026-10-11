@@ -253,8 +253,11 @@ impl Workspace {
             crate::retire::drop_later(old.image);
         }
         canvas.live_doc = Some(doc);
-        // Canvases drawn as one render show the stroke through it instead.
-        if !crate::layer_cache::stackable(&canvas.doc) {
+        // Canvases drawn as one render show the stroke through it instead;
+        // the others show the patch at once.
+        if crate::layer_cache::stackable(&canvas.doc) {
+            canvas.stroke_shown = canvas.points.len();
+        } else {
             canvas.bump_version();
             self.render_canvas(window, cx);
         }
@@ -269,6 +272,7 @@ impl Workspace {
                 command = None;
             }
             canvas.points.clear();
+            canvas.stroke_shown = 0;
             canvas.live_doc = None;
             canvas.erase_target = None;
             // The patch stays until the layer's new render arrives.
