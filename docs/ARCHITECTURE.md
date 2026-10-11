@@ -158,8 +158,9 @@ What keeps it fast:
   showed it draws from a 2048 px stand-in while its full render is made in
   the background.
 - **Compositing.** Canvases drawn as one image render in bands of rows on
-  every core. Shapes, text, paths, and paint draw only the part each band
-  needs, so a full-page shape zoomed in on a Retina screen never draws whole;
+  every core. Shapes, paths, and paint draw only the part each band needs,
+  so a full-page shape zoomed in on a Retina screen never draws whole; text
+  draws whole once and is kept between bands and renders;
   shadows and vector masks give the same pixels however a render is split.
   `SPECTRUM_BENCHMARK_SCREEN=2880x1800 GPUI_X11_SCALE_FACTOR=2` runs the
   Linux benchmark at a Retina screen's scale.

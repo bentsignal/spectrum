@@ -57,9 +57,11 @@ what is shown.
     every run since, alone and with its crate. Its child process's output
     is now in the failure message; read it if it fails again.
 12. **Zooms on a Retina screen.** A real Mac (2026-10-11) took 360-680 ms
-    to show a zoom sharp (budget 300). Shapes and text now draw only the part
-    each band needs (poster 2.3 s to 0.3 s at 2x on Linux). At 2x on Linux
-    the heavy canvas still takes about 1 s: its twelve photos' reduced copies
-    are resized whole for each zoom level, all at once. Check on the Mac.
+    to show a zoom sharp (budget 300). Shapes now draw only the part each
+    band needs (poster 681 to 201 ms on the Mac). Drawing text that way too
+    made the plain, heavy, and blend canvases slower on the Mac (to 620-880
+    ms) and was undone. The heavy canvas's twelve photos' reduced copies are
+    still resized whole for each zoom level. The user called zoom fine for
+    now (400 ms); revisit later, on every platform.
 
 The history tree view is next, in [revision lifecycle](revision-lifecycle.md).
