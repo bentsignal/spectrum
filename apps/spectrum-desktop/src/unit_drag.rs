@@ -21,6 +21,8 @@ pub struct UnitDrag {
     pub alone: Option<LayerImage>,
     /// The layer has moved, so the parts show instead of the unit's image.
     pub moved: bool,
+    /// The canvas's look version the parts were rendered for.
+    version: u64,
 }
 
 impl UnitDrag {
@@ -64,15 +66,16 @@ impl Workspace {
         let Some(holder) = holder_of(&doc, member).filter(|holder| *holder != member) else {
             return;
         };
-        // A press renders the parts afresh; the drag's moves then show them.
-        if moving
-            && let Some(drag) = canvas
-                .cache
-                .unit_drag
-                .as_mut()
-                .filter(|drag| drag.member == member)
+        // The drag's moves show the parts a press or selecting the layer
+        // rendered; a press renders them afresh only if the canvas changed.
+        let version = canvas.look_version();
+        if let Some(drag) = canvas
+            .cache
+            .unit_drag
+            .as_mut()
+            .filter(|drag| drag.member == member && (moving || drag.version == version))
         {
-            drag.moved = true;
+            drag.moved |= moving;
             return;
         }
         Self::drop_unit_drag(canvas);
@@ -94,6 +97,7 @@ impl Workspace {
             rest: None,
             alone: None,
             moved: moving,
+            version,
         });
         let mut unclipped = doc.clone();
         if let Some(layer) = unclipped.layers.iter_mut().find(|layer| layer.id == member) {
@@ -149,6 +153,33 @@ impl Workspace {
                 .ok();
             })
             .detach();
+        }
+    }
+
+    /// Selecting a layer renders the parts a drag draws it apart with (in
+    /// its unit, or over the rest of a canvas drawn as one image), so a drag
+    /// right after keeps up from its first frame.
+    pub fn prepare_selected_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.canvas.as_ref().and_then(|canvas| canvas.selected) else {
+            return;
+        };
+        if self
+            .canvas
+            .as_ref()
+            .is_some_and(|canvas| canvas.drag.is_none())
+        {
+            self.prepare_split(id, window, cx);
+        }
+        let Some(canvas) = &self.canvas else {
+            return;
+        };
+        let prepared = canvas
+            .cache
+            .unit_drag
+            .as_ref()
+            .is_some_and(|drag| drag.member == id);
+        if canvas.drag.is_none() && !prepared {
+            self.prepare_unit_drag(id, false, window, cx);
         }
     }
 

@@ -4,7 +4,6 @@
 //! as `spectrum canvas selection`.
 use crate::{tools::Tool, workspace::Workspace};
 use gpui::{prelude::*, *};
-use spectrum_assets::Service;
 use spectrum_canvas::{
     Command, Selection, SelectionCombineMode, SelectionMaskOutline, SelectionOutlinePath,
     SelectionOutlinePoint, SelectionOutlineRect, SelectionOutlineTransform, SelectionOutlineView,
@@ -129,22 +128,42 @@ impl Workspace {
             }
             return;
         }
+        let area = u64::from(canvas.doc.width) * u64::from(canvas.doc.height);
+        if area > spectrum_canvas::MAX_COLOR_SELECTION_PIXELS {
+            let error = anyhow::anyhow!(
+                "the magic wand works on canvases up to {} pixels; crop or resize this one first",
+                spectrum_canvas::MAX_COLOR_SELECTION_PIXELS
+            );
+            return self.notify_error(error, window, cx);
+        }
         canvas.wand_busy = true;
+        // It selects from the flattened canvas kept while it is the tool,
+        // flattening it here only if that is not ready.
+        let key = crate::eyedropper::look_key(canvas);
+        let flat = canvas
+            .pixels
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, pixels)| pixels.clone());
         let (root, doc, id, mode) = (
             store.root.clone(),
-            canvas.doc.clone(),
+            canvas.render_doc(),
             canvas.id,
             canvas.select_mode,
         );
         let tolerance = self.canvas_ui.tool_options.tolerance(cx);
         let contiguous = self.canvas_ui.tool_options.contiguous;
         let task = cx.background_executor().spawn(async move {
-            let mut resolved = doc.clone();
-            Service::open(&root)?.resolve(&mut resolved)?;
-            let picked = spectrum_canvas::magic_wand_selection(
-                &resolved, x as u32, y as u32, tolerance, contiguous, true,
+            let current = doc.selection.clone();
+            let pixels = match flat {
+                Some(pixels) => pixels,
+                None => crate::eyedropper::flatten(&root, doc)?,
+            };
+            let picked = spectrum_canvas::magic_wand_from_image(
+                &pixels, x as u32, y as u32, tolerance, contiguous, true,
             )?;
-            spectrum_canvas::combine_selections(doc.selection.as_ref(), &picked, mode)
+            let selection = spectrum_canvas::combine_selections(current.as_ref(), &picked, mode)?;
+            anyhow::Ok((selection, pixels))
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
@@ -154,7 +173,8 @@ impl Workspace {
                 };
                 canvas.wand_busy = false;
                 match result {
-                    Ok(selection) => {
+                    Ok((selection, pixels)) => {
+                        canvas.pixels = Some((key, pixels));
                         this.canvas_commands(vec![Command::SetSelection { selection }], window, cx);
                         this.animate_ants(window, cx);
                     }

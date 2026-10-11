@@ -22,6 +22,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+mod features;
 mod fixtures;
 mod image_zoom;
 mod scenarios;
@@ -97,6 +98,9 @@ pub struct Fixtures {
     pub poster_canvas: AssetId,
     /// The photo's layer on it.
     pub poster_layer: u64,
+    /// A canvas every tool is tried on, and a shape layer on it.
+    pub feature_canvas: AssetId,
+    pub feature_layer: u64,
 }
 
 /// Makes the benchmark library and points this process at it. Runs before
@@ -266,6 +270,18 @@ const BUDGETS: &[Budget] = &[
     budget("image_zoom", "settle", "p95", 400.0, 700.0),
     budget("image_zoom", "main_thread_lag", "max", 60.0, 150.0),
     budget("image_zoom", "error_shown", "count", 0.0, 0.0),
+    // Every tool, layer control, and image slider works, is saved, and
+    // undoes; each is drawn and saved quickly.
+    // Each is timed from the release or click to drawn sharply, then to
+    // saved, which waits for a 300 ms pause in editing by design.
+    budget("canvas_tools", "feature_shown", "max", 300.0, 400.0),
+    budget("canvas_tools", "feature_saved", "max", 700.0, 900.0),
+    budget("canvas_tools", "main_thread_lag", "max", 60.0, 150.0),
+    budget("canvas_tools", "error_shown", "count", 0.0, 0.0),
+    budget("image_sliders", "feature_shown", "max", 250.0, 300.0),
+    budget("image_sliders", "feature_saved", "max", 650.0, 700.0),
+    budget("image_sliders", "main_thread_lag", "max", 60.0, 150.0),
+    budget("image_sliders", "error_shown", "count", 0.0, 0.0),
 ];
 
 /// One scenario's measurements.

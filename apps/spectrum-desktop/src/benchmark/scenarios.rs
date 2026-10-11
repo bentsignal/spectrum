@@ -110,6 +110,12 @@ pub(super) async fn run_all(
             .ok();
         until(this, cx, 20_000, Workspace::canvas_drawn).await;
     }
+    if wanted("canvas_tools") {
+        outcomes.push(super::features::canvas_tools(this, cx, fixtures).await);
+    }
+    if wanted("image_sliders") {
+        outcomes.push(super::features::image_sliders(this, cx, fixtures).await);
+    }
     if wanted("image_zoom") {
         outcomes.push(super::image_zoom::image_zoom(this, cx, fixtures).await);
     }
@@ -165,12 +171,16 @@ pub(super) async fn until(
     }
 }
 
-fn read<R>(this: &This, cx: &mut AsyncWindowContext, f: impl FnOnce(&Workspace) -> R) -> Option<R> {
+pub(super) fn read<R>(
+    this: &This,
+    cx: &mut AsyncWindowContext,
+    f: impl FnOnce(&Workspace) -> R,
+) -> Option<R> {
     this.read_with(cx, |ws, _| f(ws)).ok()
 }
 
 /// Presses a key through the app's keymap, as the keyboard does.
-fn key(cx: &mut AsyncWindowContext, spec: &str) {
+pub(super) fn key(cx: &mut AsyncWindowContext, spec: &str) {
     let Ok(keystroke) = Keystroke::parse(spec) else {
         return;
     };
@@ -183,7 +193,7 @@ fn key(cx: &mut AsyncWindowContext, spec: &str) {
 /// Presses on the canvas at `path(0)`, moves along `path` for `ms` at 60
 /// moves a second, and lets go at `path(1)`: the calls the canvas's mouse
 /// listeners make.
-async fn canvas_drag_along(
+pub(super) async fn canvas_drag_along(
     this: &This,
     cx: &mut AsyncWindowContext,
     ms: u64,
@@ -220,12 +230,12 @@ async fn canvas_drag_along(
         .ok();
 }
 
-async fn click(this: &This, cx: &mut AsyncWindowContext, at: Point<Pixels>) {
+pub(super) async fn click(this: &This, cx: &mut AsyncWindowContext, at: Point<Pixels>) {
     canvas_drag_along(this, cx, 16, |_| at).await;
 }
 
 /// Moves a color slider to `value`, as dragging its handle does.
-fn set_color(this: &This, cx: &mut AsyncWindowContext, index: usize, value: f32) {
+pub(super) fn set_color(this: &This, cx: &mut AsyncWindowContext, index: usize, value: f32) {
     this.update_in(cx, |ws, window, cx| {
         ws.image.color[index].update(cx, |slider, cx| slider.set_value(value, window, cx));
         ws.color_slider_changed(index, window, cx);
@@ -234,7 +244,7 @@ fn set_color(this: &This, cx: &mut AsyncWindowContext, index: usize, value: f32)
 }
 
 /// Where a canvas point is in the window.
-fn on_screen(ws: &Workspace, x: f32, y: f32) -> Point<Pixels> {
+pub(super) fn on_screen(ws: &Workspace, x: f32, y: f32) -> Point<Pixels> {
     let (rect, scale) = ws.canvas_rect();
     rect.origin + point(px(x * scale), px(y * scale))
 }
@@ -362,6 +372,17 @@ async fn canvas_drag(
             Some("the photo layer is not on the canvas".into()),
         );
     };
+    // Picked in the layers panel first, as a person picks a layer under
+    // others before dragging it.
+    this.update_in(cx, |ws, window, cx| {
+        if let Some(canvas) = &mut ws.canvas {
+            canvas.selected = Some(id);
+        }
+        ws.sync_layer_controls(window, cx);
+    })
+    .ok();
+    // As long as a hand takes to reach the canvas from the panel.
+    pause(cx, 250).await;
     canvas_drag_along(this, cx, 1000, |t| start + point(px(160. * t), px(90. * t))).await;
     let settled = until(this, cx, 20_000, Workspace::canvas_drawn).await;
     let saved = until(this, cx, 5_000, Workspace::canvas_idle).await;

@@ -3,11 +3,12 @@
 //! the color under it, and its code in the color format chosen in the
 //! pickers. A click takes the color as the foreground (Option: background);
 //! Command+C copies the code. `spectrum canvas sample` reads the same color.
+//! The Magic wand selects from the same flattened copy.
 use crate::{color_text, theme::*, tools::Tool, workspace::Workspace};
 use gpui::{prelude::*, *};
 use image::RgbaImage;
 use spectrum_assets::Service;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 /// The loupe shows this many pixels across, each this many points wide.
 const SPAN: i64 = 11;
@@ -18,31 +19,62 @@ pub fn eyedropping(canvas: &crate::canvas_state::CanvasState) -> bool {
     canvas.tool == Tool::Eyedropper || crate::color_picker::sampling_active()
 }
 
+/// The flattened canvas is kept while it is the Eyedropper's or the Magic
+/// wand's to read.
+fn flattened_wanted(canvas: &crate::canvas_state::CanvasState) -> bool {
+    eyedropping(canvas) || canvas.tool == Tool::Wand
+}
+
+/// What the canvas looks like flattened, apart from its selection, so
+/// selecting keeps the flattened copy. Worked out once per change.
+pub fn look_key(canvas: &mut crate::canvas_state::CanvasState) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let version = canvas.look_version();
+    if let Some((at, key)) = canvas.look
+        && at == version
+    {
+        return key;
+    }
+    let doc = canvas.render_doc();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(&doc.layers)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    (doc.width, doc.height).hash(&mut hasher);
+    let key = hasher.finish();
+    canvas.look = Some((version, key));
+    key
+}
+
+/// The canvas flattened at one pixel per unit, as exported.
+pub fn flatten(root: &Path, doc: spectrum_canvas::Document) -> anyhow::Result<Arc<RgbaImage>> {
+    let mut resolved = doc;
+    Service::open(root)?.resolve(&mut resolved)?;
+    let sources = spectrum_canvas::prepare_export_raster_sources(
+        &resolved,
+        &spectrum_canvas::default_raster_backing_cache_root()?,
+    )?;
+    let image = spectrum_canvas::render_document_scaled_with_sources(&resolved, 1., &sources)?;
+    Ok(Arc::new(image.to_rgba8()))
+}
+
 impl Workspace {
-    /// Renders the flattened canvas for the loupe when it is missing or out
-    /// of date.
+    /// Renders the flattened canvas for the loupe and the wand when it is
+    /// missing or out of date.
     pub fn ensure_pixels(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(canvas), Ok(store)) = (&mut self.canvas, &self.store) else {
             return;
         };
-        let version = canvas.look_version();
-        let fresh = canvas.pixels.as_ref().is_some_and(|(v, _)| *v == version);
-        if !eyedropping(canvas) || fresh || canvas.pixels_busy {
+        let key = look_key(canvas);
+        let fresh = canvas.pixels.as_ref().is_some_and(|(k, _)| *k == key);
+        if !flattened_wanted(canvas) || fresh || canvas.pixels_busy {
             return;
         }
         canvas.pixels_busy = true;
         let (root, doc, id) = (store.root.clone(), canvas.render_doc(), canvas.id);
-        let task = cx.background_executor().spawn(async move {
-            let mut resolved = doc;
-            Service::open(&root)?.resolve(&mut resolved)?;
-            let sources = spectrum_canvas::prepare_export_raster_sources(
-                &resolved,
-                &spectrum_canvas::default_raster_backing_cache_root()?,
-            )?;
-            let image =
-                spectrum_canvas::render_document_scaled_with_sources(&resolved, 1., &sources)?;
-            anyhow::Ok(Arc::new(image.to_rgba8()))
-        });
+        let task = cx
+            .background_executor()
+            .spawn(async move { flatten(&root, doc) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             this.update_in(cx, |this, window, cx| {
@@ -52,7 +84,7 @@ impl Workspace {
                 canvas.pixels_busy = false;
                 match result {
                     Ok(pixels) => {
-                        canvas.pixels = Some((version, pixels));
+                        canvas.pixels = Some((key, pixels));
                         // The canvas may have changed while this rendered.
                         this.ensure_pixels(window, cx);
                         cx.notify();
@@ -82,11 +114,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let cached = self
-            .canvas
-            .as_ref()
-            .and_then(|c| c.pixels.as_ref())
-            .and_then(|(_, pixels)| pixel(pixels, at.0.floor() as i64, at.1.floor() as i64));
+        // Only a flattened copy of the canvas as it is now.
+        let cached = self.canvas.as_mut().and_then(|canvas| {
+            let key = look_key(canvas);
+            let (_, pixels) = canvas.pixels.as_ref().filter(|(k, _)| *k == key)?;
+            pixel(pixels, at.0.floor() as i64, at.1.floor() as i64)
+        });
         if let Some(color) = cached {
             return self.apply_picked(color, background, window, cx);
         }

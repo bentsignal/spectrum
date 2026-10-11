@@ -107,6 +107,8 @@ pub struct CanvasState {
     /// The flattened canvas at one pixel per unit, for the Eyedropper, and
     /// the look it was rendered from.
     pub pixels: Option<(u64, std::sync::Arc<image::RgbaImage>)>,
+    /// The look's key and the version it was taken at; see `look_key`.
+    pub look: Option<(u64, u64)>,
     pub pixels_busy: bool,
     /// Counts changes to the document; a reload only applies if none
     /// happened while it loaded.
@@ -135,6 +137,8 @@ pub struct CanvasState {
     edited_at: Option<std::time::Instant>,
     /// Reload from the library once saving finishes (after undo or redo).
     reload: bool,
+    /// A reload is reading the saved document.
+    loading: bool,
 }
 
 impl CanvasState {
@@ -383,6 +387,7 @@ impl Workspace {
             panning: None,
             space_held: false,
             pixels: None,
+            look: None,
             pixels_busy: false,
             edits: 0,
             version: 0,
@@ -397,6 +402,7 @@ impl Workspace {
             render_asked: None,
             edited_at: None,
             reload: true,
+            loading: false,
         });
         self.reload_canvas(window, cx);
     }
@@ -422,6 +428,7 @@ impl Workspace {
         let busy = canvas.saving
             || !canvas.queue.is_empty()
             || canvas.reload
+            || canvas.loading
             || !canvas.loaded
             || canvas.drag.is_some()
             || canvas.editing.is_some()
@@ -439,6 +446,7 @@ impl Workspace {
                 && canvas.rendered == canvas.version
                 && !canvas.cache.rendering()
                 && !canvas.reload
+                && !canvas.loading
                 // A zoom renders sharp once it settles, a frame after SETTLE.
                 && canvas.zoom_anim.is_none()
                 && canvas.zoomed_at.is_none_or(|at| {
@@ -452,10 +460,12 @@ impl Workspace {
     /// Whether every edit to the open canvas is drawn and saved.
     pub fn canvas_idle(&self) -> bool {
         self.canvas_drawn()
-            && self
-                .canvas
-                .as_ref()
-                .is_some_and(|canvas| canvas.queue.is_empty() && !canvas.saving)
+            && self.canvas.as_ref().is_some_and(|canvas| {
+                canvas.queue.is_empty()
+                    && !canvas.saving
+                    && !canvas.wand_busy
+                    && !canvas.pixels_busy
+            })
     }
 
     /// Shows the canvas's saved document again, after following an agent.
@@ -476,6 +486,7 @@ impl Workspace {
             return;
         }
         canvas.reload = false;
+        canvas.loading = true;
         let (root, id, edits) = (store.root.clone(), canvas.id, canvas.edits);
         let task = cx
             .background_executor()
@@ -487,6 +498,7 @@ impl Workspace {
                 let Some(canvas) = this.canvas.as_mut().filter(|c| c.id == id) else {
                     return;
                 };
+                canvas.loading = false;
                 match result {
                     // Newer local edits win; they are on their way to disk.
                     Ok((doc, revision)) if canvas.edits == edits => {
@@ -511,7 +523,13 @@ impl Workspace {
                         this.refresh_layers(window, cx);
                         this.sync_layer_controls(window, cx);
                     }
-                    Ok(_) => {}
+                    // Edits made while it loaded were saved on top of it, so
+                    // what is saved now is read again; an undo followed
+                    // quickly by another change is never lost from the screen.
+                    Ok(_) => {
+                        canvas.reload = true;
+                        this.reload_canvas(window, cx);
+                    }
                     Err(error) => this.notify_error(error, window, cx),
                 }
             })

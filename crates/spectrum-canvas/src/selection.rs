@@ -249,7 +249,9 @@ pub fn magic_wand_selection(
     magic_wand_from_image(&image, x, y, tolerance, contiguous, antialias)
 }
 
-fn magic_wand_from_image(
+/// The magic wand on an already flattened canvas, as the desktop app keeps
+/// one while the wand is the tool.
+pub fn magic_wand_from_image(
     image: &RgbaImage,
     x: u32,
     y: u32,

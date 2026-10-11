@@ -689,13 +689,20 @@ fn private_publish_lock_blocks_same_process_and_child_process() {
     let held = lock_private(&lock_path).unwrap();
     let second = private.open_file(LOCK_FILE, true).unwrap();
     assert!(second.try_lock_exclusive().is_err());
-    let status = Command::new(std::env::current_exe().unwrap())
+    let probe = Command::new(std::env::current_exe().unwrap())
         .arg("private_lock_probe_child")
         .arg("--nocapture")
         .env("SPECTRUM_PRIVATE_LOCK_CACHE", directory.path())
-        .status()
+        .output()
         .unwrap();
-    assert!(status.success());
+    // It once failed under a full workspace run; say why if it does again.
+    assert!(
+        probe.status.success(),
+        "lock probe failed ({}):\n{}{}",
+        probe.status,
+        String::from_utf8_lossy(&probe.stdout),
+        String::from_utf8_lossy(&probe.stderr)
+    );
     drop(held);
     second.try_lock_exclusive().unwrap();
 }

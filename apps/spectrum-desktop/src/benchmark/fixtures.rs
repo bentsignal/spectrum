@@ -84,6 +84,7 @@ pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Re
         heavy(&mut service, directory, project, &[photo, edited_photo])?;
     let blend_canvas = blend(&mut service, project, photo, photo_width)?;
     let (poster_canvas, poster_layer) = poster(&mut service, project, photo, photo_width)?;
+    let (feature_canvas, feature_layer) = features(&mut service, project, photo, photo_width)?;
     Ok(Fixtures {
         directory: directory.to_path_buf(),
         project,
@@ -97,7 +98,52 @@ pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Re
         blend_canvas,
         poster_canvas,
         poster_layer,
+        feature_canvas,
+        feature_layer,
     })
+}
+
+/// A canvas to try every tool on: the photo across its left side and a
+/// shape on the right. Returns it and the shape's layer.
+fn features(
+    service: &mut Service,
+    project: spectrum_library::ProjectId,
+    photo: spectrum_library::AssetId,
+    photo_width: u32,
+) -> Result<(spectrum_library::AssetId, u64)> {
+    let canvas = service.create_canvas("Features".into(), 1600, 1000)?;
+    service.library.add_to_project(project, &[canvas.id])?;
+    let layer = service.place(canvas.id, photo)?;
+    let scale = 900. / photo_width as f32;
+    let outputs = service.edit_canvas(
+        canvas.id,
+        vec![
+            Command::SetTransform {
+                id: layer,
+                transform: Transform {
+                    x: 0.,
+                    y: 0.,
+                    scale_x: scale,
+                    scale_y: scale,
+                    rotation: 0.,
+                },
+            },
+            Command::AddRectangle {
+                name: Some("Shape".into()),
+                width: 500,
+                height: 400,
+                color: [90, 160, 220, 255],
+                corner_radius: 20.,
+                x: 1000.,
+                y: 120.,
+            },
+        ],
+    )?;
+    let shape = *outputs
+        .last()
+        .and_then(|output| output.layer_ids.first())
+        .context("the shape was not added")?;
+    Ok((canvas.id, shape))
 }
 
 /// A movie poster: a tall canvas with the photo in a frame, a color grade

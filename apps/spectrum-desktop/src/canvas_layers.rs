@@ -57,6 +57,7 @@ impl Render for LayerRow {
 impl Workspace {
     /// Moves Style controls to the selected layer's values.
     pub fn sync_layer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prepare_selected_drag(window, cx);
         let Some(layer) = self.selected_layer() else {
             return;
         };

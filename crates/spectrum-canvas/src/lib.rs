@@ -128,7 +128,9 @@ pub use alignment::{
 };
 
 mod selection;
-pub use selection::{MAX_COLOR_SELECTION_PIXELS, Selection, magic_wand_selection};
+pub use selection::{
+    MAX_COLOR_SELECTION_PIXELS, Selection, magic_wand_from_image, magic_wand_selection,
+};
 
 mod layer_erase;
 mod pixel_masks;

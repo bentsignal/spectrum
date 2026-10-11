@@ -88,7 +88,10 @@ canvas is slow to settle, or an error is shown (`software` budgets on Linux,
 open, and idle check does (`crates/spectrum-assets/tests/interaction_costs.rs`).
 A slow interaction is a failed run like a failing test: find and fix the
 cause. Never raise a budget to make a run pass without the user's approval.
-New editing features add their interaction to the benchmark.
+New editing features add their interaction to the benchmark, and new tools,
+layer controls, and sliders join its feature checks
+(`apps/spectrum-desktop/src/benchmark/features.rs`), which check that each
+works, is saved, undoes, and redoes.
 
 If any command fails, fix the cause and restart the complete loop from the
 formatter. Continue until all four commands pass. Do not commit or hand off a

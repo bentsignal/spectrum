@@ -126,7 +126,10 @@ Three layers keep interaction fast, and all run in CI:
   a text size drag, and brush strokes with undo through the app's handlers,
   and fails when an edit is slow to reach the screen, the main thread stalls,
   a dragged layer trails its outline, a canvas or image is slow to come back
-  sharp, or an error shows. Budgets are per profile:
+  sharp, or an error shows. It also uses every canvas tool, the layer
+  controls, and every image slider on a feature canvas and the photo, and
+  fails when one does nothing, differs on disk from what is shown, will not
+  undo and redo, or is slow to be drawn and saved. Budgets are per profile:
   `interactive` (a GPU), `software` (Linux with software rendering), and `ci`.
   `--only <scenario,...>` runs a few while working on them. With
   `SPECTRUM_PERF_LOG=<file>` an ordinary session writes the same measurements.

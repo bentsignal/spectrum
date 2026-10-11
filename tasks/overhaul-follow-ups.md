@@ -48,6 +48,10 @@ what is shown.
    frames of the drag trail by a few points while its parts render.
 10. **GPUI frees a texture under a pending upload** if an image is dropped
     the frame after it is first drawn (`blade_atlas.rs`); Spectrum frees
-    images 250 ms after they stop showing (`retire.rs`) to avoid it.
+    images two frames after they stop showing (`retire.rs`) to avoid it.
+11. **`private_publish_lock_blocks_same_process_and_child_process`** failed
+    once in a full `cargo test --workspace` run on 2026-10-11 and passed in
+    every run since, alone and with its crate. Its child process's output
+    is now in the failure message; read it if it fails again.
 
 The history tree view is next, in [revision lifecycle](revision-lifecycle.md).
