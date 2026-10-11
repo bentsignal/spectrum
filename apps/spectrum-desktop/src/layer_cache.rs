@@ -38,6 +38,10 @@ pub struct LayerCache {
     failed: HashMap<u64, String>,
     /// Each layer's latest full-quality key and when it last changed.
     pub changed: HashMap<u64, (String, Instant)>,
+    /// The change each layer's last measured render showed, so a later
+    /// render of the same change (back on screen, a new zoom) is not
+    /// counted as that change reaching the screen again.
+    measured: HashMap<u64, Instant>,
     /// The sharp part on screen of layers too large to render whole at the
     /// canvas's scale, drawn over their images (`layer_detail`).
     pub details: HashMap<u64, LayerImage>,
@@ -450,7 +454,9 @@ impl Workspace {
                         return;
                     };
                     canvas.cache.busy.remove(&layer_id);
-                    if let Some(at) = changed_at {
+                    if let Some(at) = changed_at
+                        && canvas.cache.measured.insert(layer_id, at) != Some(at)
+                    {
                         crate::perf::record("canvas_edit_to_screen", at.elapsed());
                     }
                     let crate::canvas_split::LayerRender {

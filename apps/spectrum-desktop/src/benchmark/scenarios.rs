@@ -352,16 +352,22 @@ async fn canvas_drag(
 ) -> Outcome {
     crate::perf::drain();
     let Some((start, before)) = read(this, cx, |ws| {
-        let (min, _) = layer_bounds(ws, id)?;
+        let (min, max) = layer_bounds(ws, id)?;
         let x = ws.canvas.as_ref()?.doc.layer(id).ok()?.transform.x;
         // Near the layer's corner, or zoomed in with that off screen, the
-        // middle of the view.
+        // middle of the part of the layer in view, wherever the window's
+        // size puts it.
         let corner = on_screen(ws, min[0] + 60.0, min[1] + 60.0);
         let view = *ws.image.image_bounds.borrow();
+        let layer =
+            Bounds::from_corners(on_screen(ws, min[0], min[1]), on_screen(ws, max[0], max[1]));
+        let seen = view.intersect(&layer);
         let start = if view.contains(&corner) {
             corner
+        } else if seen.size.width > px(0.) && seen.size.height > px(0.) {
+            seen.center()
         } else {
-            view.center()
+            return None;
         };
         Some((start, x))
     })

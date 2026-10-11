@@ -40,7 +40,10 @@ what is shown.
    report) take under 5 ms, so the time is inside GPUI's drawing; a stall of
    about one second matches `CAMetalLayer.nextDrawable` waiting for a busy
    GPU (GPUI's `metal_renderer.rs`). Check it on a real Mac with
-   `spectrum-desktop --benchmark --strict --only heavy_open`.
+   `spectrum-desktop --benchmark --strict --only heavy_open`. On 2026-10-11
+   the runner also stalled 618 ms in `canvas_tools` (handlers under 5 ms)
+   and scrubbed the edited photo at 269 ms p95 (180 budget); both pass on
+   Linux and need the same real-Mac run.
 
 9. **Dragging on a canvas drawn as one image** (one with blend modes) draws
    the moving layer apart over the rest: a layer that blends, or layers
