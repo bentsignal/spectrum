@@ -103,6 +103,16 @@ impl<M: Model> Workspace<M> {
         Durable::<M>::history_of(path, session)
     }
 
+    /// Names a revision, or clears its name; not an edit.
+    pub fn name_revision(path: &Path, revision: RevisionId, name: Option<&str>) -> Result<()> {
+        Durable::<M>::name_revision(path, revision, name)
+    }
+
+    /// The document at any revision, without moving any session.
+    pub fn document_at(path: &Path, revision: RevisionId) -> Result<M::Document> {
+        Durable::<M>::document_at(path, revision)
+    }
+
     /// Moves a person following an agent to the agent's newest revision.
     pub fn follow(path: &Path, person: SessionId) -> Result<CollaborationSync> {
         Durable::<M>::follow(path, person)

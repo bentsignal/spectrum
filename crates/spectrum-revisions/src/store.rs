@@ -19,6 +19,8 @@ use crate::{
 };
 
 mod durability;
+mod names;
+pub use names::MAX_NAME as MAX_REVISION_NAME;
 mod rows;
 pub(crate) use rows::{actor_kind, revision_id, session_in};
 use rows::{project_info_in, require_revision_in, revision_from_row, revision_in, session_id};

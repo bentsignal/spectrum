@@ -30,6 +30,10 @@ mod grid;
 mod guides;
 mod header;
 mod histogram;
+mod history_layout;
+mod history_paint;
+mod history_panel;
+mod history_view;
 mod home;
 mod icons;
 mod image_zoom;
@@ -82,6 +86,7 @@ gpui::actions!(
         Mode3,
         Mode4,
         Mode5,
+        Mode6,
         OpenPalette,
         SelectAll,
         ClearSelection,
@@ -170,6 +175,7 @@ fn main() -> std::process::ExitCode {
                 KeyBinding::new("secondary-3", Mode3, None),
                 KeyBinding::new("secondary-4", Mode4, None),
                 KeyBinding::new("secondary-5", Mode5, None),
+                KeyBinding::new("secondary-6", Mode6, None),
                 KeyBinding::new("secondary-k", OpenPalette, None),
                 KeyBinding::new("secondary-a", SelectAll, None),
                 KeyBinding::new("escape", ClearSelection, None),

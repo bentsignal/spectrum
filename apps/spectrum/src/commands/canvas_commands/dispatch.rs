@@ -351,8 +351,10 @@ pub(super) fn semantic_commands(command: CliCommand, document: &Document) -> Res
         #[cfg(test)]
         CliCommand::Init { .. } => unreachable!(),
         CliCommand::List
-        | CliCommand::History
+        | CliCommand::History { .. }
         | CliCommand::HistoryJump { .. }
+        | CliCommand::HistoryName { .. }
+        | CliCommand::HistoryPreview { .. }
         | CliCommand::FontList { .. }
         | CliCommand::FontUsage { .. }
         | CliCommand::LayerCopy(..)

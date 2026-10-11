@@ -98,9 +98,11 @@ person's, because revisions are immutable and the person's place moves only by
 their own choice. Working together, the person follows the agent's revisions
 and watches them land until they edit, which branches. Working separately,
 the person never moves. The person can jump to any revision, an agent's
-included, and editing there branches from it. Next: a history tree view for
-every asset kind, showing each session's branch, so the person can watch an
-agent live and jump back to their own work. Remaining work is in
+included, and editing there branches from it. The History mode shows each
+image's and canvas's tree, where each session is, names on revisions
+(checkpoints that also name their branch), and search; the person can watch
+a session live and go back to their own work. Remaining work is in
+[history tree](../tasks/history-tree.md) and
 [revision lifecycle](../tasks/revision-lifecycle.md).
 
 ## Current product work

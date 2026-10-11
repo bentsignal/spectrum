@@ -362,11 +362,35 @@ enum CliCommand {
         x: u32,
         y: u32,
     },
-    /// Show the canvas's revisions and where each session is.
-    History,
-    /// Return to a revision from `history`.
+    /// Show the canvas's revisions, their names, and where each session is.
+    History {
+        /// Also list the revisions whose name, description, or author
+        /// contains this.
+        #[arg(long)]
+        search: Option<String>,
+    },
+    /// Return to a revision from `history`, or go to where another session
+    /// is, such as an agent's. Editing there branches.
     HistoryJump {
+        #[arg(required_unless_present = "to_session")]
+        revision: Option<spectrum_document::RevisionId>,
+        #[arg(long, conflicts_with = "revision")]
+        to_session: Option<SessionId>,
+    },
+    /// Name a revision, which marks a checkpoint and names its branch, or
+    /// clear its name. Not an edit: no one moves.
+    HistoryName {
         revision: spectrum_document::RevisionId,
+        name: Option<String>,
+        #[arg(long, conflicts_with = "name")]
+        clear: bool,
+    },
+    /// Render a small preview of a revision and print where it is.
+    HistoryPreview {
+        revision: spectrum_document::RevisionId,
+        /// Pixels on the long edge.
+        #[arg(long, default_value_t = 256)]
+        size: u32,
     },
     /// Execute one Command JSON object, or an array applied as one edit.
     Run {
@@ -459,24 +483,29 @@ fn run(cli: Cli) -> Result<Value> {
                 json!({"ok": true, "x": x, "y": y, "color": format!("{r:02x}{g:02x}{b:02x}{a:02x}")}),
             )
         }
-        CliCommand::History => {
+        CliCommand::History { search } => {
             let history = match cli.session {
                 Some(session) => Workspace::history_of(&cli.project, session)?,
                 None => Workspace::open(&cli.project, cli_actor(), SessionId::new())?
                     .history()?
                     .context("the canvas has no history")?,
             };
-            Ok(json!({
-                "ok": true,
-                "root": history.root,
-                "current": history.current,
-                "revisions": history.revisions,
-                "sessions": history.sessions,
-            }))
+            Ok(super::history::output(&history, search.as_deref()))
         }
-        CliCommand::HistoryJump { revision } => {
+        CliCommand::HistoryJump {
+            revision,
+            to_session,
+        } => {
+            let revision = match (revision, to_session) {
+                (Some(revision), _) => revision,
+                (None, Some(session)) => Workspace::cursor_of(&cli.project, session)?,
+                (None, None) => bail!("choose a revision or --to-session"),
+            };
             edit(&cli.project, cli.session)?.move_to(revision)?;
             Ok(json!({"ok": true, "action": "history_jump", "revision": revision}))
+        }
+        CliCommand::HistoryName { .. } | CliCommand::HistoryPreview { .. } => {
+            unreachable!("run through the library service in commands::history")
         }
         CliCommand::Schema => Ok(schema()),
         CliCommand::Benchmark { strict, profile } => benchmark(strict, profile),

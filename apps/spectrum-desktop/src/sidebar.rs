@@ -53,7 +53,7 @@ impl Workspace {
             .when(!modes.is_empty(), |el| el.child(self.mode_switcher(cx)))
     }
 
-    pub fn sidebar(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match (self.place, self.mode) {
             (Place::Home, Mode::Projects) => self.projects_sidebar(cx).into_any_element(),
             (Place::Home, _) => self.library_sidebar(cx).into_any_element(),
@@ -65,6 +65,7 @@ impl Workspace {
             (_, Mode::Overview) => self.tool_sidebar(cx).into_any_element(),
             (_, Mode::Canvas) => self.canvas_settings(cx).into_any_element(),
             (_, Mode::Info) => self.info_sidebar(cx).into_any_element(),
+            (_, Mode::History) => self.history_sidebar(window, cx).into_any_element(),
             _ => self.layers_sidebar(cx).into_any_element(),
         };
         // Every canvas mode starts with the tool, so it can change from any

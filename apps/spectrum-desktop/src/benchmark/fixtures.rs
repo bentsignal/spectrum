@@ -30,7 +30,7 @@ pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Re
     let photo_width = spectrum_image::Image::import(&photo_path)?.width;
     let mut service = Service::open(library)?;
     let project = service.library.create_project("Benchmark")?.id;
-    let (_, assets) = service.import_into(vec![photo_path, large_path], Some(project))?;
+    let (_, assets) = service.import_into(vec![photo_path.clone(), large_path], Some(project))?;
     let [photo, edited_photo] = [0, 1].map(|index| assets.get(index).map(|asset| asset.id));
     let photo = photo.context("the photo was not imported")?;
     let edited_photo = edited_photo.context("the large photo was not imported")?;
@@ -85,6 +85,7 @@ pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Re
     let blend_canvas = blend(&mut service, project, photo, photo_width)?;
     let (poster_canvas, poster_layer) = poster(&mut service, project, photo, photo_width)?;
     let (feature_canvas, feature_layer) = features(&mut service, project, photo, photo_width)?;
+    let history = super::history::make(&mut service, library, project, &photo_path)?;
     Ok(Fixtures {
         directory: directory.to_path_buf(),
         project,
@@ -100,6 +101,7 @@ pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Re
         poster_layer,
         feature_canvas,
         feature_layer,
+        history,
     })
 }
 

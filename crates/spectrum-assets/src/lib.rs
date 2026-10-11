@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub use spectrum_library::default_root;
 mod display;
 mod export;
+mod history;
 mod sessions;
 pub mod thumbnail;
 pub mod trash;

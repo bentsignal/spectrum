@@ -62,21 +62,26 @@ impl Workspace {
             .when(self.image_zooms(), |el| {
                 el.child(self.zoom_control(window, cx))
             })
-            .when(matches!(self.open, Open::Image(_)), |el| {
-                el.child(
-                    Button::new("compare")
-                        .ghost()
-                        .small()
-                        .label("Compare")
-                        .selected(self.image.compare)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.image.compare = !this.image.compare;
-                            cx.notify();
-                        })),
-                )
-            })
             .when(
-                matches!(self.open, Open::Canvas(_)) && self.canvas.is_some(),
+                matches!(self.open, Open::Image(_)) && self.mode != Mode::History,
+                |el| {
+                    el.child(
+                        Button::new("compare")
+                            .ghost()
+                            .small()
+                            .label("Compare")
+                            .selected(self.image.compare)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.image.compare = !this.image.compare;
+                                cx.notify();
+                            })),
+                    )
+                },
+            )
+            .when(
+                matches!(self.open, Open::Canvas(_))
+                    && self.canvas.is_some()
+                    && self.mode != Mode::History,
                 |el| {
                     let snapping = self.canvas.as_ref().is_some_and(|c| c.doc.snapping_enabled);
                     el.child(self.zoom_control(window, cx))

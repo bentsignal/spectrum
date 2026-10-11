@@ -109,15 +109,39 @@ enum CliCommand {
     },
     /// Remove every edit.
     Reset,
-    /// Show the image's revisions and where each session is.
-    History,
+    /// Show the image's revisions, their names, and where each session is.
+    History {
+        /// Also list the revisions whose name, description, or author
+        /// contains this.
+        #[arg(long)]
+        search: Option<String>,
+    },
     /// Go back one edit.
     Undo,
     /// Go forward one edit.
     Redo,
-    /// Return to a revision from `history`.
+    /// Return to a revision from `history`, or go to where another session
+    /// is, such as an agent's. Editing there branches.
     HistoryJump {
+        #[arg(required_unless_present = "to_session")]
+        revision: Option<spectrum_document::RevisionId>,
+        #[arg(long, conflicts_with = "revision")]
+        to_session: Option<spectrum_document::SessionId>,
+    },
+    /// Name a revision, which marks a checkpoint and names its branch, or
+    /// clear its name. Not an edit: no one moves.
+    HistoryName {
         revision: spectrum_document::RevisionId,
+        name: Option<String>,
+        #[arg(long, conflicts_with = "name")]
+        clear: bool,
+    },
+    /// Render a small preview of a revision and print where it is.
+    HistoryPreview {
+        revision: spectrum_document::RevisionId,
+        /// Pixels on the long edge.
+        #[arg(long, default_value_t = 256)]
+        size: u32,
     },
     /// Execute image Command JSON: one object or an array.
     Run { json: String },
@@ -265,20 +289,25 @@ fn run(service: &mut Service, id: AssetId, command: CliCommand) -> Result<Value>
         CliCommand::Get | CliCommand::Schema | CliCommand::Benchmark { .. } => {
             return Ok(json!({"ok": true, "asset": id, "image": service.image(id)?}));
         }
-        CliCommand::History => {
-            let history = service.history(id)?;
-            return Ok(json!({
-                "ok": true,
-                "asset": id,
-                "root": history.root,
-                "current": history.current,
-                "revisions": history.revisions,
-                "sessions": history.sessions,
-            }));
+        CliCommand::History { search } => {
+            let mut output = super::history::output(&service.history(id)?, search.as_deref());
+            output["asset"] = json!(id);
+            return Ok(output);
         }
-        CliCommand::HistoryJump { revision } => {
+        CliCommand::HistoryJump {
+            revision,
+            to_session,
+        } => {
+            let revision = match (revision, to_session) {
+                (Some(revision), _) => revision,
+                (None, Some(session)) => service.session_place(id, session)?,
+                (None, None) => bail!("choose a revision or --to-session"),
+            };
             service.move_to(id, revision)?;
             return Ok(json!({"ok": true, "action": "history_jump", "revision": revision}));
+        }
+        CliCommand::HistoryName { .. } | CliCommand::HistoryPreview { .. } => {
+            unreachable!("run through the library service in commands::history")
         }
         CliCommand::Edit(arguments) => service.edit_image(
             id,

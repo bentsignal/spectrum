@@ -56,6 +56,8 @@ pub struct History {
     pub current: RevisionId,
     pub revisions: Vec<Revision>,
     pub sessions: Vec<Session>,
+    /// Named revisions (checkpoints, which also name their branch).
+    pub names: Vec<(RevisionId, String)>,
 }
 
 struct Families<M>(PhantomData<M>);
@@ -285,6 +287,36 @@ impl<M: Model> Durable<M> {
         let info = checked_info::<M>(&store, path)?;
         let cursor = session_cursor(&store, &info, session)?;
         Self::reader(path, store, info, cursor)?.history()
+    }
+
+    /// Names a revision, or with `None` clears its name. Naming is not an
+    /// edit: no session moves and no revision is added.
+    pub fn name_revision(path: &Path, revision: RevisionId, name: Option<&str>) -> Result<()> {
+        let mut store = LiveRevisionStore::open(path, &cache_root(path)?)?;
+        let info = checked_info::<M>(&store, path)?;
+        let found = store
+            .store()
+            .revision(revision)?
+            .filter(|found| found.track_id == info.default_track_id);
+        if found.is_none() {
+            bail!("{} has no revision {revision}", path.display());
+        }
+        store.mutate(|store| store.name_revision(revision, name))?;
+        Ok(())
+    }
+
+    /// The document at any revision, read without moving any session.
+    pub fn document_at(path: &Path, revision: RevisionId) -> Result<M::Document> {
+        let store = LiveRevisionStore::open(path, &cache_root(path)?)?;
+        let info = checked_info::<M>(&store, path)?;
+        let found = store
+            .store()
+            .revision(revision)?
+            .filter(|found| found.track_id == info.default_track_id);
+        if found.is_none() {
+            bail!("{} has no revision {revision}", path.display());
+        }
+        Self::reader(path, store, info, revision)?.load_document()
     }
 
     /// Moves a person following an agent to the agent's newest revision, or
@@ -540,11 +572,21 @@ impl<M: Model> Durable<M> {
     }
 
     pub fn history(&self) -> Result<History> {
+        let revisions = self.store.store().revisions_for_track(self.track)?;
+        let on_track: HashSet<RevisionId> = revisions.iter().map(|r| r.id).collect();
+        let names = self
+            .store
+            .store()
+            .revision_names()?
+            .into_iter()
+            .filter(|(revision, _)| on_track.contains(revision))
+            .collect();
         Ok(History {
             root: self.info.root_revision,
             current: self.cursor,
-            revisions: self.store.store().revisions_for_track(self.track)?,
+            revisions,
             sessions: self.store.store().sessions_on_track(self.track)?,
+            names,
         })
     }
 

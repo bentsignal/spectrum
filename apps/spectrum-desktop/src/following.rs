@@ -9,6 +9,8 @@ use spectrum_library::AssetId;
 use std::time::Duration;
 
 const EVERY: Duration = Duration::from_millis(1500);
+/// Checks come this often while watching a session, so it shows live.
+const WATCHING: Duration = Duration::from_millis(150);
 
 /// The stamp of an asset's document file, which changes whenever anyone
 /// saves the asset.
@@ -30,7 +32,12 @@ impl Workspace {
     pub fn start_following(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
             loop {
-                cx.background_executor().timer(EVERY).await;
+                let watching = this
+                    .update(cx, |this, _| this.history.watching.is_some())
+                    .unwrap_or(false);
+                cx.background_executor()
+                    .timer(if watching { WATCHING } else { EVERY })
+                    .await;
                 if this
                     .update_in(cx, |this, window, cx| this.check_following(window, cx))
                     .is_err()
@@ -63,12 +70,19 @@ impl Workspace {
         // Only a document whose file changed can hold an agent's new work;
         // checking costs one file stat until then.
         let stamp = document_stamp(&store.service, id);
+        let root = store.root.clone();
         if stamp.is_some() && self.followed_stamp == Some((id, stamp)) {
             return;
         }
         self.followed_stamp = Some((id, stamp));
+        // Someone saved: the history view shows it, and watching follows it.
+        if self.mode == crate::workspace::Mode::History {
+            self.load_history(window, cx);
+        }
+        if self.history.watching.is_some() {
+            return self.check_watching(window, cx);
+        }
         self.following = true;
-        let root = store.root.clone();
         let task = cx.background_executor().spawn(async move {
             let started = std::time::Instant::now();
             let result = Service::open(&root)?.follow(id);

@@ -52,4 +52,4 @@ pub use model::{
 #[cfg(feature = "storage")]
 pub use publish::publish_noreplace;
 #[cfg(feature = "storage")]
-pub use store::{Compatibility, RevisionStore};
+pub use store::{Compatibility, MAX_REVISION_NAME, RevisionStore};

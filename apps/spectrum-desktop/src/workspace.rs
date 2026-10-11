@@ -1,6 +1,6 @@
 use crate::{
     ClearSelection, CopyEdits, CopyLayer, DeleteSelection, Deselect, EditText, InvertSelection,
-    Mode1, Mode2, Mode3, Mode4, Mode5, NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar,
+    Mode1, Mode2, Mode3, Mode4, Mode5, Mode6, NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar,
     NudgeRight, NudgeRightFar, NudgeUp, NudgeUpFar, OpenPalette, OpenTools, PasteEdits, PasteLayer,
     Redo, Section1, Section2, Section3, Section4, Section5, Section6, SelectAll, ToggleGuides,
     ToggleSnapping, Undo, controls::in_sidebar, store::Store, theme::*,
@@ -48,6 +48,7 @@ pub enum Mode {
     Style,
     Info,
     Canvas,
+    History,
 }
 
 impl Mode {
@@ -62,11 +63,13 @@ impl Mode {
             Mode::Layers => "Layers",
             Mode::Overview => "Overview",
             Mode::Canvas => "Canvas",
+            Mode::History => "History",
         }
     }
 
-    pub fn icon(self) -> IconName {
-        match self {
+    pub fn icon(self) -> gpui_component::Icon {
+        let name = match self {
+            Mode::History => return crate::icons::icon("history"),
             Mode::Projects => IconName::FolderClosed,
             Mode::Assets => IconName::LayoutDashboard,
             Mode::Color => IconName::Sun,
@@ -76,7 +79,8 @@ impl Mode {
             Mode::Layers => IconName::GalleryVerticalEnd,
             Mode::Overview => IconName::Inspector,
             Mode::Canvas => IconName::Frame,
-        }
+        };
+        gpui_component::Icon::new(name)
     }
 }
 
@@ -162,6 +166,8 @@ pub struct Workspace {
     pub followed_stamp: Option<(AssetId, Option<FileStamp>)>,
     /// Two-finger scrolls on the canvas or the open image.
     pub gestures: crate::gesture::ScrollGestures,
+    /// The History mode's tree, selection, and watching.
+    pub history: crate::history_view::HistoryView,
     /// A render is coming to free retired images (`retire`).
     retire_scheduled: bool,
     /// Keeps keyboard shortcuts working when no field has focus.
@@ -206,6 +212,8 @@ impl Workspace {
         let rename_input = input("Name", cx);
         let text_input = input("Text", cx);
         let font_query = input("Search fonts", cx);
+        let history_search = input("Search names, edits, and people", cx);
+        let history_name = input("Name this revision", cx);
         let opacity = in_sidebar(slider(cx, 0., 100., 1., 100.));
         let text_size = in_sidebar(slider(cx, 8., 400., 1., 48.));
         let corner = in_sidebar(slider(cx, 0., 200., 1., 0.));
@@ -282,6 +290,27 @@ impl Workspace {
                 },
             ),
         ];
+        subscriptions.push(cx.subscribe_in(
+            &history_search,
+            window,
+            |this, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => {
+                    this.update_history_matches(cx);
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => this.next_history_match(window, cx),
+                _ => {}
+            },
+        ));
+        subscriptions.push(cx.subscribe_in(
+            &history_name,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    this.name_selected_revision(window, cx);
+                }
+            },
+        ));
         subscriptions.push(cx.subscribe_in(
             &straighten,
             window,
@@ -405,6 +434,10 @@ impl Workspace {
             following: false,
             followed_stamp: None,
             gestures: Default::default(),
+            history: crate::history_view::HistoryView::new(
+                history_search.clone(),
+                history_name.clone(),
+            ),
             retire_scheduled: false,
             focus_handle: cx.focus_handle(),
             dragging: None,
@@ -423,13 +456,14 @@ impl Workspace {
         match (self.place, self.open) {
             (Place::Home, _) => vec![Mode::Projects, Mode::Assets],
             (_, Open::Overview) => Vec::new(),
-            (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop, Mode::Info],
+            (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop, Mode::Info, Mode::History],
             (_, Open::Canvas(_)) => vec![
                 Mode::Overview,
                 Mode::Layers,
                 Mode::Style,
                 Mode::Color,
                 Mode::Canvas,
+                Mode::History,
             ],
         }
     }
@@ -445,6 +479,9 @@ impl Workspace {
             self.load_layer_color(window, cx);
         }
         self.settle = 1;
+        if mode == Mode::History {
+            self.load_history(window, cx);
+        }
         if mode == Mode::Assets && self.place == Place::Home {
             let view = match self.view {
                 LibraryView::Project(_) => LibraryView::All,
@@ -681,6 +718,9 @@ impl Render for Workspace {
             (Place::Home, _) | (_, Open::Overview) => {
                 self.asset_grid(area.width, cx).into_any_element()
             }
+            (_, Open::Image(_) | Open::Canvas(_)) if self.mode == Mode::History => {
+                self.history_main(window, cx)
+            }
             (_, Open::Image(_)) if self.mode == Mode::Crop => self.crop_view(cx).into_any_element(),
             (_, Open::Image(_)) => self.image_view(window, cx).into_any_element(),
             (_, Open::Canvas(_)) => self.canvas_main(window, cx).into_any_element(),
@@ -739,6 +779,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Mode3, window, cx| this.nth_mode(2, window, cx)))
             .on_action(cx.listener(|this, _: &Mode4, window, cx| this.nth_mode(3, window, cx)))
             .on_action(cx.listener(|this, _: &Mode5, window, cx| this.nth_mode(4, window, cx)))
+            .on_action(cx.listener(|this, _: &Mode6, window, cx| this.nth_mode(5, window, cx)))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
                 if this.palette_open {
                     this.close_palette(cx)

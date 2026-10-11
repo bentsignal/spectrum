@@ -71,7 +71,9 @@ impl ImageView {
 impl Workspace {
     /// Whether the open image can zoom: shown alone, not cropping or comparing.
     pub fn image_zooms(&self) -> bool {
-        matches!(self.open, Open::Image(_)) && self.mode != Mode::Crop && !self.image.compare
+        matches!(self.open, Open::Image(_))
+            && !matches!(self.mode, Mode::Crop | Mode::History)
+            && !self.image.compare
     }
 
     /// The edited image's full-resolution size.

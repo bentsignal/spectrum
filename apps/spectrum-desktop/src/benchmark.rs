@@ -24,6 +24,7 @@ use std::{
 
 mod features;
 mod fixtures;
+mod history;
 mod image_zoom;
 mod scenarios;
 
@@ -101,6 +102,8 @@ pub struct Fixtures {
     /// A canvas every tool is tried on, and a shape layer on it.
     pub feature_canvas: AssetId,
     pub feature_layer: u64,
+    /// A photo with a long branched history and an agent's session.
+    pub history: history::HistoryFixture,
 }
 
 /// Makes the benchmark library and points this process at it. Runs before
@@ -282,6 +285,14 @@ const BUDGETS: &[Budget] = &[
     budget("image_sliders", "feature_saved", "max", 650.0, 700.0),
     budget("image_sliders", "main_thread_lag", "max", 60.0, 150.0),
     budget("image_sliders", "error_shown", "count", 0.0, 0.0),
+    // The History mode on 1,200 revisions: open, previews, going to another
+    // branch, and a watched agent's edit arriving; pans and zooms stay smooth.
+    budget("history", "settle", "max", 300.0, 400.0),
+    budget("history", "preview", "max", 500.0, 700.0),
+    budget("history", "jump", "max", 300.0, 400.0),
+    budget("history", "watch", "max", 500.0, 700.0),
+    budget("history", "main_thread_lag", "max", 60.0, 150.0),
+    budget("history", "error_shown", "count", 0.0, 0.0),
 ];
 
 /// One scenario's measurements.

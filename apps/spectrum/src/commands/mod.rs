@@ -1,4 +1,5 @@
 mod canvas;
+mod history;
 mod images;
 mod library;
 mod projects;
@@ -118,6 +119,16 @@ fn dispatch(matches: clap::ArgMatches) -> Result<serde_json::Value> {
         .get_one::<spectrum_document::SessionId>("session")
         .copied();
     let mut service = Service::agent(&root)?.with_session(session)?;
+    // Naming and previews go through the service for either kind.
+    if let ("history-name" | "history-preview", Some((_, history_args))) =
+        (operation, args.subcommand())
+    {
+        return if operation == "history-name" {
+            history::name(&mut service, id, history_args)
+        } else {
+            history::preview(&service, id, history_args)
+        };
+    }
     if domain == "images" {
         images::execute_target(args, &mut service, id)
     } else {

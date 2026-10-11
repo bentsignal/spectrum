@@ -116,6 +116,9 @@ pub(super) async fn run_all(
     if wanted("image_sliders") {
         outcomes.push(super::features::image_sliders(this, cx, fixtures).await);
     }
+    if wanted("history") {
+        outcomes.push(super::history::history(this, cx, fixtures.project, &fixtures.history).await);
+    }
     if wanted("image_zoom") {
         outcomes.push(super::image_zoom::image_zoom(this, cx, fixtures).await);
     }
