@@ -87,6 +87,52 @@ impl Workspace {
                     ),
             );
         }
+        // The branch the person is on, as the canvas shows its tool: a
+        // button that opens the branch finder.
+        let branch = self.history.shown.as_ref().and_then(|shown| {
+            let lane = shown.layout.node(shown.history.current)?.lane;
+            let branch = shown
+                .layout
+                .branches
+                .iter()
+                .find(|b| shown.layout.nodes[b.tip].lane == lane)?;
+            Some(shown.layout.branch_title(branch))
+        });
+        panel = panel.child(
+            div()
+                .id("find-branch")
+                .h(px(34.))
+                .px_3()
+                .flex()
+                .items_center()
+                .gap_2p5()
+                .rounded_md()
+                .border_1()
+                .border_color(rgb(BORDER))
+                .bg(rgb(SURFACE))
+                .hover(|el| el.bg(rgb(HOVER)))
+                .cursor_pointer()
+                .child(
+                    crate::icons::icon("history")
+                        .size(px(14.))
+                        .text_color(rgb(MUTED)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .child(branch.unwrap_or_else(|| "Branches".into())),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(FAINT))
+                        .child(crate::tools::SHORTCUT),
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.open_branches(window, cx))),
+        );
         panel = panel.child(
             div()
                 .flex()
@@ -109,13 +155,6 @@ impl Workspace {
                             cx.listener(|this, _, window, cx| this.history_forward(window, cx)),
                         ),
                 ),
-        );
-        panel = panel.child(
-            Button::new("find-branch")
-                .small()
-                .w_full()
-                .label("Find a branch…   ⌘P")
-                .on_click(cx.listener(|this, _, window, cx| this.open_branches(window, cx))),
         );
         let Some(shown) = &self.history.shown else {
             return panel;
@@ -162,7 +201,7 @@ impl Workspace {
         }
         panel = panel.child(
             group("Branch", None)
-                .child(Input::new(&self.history.name).small())
+                .child(Input::new(&self.history.name))
                 .child(
                     div()
                         .text_xs()

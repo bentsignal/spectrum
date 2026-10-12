@@ -86,7 +86,7 @@ pub const TOOLS: [(Tool, &str, &str); 15] = [
     (Tool::Image, "Image", "Place an image from the project"),
 ];
 
-const SHORTCUT: &str = if cfg!(target_os = "macos") {
+pub const SHORTCUT: &str = if cfg!(target_os = "macos") {
     "⌘P"
 } else {
     "Ctrl+P"

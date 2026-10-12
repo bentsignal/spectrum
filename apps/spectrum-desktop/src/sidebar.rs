@@ -135,6 +135,7 @@ impl Workspace {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.sidebar_scroll)
                     .px_4()
                     .pt_4()
                     .pb_6()

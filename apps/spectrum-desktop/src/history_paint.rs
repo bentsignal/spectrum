@@ -212,18 +212,28 @@ impl Workspace {
                 if !seen(x, y, 240.) {
                     continue;
                 }
+                // Clicking a branch's name goes to its newest revision.
+                let id = tip.id;
                 overlays.push(
                     div()
+                        .id(SharedString::from(format!("branch-label-{id}")))
                         .absolute()
-                        .left(px(x + offset))
-                        .top(px(y - 9.))
-                        .h(px(18.))
+                        .left(px(x + offset - 4.))
+                        .top(px(y - 10.))
+                        .h(px(20.))
+                        .px_1()
                         .flex()
                         .items_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(rgb(HOVER)).text_color(rgb(TEXT)))
                         .text_xs()
                         .whitespace_nowrap()
                         .text_color(rgb(if branch.name.is_some() { TEXT } else { MUTED }))
                         .child(layout.branch_title(branch))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.go_to_revision(id, window, cx)
+                        }))
                         .into_any_element(),
                 );
             }

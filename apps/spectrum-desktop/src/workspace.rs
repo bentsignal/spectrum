@@ -170,6 +170,8 @@ pub struct Workspace {
     pub gestures: crate::gesture::ScrollGestures,
     /// The History mode's tree, selection, and watching.
     pub history: crate::history_view::HistoryView,
+    /// Where the sidebar is scrolled to.
+    pub sidebar_scroll: ScrollHandle,
     /// A render is coming to free retired images (`retire`).
     retire_scheduled: bool,
     /// Keeps keyboard shortcuts working when no field has focus.
@@ -425,6 +427,7 @@ impl Workspace {
             followed_stamp: None,
             gestures: Default::default(),
             history: crate::history_view::HistoryView::new(history_name.clone()),
+            sidebar_scroll: ScrollHandle::new(),
             retire_scheduled: false,
             focus_handle: cx.focus_handle(),
             dragging: None,

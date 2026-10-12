@@ -66,6 +66,12 @@ Engine and CLI first, then the app on top of the same service calls.
   a branch") instead of a sidebar list and search; typing a branch name is
   never overwritten by a reload; Crop and Color draw in place from the first
   frame (the crop view measures the same area as the image view).
+- Third review: the sidebar opens with the branch the person is on, styled
+  like the canvas's tool button, which opens the branch finder; branch names
+  in the tree go to their branch when clicked. The branch name field
+  scrolled its text out of view on the person's Mac; it did not reproduce on
+  Linux at 1x, 2x, or with the sidebar scrolled. The field now matches the
+  canvas's Text field, which works there; recheck on the Mac.
   Next: keyboard navigation, previews when a canvas's linked images change,
   very wide histories.
 
