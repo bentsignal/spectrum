@@ -594,6 +594,7 @@ impl Workspace {
             )
             .child(
                 Input::new(&self.canvas_ui.font_query)
+                    .w(px(crate::controls::FIELD_WIDTH))
                     .small()
                     .prefix(Icon::new(IconName::Search).small().text_color(rgb(MUTED))),
             )

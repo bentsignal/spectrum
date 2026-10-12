@@ -26,6 +26,7 @@ impl Workspace {
             .child(self.new_project_button(cx))
             .child(
                 Input::new(&self.project_search)
+                    .w(px(crate::controls::FIELD_WIDTH))
                     .prefix(Icon::new(IconName::Search).small().text_color(rgb(MUTED)))
                     .cleanable(true),
             )

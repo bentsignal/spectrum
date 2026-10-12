@@ -70,8 +70,13 @@ Engine and CLI first, then the app on top of the same service calls.
   like the canvas's tool button, which opens the branch finder; branch names
   in the tree go to their branch when clicked. The branch name field
   scrolled its text out of view on the person's Mac; it did not reproduce on
-  Linux at 1x, 2x, or with the sidebar scrolled. The field now matches the
-  canvas's Text field, which works there; recheck on the Mac.
+  Linux at 1x, 2x, or with the sidebar scrolled.
+- Fourth review: found on a macOS CI runner (screenshots plus a logged copy
+  of the input library, branch `debug/mac-input`): on macOS a text field
+  sized by its container lays its text out 0 px wide (233 on Linux), so
+  focusing scrolled the text out of view. Sidebar fields now get an explicit
+  width (`controls::FIELD_WIDTH`), confirmed on the runner. The hint under
+  the branch field is gone.
   Next: keyboard navigation, previews when a canvas's linked images change,
   very wide histories.
 

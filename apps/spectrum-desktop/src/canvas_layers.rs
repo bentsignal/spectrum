@@ -373,7 +373,10 @@ impl Workspace {
                 body = body.child(
                     group("Text", None)
                         .gap_4()
-                        .child(Input::new(&self.canvas_ui.text_input))
+                        .child(
+                            Input::new(&self.canvas_ui.text_input)
+                                .w(px(crate::controls::FIELD_WIDTH)),
+                        )
                         .child(font)
                         .child(crate::controls::segmented(
                             "text-align",

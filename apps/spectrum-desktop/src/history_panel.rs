@@ -201,13 +201,7 @@ impl Workspace {
         }
         panel = panel.child(
             group("Branch", None)
-                .child(Input::new(&self.history.name))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(FAINT))
-                        .child("Names the branch you are on, from where it began."),
-                ),
+                .child(Input::new(&self.history.name).w(px(crate::controls::FIELD_WIDTH))),
         );
         // Agents working on this asset, to watch as they work.
         let watched = self.history.watching.as_ref().map(|w| w.session);

@@ -12,6 +12,11 @@ use std::{
     rc::Rc,
 };
 
+/// The width of a text field in the sidebar. Fields are given it outright:
+/// on macOS a field sized by its container lays its text out zero wide, so
+/// focusing it scrolls the text out of view (seen on a Mac, never on Linux).
+pub const FIELD_WIDTH: f32 = crate::workspace::SIDEBAR_WIDTH - 32.;
+
 /// A titled group of sidebar controls, with an optional action on the right.
 pub fn group(title: &'static str, action: Option<AnyElement>) -> Div {
     div().flex().flex_col().gap_3().child(
