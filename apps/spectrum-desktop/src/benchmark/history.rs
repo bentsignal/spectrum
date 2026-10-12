@@ -158,6 +158,9 @@ pub(super) async fn history(
     // DEBUG (debug/mac-input only): focus the branch field, type slowly,
     // and hold, for screenshots on macOS.
     if std::env::var("SPECTRUM_INPUT_PROBE").is_ok() {
+        // The runner's screen is 1024 by 768: fit the window on it.
+        this.update_in(cx, |_, window, _| window.resize(size(px(960.), px(640.))))
+            .ok();
         pause(cx, 2000).await;
         eprintln!("PROBE focus");
         this.update_in(cx, |ws, window, cx| {
