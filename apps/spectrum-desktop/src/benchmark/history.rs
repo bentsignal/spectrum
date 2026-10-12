@@ -155,6 +155,26 @@ pub(super) async fn history(
         problems.push(format!("the tree shows {revisions} revisions"));
     }
 
+    // DEBUG (debug/mac-input only): focus the branch field, type slowly,
+    // and hold, for screenshots on macOS.
+    if std::env::var("SPECTRUM_INPUT_PROBE").is_ok() {
+        pause(cx, 2000).await;
+        eprintln!("PROBE focus");
+        this.update_in(cx, |ws, window, cx| {
+            ws.history.name.update(cx, |input, cx| input.focus(window, cx));
+        })
+        .ok();
+        pause(cx, 2500).await;
+        for spec in ["end", "backspace", "backspace", "x", "y", "z"] {
+            eprintln!("PROBE key {spec}");
+            super::scenarios::key(cx, spec);
+            pause(cx, 700).await;
+        }
+        eprintln!("PROBE hold");
+        pause(cx, 2500).await;
+        eprintln!("PROBE done");
+    }
+
     // Pan and zoom like a canvas.
     let before = this.read_with(cx, |ws, _| ws.history.pan).ok();
     gesture(this, cx, -40., 0., 20).await;

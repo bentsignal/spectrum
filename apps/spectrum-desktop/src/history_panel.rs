@@ -201,7 +201,18 @@ impl Workspace {
         }
         panel = panel.child(
             group("Branch", None)
-                .child(Input::new(&self.history.name))
+                .child({
+                    // DEBUG (debug/mac-input only): field variants to compare on macOS.
+                    let input = Input::new(&self.history.name);
+                    match std::env::var("SPECTRUM_INPUT_VARIANT").as_deref() {
+                        Ok("prefix") => input
+                            .prefix(gpui_component::Icon::new(gpui_component::IconName::Search).small())
+                            .into_any_element(),
+                        Ok("cleanable") => input.cleanable(true).into_any_element(),
+                        Ok("small") => input.small().into_any_element(),
+                        _ => input.into_any_element(),
+                    }
+                })
                 .child(
                     div()
                         .text_xs()
