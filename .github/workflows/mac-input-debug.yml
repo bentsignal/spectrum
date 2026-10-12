@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [plain]
+        variant: [width, wrapped]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7

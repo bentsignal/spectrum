@@ -210,6 +210,8 @@ impl Workspace {
                             .into_any_element(),
                         Ok("cleanable") => input.cleanable(true).into_any_element(),
                         Ok("small") => input.small().into_any_element(),
+                        Ok("width") => input.w(px(258.)).into_any_element(),
+                        Ok("wrapped") => div().w_full().flex().child(input.flex_1()).into_any_element(),
                         _ => input.into_any_element(),
                     }
                 })
