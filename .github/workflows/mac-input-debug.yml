@@ -7,13 +7,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [plain, prefix, cleanable]
+        variant: [plain]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
-      - run: cargo build --release --locked -p spectrum-desktop
+      - run: cargo build --release -p spectrum-desktop
       - name: Probe the branch name field with screenshots
         env:
           SPECTRUM_INPUT_PROBE: "1"
@@ -22,6 +22,7 @@ jobs:
           mkdir -p shots
           (i=0; while [ $i -lt 400 ]; do screencapture -x -C shots/$(printf %04d $i).png || true; i=$((i+1)); sleep 0.25; done) &
           target/release/spectrum-desktop --benchmark --profile ci --only history --report report.json 2> app.err || true
+          grep -E "INPUTDBG|PROBE" app.err | head -20000 > inputdbg.txt || true
           kill %1 || true
           cat app.err | grep -E "PROBE|spectrum:" || true
           ls shots | wc -l
@@ -32,3 +33,4 @@ jobs:
           path: |
             shots
             app.err
+            inputdbg.txt
