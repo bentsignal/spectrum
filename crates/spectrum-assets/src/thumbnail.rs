@@ -49,6 +49,17 @@ impl Service {
                 Ok(path)
             }
             AssetKind::Footage | AssetKind::Audio => self.media_thumbnail(id, max),
+            AssetKind::Video => {
+                let (modified, length) = file_stamp(&document)?;
+                let key = hex(format!("{modified:?}{length}{max}").as_bytes());
+                let path = previews.join(format!("{id}-thumb-{}.png", &key[..24]));
+                if !path.exists() {
+                    let video = self.read::<spectrum_video::VideoModel>(&document, true)?.0;
+                    let poster = self.video_poster(&video, max)?;
+                    save_atomically(&image::DynamicImage::ImageRgba8(poster), &path)?;
+                }
+                Ok(path)
+            }
             kind => bail!("no thumbnail for {kind} assets"),
         }
     }

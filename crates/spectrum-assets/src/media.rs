@@ -72,11 +72,24 @@ impl Service {
         time: Time,
         max_size: Option<u32>,
     ) -> Result<spectrum_media::Frame> {
+        Ok(self.footage_frame_from(id, time, max_size)?.0)
+    }
+
+    /// The frame showing at `time`, and the hardware that decoded it (`None`
+    /// for software).
+    pub fn footage_frame_from(
+        &self,
+        id: AssetId,
+        time: Time,
+        max_size: Option<u32>,
+    ) -> Result<(spectrum_media::Frame, Option<&'static str>)> {
         let (media, path) = self.media(id)?;
         if !media.info.is_footage() {
             bail!("audio has no picture");
         }
-        spectrum_media::FrameReader::open(&path)?.frame_at(time, max_size)
+        let mut reader = spectrum_media::FrameReader::open(&path)?;
+        let frame = reader.frame_at(time, max_size)?;
+        Ok((frame, reader.hardware()))
     }
 
     /// A small poster of footage, or a waveform of audio, for grids.

@@ -48,6 +48,12 @@ pub struct FrameReader {
     frames: u64,
     scaler: Option<Scaler>,
     bgra: bool,
+    /// The hardware decoding, if any.
+    hardware: Option<&'static str>,
+    /// The current frame copied from the GPU, once it is needed.
+    in_memory: Option<frame::Video>,
+    /// A frame came from the GPU, so the hardware decodes this stream.
+    on_gpu: bool,
     current: Option<Decoded>,
     /// A frame decoded past the last answer, kept for the next request.
     ahead: Option<Decoded>,
@@ -78,16 +84,24 @@ impl FrameReader {
         } else {
             stream.start_time()
         };
-        let mut context = codec::Context::from_parameters(stream.parameters())?;
-        unsafe {
-            let raw = context.as_mut_ptr();
-            (*raw).pkt_timebase = time_base.into();
-            (*raw).thread_count = 0;
-            (*raw).thread_type = ffi::FF_THREAD_FRAME | ffi::FF_THREAD_SLICE;
-        }
-        let decoder = context
-            .decoder()
-            .video()
+        let open = |hardware: bool| -> Result<(ffmpeg::decoder::Video, Option<&'static str>)> {
+            let mut context = codec::Context::from_parameters(stream.parameters())?;
+            let mut used = None;
+            unsafe {
+                let raw = context.as_mut_ptr();
+                (*raw).pkt_timebase = time_base.into();
+                (*raw).thread_count = 0;
+                (*raw).thread_type = ffi::FF_THREAD_FRAME | ffi::FF_THREAD_SLICE;
+                if hardware {
+                    used = crate::hardware::attach(raw);
+                }
+            }
+            let decoder = context.decoder().video()?;
+            Ok((decoder, used))
+        };
+        // Hardware when it opens; software when it does not.
+        let (decoder, hardware) = open(true)
+            .or_else(|_| open(false))
             .with_context(|| format!("Spectrum cannot decode {} pictures", video.codec))?;
         Ok(Self {
             input,
@@ -101,10 +115,19 @@ impl FrameReader {
             frames: video.frames,
             scaler: None,
             bgra: false,
+            hardware,
+            in_memory: None,
+            on_gpu: false,
             current: None,
             ahead: None,
             sent_eof: false,
         })
+    }
+
+    /// The hardware that decoded this file's frames so far, such as
+    /// "VideoToolbox", or `None` for software.
+    pub fn hardware(&self) -> Option<&'static str> {
+        self.hardware.filter(|_| self.on_gpu)
     }
 
     /// Clockwise degrees that turn this file's frames upright.
@@ -123,11 +146,12 @@ impl FrameReader {
     pub(crate) fn picture(&mut self, index: i64) -> Result<&frame::Video> {
         let last = self.frames.saturating_sub(1) as i64;
         self.decode_to(index.clamp(0, last))?;
-        Ok(&self
+        let current = &self
             .current
             .as_ref()
             .context("the file has no frames")?
-            .frame)
+            .frame;
+        crate::hardware::in_memory(current, &mut self.in_memory)
     }
 
     /// Frames in blue, green, red, alpha byte order from now on, as GPU
@@ -168,7 +192,7 @@ impl FrameReader {
         self.seek(time)?;
         let first = self.decode_next()?.context("the file has no frames")?;
         let (time, index) = (first.time, first.index);
-        self.current = Some(first);
+        self.set_current(first);
         let image = self.convert(max_size)?;
         Ok(Frame { image, time, index })
     }
@@ -193,7 +217,7 @@ impl FrameReader {
                 break;
             }
             let index = next.index;
-            self.current = Some(next);
+            self.set_current(next);
             if index >= first {
                 let time = self.rate.time_of(index);
                 frames.push(Frame {
@@ -232,12 +256,18 @@ impl FrameReader {
                 return Ok(());
             };
             if next.index <= wanted || self.current.is_none() {
-                self.current = Some(next);
+                self.set_current(next);
             } else {
                 self.ahead = Some(next);
                 return Ok(());
             }
         }
+    }
+
+    fn set_current(&mut self, next: Decoded) {
+        self.on_gpu |= crate::hardware::on_gpu(&next.frame);
+        self.current = Some(next);
+        self.in_memory = None;
     }
 
     /// Moves to the keyframe at or before `time`.
@@ -274,6 +304,7 @@ impl FrameReader {
         }
         self.decoder.flush();
         self.current = None;
+        self.in_memory = None;
         self.ahead = None;
         self.sent_eof = false;
         Ok(())
@@ -339,7 +370,8 @@ impl FrameReader {
 
     /// The current frame as upright RGBA.
     fn convert(&mut self, max_size: Option<u32>) -> Result<RgbaImage> {
-        let decoded = &self.current.as_ref().context("no frame decoded")?.frame;
+        let current = &self.current.as_ref().context("no frame decoded")?.frame;
+        let decoded = crate::hardware::in_memory(current, &mut self.in_memory)?;
         let (width, height) = (decoded.width(), decoded.height());
         let (out_width, out_height) = fit(width, height, max_size);
         let key = ScalerKey {

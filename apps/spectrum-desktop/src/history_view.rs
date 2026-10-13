@@ -136,7 +136,7 @@ impl Workspace {
     /// The open asset with a history: an image or canvas.
     pub fn history_asset(&self) -> Option<AssetId> {
         match self.open {
-            Open::Image(id) | Open::Canvas(id) => Some(id),
+            Open::Image(id) | Open::Canvas(id) | Open::Video(id) => Some(id),
             Open::Overview | Open::Media(_) => None,
         }
     }

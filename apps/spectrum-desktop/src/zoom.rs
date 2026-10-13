@@ -425,11 +425,27 @@ impl Workspace {
 
     /// The zoom shortcuts, on the workspace's root.
     pub fn zoom_actions(&self, root: Div, cx: &mut Context<Self>) -> Div {
-        root.on_action(cx.listener(|this, _: &ZoomIn, window, cx| this.zoom_by(1, window, cx)))
-            .on_action(cx.listener(|this, _: &ZoomOut, window, cx| this.zoom_by(-1, window, cx)))
-            .on_action(cx.listener(|this, _: &ZoomFit, window, cx| this.zoom_any(None, window, cx)))
-            .on_action(
-                cx.listener(|this, _: &ZoomActual, window, cx| this.zoom_any(Some(1.), window, cx)),
-            )
+        // In the video editor these zoom the timeline.
+        root.on_action(
+            cx.listener(|this, _: &ZoomIn, window, cx| match this.video {
+                Some(_) => this.zoom_timeline(1, cx),
+                None => this.zoom_by(1, window, cx),
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &ZoomOut, window, cx| match this.video {
+                Some(_) => this.zoom_timeline(-1, cx),
+                None => this.zoom_by(-1, window, cx),
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &ZoomFit, window, cx| match this.video {
+                Some(_) => this.zoom_timeline(0, cx),
+                None => this.zoom_any(None, window, cx),
+            }),
+        )
+        .on_action(
+            cx.listener(|this, _: &ZoomActual, window, cx| this.zoom_any(Some(1.), window, cx)),
+        )
     }
 }

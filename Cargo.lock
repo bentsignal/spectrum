@@ -6418,6 +6418,7 @@ dependencies = [
  "spectrum-imaging",
  "spectrum-library",
  "spectrum-media",
+ "spectrum-video",
  "tempfile",
  "tiff",
  "unicode-linebreak",
@@ -6439,6 +6440,8 @@ dependencies = [
  "spectrum-imaging",
  "spectrum-library",
  "spectrum-media",
+ "spectrum-time",
+ "spectrum-video",
  "tempfile",
 ]
 
@@ -6502,6 +6505,7 @@ dependencies = [
  "spectrum-image",
  "spectrum-library",
  "spectrum-media",
+ "spectrum-video",
 ]
 
 [[package]]
@@ -6574,6 +6578,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ffmpeg-next",
+ "ffmpeg-sys-next",
  "image",
  "serde",
  "serde_json",
@@ -6605,6 +6610,20 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "spectrum-video"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "serde",
+ "serde_json",
+ "spectrum-document",
+ "spectrum-library",
+ "spectrum-time",
+ "tempfile",
 ]
 
 [[package]]

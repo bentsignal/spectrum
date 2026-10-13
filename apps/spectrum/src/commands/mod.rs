@@ -4,6 +4,7 @@ mod images;
 mod library;
 mod media;
 mod projects;
+mod video;
 
 use anyhow::{Context, Result, bail};
 use clap::{Arg, Command, CommandFactory, FromArgMatches};
@@ -71,10 +72,10 @@ fn dispatch(matches: clap::ArgMatches) -> Result<serde_json::Value> {
     if domain == "schema" {
         return Ok(serde_json::json!({
             "images": images::protocol(), "canvas": canvas::protocol(),
-            "library": {"asset_types": ["image", "canvas", "footage", "audio"], "references": "live",
+            "library": {"asset_types": ["image", "canvas", "footage", "audio", "video"], "references": "live",
                 "import": "spectrum import <files>: images, footage (video with sound), and audio; footage and audio are copied into the library",
                 "copy": "independent, recursively copies referenced content"},
-            "help": "spectrum images --help; spectrum canvas --help; spectrum footage --help; spectrum audio --help",
+            "help": "spectrum images --help; spectrum canvas --help; spectrum footage --help; spectrum audio --help; spectrum video --help",
             "targeting": "Library commands take asset UUIDs. Editor commands take --asset UUID; canvas layer IDs are local to the canvas.",
             "agents": {
                 "history": "each asset's history is an immutable tree of revisions; the person and each agent have their own session in it",

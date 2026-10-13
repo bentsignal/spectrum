@@ -54,9 +54,11 @@ impl Workspace {
             Some(((requests, frames), sharp)) => (Some((requests, frames)), sharp),
             None => (None, None),
         };
+        let timing = crate::player::Timing::of(&media);
         let mut player = Player::new(
             id,
-            media,
+            Some(media),
+            timing,
             size,
             main.as_ref().map(|(requests, _)| requests.clone()),
             sharp.as_ref().map(|(requests, _)| requests.clone()),
@@ -68,7 +70,9 @@ impl Workspace {
             self.player_controls = Some(crate::player_view::PlayerControls::new(window, cx));
         }
         if let Some(controls) = &mut self.player_controls {
-            controls.waveform = None;
+            if let Some(old) = controls.waveform.take() {
+                crate::retire::drop_later(old);
+            }
             controls.shown = None;
         }
         if !has_picture {

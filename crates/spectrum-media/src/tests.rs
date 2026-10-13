@@ -183,3 +183,56 @@ fn playback_copies_keep_every_frame_at_its_time() {
     assert!(!stopped.exists());
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
 }
+
+#[test]
+fn exports_write_every_frame_and_the_sound() {
+    let directory = tempfile::tempdir().unwrap();
+    for codec in [VideoCodec::H264, VideoCodec::ProRes] {
+        let path = directory.path().join(format!("out.{}", codec.extension()));
+        let rate = FrameRate::new(30, 1);
+        let mut writer = Writer::create(
+            &path,
+            ExportSettings {
+                codec,
+                width: 64,
+                height: 48,
+                rate,
+                bitrate: None,
+                sound: true,
+            },
+        )
+        .unwrap();
+        for index in 0..30u8 {
+            let shade = 40 + index * 6;
+            writer
+                .push_frame(&image::RgbaImage::from_pixel(
+                    64,
+                    48,
+                    image::Rgba([shade, shade, shade, 255]),
+                ))
+                .unwrap();
+            writer.push_sound(&vec![0.1f32; 1600 * 2]).unwrap();
+        }
+        writer.finish().unwrap();
+        let info = probe(&path).unwrap();
+        let video = info.video.unwrap();
+        assert_eq!(
+            (video.width, video.height, video.frames),
+            (64, 48, 30),
+            "{codec:?}"
+        );
+        assert_eq!(info.audio.len(), 1);
+        assert!(
+            (info.duration.seconds() - 1.0).abs() < 0.05,
+            "{codec:?} {:?}",
+            info.duration
+        );
+        let mut reader = FrameReader::open(&path).unwrap();
+        let last = reader.frame_at(rate.time_of(29), None).unwrap();
+        let shade = last.image.get_pixel(32, 24).0[0];
+        assert!(
+            (i32::from(shade) - (40 + 29 * 6)).abs() <= 4,
+            "{codec:?} {shade}"
+        );
+    }
+}

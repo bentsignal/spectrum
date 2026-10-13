@@ -25,6 +25,17 @@ impl Workspace {
                 (_, Open::Overview) => (self.view_name(), count(entries, "asset"), true),
                 (_, Open::Image(id)) => (self.asset_name(id), "Image".into(), false),
                 (_, Open::Media(id)) => (self.asset_name(id), self.media_detail(), false),
+                (_, Open::Video(id)) => (
+                    self.asset_name(id),
+                    self.video.as_ref().map_or_else(SharedString::default, |v| {
+                        format!(
+                            "Video · {} × {} · {}",
+                            v.doc.width, v.doc.height, v.doc.rate
+                        )
+                        .into()
+                    }),
+                    false,
+                ),
                 (_, Open::Canvas(_)) => {
                     let (name, detail) = self.canvas.as_ref().map_or_else(
                         || (SharedString::default(), SharedString::default()),

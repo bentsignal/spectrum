@@ -18,6 +18,8 @@ spectrum-image = { path = "../spectrum-image" }
 spectrum-imaging = { path = "../spectrum-imaging" }
 spectrum-library = { path = "../spectrum-library" }
 spectrum-media = { path = "../spectrum-media" }
+spectrum-time = { path = "../spectrum-time" }
+spectrum-video = { path = "../spectrum-video" }
 
 [dev-dependencies]
 tempfile = "3.27"

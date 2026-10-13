@@ -158,8 +158,8 @@ pub(super) async fn scrub(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
 /// The footage's frame rate and last frame.
 fn timing(this: &This, cx: &mut AsyncWindowContext) -> (spectrum_media::FrameRate, i64) {
     read(this, cx, |ws| {
-        let video = ws.player.as_ref()?.media.info.video.clone()?;
-        Some((video.rate, video.frames as i64 - 1))
+        let timing = ws.player.as_ref()?.timing;
+        Some((timing.rate, timing.frames - 1))
     })
     .flatten()
     .unwrap_or((spectrum_media::FrameRate::new(60000, 1001), 0))

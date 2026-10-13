@@ -13,6 +13,42 @@ use std::{
     time::Duration,
 };
 
+/// Where the sound thread gets sound: a file's track, or a video's mix.
+pub trait Sounds: Send {
+    /// Plays sound track `track` (for files with several) from `from`.
+    fn start(&mut self, from: Time, track: usize) -> anyhow::Result<()>;
+    /// Fills `out` with interleaved 48 kHz stereo, returning the sample
+    /// frames written; fewer means the sound ended.
+    fn read(&mut self, out: &mut [f32]) -> anyhow::Result<usize>;
+    /// Takes a newer version of what it plays, such as an edited video.
+    fn update(&mut self, _: Box<dyn std::any::Any + Send>) {}
+}
+
+/// A file's sound tracks.
+struct FileSound {
+    file: PathBuf,
+    reader: Option<(usize, AudioReader)>,
+}
+
+impl Sounds for FileSound {
+    fn start(&mut self, from: Time, track: usize) -> anyhow::Result<()> {
+        if self.reader.as_ref().is_none_or(|(open, _)| *open != track) {
+            self.reader = Some((track, AudioReader::open(&self.file, track)?));
+        }
+        if let Some((_, reader)) = &mut self.reader {
+            reader.seek(from)?;
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, out: &mut [f32]) -> anyhow::Result<usize> {
+        match &mut self.reader {
+            Some((_, reader)) => reader.read(out),
+            None => Ok(0),
+        }
+    }
+}
+
 /// Decoded sound kept ahead of the device.
 const AHEAD: usize = SAMPLE_RATE as usize / 2 * CHANNELS;
 
@@ -38,6 +74,7 @@ enum Command {
         generation: u64,
     },
     Stop,
+    Update(Box<dyn std::any::Any + Send>),
 }
 
 /// A sound output and its decoder, both on their own thread: opening a
@@ -50,6 +87,12 @@ pub struct AudioOut {
 impl AudioOut {
     /// Starts opening the default output for `file`.
     pub fn open(file: PathBuf) -> Self {
+        Self::open_with(move || Some(Box::new(FileSound { file, reader: None }) as Box<dyn Sounds>))
+    }
+
+    /// Starts opening the default output for sound made on its thread by
+    /// `open`.
+    pub fn open_with(open: impl FnOnce() -> Option<Box<dyn Sounds>> + Send + 'static) -> Self {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(VecDeque::with_capacity(AHEAD * 2)),
             played: AtomicU64::new(0),
@@ -65,9 +108,9 @@ impl AudioOut {
             .name("spectrum-audio".into())
             .spawn(move || {
                 // The stream lives on this thread, as some systems require.
-                match output_stream(&thread) {
-                    Some(_stream) => decode(file, receiver, thread),
-                    None => thread.unavailable.store(true, Ordering::SeqCst),
+                match (output_stream(&thread), open()) {
+                    (Some(_stream), Some(sounds)) => decode(sounds, receiver, thread),
+                    _ => thread.unavailable.store(true, Ordering::SeqCst),
                 }
             });
         if started.is_err() {
@@ -113,6 +156,11 @@ impl AudioOut {
         Some(
             Duration::from_secs_f64(played as f64 / f64::from(SAMPLE_RATE)).saturating_sub(latency),
         )
+    }
+
+    /// Hands the sound thread a newer version of what it plays.
+    pub fn update(&self, update: Box<dyn std::any::Any + Send>) {
+        let _ = self.commands.send(Command::Update(update));
     }
 
     pub fn set_volume(&self, volume: f32) {
@@ -161,8 +209,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Keeps the buffer filled for the current start until stopped.
-fn decode(file: PathBuf, commands: flume::Receiver<Command>, shared: Arc<Shared>) {
-    let mut reader: Option<(usize, AudioReader)> = None;
+fn decode(mut sounds: Box<dyn Sounds>, commands: flume::Receiver<Command>, shared: Arc<Shared>) {
     let mut active: Option<u64> = None;
     let mut chunk = vec![0f32; 4096 * CHANNELS];
     loop {
@@ -184,27 +231,20 @@ fn decode(file: PathBuf, commands: flume::Receiver<Command>, shared: Arc<Shared>
                 track,
                 generation,
             }) => {
-                if reader.as_ref().is_none_or(|(open, _)| *open != track) {
-                    reader = AudioReader::open(&file, track)
-                        .ok()
-                        .map(|reader| (track, reader));
-                }
-                active = reader
-                    .as_mut()
-                    .and_then(|(_, reader)| reader.seek(from).ok())
-                    .map(|_| generation);
+                active = sounds.start(from, track).ok().map(|_| generation);
             }
             Some(Command::Stop) => active = None,
+            Some(Command::Update(update)) => sounds.update(update),
             None => {}
         }
-        let (Some(generation), Some((_, reader))) = (active, reader.as_mut()) else {
+        let Some(generation) = active else {
             continue;
         };
         if lock(&shared.buffer).len() >= AHEAD {
             std::thread::sleep(Duration::from_millis(5));
             continue;
         }
-        let frames = reader.read(&mut chunk).unwrap_or(0);
+        let frames = sounds.read(&mut chunk).unwrap_or(0);
         if shared.generation.load(Ordering::SeqCst) != generation {
             active = None;
             continue;

@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 ffmpeg-next.workspace = true
+# Only for the static build's hardware decoding switches.
+ffmpeg-sys-next = { version = "9.0.1", default-features = false }
 image.workspace = true
 serde.workspace = true
 spectrum-document = { path = "../spectrum-document" }
@@ -17,7 +19,13 @@ spectrum-time = { path = "../spectrum-time" }
 [features]
 # Builds FFmpeg (LGPL) from source into the binary, for packages that must
 # run where FFmpeg is not installed. Development links the system's FFmpeg.
-static-ffmpeg = ["ffmpeg-next/build", "ffmpeg-next/build-zlib"]
+# VideoToolbox decodes on macOS (FFmpeg's build turns it on only there).
+static-ffmpeg = [
+    "ffmpeg-next/build",
+    "ffmpeg-next/build-zlib",
+    "ffmpeg-sys-next/build-videotoolbox",
+    "ffmpeg-sys-next/build-audiotoolbox",
+]
 
 [dev-dependencies]
 serde_json.workspace = true

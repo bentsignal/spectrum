@@ -12,6 +12,7 @@ members = [
     "crates/spectrum-revisions",
     "crates/spectrum-media",
     "crates/spectrum-time",
+    "crates/spectrum-video",
     "tools/workspace-guardrails",
 ]
 exclude = ["third_party/hb-subset"]

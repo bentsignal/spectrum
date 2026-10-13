@@ -155,7 +155,7 @@ impl Store {
             .into_iter()
             .filter(|e| {
                 use spectrum_library::AssetKind::*;
-                matches!(e.asset.kind, Image | Canvas | Footage | Audio)
+                matches!(e.asset.kind, Image | Canvas | Footage | Audio | Video)
             })
             .collect();
         Ok(view)

@@ -10,7 +10,8 @@ apps/spectrum-desktop (GPUI) ─┐
 apps/spectrum (CLI) ──────────┘      ├─ spectrum-library  index: identity, kind, name, projects, references, trash
                                      ├─ spectrum-image    image asset: source photo + adjustments
                                      ├─ spectrum-canvas   canvas asset: layers, compositing, text, paint
-                                     ├─ spectrum-media    footage and audio: FFmpeg decoding, playback copies
+                                     ├─ spectrum-media    footage and audio: FFmpeg decoding, playback copies, export
+                                     ├─ spectrum-video    video asset: tracks, clips, speed, compositing
                                      └─ spectrum-document durable documents: history, files, sessions
                                             └─ spectrum-revisions  revision store (SQLite)
 shared pixels: spectrum-imaging · shaping/fonts: spectrum-fonts · media time: spectrum-time
@@ -117,6 +118,29 @@ display-sized MPEG-2 playback copy with short groups of pictures and the same
 frames at the same times, so scrubbing, playing backward, and future speed
 ramps decode thousands of frames a second.
 
+Decoding uses VideoToolbox on macOS, Direct3D 11 on Windows, and VA-API on
+Linux when a device opens, falling back to software per stream
+(`SPECTRUM_HARDWARE_DECODING=off` turns it off). `Writer` exports H.264 or
+HEVC (x264 and x265 where FFmpeg has them, the platform's encoder otherwise)
+and ProRes 422 HQ, with AAC sound.
+
+## Video engine
+
+`spectrum-video` holds the video asset: video tracks (the first at the
+bottom) and audio tracks of clips that use footage, audio, images, and
+canvases. Its commands overwrite or insert, move, trim (with or without
+ripple), roll, slip, slide, cut, and delete, with linked picture and sound
+changing together; each applies all or nothing, and new clips go on the
+lowest free track. A clip's speed is velocity keyframes or a time remap
+(`speed.rs`, integrated exactly per curve), anchored by an origin so trims
+and cuts never move its frames; footage that runs out repeats. `render`
+composites a frame (top-down, stopping at the first opaque full-frame clip)
+and mixes sound through providers; `spectrum-assets::video_render` supplies
+them from playback copies or originals. Slow motion between source frames
+blends, or follows each pixel's motion (`spectrum-imaging::flow`, pyramidal
+dense flow with occlusion-aware drawing) for paused frames and exports. Sound
+follows the speed by resampling, unless a clip keeps it.
+
 ## Canvas engine
 
 `spectrum-canvas` owns the layered document: raster, text, rectangle, ellipse,
@@ -147,7 +171,10 @@ the main thread, and follow an agent the person works together with while
 nothing is waiting to save. The desktop executable is also the CLI: started as
 `spectrum` (packages link that name to it), it runs the command line.
 
-The player (`player*.rs`) shows footage and audio. A picture thread decodes
+The video editor (`video_*.rs`) applies each timeline edit on screen at once
+and saves batches after a pause, as the canvas does; its program monitor is
+the same player fed by the video's composited frames and mixed sound. The
+player (`player*.rs`) shows footage and audio. A picture thread decodes
 from the playback copy (ahead of the playhead while playing, newest request
 first while scrubbing), and a paused frame then redraws from the original. The
 sound thread owns the output device; samples played are the playback clock,
