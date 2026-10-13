@@ -46,6 +46,16 @@ impl Curve {
         }
     }
 
+    /// The curve that makes the same change backward: Fast and Slow swap.
+    /// Hold has no mirror; reversing holds at the other end instead.
+    fn mirrored(self) -> Self {
+        match self {
+            Curve::Fast => Curve::Slow,
+            Curve::Slow => Curve::Fast,
+            other => other,
+        }
+    }
+
     /// The area under `shape` from 0 to `u`, exactly.
     fn area(self, u: f64) -> f64 {
         let u = u.clamp(0., 1.);
@@ -221,6 +231,136 @@ impl Speed {
             Speed::Normal => Time::ZERO,
             Speed::Velocity { origin, .. } | Speed::Remap { origin, .. } => *origin,
         }
+    }
+}
+
+/// A keyframe of either kind: its time, value (a percent, or source
+/// seconds), and curve.
+type Key = (Time, f64, Curve);
+
+impl Speed {
+    fn keys(&self) -> Vec<Key> {
+        match self {
+            Speed::Normal => vec![(Time::ZERO, 100., Curve::Linear)],
+            Speed::Velocity { keys, .. } => {
+                keys.iter().map(|k| (k.at, k.percent, k.curve)).collect()
+            }
+            Speed::Remap { keys, .. } => keys
+                .iter()
+                .map(|k| (k.at, k.source.seconds(), k.curve))
+                .collect(),
+        }
+    }
+
+    /// The same kind of speed with `keys`; normal speed becomes velocity.
+    fn with(&self, keys: Vec<Key>, origin: Time) -> Speed {
+        match self {
+            Speed::Remap { .. } => Speed::Remap {
+                keys: keys
+                    .into_iter()
+                    .map(|(at, source, curve)| RemapKey {
+                        at,
+                        source: Time::from_seconds(source),
+                        curve,
+                    })
+                    .collect(),
+                origin,
+            },
+            _ => Speed::Velocity {
+                keys: keys
+                    .into_iter()
+                    .map(|(at, percent, curve)| VelocityKey { at, percent, curve })
+                    .collect(),
+                origin,
+            },
+        }
+    }
+
+    /// The value at keyframe time `t`: a percent, or source seconds.
+    fn value(&self, t: f64) -> f64 {
+        match self {
+            Speed::Normal => 100.,
+            Speed::Velocity { keys, .. } => velocity(keys, t),
+            Speed::Remap { keys, .. } => remap(keys, t),
+        }
+    }
+
+    /// The frame `offset` into the clip held for `length` (or to the
+    /// clip's end), after which the clip goes on as it was; the clip's
+    /// length stays the same. Normal speed becomes velocity.
+    pub fn frozen(&self, offset: Time, length: Option<Time>) -> Speed {
+        let origin = self.origin();
+        let at = origin + offset.max(Time::ZERO);
+        let value = self.value(at.seconds());
+        let keys = self.keys();
+        // The curve the frozen moment was on carries on after the hold.
+        let curve = keys
+            .iter()
+            .rev()
+            .find(|k| k.0 <= at)
+            .map_or(Curve::Linear, |k| k.2);
+        let mut frozen: Vec<Key> = keys.iter().copied().filter(|k| k.0 < at).collect();
+        if self.is_absolute() {
+            frozen.push((at, value, Curve::Hold));
+        } else {
+            // Straight from the speed it had to a standstill.
+            frozen.push((at, value, Curve::Linear));
+            frozen.push((at, 0., Curve::Hold));
+        }
+        if let Some(length) = length {
+            frozen.push((at + length, value, curve));
+            frozen.extend(
+                keys.iter()
+                    .filter(|k| k.0 > at)
+                    .map(|&(t, v, c)| (t + length, v, c)),
+            );
+        }
+        self.with(frozen, origin)
+    }
+
+    /// The clip's frames played backward: the speed mirrored about the
+    /// clip's last frame (`duration` less one `frame`), so the clip starts
+    /// on the frame it ended on. Returns the speed and how many seconds
+    /// further into the source the clip's in point moves (for velocity).
+    pub fn reversed(&self, duration: Time, frame: Time) -> (Speed, f64) {
+        let origin = self.origin();
+        let pivot = (duration - frame).max(Time::ZERO);
+        let keys = self.keys();
+        // Keyframe times turn around `origin + pivot`, moved later if any
+        // would fall before zero.
+        let latest = keys.iter().map(|k| k.0).max().unwrap_or(Time::ZERO);
+        let shift = (latest - origin - pivot).max(Time::ZERO);
+        let turn = |t: Time| origin + pivot + shift - t;
+        // Velocity turns around; source times stay. (Adding zero keeps a
+        // standstill at 0 rather than -0.)
+        let sign = if self.is_absolute() { 1. } else { -1. };
+        let sign = move |value: f64| sign * value + 0.;
+        let mut mirrored: Vec<Key> = Vec::new();
+        for (index, &(at, value, _)) in keys.iter().enumerate().rev() {
+            // The span before this keyframe, played backward from it.
+            let before = index.checked_sub(1).map(|i| keys[i]);
+            match before {
+                Some((held_at, held, Curve::Hold)) => {
+                    // A hold covered up to this keyframe, which showed its
+                    // own value; backward, it shows that value, then holds
+                    // a flick later.
+                    let after = (turn(at) + Time(1)).min(turn(held_at));
+                    mirrored.push((turn(at), sign(value), Curve::Hold));
+                    mirrored.push((after, sign(held), Curve::Hold));
+                }
+                Some((.., curve)) => mirrored.push((turn(at), sign(value), curve.mirrored())),
+                None => mirrored.push((turn(at), sign(value), Curve::Smooth)),
+            }
+        }
+        // One velocity holds everywhere; keep its keyframe at the start.
+        if let [only] = mirrored.as_mut_slice() {
+            only.0 = shift;
+        }
+        let moved = match self {
+            Speed::Remap { .. } => 0.,
+            _ => self.source_seconds(pivot),
+        };
+        (self.with(mirrored, shift), moved)
     }
 }
 

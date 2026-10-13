@@ -1,7 +1,7 @@
 //! The video editor on a 4K edit of camera footage with cuts, a photo over
 //! it, and a song: opening, scrubbing, playing across cuts, dragging a
-//! trim, and every timeline tool, each checked to work, be saved, and undo
-//! and redo.
+//! trim, and every timeline tool and clip edit (placing media, freezing,
+//! reversing), each checked to work, be saved, and undo and redo.
 use super::{
     Outcome,
     scenarios::{This, key, ms, outcome, pause, read, until},
@@ -378,14 +378,17 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
         restore(this, cx, &before).await;
     }
     // The edits a key or a button makes.
-    let keyed: [(&str, &str); 5] = [
-        ("Cut at playhead", "s"),
-        ("Delete", "delete"),
-        ("Ripple delete", "shift-delete"),
-        ("Insert media", ","),
-        ("Overwrite media", "."),
+    type Button = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
+    let keyed: [(&str, &str, Option<Button>); 7] = [
+        ("Cut at playhead", "s", None),
+        ("Delete", "delete", None),
+        ("Ripple delete", "shift-delete", None),
+        ("Insert media", ",", None),
+        ("Overwrite media", ".", None),
+        ("Freeze frame", "", Some(Workspace::freeze_frame)),
+        ("Reverse", "", Some(Workspace::reverse_clip)),
     ];
-    for (name, keys) in keyed {
+    for (name, keys, button) in keyed {
         let before = doc(this, cx)
             .unwrap_or_else(|| Video::new("", 2, 2, spectrum_media::FrameRate::new(30, 1)));
         this.update_in(cx, |ws, window, cx| {
@@ -407,7 +410,12 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
         })
         .ok();
         let started = Instant::now();
-        key(cx, keys);
+        match button {
+            Some(press) => {
+                this.update_in(cx, press).ok();
+            }
+            None => key(cx, keys),
+        }
         if let Err(problem) = check(this, cx, video_id, &before, started).await {
             problems.push(format!("{name}: {problem}"));
         }

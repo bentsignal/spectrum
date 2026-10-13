@@ -201,6 +201,52 @@ impl Workspace {
         self.sync_key_fields(window, cx);
     }
 
+    /// Holds the frame at the playhead for a second, then plays on; the
+    /// keyframe where it plays on is chosen, so its time can be typed.
+    pub fn freeze_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(clip) = self.speed_clip() else {
+            return;
+        };
+        let Some(now) = self.video.as_ref().map(|v| v.monitor.now()) else {
+            return;
+        };
+        if !clip.covers(now) {
+            self.notify_error(
+                anyhow::anyhow!("Move the playhead onto the clip to freeze a frame"),
+                window,
+                cx,
+            );
+            return;
+        }
+        let length = Time::from_seconds(1.);
+        let command = Command::Freeze {
+            clip: clip.id,
+            at: now,
+            length: Some(length),
+        };
+        self.video_commands(vec![command], window, cx);
+        let resume = now - clip.start + length;
+        if let Some(frozen) = self.speed_clip() {
+            let at = resume + frozen.speed.origin();
+            let index = keys(&frozen.speed).iter().position(|k| k.0 == at);
+            if let Some(video) = &mut self.video {
+                video.key = index.map(|i| (frozen.id, i));
+            }
+        }
+        self.sync_key_fields(window, cx);
+    }
+
+    /// Plays the clip's frames backward.
+    pub fn reverse_clip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(clip) = self.speed_clip() else {
+            return;
+        };
+        if let Some(video) = &mut self.video {
+            video.key = None;
+        }
+        self.video_commands(vec![Command::Reverse { clip: clip.id }], window, cx);
+    }
+
     fn delete_speed_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((clip, index)) = self.selected_key() else {
             return;
@@ -316,7 +362,11 @@ impl Workspace {
                 )
             }),
         );
-        let selected = video.key.filter(|(id, _)| *id == clip.id).map(|(_, i)| i);
+        // A keyframe chosen before an undo may be gone.
+        let selected = video
+            .key
+            .filter(|(id, i)| *id == clip.id && *i < keys(&clip.speed).len())
+            .map(|(_, i)| i);
         let rows = keys(&clip.speed)
             .into_iter()
             .enumerate()
@@ -383,10 +433,28 @@ impl Workspace {
         );
         let follows = clip.sound_follows_speed;
         let id = clip.id;
+        let actions = div()
+            .flex()
+            .gap_2()
+            .child(
+                Button::new("freeze-frame")
+                    .small()
+                    .ghost()
+                    .label("Freeze frame")
+                    .on_click(cx.listener(|this, _, window, cx| this.freeze_frame(window, cx))),
+            )
+            .child(
+                Button::new("reverse-clip")
+                    .small()
+                    .ghost()
+                    .label("Reverse")
+                    .on_click(cx.listener(|this, _, window, cx| this.reverse_clip(window, cx))),
+            );
         Some(
             group("Speed", None)
                 .gap_3()
                 .child(modes)
+                .child(actions)
                 .when(mode != 0, |el| {
                     el.child(div().flex().flex_col().gap_0p5().children(rows))
                         .child(
@@ -541,6 +609,9 @@ impl Workspace {
         (top, height): (f32, f32),
     ) -> Speed {
         let mut list = keys(&clip.speed);
+        if index >= list.len() {
+            return clip.speed.clone();
+        }
         let unit = ((top + height / 2. - y) / (height / 2. - 4.)).clamp(-1., 1.) as f64;
         let value = match clip.speed {
             Speed::Remap { .. } => {
@@ -552,14 +623,9 @@ impl Workspace {
             _ => height_velocity(unit),
         };
         let origin = clip.speed.origin();
-        let low = if index == 0 {
-            Time::ZERO
-        } else {
-            list[index - 1].0 + Time(1)
-        };
-        let high = list
-            .get(index + 1)
-            .map_or(Time(i64::MAX), |k| k.0 - Time(1));
+        // Up to its neighbors, which a freeze's keyframes share times with.
+        let low = index.checked_sub(1).map_or(Time::ZERO, |i| list[i].0);
+        let high = list.get(index + 1).map_or(Time(i64::MAX), |k| k.0);
         let at = (at - clip.start + origin).clamp(low, high);
         list[index] = (at, value, list[index].2);
         with_keys(&clip.speed, &list)

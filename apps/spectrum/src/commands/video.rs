@@ -50,8 +50,9 @@ pub(super) enum Video {
     },
     /// Set a clip's speed (its linked sound follows): velocity keyframes as
     /// time=percent pairs ("0=100,1.5s=25,3s=-100"), a time remap as
-    /// clip time=source time pairs ("0=2s,1s=2s,3s=0"), or normal. Times
-    /// count from the clip's start.
+    /// clip time=source time pairs ("0=2s,1s=2s,3s=0"), or normal; or
+    /// freeze a frame, or reverse the clip. Times count from the clip's
+    /// start.
     Speed {
         video: AssetId,
         clip: u64,
@@ -61,6 +62,15 @@ pub(super) enum Video {
         remap: Option<String>,
         #[arg(long)]
         normal: bool,
+        /// Hold the frame at this time, for --hold or to the clip's end.
+        #[arg(long)]
+        freeze: Option<String>,
+        /// How long a freeze lasts.
+        #[arg(long, requires = "freeze")]
+        hold: Option<String>,
+        /// Play the clip's frames backward, after any other change.
+        #[arg(long)]
+        reverse: bool,
         /// How each keyframe moves to the next: smooth, linear, fast, slow,
         /// sharp, or hold.
         #[arg(long, default_value = "smooth")]
@@ -251,6 +261,9 @@ pub(super) fn run(service: &mut Service, command: Video) -> Result<serde_json::V
             velocity,
             remap,
             normal,
+            freeze,
+            hold,
+            reverse,
             curve,
             interpolate,
             sound,
@@ -316,6 +329,17 @@ pub(super) fn run(service: &mut Service, command: Video) -> Result<serde_json::V
                     speed: Speed::Normal,
                 });
             }
+            if let Some(at) = freeze {
+                let start = edit.clip(clip).context("no such clip")?.1.start;
+                commands.push(Command::Freeze {
+                    clip,
+                    at: start + Time::parse(&at, Some(rate))?,
+                    length: hold.map(|h| Time::parse(&h, Some(rate))).transpose()?,
+                });
+            }
+            if reverse {
+                commands.push(Command::Reverse { clip });
+            }
             let interpolation = interpolate
                 .map(|text| match text.as_str() {
                     "off" => Ok(Interpolation::Off),
@@ -345,7 +369,9 @@ pub(super) fn run(service: &mut Service, command: Video) -> Result<serde_json::V
                 }
             }
             if commands.is_empty() {
-                bail!("give --velocity, --remap, --normal, --interpolate, or --sound");
+                bail!(
+                    "give --velocity, --remap, --normal, --freeze, --reverse, --interpolate, or --sound"
+                );
             }
             let outputs = service.edit_video(video, commands)?;
             Ok(json!({"video": video, "clip": clip, "results": outputs}))
@@ -371,12 +397,14 @@ fn schema() -> serde_json::Value {
                 {"at": 705600000, "percent": -100.0, "curve": "linear"}]}},
             {"command": "set_speed", "clip": 3, "speed": {"kind": "remap", "origin": 0, "keys": [
                 {"at": 0, "source": 1411200000, "curve": "hold"}]}},
+            {"command": "freeze", "clip": 3, "at": 705600000, "length": 705600000},
+            {"command": "reverse", "clip": 3},
             {"command": "set_track", "track": 1, "muted": true},
             {"command": "add_track", "kind": "video"},
             {"command": "undo"}
         ],
         "commands": ["rename", "set_format", "add_track", "remove_track", "set_track", "add_clip",
             "move", "trim", "roll", "slip", "slide", "split", "delete", "link", "unlink",
-            "set_clip", "set_speed", "undo", "redo"],
+            "set_clip", "set_speed", "freeze", "reverse", "undo", "redo"],
     })
 }

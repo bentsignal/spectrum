@@ -567,3 +567,167 @@ fn sped_clips_repeat_and_keep_their_frames_through_edits() {
     assert!((remap.source_seconds(Time::from_seconds(1.5)) - 0.5).abs() < 1e-9);
     assert!(remap.rate(Time::from_seconds(1.5)) < -0.9);
 }
+
+/// The source seconds a clip shows on each of its frames, wrapped into
+/// the footage.
+fn shown(video: &Video, clip: u64) -> Vec<f64> {
+    let clip = video.clip(clip).unwrap().1.clone();
+    let first = RATE.frame_at(clip.start);
+    (first..first + RATE.frame_at(clip.duration))
+        .map(|f| clip.source_seconds(frames(f)))
+        .collect()
+}
+
+fn close(a: f64, b: f64, length: f64) -> bool {
+    let apart = (a - b).rem_euclid(length);
+    apart.min(length - apart) < 1e-4
+}
+
+#[test]
+fn reverse_plays_the_same_frames_backward_ramps_and_all() {
+    let remap = |keys: &[(f64, f64, Curve)]| Speed::Remap {
+        keys: keys
+            .iter()
+            .map(|&(at, source, curve)| RemapKey {
+                at: Time::from_seconds(at),
+                source: Time::from_seconds(source),
+                curve,
+            })
+            .collect(),
+        origin: Time::ZERO,
+    };
+    let speeds = [
+        Speed::Normal,
+        velocity(&[
+            (0., 100., Curve::Fast),
+            (1., 25., Curve::Hold),
+            (2., 300., Curve::Slow),
+            (4., -50., Curve::Sharp),
+        ]),
+        remap(&[
+            (0., 1., Curve::Hold),
+            (1., 1., Curve::Fast),
+            (2., 3., Curve::Smooth),
+            (3., 0.5, Curve::Linear),
+        ]),
+    ];
+    for speed in speeds {
+        let mut video = video();
+        let (a, sound) = footage(&mut video, 0, 120, 300);
+        apply(
+            &mut video,
+            Command::SetSpeed {
+                clip: a,
+                speed: speed.clone(),
+            },
+        )
+        .unwrap();
+        // Trimmed, so keyframes lie before the clip's start.
+        video.trim(a, Edge::Start, frames(12), false).unwrap();
+        let before = shown(&video, a);
+        apply(&mut video, Command::Reverse { clip: a }).unwrap();
+        let after = shown(&video, a);
+        assert_eq!(shown(&video, sound), after, "the sound reverses with it");
+        let length = 10.;
+        for (index, value) in after.iter().enumerate() {
+            let was = before[before.len() - 1 - index];
+            assert!(
+                close(*value, was, length),
+                "{speed:?} frame {index}: {value} vs {was}"
+            );
+        }
+        // Twice is the clip as it was.
+        apply(&mut video, Command::Reverse { clip: a }).unwrap();
+        for (now, was) in shown(&video, a).iter().zip(&before) {
+            assert!(close(*now, *was, length), "{speed:?}: {now} vs {was}");
+        }
+    }
+}
+
+#[test]
+fn freezing_holds_a_frame_then_plays_on() {
+    let ramp = velocity(&[(0., 100., Curve::Linear), (2., 50., Curve::Linear)]);
+    let remap = Speed::Remap {
+        keys: vec![
+            RemapKey {
+                at: Time::ZERO,
+                source: Time::from_seconds(2.),
+                curve: Curve::Linear,
+            },
+            RemapKey {
+                at: Time::from_seconds(4.),
+                source: Time::ZERO,
+                curve: Curve::Linear,
+            },
+        ],
+        origin: Time::ZERO,
+    };
+    for speed in [Speed::Normal, ramp, remap] {
+        let mut video = video();
+        let (a, _) = footage(&mut video, 0, 120, 300);
+        apply(
+            &mut video,
+            Command::SetSpeed {
+                clip: a,
+                speed: speed.clone(),
+            },
+        )
+        .unwrap();
+        let before = shown(&video, a);
+        apply(
+            &mut video,
+            Command::Freeze {
+                clip: a,
+                at: frames(30),
+                length: Some(frames(20)),
+            },
+        )
+        .unwrap();
+        let held = shown(&video, a);
+        assert_eq!(held.len(), 120, "a freeze keeps the clip's length");
+        for f in 0..120 {
+            let expected = match f {
+                ..30 => before[f],
+                30..50 => before[30],
+                _ => before[f - 20],
+            };
+            assert!(
+                (held[f] - expected).abs() < 1e-4,
+                "{speed:?} frame {f}: {} vs {expected}",
+                held[f]
+            );
+        }
+        // Held to the end.
+        apply(
+            &mut video,
+            Command::SetSpeed {
+                clip: a,
+                speed: speed.clone(),
+            },
+        )
+        .unwrap();
+        apply(
+            &mut video,
+            Command::Freeze {
+                clip: a,
+                at: frames(30),
+                length: None,
+            },
+        )
+        .unwrap();
+        let held = shown(&video, a);
+        assert!(held[30..].iter().all(|v| (v - before[30]).abs() < 1e-4));
+        assert!(
+            apply(
+                &mut video,
+                Command::Freeze {
+                    clip: a,
+                    at: frames(500),
+                    length: None,
+                },
+            )
+            .is_err(),
+            "only where the clip is"
+        );
+    }
+}

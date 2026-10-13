@@ -133,7 +133,9 @@ ripple), roll, slip, slide, cut, and delete, with linked picture and sound
 changing together; each applies all or nothing, and new clips go on the
 lowest free track. A clip's speed is velocity keyframes or a time remap
 (`speed.rs`, integrated exactly per curve), anchored by an origin so trims
-and cuts never move its frames; footage that runs out repeats. `render`
+and cuts never move its frames; footage that runs out repeats. `Freeze`
+holds a frame and plays on; `Reverse` mirrors the speed about the clip's
+last frame, so it plays the same frames backward. `render`
 composites a frame (top-down, stopping at the first opaque full-frame clip)
 and mixes sound through providers; `spectrum-assets::video_render` supplies
 them from playback copies or originals. Slow motion between source frames

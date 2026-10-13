@@ -35,7 +35,9 @@ benchmark with the heaviest real footage.
 3. **Speed** (built 2026-10-13): velocity keyframes and time remaps with
    Vegas's curves, repeat past the end, reverse, freeze, sound that follows
    (or not), blend and motion interpolation; a velocity line on the
-   timeline and typeable keyframes. Left: the user's review of the feel.
+   timeline and typeable keyframes; one-click Freeze frame (a held frame,
+   then the clip plays on) and Reverse (the same frames backward, ramps
+   mirrored). Left: the user's review of the feel.
 4. **Animate**: a neutral keyframe model for every property; clip and canvas
    layer lanes, graph editor, animated canvases playing in videos, grouping
    clips into a canvas.
