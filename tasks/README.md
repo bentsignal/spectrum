@@ -15,3 +15,4 @@ The [agent guide](../AGENTS.md) defines validation; Git retains completed work.
 - [macOS icons](macos-icons.md)
 - [Rust dead-code audit](rust-dead-code-audit.md)
 - [Mac build tracks](macos-preview-builds.md)
+- [Video and animation](video-and-animation.md)
