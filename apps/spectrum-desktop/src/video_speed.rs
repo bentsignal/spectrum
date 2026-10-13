@@ -539,7 +539,7 @@ impl Workspace {
             return None;
         }
         let video = self.video.as_ref()?;
-        let (left, top, width, height) = bounds;
+        let (_, top, _, height) = bounds;
         let zoom = video.zoom;
         let start = clip.start.seconds() - video.scroll;
         let origin = clip.speed.origin().seconds();
@@ -557,10 +557,15 @@ impl Workspace {
             top + height / 2. - unit as f32 * (height / 2. - 4.)
         };
         let x_of = |offset: f64| crate::video_timeline::HEADER + (start + offset) as f32 * zoom;
-        let samples = ((width / 3.).max(2.)) as usize;
+        // Every 3 points across the part of the clip on screen.
+        let view = f32::from(video.timeline.borrow().size.width);
+        let offset_at = |x: f32| f64::from((x - x_of(0.)) / zoom);
+        let from = offset_at(crate::video_timeline::HEADER).max(0.);
+        let to = offset_at(view).min(clip.duration.seconds());
+        let samples = ((x_of(to) - x_of(from)) / 3.).max(2.) as usize;
         let mut points = Vec::with_capacity(samples + 1);
         for i in 0..=samples {
-            let offset = clip.duration.seconds() * i as f64 / samples as f64;
+            let offset = from + (to - from) * i as f64 / samples as f64;
             points.push((x_of(offset), y_of(offset)));
         }
         let dots: Vec<(f32, f32, bool)> = keys(&clip.speed)
@@ -570,7 +575,6 @@ impl Workspace {
             .filter(|(offset, _)| *offset >= 0. && *offset <= clip.duration.seconds())
             .map(|(offset, i)| (x_of(offset), y_of(offset), selected == Some(i)))
             .collect();
-        let _ = left;
         Some((dots, points))
     }
 

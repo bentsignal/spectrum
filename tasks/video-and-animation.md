@@ -33,7 +33,11 @@ benchmark with the heaviest real footage.
    waveforms on clips, media dragged onto the timeline or placed with `,`
    (insert) and `.` (overwrite), rows dragged taller from under their
    headers, and a timeline that scrolls (Shift-wheel) rather than squeeze
-   the monitor. Left: the user's review.
+   the monitor. Left: the user's review, and an intermittent GPUI crash
+   seen once in the benchmark's `video_tools` (2026-10-13; two reruns
+   passed): `blade_atlas.rs:229` flushed an upload for a texture already
+   freed, the race `retire.rs` guards against. Find which image is freed
+   within two frames of its upload in the video editor.
 3. **Speed** (built 2026-10-13): velocity keyframes and time remaps with
    Vegas's curves, repeat past the end, reverse, freeze, sound that follows
    (or not), blend and motion interpolation; a velocity line on the

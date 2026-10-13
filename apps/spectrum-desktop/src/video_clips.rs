@@ -118,29 +118,46 @@ impl Workspace {
         let (zoom, scroll) = (video.zoom, video.scroll);
         let clip = clip.clone();
         let header = crate::video_timeline::HEADER;
-        let left = left.max(header);
+        // Only the part on screen, drawn as one shape: a clip far wider
+        // than the timeline would otherwise paint thousands of pieces each
+        // time the playhead moves.
+        let width = f32::from(video.timeline.borrow().size.width);
+        let (left, right) = (left.max(header), right.min(width));
+        if right <= left {
+            return None;
+        }
         Some(
             canvas(
                 |_, _, _| {},
                 move |bounds, _, window, _| {
                     let middle = top + height / 2.;
                     let reach = height / 2. - 2.;
+                    let mut halves = Vec::new();
                     let mut x = left;
-                    while x < right {
+                    while x <= right {
                         // The source this column of the timeline plays.
                         let time = Time::from_seconds(scroll + f64::from((x - header) / zoom));
                         let source = clip.source_seconds(time);
                         let index = (source * PER_SECOND) as usize;
                         let peak = waveform.peaks.get(index).copied().unwrap_or(0.).sqrt();
-                        let half = (peak * reach).max(0.5);
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                bounds.origin + point(px(x), px(middle - half)),
-                                size(px(1.), px(half * 2.)),
-                            ),
-                            rgba(0xa8d8b980),
-                        ));
+                        halves.push((x, (peak * reach).max(0.5)));
                         x += 2.;
+                    }
+                    let at = |x: f32, y: f32| bounds.origin + point(px(x), px(y));
+                    let mut shape = PathBuilder::fill();
+                    for (i, (x, half)) in halves.iter().enumerate() {
+                        if i == 0 {
+                            shape.move_to(at(*x, middle - half));
+                        } else {
+                            shape.line_to(at(*x, middle - half));
+                        }
+                    }
+                    for (x, half) in halves.iter().rev() {
+                        shape.line_to(at(*x, middle + half));
+                    }
+                    shape.close();
+                    if let Ok(path) = shape.build() {
+                        window.paint_path(path, rgba(0xa8d8b980));
                     }
                 },
             )
