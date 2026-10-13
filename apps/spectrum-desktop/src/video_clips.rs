@@ -43,6 +43,10 @@ impl Workspace {
                 store.thumb_queue.push_back(asset);
             }
         }
+        self.render_next_thumbnail(cx);
+        let Ok(store) = &mut self.store else {
+            return;
+        };
         let root = store.root.clone();
         for key in sounds {
             if store.waveforms.contains_key(&key) {
