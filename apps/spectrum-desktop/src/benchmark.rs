@@ -1,10 +1,11 @@
 //! The interaction benchmark: `spectrum-desktop --benchmark [--strict]
 //! [--profile interactive|software|ci] [--report <file>] [--photo <file>]
-//! [--only <scenario,...>]`.
+//! [--footage <file>] [--only <scenario,...>]`.
 //!
 //! It makes a throwaway library holding a 24-megapixel photo (or `--photo`,
 //! such as a camera RAW file), a 45-megapixel photo with a full editing
-//! pass, and canvases from one photo to twelve,
+//! pass, canvases from one photo to twelve, and 4K 10-bit 4:2:2 HEVC
+//! footage at 59.94 fps (or `--footage`, such as a camera's clip),
 //! then drives the real app with synthetic mouse and keyboard input: the
 //! same handlers a person's clicks and drags reach. It measures what a person
 //! feels (how long an edit takes to reach the screen, how long the main
@@ -24,6 +25,7 @@ use std::{
 
 mod features;
 mod fixtures;
+mod footage;
 mod history;
 mod image_zoom;
 mod scenarios;
@@ -45,6 +47,8 @@ pub struct Options {
     pub report: Option<PathBuf>,
     /// A photo to use instead of the generated one, such as a camera RAW.
     pub photo: Option<PathBuf>,
+    /// Footage to use instead of the generated clip, such as a camera's.
+    pub footage: Option<PathBuf>,
 }
 
 /// The benchmark's options, when the app was started with `--benchmark`.
@@ -67,6 +71,7 @@ pub fn options() -> Option<Options> {
         },
         report: value("--report").map(PathBuf::from),
         photo: value("--photo").map(PathBuf::from),
+        footage: value("--footage").map(PathBuf::from),
     })
 }
 
@@ -104,6 +109,10 @@ pub struct Fixtures {
     pub feature_layer: u64,
     /// A photo with a long branched history and an agent's session.
     pub history: history::HistoryFixture,
+    /// 4K footage with sound.
+    pub footage: AssetId,
+    /// Ten seconds of stereo sound.
+    pub song: AssetId,
 }
 
 /// Makes the benchmark library and points this process at it. Runs before
@@ -123,8 +132,13 @@ pub fn prepare(options: &Options) -> Result<Fixtures> {
         std::env::set_var("SPECTRUM_CACHE", directory.join("cache"));
         std::env::set_var("SPECTRUM_PERF_LOG", directory.join("perf.json"));
     }
-    let fixtures = fixtures::make(&directory, &library, options.photo.as_deref())
-        .context("could not make the benchmark library")?;
+    let fixtures = fixtures::make(
+        &directory,
+        &library,
+        options.photo.as_deref(),
+        options.footage.as_deref(),
+    )
+    .context("could not make the benchmark library")?;
     // The library's photos and renders are hundreds of megabytes just
     // written; flushing them now keeps that out of the first saves measured.
     #[cfg(unix)]
@@ -299,6 +313,35 @@ const BUDGETS: &[Budget] = &[
     budget("history", "watch", "max", 400.0, 500.0),
     budget("history", "main_thread_lag", "max", 60.0, 150.0),
     budget("history", "error_shown", "count", 0.0, 0.0),
+    // 4K 10-bit 4:2:2 HEVC at 59.94 fps, as a camera records it, readied
+    // with its playback copy: the first frame shows promptly, a scrub's
+    // picture follows the pointer and lands on its frame, and playback
+    // (forward and backward) keeps every frame in sync with the sound.
+    budget("footage_open", "elapsed", "max", 150.0, 200.0),
+    budget("footage_open", "main_thread_lag", "max", 60.0, 150.0),
+    budget("footage_open", "error_shown", "count", 0.0, 0.0),
+    budget("footage_scrub", "player_frame_to_screen", "p95", 40.0, 60.0),
+    budget(
+        "footage_scrub",
+        "player_frame_to_screen",
+        "max",
+        100.0,
+        150.0,
+    ),
+    budget("footage_scrub", "caught_up", "max", 100.0, 150.0),
+    // After the scrub stops, the original redraws the paused frame.
+    budget("footage_scrub", "sharp", "max", 800.0, 1000.0),
+    budget("footage_scrub", "main_thread_lag", "max", 60.0, 150.0),
+    budget("footage_scrub", "error_shown", "count", 0.0, 0.0),
+    budget("footage_play", "player_frames_behind", "p95", 1.0, 1.0),
+    budget("footage_play", "player_catch_up", "count", 0.0, 0.0),
+    budget("footage_play", "main_thread_lag", "p99", 20.0, 60.0),
+    budget("footage_play", "main_thread_lag", "max", 50.0, 150.0),
+    budget("footage_play", "error_shown", "count", 0.0, 0.0),
+    // A song opens with its waveform drawn and plays.
+    budget("audio_play", "elapsed", "max", 300.0, 400.0),
+    budget("audio_play", "main_thread_lag", "max", 60.0, 150.0),
+    budget("audio_play", "error_shown", "count", 0.0, 0.0),
 ];
 
 /// One scenario's measurements.

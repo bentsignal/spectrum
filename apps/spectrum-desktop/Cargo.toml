@@ -10,6 +10,8 @@ gpui = "=0.2.2"
 gpui-component = "=0.5.1"
 gpui-component-assets = "=0.5.1"
 anyhow.workspace = true
+cpal = "0.18"
+flume = "0.11"
 image.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
@@ -19,7 +21,15 @@ spectrum-canvas = { path = "../../crates/spectrum-canvas" }
 spectrum-document = { path = "../../crates/spectrum-document" }
 spectrum-image = { path = "../../crates/spectrum-image" }
 spectrum-library = { path = "../../crates/spectrum-library" }
+spectrum-media = { path = "../../crates/spectrum-media" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2.7"
 raw-window-handle = "0.6.2"
+
+[features]
+# A package's FFmpeg, built into the binary (see spectrum-media).
+static-ffmpeg = ["spectrum-media/static-ffmpeg"]

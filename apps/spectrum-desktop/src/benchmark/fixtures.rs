@@ -18,7 +18,12 @@ const LARGE_PHOTO: (u32, u32) = (8256, 5504);
 /// The size of the heavy canvas's other photos: a phone camera.
 const PHONE_PHOTO: (u32, u32) = (4000, 3000);
 
-pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Result<Fixtures> {
+pub(super) fn make(
+    directory: &Path,
+    library: &Path,
+    photo: Option<&Path>,
+    footage: Option<&Path>,
+) -> Result<Fixtures> {
     let photo_path = match photo {
         Some(photo) => photo.to_path_buf(),
         None => generate(&directory.join("photo.jpg"), PHOTO, 0)?,
@@ -86,6 +91,24 @@ pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Re
     let (poster_canvas, poster_layer) = poster(&mut service, project, photo, photo_width)?;
     let (feature_canvas, feature_layer) = features(&mut service, project, photo, photo_width)?;
     let history = super::history::make(&mut service, library, project, &photo_path)?;
+    let footage_path = match footage {
+        Some(footage) => footage.to_path_buf(),
+        None => super::footage::generate(directory)?,
+    };
+    let footage = service
+        .import_into(vec![footage_path], Some(project))?
+        .1
+        .first()
+        .context("the footage was not imported")?
+        .id;
+    // As after import, once Spectrum has readied it for playback.
+    service.make_playback_copy(footage, &mut |_| true)?;
+    let song = service
+        .import_into(vec![super::footage::song(directory)?], Some(project))?
+        .1
+        .first()
+        .context("the song was not imported")?
+        .id;
     Ok(Fixtures {
         directory: directory.to_path_buf(),
         project,
@@ -102,6 +125,8 @@ pub(super) fn make(directory: &Path, library: &Path, photo: Option<&Path>) -> Re
         feature_canvas,
         feature_layer,
         history,
+        footage,
+        song,
     })
 }
 

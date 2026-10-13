@@ -1,0 +1,24 @@
+[package]
+name = "spectrum-media"
+version = "0.1.0"
+edition.workspace = true
+description = "Spectrum's footage and audio: probing, decoding, and their library documents"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ffmpeg-next.workspace = true
+image.workspace = true
+serde.workspace = true
+spectrum-document = { path = "../spectrum-document" }
+spectrum-time = { path = "../spectrum-time" }
+
+[features]
+# Builds FFmpeg (LGPL) from source into the binary, for packages that must
+# run where FFmpeg is not installed. Development links the system's FFmpeg.
+static-ffmpeg = ["ffmpeg-next/build", "ffmpeg-next/build-zlib"]
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3.27"

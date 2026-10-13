@@ -2,7 +2,7 @@
 use crate::{controls::group, theme::*, workspace::Workspace};
 use gpui::{prelude::*, *};
 
-fn row(label: &'static str, value: String) -> Div {
+pub fn row(label: &'static str, value: String) -> Div {
     div()
         .flex()
         .justify_between()

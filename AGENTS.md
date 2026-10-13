@@ -33,8 +33,9 @@ space afterward.
 
 This repository is the Spectrum monorepo. The GPUI desktop app lives in
 `apps/spectrum-desktop` and the `spectrum` CLI in `apps/spectrum`. The library
-service is `crates/spectrum-assets`; engines are `crates/spectrum-image` and
-`crates/spectrum-canvas` over the durable document layer `crates/spectrum-document`.
+service is `crates/spectrum-assets`; engines are `crates/spectrum-image`,
+`crates/spectrum-canvas`, and `crates/spectrum-media` (footage and audio) over
+the durable document layer `crates/spectrum-document`.
 Shared pixel behavior lives in `crates/spectrum-imaging`; repository policy
 checks live in `tools/workspace-guardrails`. See
 [Architecture](docs/ARCHITECTURE.md). Keep each editor's UI focused, and put

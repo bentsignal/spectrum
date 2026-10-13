@@ -5,7 +5,7 @@ use gpui_component::Icon;
 use gpui_component_assets::Assets;
 use std::borrow::Cow;
 
-const ICONS: [(&str, &[u8]); 8] = [
+const ICONS: [(&str, &[u8]); 12] = [
     (
         "spectrum/icons/pipette.svg",
         include_bytes!("../assets/icons/pipette.svg"),
@@ -37,6 +37,22 @@ const ICONS: [(&str, &[u8]); 8] = [
     (
         "spectrum/icons/history.svg",
         include_bytes!("../assets/icons/history.svg"),
+    ),
+    (
+        "spectrum/icons/play.svg",
+        include_bytes!("../assets/icons/play.svg"),
+    ),
+    (
+        "spectrum/icons/pause.svg",
+        include_bytes!("../assets/icons/pause.svg"),
+    ),
+    (
+        "spectrum/icons/volume.svg",
+        include_bytes!("../assets/icons/volume.svg"),
+    ),
+    (
+        "spectrum/icons/volume-off.svg",
+        include_bytes!("../assets/icons/volume-off.svg"),
     ),
 ];
 

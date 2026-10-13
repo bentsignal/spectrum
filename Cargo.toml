@@ -10,6 +10,8 @@ members = [
     "crates/spectrum-library",
     "crates/spectrum-fonts",
     "crates/spectrum-revisions",
+    "crates/spectrum-media",
+    "crates/spectrum-time",
     "tools/workspace-guardrails",
 ]
 exclude = ["third_party/hb-subset"]
@@ -26,6 +28,7 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 epaint_default_fonts = "0.35"
+ffmpeg-next = { version = "9.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 flate2 = "1.1"
 fs2 = "0.4"
 fontdue = "0.9"

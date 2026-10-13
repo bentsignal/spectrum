@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use spectrum_assets::{Service, default_root};
 use spectrum_document::{CollaborationMode, SessionId};
@@ -30,6 +30,19 @@ enum Domain {
         #[command(subcommand)]
         command: super::projects::Projects,
     },
+    /// Import images, footage, and audio as one batch, optionally into a
+    /// project. Footage and audio are copied into the library, so the
+    /// originals can be deleted afterward.
+    Import {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Add the imported assets to this project.
+        #[arg(long = "project", id = "project_id")]
+        project: Option<ProjectId>,
+        /// Create a project with this name and add the imported assets to it.
+        #[arg(long, conflicts_with = "project_id")]
+        new_project: Option<String>,
+    },
     /// List import batches, newest first. Each lists the assets imported together.
     Imports,
     Images {
@@ -40,7 +53,17 @@ enum Domain {
         #[command(subcommand)]
         command: Canvas,
     },
-    /// Rename an image or canvas.
+    /// Inspect footage: imported video with its sound.
+    Footage {
+        #[command(subcommand)]
+        command: super::media::Footage,
+    },
+    /// Inspect imported audio.
+    Audio {
+        #[command(subcommand)]
+        command: super::media::Audio,
+    },
+    /// Rename an asset.
     Rename { asset: AssetId, name: String },
     /// Move an asset to the trash for 30 days. Canvases that use it show a
     /// same-sized placeholder until it is restored.
@@ -216,7 +239,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
         Domain::Imports => serde_json::to_value(service.library.imports()?)?,
         Domain::Copy { asset } => serde_json::to_value(service.copy(asset)?)?,
         Domain::Schema => {
-            serde_json::json!({"images":{"adjust":{"exposure":1.0},"command":{"action":"set_adjustments","adjustments":spectrum_image::Adjustments::default()}},"canvas":{"command":{"command":"add_text","text":"Hello","name":null,"font_size":48,"color":[255,255,255,255],"x":0,"y":0}},"asset_types":["image","canvas"],"references":"live","copy":"independent, recursively copies referenced content"})
+            serde_json::json!({"images":{"adjust":{"exposure":1.0},"command":{"action":"set_adjustments","adjustments":spectrum_image::Adjustments::default()}},"canvas":{"command":{"command":"add_text","text":"Hello","name":null,"font_size":48,"color":[255,255,255,255],"x":0,"y":0}},"asset_types":["image","canvas","footage","audio"],"references":"live","copy":"independent, recursively copies referenced content"})
         }
         Domain::Images {
             command: Images::List,
@@ -236,22 +259,24 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
                     new_project,
                 },
         } => {
-            let created = new_project
-                .map(|name| service.library.create_project(&name))
-                .transpose()?
-                .map(|p| p.id);
-            let project = created.or(project);
-            let (batch, assets) = match service.import_into(paths, project) {
-                Ok(imported) => imported,
-                Err(error) => {
-                    if let Some(id) = created {
-                        service.library.delete_project(id)?;
-                    }
-                    return Err(error);
-                }
-            };
-            serde_json::json!({"batch": batch.id, "project": project, "assets": assets})
+            if let Some(path) = paths
+                .iter()
+                .find(|path| !spectrum_image::is_supported_image(path))
+            {
+                bail!(
+                    "{} is not an image; `spectrum import` takes footage and audio",
+                    path.display()
+                );
+            }
+            super::media::import(&mut service, paths, project, new_project)?
         }
+        Domain::Import {
+            paths,
+            project,
+            new_project,
+        } => super::media::import(&mut service, paths, project, new_project)?,
+        Domain::Footage { command } => super::media::run_footage(&service, command)?,
+        Domain::Audio { command } => super::media::run_audio(&service, command)?,
         Domain::Images {
             command:
                 Images::Export {

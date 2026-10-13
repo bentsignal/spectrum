@@ -24,7 +24,8 @@ impl Default for ExportOptions {
 
 impl Service {
     /// Exports an image or canvas at full size to a path outside the library.
-    /// The extension picks the format: .jpg, .jpeg, or .png.
+    /// The extension picks the format: .jpg, .jpeg, or .png. Footage and
+    /// audio export their imported file unchanged.
     pub fn export(&self, id: AssetId, destination: &Path) -> Result<()> {
         self.export_with(id, destination, ExportOptions::default())
     }
@@ -49,6 +50,7 @@ impl Service {
             AssetKind::Canvas => {
                 self.export_canvas_with(&self.saved_canvas(id)?, destination, options)
             }
+            AssetKind::Footage | AssetKind::Audio => self.export_original(id, destination),
             kind => bail!("exporting is not implemented for {kind}"),
         }
     }
@@ -68,6 +70,15 @@ impl Service {
             AssetKind::Canvas => {
                 let document = self.saved_canvas(id)?;
                 Ok((document.width, document.height))
+            }
+            AssetKind::Footage => {
+                let video = self
+                    .media(id)?
+                    .0
+                    .info
+                    .video
+                    .context("footage has a picture")?;
+                Ok((video.width, video.height))
             }
             kind => bail!("exporting is not implemented for {kind}"),
         }

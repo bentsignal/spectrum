@@ -46,6 +46,7 @@ These take asset UUIDs as arguments.
 
 ```sh
 spectrum library [--unassigned]
+spectrum import <files...> [--project <uuid> | --new-project "Trip"]   # images, footage, audio
 spectrum images import <files...> [--project <uuid> | --new-project "Trip"]
 spectrum imports
 spectrum projects list|create|show|rename|delete|add|remove
@@ -63,8 +64,17 @@ spectrum canvas new "Poster" [--width 1920 --height 1080 --background 18191dff -
 spectrum canvas place <canvas> <image>
 spectrum canvas command <canvas> '[{"command":"add_text","text":"Hi","name":null,"font_size":48,"color":[255,255,255,255],"x":0,"y":0}]'
 spectrum canvas export <canvas> out.png [--max-size 2048]
+spectrum footage list | info <footage>
+spectrum footage frame <footage> out.png --at 00:00:01:12 [--max-size 1920]   # or 1.5, 36f
+spectrum footage prepare <footage>   # the playback copy the app makes on its own
+spectrum footage export <footage> out.mp4   # the imported file, unchanged
+spectrum audio list | info <audio> | export <audio> out.wav
 spectrum schema
 ```
+
+Footage (video with its sound) and audio are copied into the library's media
+store on import, so the originals can be deleted. `info` lists the picture's
+size, exact frame rate, frame count, codec, and every sound track.
 
 A placed image stays linked: editing the image updates every canvas that uses
 it, and canvas exports render its current edits. Exports must be outside the

@@ -40,6 +40,8 @@ pub struct Store {
     pub thumb_rendering: bool,
     /// Each project's most recently added asset, used as its cover.
     pub covers: HashMap<ProjectId, AssetId>,
+    /// Footage's playback copies, made in the background.
+    pub copies: crate::copies::Copies,
 }
 
 /// Files and folders are expanded to the image files inside them.
@@ -54,7 +56,7 @@ pub fn importable(paths: Vec<PathBuf>) -> Vec<PathBuf> {
             for child in children {
                 walk(&child, out);
             }
-        } else if spectrum_image::is_supported_image(path) {
+        } else if spectrum_image::is_supported_image(path) || spectrum_media::is_media_file(path) {
             out.push(path.to_path_buf());
         }
     }
@@ -84,6 +86,7 @@ impl Store {
             thumbs: HashMap::new(),
             thumb_queue: Default::default(),
             thumb_rendering: false,
+            copies: Default::default(),
             covers: HashMap::new(),
         })
     }
@@ -151,10 +154,8 @@ impl Store {
         self.entries = entries
             .into_iter()
             .filter(|e| {
-                matches!(
-                    e.asset.kind,
-                    spectrum_library::AssetKind::Image | spectrum_library::AssetKind::Canvas
-                )
+                use spectrum_library::AssetKind::*;
+                matches!(e.asset.kind, Image | Canvas | Footage | Audio)
             })
             .collect();
         Ok(view)

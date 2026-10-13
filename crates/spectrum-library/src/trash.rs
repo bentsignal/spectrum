@@ -144,7 +144,8 @@ impl Library {
     }
 
     /// Drops a trashed asset from the index after its engine content is gone.
-    /// Its placeholder record remains for canvases that still name it.
+    /// Its placeholder record remains for canvases that still name it. Store
+    /// files it alone used are released for `delete_unused_media`.
     pub fn forget(&mut self, id: AssetId) -> Result<()> {
         if self.removed(id)?.is_none_or(|r| r.purged) {
             bail!("only trashed assets can be purged");
@@ -154,6 +155,11 @@ impl Library {
         tx.execute("DELETE FROM refs WHERE owner=?1 OR target=?1", [&id])?;
         tx.execute("DELETE FROM project_assets WHERE asset=?1", [&id])?;
         tx.execute("DELETE FROM import_assets WHERE asset=?1", [&id])?;
+        tx.execute(
+            "INSERT OR IGNORE INTO media_released SELECT file FROM media_uses WHERE asset=?1",
+            [&id],
+        )?;
+        tx.execute("DELETE FROM media_uses WHERE asset=?1", [&id])?;
         tx.execute("DELETE FROM assets WHERE id=?1", [&id])?;
         tx.execute(
             "UPDATE removed SET purged=?2 WHERE asset=?1",

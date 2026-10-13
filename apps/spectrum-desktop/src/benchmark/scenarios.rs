@@ -125,6 +125,18 @@ pub(super) async fn run_all(
     if wanted("image_zoom") {
         outcomes.push(super::image_zoom::image_zoom(this, cx, fixtures).await);
     }
+    if wanted("footage_open") {
+        outcomes.push(super::footage::open(this, cx, fixtures.project, fixtures.footage).await);
+    }
+    if wanted("footage_scrub") {
+        outcomes.push(super::footage::scrub(this, cx).await);
+    }
+    if wanted("footage_play") {
+        outcomes.push(super::footage::play(this, cx).await);
+    }
+    if wanted("audio_play") {
+        outcomes.push(super::footage::audio(this, cx, fixtures.project, fixtures.song).await);
+    }
     outcomes
 }
 

@@ -10,8 +10,10 @@ use std::{
 };
 pub use uuid::Uuid as AssetId;
 
+mod media;
 mod projects;
 mod trash;
+pub use media::{StoredMedia, is_store_name};
 pub use projects::{BatchId, ImportBatch, Project, ProjectId};
 pub use trash::{Removed, TRASH_DAYS, Trashed};
 
@@ -22,6 +24,9 @@ pub use trash::{Removed, TRASH_DAYS, Trashed};
 pub enum AssetKind {
     Image,
     Canvas,
+    /// Imported video, with its sound.
+    Footage,
+    /// An edit: tracks of clips that use other assets.
     Video,
     Audio,
     Music,
@@ -32,6 +37,7 @@ impl AssetKind {
         match self {
             Self::Image => "image",
             Self::Canvas => "canvas",
+            Self::Footage => "footage",
             Self::Video => "video",
             Self::Audio => "audio",
             Self::Music => "music",
@@ -39,12 +45,13 @@ impl AssetKind {
     }
 
     /// Whether an asset of this kind can use one of `target`'s: canvases
-    /// use images; video uses images, canvases, audio, video, and music.
+    /// use images; video uses images, canvases, footage, audio, video, and
+    /// music.
     pub fn accepts(self, target: AssetKind) -> bool {
         use AssetKind::*;
         matches!(
             (self, target),
-            (Canvas, Image) | (Video, Image | Canvas | Audio | Video | Music)
+            (Canvas, Image) | (Video, Image | Canvas | Footage | Audio | Video | Music)
         )
     }
 }
@@ -62,6 +69,7 @@ impl std::str::FromStr for AssetKind {
         Ok(match value {
             "image" => Self::Image,
             "canvas" => Self::Canvas,
+            "footage" => Self::Footage,
             "video" => Self::Video,
             "audio" => Self::Audio,
             "music" => Self::Music,
@@ -110,6 +118,8 @@ impl Library {
         )?;
         db.execute_batch(projects::SCHEMA)?;
         db.execute_batch(trash::SCHEMA)?;
+        db.execute_batch(media::SCHEMA)?;
+        db.execute_batch(media::RELEASED_SCHEMA)?;
         let format: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if format != FORMAT {
             db.pragma_update(None, "user_version", FORMAT)?;

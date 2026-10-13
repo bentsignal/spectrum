@@ -48,6 +48,7 @@ impl Service {
                 }
                 Ok(path)
             }
+            AssetKind::Footage | AssetKind::Audio => self.media_thumbnail(id, max),
             kind => bail!("no thumbnail for {kind} assets"),
         }
     }
