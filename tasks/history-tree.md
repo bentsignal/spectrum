@@ -1,5 +1,5 @@
 ---
-status: in_progress
+status: done
 priority: high
 ---
 
@@ -77,8 +77,9 @@ Engine and CLI first, then the app on top of the same service calls.
   focusing scrolled the text out of view. Sidebar fields now get an explicit
   width (`controls::FIELD_WIDTH`), confirmed on the runner. The hint under
   the branch field is gone.
-  Next: keyboard navigation, previews when a canvas's linked images change,
-  very wide histories.
+- Done after the fourth review; the person approved the tree. Later polish,
+  not started: keyboard navigation in the tree, previews that follow a
+  canvas's linked images, very wide histories.
 
 ## Acceptance
 
