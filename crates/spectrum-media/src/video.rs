@@ -162,6 +162,17 @@ impl FrameReader {
         Ok(Frame { image, time, index })
     }
 
+    /// The keyframe at or before `time`: a frame near it that decodes on
+    /// its own, quickly, as posters need.
+    pub fn keyframe_near(&mut self, time: Time, max_size: Option<u32>) -> Result<Frame> {
+        self.seek(time)?;
+        let first = self.decode_next()?.context("the file has no frames")?;
+        let (time, index) = (first.time, first.index);
+        self.current = Some(first);
+        let image = self.convert(max_size)?;
+        Ok(Frame { image, time, index })
+    }
+
     /// Frames up to and including frame `last`, oldest first: those from
     /// the keyframe before it, at most `max` of them. Playing backward
     /// steps through these, so each seek pays for a whole group of frames.

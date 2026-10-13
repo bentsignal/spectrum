@@ -91,10 +91,20 @@ impl Service {
         }
         let (media, file) = self.media(id)?;
         let image = if media.info.is_footage() {
-            let mut reader = spectrum_media::FrameReader::open(&file)?;
-            image::DynamicImage::ImageRgba8(
-                reader.frame_at(poster_time(&media.info), Some(max))?.image,
-            )
+            // From the playback copy, or the original's nearest keyframe:
+            // either decodes in a moment, so a grid of camera footage never
+            // takes the cores editing needs.
+            let at = poster_time(&media.info);
+            let frame = match self.playback_copy(id)? {
+                Some(copy) => {
+                    let rotation = media.info.video.as_ref().map_or(0, |v| v.rotation);
+                    spectrum_media::FrameReader::open(&copy)?
+                        .with_rotation(rotation)
+                        .frame_at(at, Some(max))?
+                }
+                None => spectrum_media::FrameReader::open(&file)?.keyframe_near(at, Some(max))?,
+            };
+            image::DynamicImage::ImageRgba8(frame.image)
         } else {
             waveform_picture(&file, &media.info, max)?
         };
