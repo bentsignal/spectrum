@@ -13,6 +13,7 @@ pub use spectrum_library::default_root;
 mod display;
 mod export;
 mod history;
+mod media;
 mod sessions;
 pub mod thumbnail;
 pub mod trash;
@@ -101,30 +102,58 @@ impl Service {
         Ok(self.import_into(paths, None)?.1)
     }
 
-    /// Imports files as one batch, one image asset per file, and optionally
-    /// adds them to a project.
+    /// Imports files as one batch, one asset per file, and optionally adds
+    /// them to a project: images, footage, and audio. Footage and audio are
+    /// copied into the library's media store.
     pub fn import_into(
         &mut self,
         paths: Vec<PathBuf>,
         project: Option<ProjectId>,
     ) -> Result<(ImportBatch, Vec<Asset>)> {
+        self.import_with_progress(paths, project, &mut |_| {})
+    }
+
+    /// Imports as [`Self::import_into`] does; `progress` hears the bytes of
+    /// footage and audio copied so far, across the batch.
+    pub fn import_with_progress(
+        &mut self,
+        paths: Vec<PathBuf>,
+        project: Option<ProjectId>,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<(ImportBatch, Vec<Asset>)> {
         if let Some(project) = project {
             self.library.project(project)?;
         }
         if paths.is_empty() {
-            bail!("choose at least one image to import");
+            bail!("choose at least one file to import");
         }
-        let images = paths
+        // Read every file before importing any, so one bad file imports none.
+        let incoming = paths
             .iter()
-            .map(|path| Image::import(path))
+            .map(|path| {
+                if spectrum_image::is_supported_image(path) {
+                    Image::import(path).map(|image| Incoming::Image(Box::new(image)))
+                } else {
+                    spectrum_media::probe(path).map(Incoming::Media)
+                }
+            })
             .collect::<Result<Vec<_>>>()?;
-        let mut assets = Vec::with_capacity(images.len());
-        for (path, image) in paths.iter().zip(images) {
+        let mut assets = Vec::with_capacity(incoming.len());
+        let mut copied = 0;
+        for (path, incoming) in paths.iter().zip(incoming) {
             let name = path
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Image".into());
-            assets.push(self.create_image(&name, image)?);
+                .unwrap_or_else(|| "Untitled".into());
+            assets.push(match incoming {
+                Incoming::Image(image) => self.create_image(&name, *image)?,
+                Incoming::Media(info) => {
+                    let asset = self
+                        .create_media(&name, path, info, &mut |bytes| progress(copied + bytes))?;
+                    copied += std::fs::metadata(path).map_or(0, |m| m.len());
+                    asset
+                }
+            });
         }
         let ids = assets.iter().map(|a| a.id).collect::<Vec<_>>();
         let batch = self.library.record_import(&ids)?;
@@ -278,9 +307,16 @@ impl Service {
                 self.library.references(copy.id, &links(&document))?;
                 Ok(copy)
             }
+            AssetKind::Footage | AssetKind::Audio => self.copy_media(id, &name),
             kind => bail!("copying is not implemented for {kind}"),
         }
     }
+}
+
+/// A file read for import, before any is imported.
+enum Incoming {
+    Image(Box<Image>),
+    Media(spectrum_media::MediaInfo),
 }
 
 fn person() -> Actor {

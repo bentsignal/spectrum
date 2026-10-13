@@ -21,9 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install Linux GPUI dependencies
+      - name: Install Linux GPUI and FFmpeg dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
@@ -46,9 +46,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - name: Install Linux GPUI dependencies and software rendering
+      - name: Install Linux GPUI and FFmpeg dependencies and software rendering
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev xvfb mesa-vulkan-drivers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev xvfb mesa-vulkan-drivers
+      - name: Install FFmpeg
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - name: Ensure Metal compiler is available
         if: runner.os == 'macOS'
@@ -84,12 +87,28 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install Linux GPUI dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libssl-dev libwayland-dev libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libvulkan-dev nasm
+      # Packages carry FFmpeg: built into the binary on macOS and Linux, and
+      # an LGPL build's libraries beside it on Windows.
+      - name: Install the FFmpeg build's assembler
+        if: runner.os == 'macOS'
+        run: brew install nasm
+      - name: Download FFmpeg for Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=ffmpeg-n9.0-latest-win64-lgpl-shared-9.0
+          curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$name.zip"
+          unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP"
+          echo "FFMPEG_DIR=$RUNNER_TEMP/$name" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+          # FFmpeg's binding generator runs deeper than Windows' 1 MB stack.
+          echo "RUSTFLAGS=-C link-arg=/STACK:16777216" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - name: Ensure Metal compiler is available
         if: runner.os == 'macOS'
         run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
-      - run: cargo build --release -p spectrum-desktop -p spectrum --locked
       - name: Install Developer ID certificate
         if: runner.os == 'macOS' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.SPECTRUM_MACOS_SIGNING_ENABLED == 'true'
         shell: bash

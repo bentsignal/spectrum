@@ -39,12 +39,8 @@ impl Workspace {
             .entries
             .iter()
             .filter(|e| {
-                let kind = if e.asset.kind == spectrum_library::AssetKind::Canvas {
-                    self.show_canvases
-                } else {
-                    self.show_images
-                };
-                kind && e.asset.name.to_lowercase().contains(&query)
+                !self.hidden_kinds.contains(&e.asset.kind)
+                    && e.asset.name.to_lowercase().contains(&query)
             })
             .collect();
         match self.sort {
@@ -137,6 +133,9 @@ impl Workspace {
             (_, _) if entry.purge_after.is_some() => {}
             (Place::Project(_), AssetKind::Image) => self.open_item(Open::Image(id), window, cx),
             (Place::Project(_), AssetKind::Canvas) => self.open_item(Open::Canvas(id), window, cx),
+            (Place::Project(_), AssetKind::Footage | AssetKind::Audio) => {
+                self.open_item(Open::Media(id), window, cx)
+            }
             _ => {}
         }
     }
@@ -530,8 +529,11 @@ impl Workspace {
                 let days = ((purge_after - now) as f32 / 86_400.).ceil().max(0.) as i64;
                 format!("{days} day{} left", if days == 1 { "" } else { "s" }).into()
             }
-            None if entry.asset.kind == spectrum_library::AssetKind::Canvas => "Canvas".into(),
-            None => "Image".into(),
+            None => match self.store.as_ref().ok().and_then(|s| s.copies.progress(id)) {
+                // Footage being readied for smooth playback.
+                Some(share) => format!("Footage · Preparing {:.0}%", share * 100.).into(),
+                None => kind_label(entry.asset.kind).into(),
+            },
         };
         let bounds = self.card_bounds.clone();
         div()
@@ -683,5 +685,18 @@ pub fn frame(thumb: Option<&Thumb>, width: f32, height: f32) -> Div {
             .text_color(rgb(FAINT))
             .child("No preview"),
         _ => frame,
+    }
+}
+
+/// What a card calls its asset's kind.
+pub fn kind_label(kind: spectrum_library::AssetKind) -> &'static str {
+    use spectrum_library::AssetKind::*;
+    match kind {
+        Image => "Image",
+        Canvas => "Canvas",
+        Footage => "Footage",
+        Audio => "Audio",
+        Video => "Video",
+        Music => "Music",
     }
 }

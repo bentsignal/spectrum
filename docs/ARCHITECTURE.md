@@ -10,9 +10,10 @@ apps/spectrum-desktop (GPUI) ─┐
 apps/spectrum (CLI) ──────────┘      ├─ spectrum-library  index: identity, kind, name, projects, references, trash
                                      ├─ spectrum-image    image asset: source photo + adjustments
                                      ├─ spectrum-canvas   canvas asset: layers, compositing, text, paint
+                                     ├─ spectrum-media    footage and audio: FFmpeg decoding, playback copies
                                      └─ spectrum-document durable documents: history, files, sessions
                                             └─ spectrum-revisions  revision store (SQLite)
-shared pixels: spectrum-imaging · shaping/fonts: spectrum-fonts
+shared pixels: spectrum-imaging · shaping/fonts: spectrum-fonts · media time: spectrum-time
 ```
 
 Rust sources stay at or under 1,000 lines; `tools/workspace-guardrails` checks
@@ -26,8 +27,12 @@ that group assets without owning them; import batches; typed references (a
 canvas uses images; video will use everything); and a 30-day trash. Canvases
 that use a trashed or purged image draw a same-sized placeholder.
 
-Every asset is one `.spectrum` document inside the library: `images/<uuid>.spectrum`
-and `canvases/<uuid>.spectrum`. `previews/` and each folder's `.cache/` are
+Every asset is one `.spectrum` document inside the library: `images/<uuid>.spectrum`,
+`canvases/<uuid>.spectrum`, `footage/<uuid>.spectrum`, and `audio/<uuid>.spectrum`.
+Imported video and sound files are too large to embed, so they live once in
+the media store, `media/<sha256>.<ext>`, copied in (and hashed) on import; the
+index records which assets use which file, and a file goes when its last
+asset is purged. `media/.cache/` holds rebuildable playback copies. `previews/` and each folder's `.cache/` are
 disposable. `SPECTRUM_LIBRARY` or `--library` selects another library; the
 default is `Library` in Spectrum's application-data directory. Back up by
 copying the whole library directory while Spectrum is closed.
@@ -97,6 +102,21 @@ RAW development is bounded to 25 megapixels for previews; exports develop at
 full resolution. The adjustment pipeline itself lives in `spectrum-imaging`,
 which canvases also use for per-layer adjustments.
 
+## Media engine
+
+`spectrum-media` reads every common container and codec through FFmpeg
+(`ffmpeg-next`; development links the system's FFmpeg, and macOS and Linux
+packages build its LGPL configuration into the binary). `probe` reads a file's
+picture, exact frame rate, frame count, rotation, and sound tracks;
+`FrameReader` decodes the frame showing at any time, seeking to the keyframe
+before it and decoding on, and converts on several threads to RGBA or BGRA;
+`AudioReader` decodes a track as 48 kHz stereo. Times are `spectrum_time::Time`,
+counted in flicks (1/705,600,000 s), which land exactly on every common frame
+and sample rate. Footage larger than HD or deeper than 8 bits gets a
+display-sized MPEG-2 playback copy with short groups of pictures and the same
+frames at the same times, so scrubbing, playing backward, and future speed
+ramps decode thousands of frames a second.
+
 ## Canvas engine
 
 `spectrum-canvas` owns the layered document: raster, text, rectangle, ellipse,
@@ -127,6 +147,13 @@ the main thread, and follow an agent the person works together with while
 nothing is waiting to save. The desktop executable is also the CLI: started as
 `spectrum` (packages link that name to it), it runs the command line.
 
+The player (`player*.rs`) shows footage and audio. A picture thread decodes
+from the playback copy (ahead of the playhead while playing, newest request
+first while scrubbing), and a paused frame then redraws from the original. The
+sound thread owns the output device; samples played are the playback clock,
+and the picture skips ahead rather than drift if it falls behind. Copies are
+made in the background, one at a time at low priority, paused while playing.
+
 ## Performance checks
 
 Three layers keep interaction fast, and all run in CI:
@@ -135,9 +162,11 @@ Three layers keep interaction fast, and all run in CI:
   (`spectrum-desktop --benchmark`) on a throwaway library: a 24-megapixel
   photo (or `--photo <file>`, such as a camera RAW), a 45-megapixel photo with
   every tab edited, and canvases of one photo, twelve photos with text effects
-  (one clipped in a frame), a blend mode, and a poster. It drives slider
-  scrubs, opens, layer drags, zoom steps and header zooms, image zoom and pan,
-  a text size drag, and brush strokes with undo through the app's handlers,
+  (one clipped in a frame), a blend mode, and a poster, 4K 59.94 fps 10-bit
+  4:2:2 HEVC footage at a camera's bitrate (or `--footage <file>`), and a
+  song. It drives slider scrubs, opens, layer drags, zoom steps and header
+  zooms, image zoom and pan, a text size drag, brush strokes with undo, and
+  footage scrubs, playback, and the transport keys through the app's handlers,
   and fails when an edit is slow to reach the screen, the main thread stalls,
   a dragged layer trails its outline, a canvas or image is slow to come back
   sharp, or an error shows. It also uses every canvas tool, the layer

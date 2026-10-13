@@ -21,6 +21,7 @@ png.workspace = true
 spectrum-canvas = { path = "../../crates/spectrum-canvas" }
 spectrum-assets = { path = "../../crates/spectrum-assets" }
 spectrum-document = { path = "../../crates/spectrum-document" }
+spectrum-media = { path = "../../crates/spectrum-media" }
 rayon.workspace = true
 same-file.workspace = true
 serde.workspace = true
@@ -46,3 +47,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "spectrum"
 path = "src/cli.rs"
+
+[features]
+# A package's FFmpeg, built into the binary (see spectrum-media).
+static-ffmpeg = ["spectrum-media/static-ffmpeg"]

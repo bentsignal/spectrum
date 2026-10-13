@@ -64,9 +64,26 @@ followed by one effects stage. The user sometimes edits stills in After Effects
 because Lightroom cannot express layered treatments; Spectrum should support
 that through canvases without making still work depend on video.
 
-Future animation should address every editable property, including image
-adjustments and toggles, with suitable semantics for continuous values and
-switches. Keep this possible in the model; animation and the DAW are later work.
+### Video and animation
+
+Decided 2026-10-13, designed as one piece ([plan](../tasks/video-and-animation.md)):
+
+- **Footage** (imported video with its sound) and **audio** are imported
+  assets, copied into the library so the card can be wiped. Spectrum is for
+  public release: read and export the major codecs and containers (FFmpeg).
+- A **video** is an edit: Premiere-style tracks of clips that use footage,
+  audio, images, canvases, and other videos.
+- **No animation asset.** Every editable property, image adjustments and
+  toggles included, is a value or keyframes (switches hold). A canvas with
+  keyframes is animated and plays in a video. Edit (tracks) and Animate
+  (property keyframes and graph) are two views of one timeline: animate a
+  clip or a canvas's layers, go back, and see it.
+- **Speed** per clip is either velocity keyframes (Sony Vegas) or a time
+  remap (After Effects), not both. Neither changes the clip's length on the
+  timeline: running out of footage repeats it, as Vegas does. Reverse and
+  freeze are required. Slowing below the project's frame rate offers
+  easy, high-quality frame interpolation. Audio follows the speed by
+  default, with a one-click switch to leave it unchanged.
 
 ### Interface
 

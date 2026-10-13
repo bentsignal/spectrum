@@ -188,21 +188,26 @@ impl Workspace {
     }
 
     pub fn kind_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let kind = |id: &'static str, label: &'static str, on: bool| {
+        use spectrum_library::AssetKind;
+        let kind = |id: &'static str, label: &'static str, kind: AssetKind| {
+            let on = !self.hidden_kinds.contains(&kind);
             chip(id, label, on).on_click(cx.listener(move |this, _, _, cx| {
-                if id == "images" {
-                    this.show_images = !this.show_images;
+                if let Some(at) = this.hidden_kinds.iter().position(|k| *k == kind) {
+                    this.hidden_kinds.remove(at);
                 } else {
-                    this.show_canvases = !this.show_canvases;
+                    this.hidden_kinds.push(kind);
                 }
                 cx.notify();
             }))
         };
         div()
             .flex()
+            .flex_wrap()
             .gap_2()
-            .child(kind("images", "Images", self.show_images))
-            .child(kind("canvases", "Canvases", self.show_canvases))
+            .child(kind("images", "Images", AssetKind::Image))
+            .child(kind("canvases", "Canvases", AssetKind::Canvas))
+            .child(kind("footage", "Footage", AssetKind::Footage))
+            .child(kind("audio", "Audio", AssetKind::Audio))
     }
 
     /// Sort order, at the right of the title row above a grid.
@@ -260,7 +265,11 @@ impl Workspace {
         };
         let files = importable(paths);
         if files.is_empty() {
-            self.notify_error("No supported images to import.", window, cx);
+            self.notify_error(
+                "No supported images, footage, or audio to import.",
+                window,
+                cx,
+            );
             return;
         }
         let project = match self.place {

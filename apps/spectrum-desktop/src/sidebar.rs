@@ -64,6 +64,9 @@ impl Workspace {
             (_, Mode::Style) => self.style_sidebar(cx).into_any_element(),
             (_, Mode::Overview) => self.tool_sidebar(cx).into_any_element(),
             (_, Mode::Canvas) => self.canvas_settings(cx).into_any_element(),
+            (_, Mode::Info) if matches!(self.open, Open::Media(_)) => {
+                self.media_info_sidebar(cx).into_any_element()
+            }
             (_, Mode::Info) => self.info_sidebar(cx).into_any_element(),
             (_, Mode::History) => self.history_sidebar(cx).into_any_element(),
             _ => self.layers_sidebar(cx).into_any_element(),

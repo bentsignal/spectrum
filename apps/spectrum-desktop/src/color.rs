@@ -47,7 +47,7 @@ impl Workspace {
                     _ => Target::Layer(layer.id),
                 })
             }
-            Open::Overview => None,
+            Open::Overview | Open::Media(_) => None,
         }
     }
 

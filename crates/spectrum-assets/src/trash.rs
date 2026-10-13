@@ -37,10 +37,15 @@ impl Service {
     /// the same size until it is restored.
     pub fn delete(&mut self, id: AssetId) -> Result<Deleted> {
         let asset = self.library.get(id)?;
-        let size = if asset.kind == AssetKind::Image {
-            Some(image::image_dimensions(self.preview(id)?)?)
-        } else {
-            None
+        let size = match asset.kind {
+            AssetKind::Image => Some(image::image_dimensions(self.preview(id)?)?),
+            AssetKind::Footage => self
+                .media(id)?
+                .0
+                .info
+                .video
+                .map(|video| (video.width, video.height)),
+            _ => None,
         };
         let usage = self.usage(id)?;
         let trashed = self.library.trash(id, size)?;
@@ -61,6 +66,7 @@ impl Service {
         if !self.library.document_in_use(&asset.document)? {
             spectrum_document::remove(&path)?;
         }
+        self.library.delete_unused_media()?;
         Ok(())
     }
 

@@ -23,6 +23,9 @@
             libXi
             libXrandr
             libxcb
+            # Video and audio: decoding, encoding, and sound output.
+            ffmpeg
+            alsa-lib
           ];
         in {
           default = pkgs.mkShell {
@@ -30,6 +33,10 @@
               cargo rustc rustfmt clippy rust-analyzer
               pkg-config cmake
               rustPlatform.bindgenHook
+              # The ffmpeg command makes benchmark footage; nasm builds the
+              # static FFmpeg packages carry.
+              ffmpeg
+              nasm
               # A private display for the interaction benchmark.
               xorg-server
             ];

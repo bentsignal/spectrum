@@ -7,6 +7,17 @@ Sony ARW decoding and development uses `rawler` 0.7.2, Copyright (c) the
 dnglab/rawler contributors, under the GNU Lesser General Public License v2.1.
 Source and license text: <https://github.com/dnglab/dnglab/tree/main/rawler>.
 
+Footage and audio are read, and playback copies written, with FFmpeg,
+Copyright the FFmpeg developers, under the GNU Lesser General Public License
+v2.1 or later, through `ffmpeg-next` and `ffmpeg-sys-next` (WTFPL). macOS and
+Linux packages build FFmpeg's LGPL configuration (with zlib) from its
+`release/9.0` source into the binary; Spectrum's source is public, so the
+binary can be relinked against a modified FFmpeg. Windows packages carry an
+LGPL shared build from <https://github.com/BtbN/FFmpeg-Builds> beside the
+executable, with its license as `FFMPEG-LICENSE.txt`. Source:
+<https://ffmpeg.org/download.html>. Sound plays through `cpal`
+(Apache-2.0), and the player's threads talk through `flume` (MIT/Apache-2.0).
+
 Prism uses the Ubuntu Light font designed by Dalton Maag and distributed by
 `epaint_default_fonts` for portable text-layer rendering. Ubuntu Font Family is
 licensed under the Ubuntu Font Licence 1.0:

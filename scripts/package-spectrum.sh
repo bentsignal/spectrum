@@ -2,7 +2,13 @@
 set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-cargo build --release --locked -p spectrum-desktop -p spectrum
+# macOS and Linux packages carry FFmpeg inside the binary; Windows carries
+# the LGPL build named by FFMPEG_DIR beside it.
+features=()
+case "$(uname -s)" in
+  Darwin|Linux) features=(--features spectrum-desktop/static-ffmpeg,spectrum/static-ffmpeg) ;;
+esac
+cargo build --release --locked -p spectrum-desktop -p spectrum "${features[@]}"
 
 case "$(uname -s)" in
   Darwin)
@@ -44,6 +50,10 @@ case "$(uname -s)" in
       install -m 0755 "target/release/spectrum$suffix" "$destination/spectrum$suffix"
     fi
     install -m 0644 LICENSE THIRD_PARTY.md packaging/licenses/UBUNTU-FONT-LICENCE-1.0.txt "$destination/"
+    if [[ -n "$suffix" ]]; then
+      install -m 0644 "${FFMPEG_DIR:?FFMPEG_DIR names the FFmpeg build Windows packages carry}"/bin/*.dll "$destination/"
+      install -m 0644 "$FFMPEG_DIR/LICENSE.txt" "$destination/FFMPEG-LICENSE.txt"
+    fi
     "$destination/spectrum-desktop$suffix" --version
     "$destination/spectrum$suffix" --version
     ;;

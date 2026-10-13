@@ -137,7 +137,7 @@ impl Workspace {
     pub fn history_asset(&self) -> Option<AssetId> {
         match self.open {
             Open::Image(id) | Open::Canvas(id) => Some(id),
-            Open::Overview => None,
+            Open::Overview | Open::Media(_) => None,
         }
     }
 
