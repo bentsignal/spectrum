@@ -448,7 +448,8 @@ impl Workspace {
             (f64::from(x / video.zoom) + video.scroll).max(0.),
         ));
         let y = f32::from(position.y - bounds.origin.y);
-        let row = crate::video_timeline::rows(&video.doc)
+        let row = video
+            .rows()
             .into_iter()
             .find(|(_, _, top, height)| y >= *top && y < top + height);
         let kind = match store.service.library.get(asset).map(|a| a.kind) {

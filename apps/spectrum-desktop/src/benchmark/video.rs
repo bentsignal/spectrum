@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     video_state::Tool,
-    video_timeline::{HEADER, rows},
+    video_timeline::HEADER,
     workspace::{Open, Workspace},
 };
 use anyhow::{Context as _, Result};
@@ -240,7 +240,7 @@ pub(super) async fn speed(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
 fn spot(ws: &Workspace, track: u64, time: Time) -> Option<Point<Pixels>> {
     let video = ws.video.as_ref()?;
     let bounds = *video.timeline.borrow();
-    let (_, _, top, height) = rows(&video.doc).into_iter().find(|(id, ..)| *id == track)?;
+    let (_, _, top, height) = video.rows().into_iter().find(|(id, ..)| *id == track)?;
     let x = HEADER + ((time.seconds() - video.scroll) as f32) * video.zoom;
     Some(bounds.origin + point(px(x), px(top + height / 2.)))
 }
@@ -446,6 +446,46 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
         }
     }
     restore(this, cx, &before).await;
+    // A row dragged taller by the line under its header: a view change, so
+    // the edit stays as it was.
+    let edge = read(this, cx, |ws| {
+        let video = ws.video.as_ref()?;
+        let bounds = *video.timeline.borrow();
+        let (track, _, top, height) = video.rows().into_iter().next()?;
+        Some((
+            track,
+            height,
+            bounds.origin + point(px(HEADER / 2.), px(top + height)),
+        ))
+    })
+    .flatten();
+    match edge {
+        None => problems.push("Row height: no row".into()),
+        Some((track, height, from)) => {
+            drag(this, cx, from, from + point(px(0.), px(60.)), 10).await;
+            let (grown, same) = read(this, cx, |ws| {
+                let video = ws.video.as_ref()?;
+                let grown = video.heights.get(&track).copied().unwrap_or(height);
+                Some((grown, video.doc.tracks == before.tracks))
+            })
+            .flatten()
+            .unwrap_or((height, false));
+            if (grown - height - 60.).abs() > 1. {
+                problems.push(format!(
+                    "Row height: {height} became {grown}, not 60 taller"
+                ));
+            }
+            if !same {
+                problems.push("Row height: changed the edit".into());
+            }
+            this.update(cx, |ws, _| {
+                if let Some(video) = &mut ws.video {
+                    video.heights.clear();
+                }
+            })
+            .ok();
+        }
+    }
     let problem = (!problems.is_empty()).then(|| problems.join("; "));
     outcome("video_tools", vec![], problem)
 }

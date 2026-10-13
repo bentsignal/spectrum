@@ -11,19 +11,22 @@ use crate::{
 use gpui::{prelude::*, *};
 use spectrum_media::Time;
 use spectrum_video::{Command, Edge, TrackKind, Video};
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 pub const HEADER: f32 = 76.;
 pub const RULER: f32 = 26.;
 const VIDEO_ROW: f32 = 54.;
 const AUDIO_ROW: f32 = 42.;
+/// How short and tall a dragged row can be.
+const ROW_RANGE: (f32, f32) = (30., 240.);
 /// How near an edge, in points, counts as grabbing it.
 const EDGE: f32 = 6.;
 /// How near, in points, an edge snaps.
 const SNAP: f32 = 8.;
 
-/// The rows from the top: video tracks (highest first), then audio.
-pub fn rows(video: &Video) -> Vec<(u64, TrackKind, f32, f32)> {
+/// The rows from the top: video tracks (highest first), then audio, at
+/// the heights they were dragged to.
+pub fn rows(video: &Video, heights: &HashMap<u64, f32>) -> Vec<(u64, TrackKind, f32, f32)> {
     let mut rows = Vec::new();
     let mut y = RULER;
     let tracks = video
@@ -33,21 +36,37 @@ pub fn rows(video: &Video) -> Vec<(u64, TrackKind, f32, f32)> {
         .rev()
         .chain(video.tracks.iter().filter(|t| t.kind == TrackKind::Audio));
     for track in tracks {
-        let height = if track.kind == TrackKind::Video {
-            VIDEO_ROW
-        } else {
-            AUDIO_ROW
-        };
+        let height = heights.get(&track.id).copied().unwrap_or(match track.kind {
+            TrackKind::Video => VIDEO_ROW,
+            TrackKind::Audio => AUDIO_ROW,
+        });
         rows.push((track.id, track.kind, y, height));
         y += height;
     }
     rows
 }
 
+/// The tallest the timeline gets: under half the window, so the monitor
+/// keeps its room.
+pub fn timeline_cap(window: &Window) -> f32 {
+    (f32::from(window.viewport_size().height) * 0.45).max(RULER + VIDEO_ROW + 24.)
+}
+
 /// What is under a point on the timeline.
 enum Hit {
     Ruler,
-    Clip { clip: u64, edge: Option<Edge> },
+    /// A track's name, switches, and nothing to drag.
+    Header,
+    /// The line under a track's header, which drags the row taller or
+    /// shorter.
+    RowEdge {
+        track: u64,
+        height: f32,
+    },
+    Clip {
+        clip: u64,
+        edge: Option<Edge>,
+    },
     Empty,
 }
 
@@ -75,7 +94,17 @@ impl Workspace {
         if y < RULER {
             return Hit::Ruler;
         }
-        let Some((track, ..)) = rows(&video.doc)
+        let rows = video.rows();
+        if x < HEADER {
+            return rows
+                .into_iter()
+                .find(|(_, _, top, height)| (y - (top + height)).abs() <= 4.)
+                .map_or(Hit::Header, |(track, _, _, height)| Hit::RowEdge {
+                    track,
+                    height,
+                });
+        }
+        let Some((track, ..)) = rows
             .into_iter()
             .find(|(_, _, top, height)| y >= *top && y < top + height)
         else {
@@ -121,6 +150,8 @@ impl Workspace {
             return;
         };
         let kind = match hit {
+            Hit::Header => return,
+            Hit::RowEdge { track, height } => DragKind::Resize { track, height },
             Hit::Ruler | Hit::Empty => {
                 if matches!(hit, Hit::Empty) && !shift {
                     video.selected.clear();
@@ -209,9 +240,20 @@ impl Workspace {
             self.seek_player(time, cx);
             return;
         }
+        if let DragKind::Resize { track, height } = kind {
+            let y = f32::from(event.position.y);
+            if let Some(video) = &mut self.video {
+                let height = (height + y - from.1).clamp(ROW_RANGE.0, ROW_RANGE.1);
+                video.heights.insert(track, height);
+                let room = (video.content_height() - timeline_cap(window)).max(0.);
+                video.scroll_y = video.scroll_y.min(room);
+            }
+            cx.notify();
+            return;
+        }
         let by = self.snapped_by(Time::from_seconds(time.seconds() - from.0), kind);
         // Rows dragged up move pictures up a track.
-        let rows = ((from.1 - f32::from(event.position.y)) / VIDEO_ROW).round() as i32;
+        let rows = self.rows_between(from.1, f32::from(event.position.y));
         let Some(selected) = self.video.as_ref().map(|v| v.selected.clone()) else {
             return;
         };
@@ -237,7 +279,7 @@ impl Workspace {
                 };
                 command
             }
-            DragKind::Playhead => return,
+            DragKind::Playhead | DragKind::Resize { .. } => return,
         };
         let Some(video) = &mut self.video else {
             return;
@@ -288,7 +330,7 @@ impl Workspace {
             | DragKind::Roll { clip }
             | DragKind::Slip { clip }
             | DragKind::Slide { clip } => doc.linked(clip),
-            DragKind::Playhead | DragKind::Key { .. } => return by,
+            DragKind::Playhead | DragKind::Key { .. } | DragKind::Resize { .. } => return by,
         };
         let edges: Vec<Time> = moving
             .iter()
@@ -339,7 +381,11 @@ impl Workspace {
         let Some(video) = &mut self.video else {
             return;
         };
-        if event.modifiers.platform || event.modifiers.alt || event.modifiers.control {
+        if event.modifiers.shift {
+            // Up and down through tracks taller than the timeline.
+            let room = (video.content_height() - timeline_cap(window)).max(0.);
+            video.scroll_y = (video.scroll_y - f32::from(delta.y)).clamp(0., room);
+        } else if event.modifiers.platform || event.modifiers.alt || event.modifiers.control {
             let factor = (1. + f32::from(delta.y) / 200.).clamp(0.5, 2.);
             let x = (time.seconds() - video.scroll) as f32 * video.zoom;
             video.zoom = (video.zoom * factor).clamp(2., 2000.);
@@ -374,7 +420,7 @@ impl Workspace {
             f32::from(event.position.x - bounds.origin.x),
             f32::from(event.position.y - bounds.origin.y),
         );
-        let Some((_, _, top, row)) = rows(&video.doc).into_iter().find(|(id, ..)| {
+        let Some((_, _, top, row)) = video.rows().into_iter().find(|(id, ..)| {
             video
                 .doc
                 .track(*id)
@@ -424,7 +470,7 @@ impl Workspace {
         let drag = video.drag.as_ref()?;
         let base = drag.base.clip(clip)?.1.clone();
         let bounds = *video.timeline.borrow();
-        let (_, _, top, row) = rows(&drag.base).into_iter().find(|(id, ..)| {
+        let (_, _, top, row) = video.rows_of(&drag.base).into_iter().find(|(id, ..)| {
             drag.base
                 .track(*id)
                 .is_some_and(|t| t.clips.iter().any(|c| c.id == clip))
@@ -432,6 +478,29 @@ impl Workspace {
         let y = f32::from(position.y - bounds.origin.y);
         let speed = self.dragged_speed(&base, index, drag.base.snap(time), y, (top + 3., row - 6.));
         Some(Command::SetSpeed { clip, speed })
+    }
+
+    /// How many rows up from window height `from` to `to`, counting the
+    /// rows between them as they are drawn.
+    fn rows_between(&self, from: f32, to: f32) -> i32 {
+        let Some(video) = &self.video else {
+            return 0;
+        };
+        let top = f32::from(video.timeline.borrow().origin.y);
+        let rows = video.rows();
+        let index = |y: f32| -> f32 {
+            let y = y - top;
+            let mut index = 0.;
+            for (_, _, row_top, height) in &rows {
+                if y >= row_top + height {
+                    index += 1.;
+                } else {
+                    return index + ((y - row_top) / height).max(0.);
+                }
+            }
+            index + (y - rows.last().map_or(RULER, |r| r.2 + r.3)) / VIDEO_ROW
+        };
+        (index(from) - index(to)).round() as i32
     }
 
     /// Moves the playhead to the next (or previous) cut on any track.
@@ -475,13 +544,14 @@ impl Workspace {
         cx.notify();
     }
 
-    pub fn timeline(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub fn timeline(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(video) = &self.video else {
             return div().into_any_element();
         };
         let doc = &video.doc;
-        let rows = rows(doc);
-        let height = rows.last().map_or(RULER, |(_, _, y, h)| y + h) + 24.;
+        let rows = video.rows();
+        // Up to most of the window's height; taller tracks scroll.
+        let height = video.content_height().min(timeline_cap(window));
         let bounds = video.timeline.clone();
         let width = f32::from(bounds.borrow().size.width).max(400.);
         let visible = (
@@ -499,8 +569,7 @@ impl Workspace {
                 canvas(move |b, _, _| *bounds.borrow_mut() = b, |_, _, _, _| {})
                     .absolute()
                     .size_full(),
-            )
-            .child(self.ruler(width, visible));
+            );
         let mut lines = Vec::new();
         for (track_id, kind, top, row) in &rows {
             let Some(track) = doc.track(*track_id) else {
@@ -635,7 +704,21 @@ impl Workspace {
                     )),
             );
         }
-        layer = layer.children(lines);
+        // The line under each header drags its row taller or shorter.
+        for (track, _, top, row) in &rows {
+            layer = layer.child(
+                div()
+                    .id(("row-edge", *track))
+                    .absolute()
+                    .left_0()
+                    .top(px(top + row - 4.))
+                    .w(px(HEADER))
+                    .h(px(8.))
+                    .cursor(CursorStyle::ResizeRow),
+            );
+        }
+        // Over the rows, which scroll under it.
+        layer = layer.children(lines).child(self.ruler(width, visible));
         let playhead = self.timeline_x(video.monitor.now());
         if playhead >= HEADER {
             layer = layer.child(

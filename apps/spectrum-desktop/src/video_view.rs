@@ -43,7 +43,7 @@ impl Workspace {
                     .flex_shrink_0()
                     .border_t_1()
                     .border_color(rgb(BORDER))
-                    .child(self.timeline(cx)),
+                    .child(self.timeline(window, cx)),
             )
             .into_any_element()
     }

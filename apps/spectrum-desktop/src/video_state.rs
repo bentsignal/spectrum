@@ -106,6 +106,11 @@ pub enum DragKind {
         clip: u64,
         index: usize,
     },
+    /// A track's row, from the height it had.
+    Resize {
+        track: u64,
+        height: f32,
+    },
 }
 
 pub struct VideoEditor {
@@ -138,6 +143,10 @@ pub struct VideoEditor {
     pub key: Option<(u64, usize)>,
     /// The media chosen in the Media sidebar, for , and .
     pub media: Option<AssetId>,
+    /// Rows dragged taller or shorter, by track, for this session.
+    pub heights: std::collections::HashMap<u64, f32>,
+    /// How far the rows are scrolled up under the ruler.
+    pub scroll_y: f32,
     pub keys: crate::video_speed::KeyFields,
     pub opacity: Entity<gpui_component::slider::SliderState>,
     pub volume: Entity<gpui_component::slider::SliderState>,
@@ -145,6 +154,31 @@ pub struct VideoEditor {
 }
 
 impl VideoEditor {
+    /// The timeline's rows, as drawn.
+    pub fn rows(&self) -> Vec<(u64, spectrum_video::TrackKind, f32, f32)> {
+        self.rows_of(&self.doc)
+    }
+
+    /// `doc`'s rows, as drawn: at the heights dragged, scrolled.
+    pub fn rows_of(
+        &self,
+        doc: &spectrum_video::Video,
+    ) -> Vec<(u64, spectrum_video::TrackKind, f32, f32)> {
+        let mut rows = crate::video_timeline::rows(doc, &self.heights);
+        for row in &mut rows {
+            row.2 -= self.scroll_y;
+        }
+        rows
+    }
+
+    /// The height of every row, the ruler, and room below.
+    pub fn content_height(&self) -> f32 {
+        let rows = crate::video_timeline::rows(&self.doc, &self.heights);
+        rows.last()
+            .map_or(crate::video_timeline::RULER, |(_, _, y, h)| y + h)
+            + 24.
+    }
+
     /// Saves are done and nothing waits.
     pub fn idle(&self) -> bool {
         !self.saving && self.queue.is_empty() && !self.save_waiting
@@ -279,6 +313,8 @@ impl Workspace {
             edited_at: None,
             key: None,
             media: None,
+            heights: Default::default(),
+            scroll_y: 0.,
             keys: crate::video_speed::KeyFields::new(window, cx),
             opacity,
             volume,
@@ -466,7 +502,10 @@ impl Workspace {
         let task = cx.background_executor().spawn(async move {
             let started = Instant::now();
             let mut service = Service::open(&root)?;
+            crate::perf::record("video_save_open", started.elapsed());
+            let editing = Instant::now();
             let (_, revision) = service.edit_video_from(id, base, batch)?;
+            crate::perf::record("video_save_edit", editing.elapsed());
             let doc = if reload {
                 Some(service.video_view(id)?.0)
             } else {
