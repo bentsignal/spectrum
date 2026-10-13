@@ -29,6 +29,7 @@ mod footage;
 mod history;
 mod image_zoom;
 mod scenarios;
+mod video;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Profile {
@@ -109,10 +110,14 @@ pub struct Fixtures {
     pub feature_layer: u64,
     /// A photo with a long branched history and an agent's session.
     pub history: history::HistoryFixture,
+    /// The project of footage, sound, and video.
+    pub motion: ProjectId,
     /// 4K footage with sound.
     pub footage: AssetId,
     /// Ten seconds of stereo sound.
     pub song: AssetId,
+    /// A 4K edit of the footage, the photo, and the song.
+    pub video: AssetId,
 }
 
 /// Makes the benchmark library and points this process at it. Runs before
@@ -338,6 +343,36 @@ const BUDGETS: &[Budget] = &[
     budget("footage_play", "main_thread_lag", "p99", 20.0, 60.0),
     budget("footage_play", "main_thread_lag", "max", 50.0, 150.0),
     budget("footage_play", "error_shown", "count", 0.0, 0.0),
+    // A 4K edit of camera footage with cuts, a photo, and a song: opens,
+    // scrubs, and plays across its cuts, trims under the pointer, and every
+    // tool works, is saved, and undoes.
+    budget("video_open", "elapsed", "max", 300.0, 400.0),
+    budget("video_open", "main_thread_lag", "max", 60.0, 150.0),
+    budget("video_open", "error_shown", "count", 0.0, 0.0),
+    budget("video_scrub", "player_frame_to_screen", "p95", 60.0, 80.0),
+    budget("video_scrub", "caught_up", "max", 150.0, 200.0),
+    budget("video_scrub", "main_thread_lag", "max", 60.0, 150.0),
+    budget("video_scrub", "error_shown", "count", 0.0, 0.0),
+    budget("video_play", "player_frames_behind", "p95", 1.0, 1.0),
+    budget("video_play", "player_catch_up", "count", 0.0, 0.0),
+    budget("video_play", "main_thread_lag", "max", 50.0, 150.0),
+    budget("video_play", "error_shown", "count", 0.0, 0.0),
+    budget("video_trim", "video_edit_to_screen", "p95", 60.0, 80.0),
+    budget("video_trim", "main_thread_lag", "p99", 20.0, 60.0),
+    budget("video_trim", "main_thread_lag", "max", 50.0, 150.0),
+    budget("video_trim", "error_shown", "count", 0.0, 0.0),
+    // Through a speed ramp to a quarter and into reverse, every frame stays
+    // in step with the sound; a paused slow-motion frame, made by following
+    // the motion between source frames, shows promptly.
+    budget("video_speed", "player_frames_behind", "p95", 1.0, 1.0),
+    budget("video_speed", "player_catch_up", "count", 0.0, 0.0),
+    budget("video_speed", "slow_frame", "max", 250.0, 350.0),
+    budget("video_speed", "main_thread_lag", "max", 60.0, 150.0),
+    budget("video_speed", "error_shown", "count", 0.0, 0.0),
+    budget("video_tools", "feature_shown", "max", 300.0, 400.0),
+    budget("video_tools", "feature_saved", "max", 700.0, 900.0),
+    budget("video_tools", "main_thread_lag", "max", 60.0, 150.0),
+    budget("video_tools", "error_shown", "count", 0.0, 0.0),
     // A song opens with its waveform drawn and plays.
     budget("audio_play", "elapsed", "max", 300.0, 400.0),
     budget("audio_play", "main_thread_lag", "max", 60.0, 150.0),

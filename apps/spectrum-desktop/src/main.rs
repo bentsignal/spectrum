@@ -74,6 +74,12 @@ mod tool_panel;
 mod tools;
 mod trash;
 mod unit_drag;
+mod video_program;
+mod video_sidebar;
+mod video_speed;
+mod video_state;
+mod video_timeline;
+mod video_view;
 mod workspace;
 mod zoom;
 
@@ -100,6 +106,7 @@ gpui::actions!(
         Undo,
         Redo,
         DeleteSelection,
+        RippleDelete,
         NudgeLeft,
         NudgeRight,
         NudgeUp,
@@ -208,6 +215,8 @@ fn main() -> std::process::ExitCode {
                 // Text fields bind these in their own context, which wins while typing.
                 KeyBinding::new("backspace", DeleteSelection, None),
                 KeyBinding::new("delete", DeleteSelection, None),
+                KeyBinding::new("shift-backspace", RippleDelete, None),
+                KeyBinding::new("shift-delete", RippleDelete, None),
                 KeyBinding::new("left", NudgeLeft, None),
                 KeyBinding::new("right", NudgeRight, None),
                 KeyBinding::new("up", NudgeUp, None),

@@ -2,6 +2,7 @@
 
 pub mod adjustments;
 mod downscale;
+pub mod flow;
 pub mod gradient;
 pub mod region_source;
 pub mod render;

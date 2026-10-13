@@ -95,8 +95,11 @@ pub(super) fn make(
         Some(footage) => footage.to_path_buf(),
         None => super::footage::generate(directory)?,
     };
+    // Motion work has its own project, as a person keeps it, so the
+    // photo and canvas checks see the same grid they always have.
+    let motion = service.library.create_project("Benchmark motion")?.id;
     let footage = service
-        .import_into(vec![footage_path], Some(project))?
+        .import_into(vec![footage_path], Some(motion))?
         .1
         .first()
         .context("the footage was not imported")?
@@ -104,11 +107,12 @@ pub(super) fn make(
     // As after import, once Spectrum has readied it for playback.
     service.make_playback_copy(footage, &mut |_| true)?;
     let song = service
-        .import_into(vec![super::footage::song(directory)?], Some(project))?
+        .import_into(vec![super::footage::song(directory)?], Some(motion))?
         .1
         .first()
         .context("the song was not imported")?
         .id;
+    let video = super::video::make(&mut service, motion, footage, photo, song)?;
     Ok(Fixtures {
         directory: directory.to_path_buf(),
         project,
@@ -125,8 +129,10 @@ pub(super) fn make(
         feature_canvas,
         feature_layer,
         history,
+        motion,
         footage,
         song,
+        video,
     })
 }
 

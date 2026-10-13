@@ -117,7 +117,7 @@ pub(super) fn run_footage(service: &Service, command: Footage) -> Result<serde_j
             let (media, _) = service.media(asset)?;
             let rate = media.info.video.as_ref().map(|video| video.rate);
             let time = Time::parse(&at, rate)?;
-            let frame = service.footage_frame(asset, time, max_size)?;
+            let (frame, hardware) = service.footage_frame_from(asset, time, max_size)?;
             image::DynamicImage::ImageRgba8(frame.image)
                 .to_rgb8()
                 .save(&path)
@@ -126,6 +126,7 @@ pub(super) fn run_footage(service: &Service, command: Footage) -> Result<serde_j
                 "exported": path,
                 "frame": frame.index,
                 "time_seconds": frame.time.seconds(),
+                "decoded_by": hardware.unwrap_or("software"),
             }))
         }
         Footage::Prepare { asset } => {

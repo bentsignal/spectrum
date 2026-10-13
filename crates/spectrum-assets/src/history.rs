@@ -23,6 +23,9 @@ impl Service {
         match asset.kind {
             AssetKind::Image => Workspace::<ImageModel>::name_revision(&path, revision, name),
             AssetKind::Canvas => Workspace::<CanvasModel>::name_revision(&path, revision, name),
+            AssetKind::Video => {
+                Workspace::<spectrum_video::VideoModel>::name_revision(&path, revision, name)
+            }
             kind => bail!("{kind} assets have no history yet"),
         }
     }
@@ -39,6 +42,7 @@ impl Service {
         match asset.kind {
             AssetKind::Image => Workspace::<ImageModel>::cursor_of(&path, session),
             AssetKind::Canvas => Workspace::<CanvasModel>::cursor_of(&path, session),
+            AssetKind::Video => Workspace::<spectrum_video::VideoModel>::cursor_of(&path, session),
             kind => bail!("{kind} assets have no history yet"),
         }
     }
@@ -89,6 +93,14 @@ impl Service {
                 let mut doc = Workspace::<CanvasModel>::document_at(&document, revision)?;
                 self.resolve_small(&mut doc, Some((max * 2).max(256)), 1.0)?;
                 spectrum_canvas::export_document_sized(&doc, &path, 90, Some(max))?;
+            }
+            AssetKind::Video => {
+                let video =
+                    Workspace::<spectrum_video::VideoModel>::document_at(&document, revision)?;
+                save_atomically(
+                    &image::DynamicImage::ImageRgba8(self.video_poster(&video, max)?),
+                    &path,
+                )?;
             }
             kind => bail!("{kind} assets have no history yet"),
         }

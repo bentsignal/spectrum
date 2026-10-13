@@ -47,7 +47,7 @@ impl Workspace {
                     _ => Target::Layer(layer.id),
                 })
             }
-            Open::Overview | Open::Media(_) => None,
+            Open::Overview | Open::Media(_) | Open::Video(_) => None,
         }
     }
 
@@ -210,6 +210,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(self.open, Open::Video(_)) {
+            let command = if forward {
+                spectrum_video::Command::Redo
+            } else {
+                spectrum_video::Command::Undo
+            };
+            return self.video_commands(vec![command], window, cx);
+        }
         if matches!(self.open, Open::Canvas(_)) {
             let command = if forward {
                 spectrum_canvas::Command::Redo

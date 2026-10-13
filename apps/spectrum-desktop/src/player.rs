@@ -24,7 +24,11 @@ const CATCH_UP: i64 = 4;
 
 pub struct Player {
     pub id: AssetId,
-    pub media: Media,
+    /// The file, for footage and audio; a video's monitor has none.
+    pub media: Option<Media>,
+    /// What plays: its frame rate, frames, length, and whether it has a
+    /// picture.
+    pub timing: Timing,
     /// Where the playhead is while paused, or where playback started.
     pub anchor: Time,
     /// Shuttle speed: 0 paused; 1, 2, 4, 8 forward; negative backward.
@@ -56,6 +60,39 @@ pub struct Player {
     pub shown_sharp: bool,
     /// A playback copy finished while this player was open.
     pub copy_arrived: bool,
+    /// The hardware decoding the original, once a frame from it shows.
+    pub hardware: Option<&'static str>,
+    /// Paused frames show quickly first, then again made carefully once
+    /// the playhead rests (a video's slow motion follows its motion).
+    pub refines: bool,
+}
+
+/// The shape of what a player plays.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Timing {
+    pub rate: FrameRate,
+    pub frames: i64,
+    pub duration: Time,
+    pub picture: bool,
+}
+
+impl Timing {
+    pub fn of(media: &Media) -> Self {
+        match &media.info.video {
+            Some(video) => Self {
+                rate: video.rate,
+                frames: video.frames as i64,
+                duration: media.info.duration,
+                picture: true,
+            },
+            None => Self {
+                rate: FrameRate::new(30, 1),
+                frames: 0,
+                duration: media.info.duration,
+                picture: false,
+            },
+        }
+    }
 }
 
 /// How long a paused frame from the copy waits before the original's
@@ -65,7 +102,8 @@ const SHARP_AFTER: Duration = Duration::from_millis(120);
 impl Player {
     pub fn new(
         id: AssetId,
-        media: Media,
+        media: Option<Media>,
+        timing: Timing,
         size: u32,
         requests: Option<flume::Sender<Request>>,
         sharp: Option<flume::Sender<Request>>,
@@ -75,6 +113,7 @@ impl Player {
         Self {
             id,
             media,
+            timing,
             anchor: Time::ZERO,
             speed: 0,
             started: None,
@@ -93,6 +132,8 @@ impl Player {
             sharp_due: None,
             shown_sharp: false,
             copy_arrived: false,
+            hardware: None,
+            refines: false,
         }
     }
 
@@ -111,28 +152,59 @@ impl Player {
         self.show(time);
     }
 
-    fn rate(&self) -> FrameRate {
-        self.media
-            .info
-            .video
-            .as_ref()
-            .map_or(FrameRate::new(30, 1), |video| video.rate)
+    pub fn rate(&self) -> FrameRate {
+        self.timing.rate
     }
 
     pub fn duration(&self) -> Time {
-        self.media.info.duration
+        self.timing.duration
     }
 
     /// The last frame's start, where playback stops.
     pub fn end(&self) -> Time {
-        match &self.media.info.video {
-            Some(video) => video.rate.time_of(video.frames.max(1) as i64 - 1),
-            None => self.duration(),
+        if self.timing.picture {
+            self.timing.rate.time_of(self.timing.frames.max(1) - 1)
+        } else {
+            self.duration()
         }
     }
 
     pub fn has_picture(&self) -> bool {
-        self.media.info.video.is_some()
+        self.timing.picture
+    }
+
+    pub fn has_sound(&self) -> bool {
+        self.audio.is_some()
+    }
+
+    /// Takes new timing, as after a video is edited, keeping the playhead
+    /// inside it.
+    pub fn retime(&mut self, timing: Timing) {
+        self.timing = timing;
+        if self.anchor > self.end() {
+            self.anchor = self.end();
+        }
+    }
+
+    /// Sends the picture and sound threads a newer version of what they
+    /// show and play, then redraws the paused frame.
+    pub fn update(
+        &mut self,
+        pictures: Box<dyn std::any::Any + Send>,
+        sound: Box<dyn std::any::Any + Send>,
+    ) {
+        if let Some(requests) = &self.requests {
+            let _ = requests.send(Request::Update(pictures));
+        }
+        if let Some(audio) = &self.audio {
+            audio.update(sound);
+        }
+        if self.playing() {
+            let speed = self.speed;
+            self.play(speed);
+        } else {
+            self.show(self.anchor);
+        }
     }
 
     /// Where the playhead is now.
@@ -166,7 +238,9 @@ impl Player {
 
     fn request(&mut self, request: impl FnOnce(u64) -> Request) {
         self.generation += 1;
-        self.queue.clear();
+        for frame in self.queue.drain(..) {
+            crate::retire::drop_later(frame.image);
+        }
         if let Some(requests) = &self.requests {
             let _ = requests.send(request(self.generation));
         }
@@ -181,10 +255,12 @@ impl Player {
             self.asked.pop_front();
         }
         self.asked.push_back((self.generation + 1, Instant::now()));
+        let fine = !self.refines;
         self.request(|generation| Request::Show {
             time,
             size,
             generation,
+            fine,
         });
     }
 
@@ -242,6 +318,16 @@ impl Player {
     /// still shows as it arrives unless a newer one already has, so the
     /// picture follows the drag.
     pub fn receive(&mut self, frame: Decoded) {
+        if frame.still && frame.fine && self.refines {
+            // The careful version of the frame on screen.
+            if frame.generation == self.generation && !self.playing() {
+                self.shown_sharp = true;
+                self.replace(frame.image, frame.index);
+            } else {
+                crate::retire::drop_later(frame.image);
+            }
+            return;
+        }
         if frame.still {
             if frame.generation <= self.shown_generation && self.shown.is_some() {
                 crate::retire::drop_later(frame.image);
@@ -256,9 +342,12 @@ impl Player {
                 crate::perf::record("player_open", opened.elapsed());
             }
             self.shown_generation = frame.generation;
-            self.shown_sharp = !self.uses_copy();
+            self.shown_sharp = !self.uses_copy() && !self.refines;
+            if !self.uses_copy() {
+                self.hardware = frame.hardware;
+            }
             self.replace(frame.image, frame.index);
-            if self.uses_copy() && frame.generation == self.generation {
+            if (self.uses_copy() || self.refines) && frame.generation == self.generation {
                 self.sharp_due = Some((frame.generation, Instant::now() + SHARP_AFTER));
             }
             return;
@@ -280,6 +369,11 @@ impl Player {
             crate::perf::record("player_sharp", asked.elapsed());
         }
         self.shown_sharp = true;
+        self.hardware = frame.hardware;
+        crate::perf::record_value(
+            "decoded_on_gpu",
+            f64::from(u8::from(frame.hardware.is_some())),
+        );
         self.replace(frame.image, frame.index);
     }
 
@@ -296,12 +390,18 @@ impl Player {
             return;
         }
         self.sharp_due = None;
+        let request = Request::Show {
+            time: self.anchor,
+            size: self.size,
+            generation,
+            fine: true,
+        };
         if let Some(sharp) = &self.sharp {
-            let _ = sharp.send(Request::Show {
-                time: self.anchor,
-                size: self.size,
-                generation,
-            });
+            let _ = sharp.send(request);
+        } else if self.refines
+            && let Some(requests) = &self.requests
+        {
+            let _ = requests.send(request);
         }
     }
 
@@ -381,6 +481,19 @@ impl Player {
     }
 }
 
+impl Drop for Player {
+    /// The frame on screen may still be uploading: it is freed two frames
+    /// later, as every image Spectrum stops showing is (`retire`).
+    fn drop(&mut self) {
+        if let Some((image, _)) = self.shown.take() {
+            crate::retire::drop_later(image);
+        }
+        for frame in self.queue.drain(..) {
+            crate::retire::drop_later(frame.image);
+        }
+    }
+}
+
 impl Workspace {
     /// The long edge the player decodes at: the main area's, in device pixels.
     pub(crate) fn player_size(&self, window: &Window) -> u32 {
@@ -402,15 +515,18 @@ impl Workspace {
         {
             self.switch_to_copy(window, cx);
         }
-        let Some(player) = self.player.as_mut() else {
+        let hold = self
+            .store
+            .as_ref()
+            .ok()
+            .map(|store| store.copies.hold.clone());
+        let open = self.open;
+        let Some(player) = self.active_player_for(open) else {
             return;
         };
-        if let Ok(store) = &self.store {
+        if let Some(hold) = hold {
             // Copies wait while the player plays.
-            store
-                .copies
-                .hold
-                .store(player.playing(), std::sync::atomic::Ordering::Relaxed);
+            hold.store(player.playing(), std::sync::atomic::Ordering::Relaxed);
         }
         if player.size != size && player.has_picture() {
             player.size = size;
@@ -427,11 +543,22 @@ impl Workspace {
         }
     }
 
-    fn with_player(&mut self, cx: &mut Context<Self>, act: impl FnOnce(&mut Player)) -> bool {
-        if !matches!(self.open, Open::Media(_)) {
-            return false;
+    /// The player on screen: footage's or audio's, or a video's monitor.
+    pub fn active_player(&mut self) -> Option<&mut Player> {
+        let open = self.open;
+        self.active_player_for(open)
+    }
+
+    fn active_player_for(&mut self, open: Open) -> Option<&mut Player> {
+        match open {
+            Open::Media(_) => self.player.as_mut(),
+            Open::Video(_) => self.video.as_mut().map(|video| &mut video.monitor),
+            _ => None,
         }
-        let Some(player) = self.player.as_mut() else {
+    }
+
+    fn with_player(&mut self, cx: &mut Context<Self>, act: impl FnOnce(&mut Player)) -> bool {
+        let Some(player) = self.active_player() else {
             return false;
         };
         act(player);
@@ -486,10 +613,28 @@ impl Workspace {
 
     /// The player's one-key shortcuts while no field has focus. Returns
     /// whether the key was the player's.
-    pub fn player_key(&mut self, key: &Keystroke, cx: &mut Context<Self>) -> bool {
+    pub fn player_key(
+        &mut self,
+        key: &Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let plain = !key.modifiers.platform && !key.modifiers.control && !key.modifiers.alt;
-        if !plain || !matches!(self.open, Open::Media(_)) {
+        if !plain || !matches!(self.open, Open::Media(_) | Open::Video(_)) {
             return false;
+        }
+        if matches!(self.open, Open::Video(_)) {
+            if let Some(tool) = crate::video_state::Tool::ALL
+                .into_iter()
+                .find(|tool| tool.key() == key.key)
+            {
+                self.set_video_tool(tool, cx);
+                return true;
+            }
+            if key.key == "s" {
+                self.split_at_playhead(window, cx);
+                return true;
+            }
         }
         match key.key.as_str() {
             "space" => self.toggle_play(cx),
@@ -498,7 +643,7 @@ impl Workspace {
             "l" => self.shuttle(1, cx),
             "home" => self.seek_player(Time::ZERO, cx),
             "end" => {
-                let end = self.player.as_ref().map_or(Time::ZERO, |p| p.end());
+                let end = self.active_player().map_or(Time::ZERO, |p| p.end());
                 self.seek_player(end, cx)
             }
             _ => false,

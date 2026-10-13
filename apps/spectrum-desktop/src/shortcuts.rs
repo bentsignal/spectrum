@@ -4,8 +4,8 @@ use crate::{
     ClearSelection, CopyEdits, CopyLayer, DeleteSelection, Deselect, EditText, InvertSelection,
     Mode1, Mode2, Mode3, Mode4, Mode5, Mode6, NudgeDown, NudgeDownFar, NudgeLeft, NudgeLeftFar,
     NudgeRight, NudgeRightFar, NudgeUp, NudgeUpFar, OpenPalette, OpenTools, PasteEdits, PasteLayer,
-    Redo, Section1, Section2, Section3, Section4, Section5, Section6, SelectAll, ToggleGuides,
-    ToggleSnapping, Undo,
+    Redo, RippleDelete, Section1, Section2, Section3, Section4, Section5, Section6, SelectAll,
+    ToggleGuides, ToggleSnapping, Undo,
     workspace::{Open, Place, Workspace},
 };
 use gpui::{prelude::*, *};
@@ -67,7 +67,9 @@ impl Workspace {
                 }
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if this.focus_handle.is_focused(window) && this.player_key(&event.keystroke, cx) {
+                if this.focus_handle.is_focused(window)
+                    && this.player_key(&event.keystroke, window, cx)
+                {
                     // The player took it.
                 } else if event.keystroke.key == "space" && this.focus_handle.is_focused(window) {
                     this.hold_space(true, cx);
@@ -93,6 +95,8 @@ impl Workspace {
             .on_action(cx.listener(|this, _: &NudgeUp, w, cx| {
                 if this.mode_menu {
                     this.step_mode(-1, w, cx)
+                } else if this.video.is_some() {
+                    this.jump_to_cut(false, cx)
                 } else {
                     this.nudge(0., -1., w, cx)
                 }
@@ -100,6 +104,8 @@ impl Workspace {
             .on_action(cx.listener(|this, _: &NudgeDown, w, cx| {
                 if this.mode_menu {
                     this.step_mode(1, w, cx)
+                } else if this.video.is_some() {
+                    this.jump_to_cut(true, cx)
                 } else {
                     this.nudge(0., 1., w, cx)
                 }
@@ -118,6 +124,11 @@ impl Workspace {
             }))
             .on_action(cx.listener(|this, _: &NudgeUpFar, w, cx| this.nudge(0., -10., w, cx)))
             .on_action(cx.listener(|this, _: &NudgeDownFar, w, cx| this.nudge(0., 10., w, cx)))
+            .on_action(cx.listener(|this, _: &RippleDelete, window, cx| {
+                if this.video.is_some() {
+                    this.delete_video_clips(true, window, cx)
+                }
+            }))
             .on_action(cx.listener(|this, _: &DeleteSelection, window, cx| {
                 this.delete_selection(window, cx)
             }))

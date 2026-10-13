@@ -22,6 +22,7 @@ spectrum-canvas = { path = "../../crates/spectrum-canvas" }
 spectrum-assets = { path = "../../crates/spectrum-assets" }
 spectrum-document = { path = "../../crates/spectrum-document" }
 spectrum-media = { path = "../../crates/spectrum-media" }
+spectrum-video = { path = "../../crates/spectrum-video" }
 rayon.workspace = true
 same-file.workspace = true
 serde.workspace = true

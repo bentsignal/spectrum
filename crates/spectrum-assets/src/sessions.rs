@@ -14,6 +14,7 @@ use spectrum_document::{
 };
 use spectrum_image::{Image, ImageModel};
 use spectrum_library::{AssetId, AssetKind};
+use spectrum_video::VideoModel;
 use std::path::Path;
 
 use super::{Service, links};
@@ -29,13 +30,13 @@ impl Service {
         Ok(self)
     }
 
-    fn is_person(&self) -> bool {
+    pub(crate) fn is_person(&self) -> bool {
         self.session == self.person
     }
 
     /// The session whose view this service reads: the person's, an agent's
     /// chosen session, or the agent the person is following.
-    fn reader<M: Model>(&self, path: &Path) -> Result<SessionId> {
+    pub(crate) fn reader<M: Model>(&self, path: &Path) -> Result<SessionId> {
         if self.is_person() {
             return Ok(self.person);
         }
@@ -47,7 +48,7 @@ impl Service {
     }
 
     /// The session this service edits in, set up if it is new.
-    fn writer<M: Model>(&self, path: &Path) -> Result<SessionId> {
+    pub(crate) fn writer<M: Model>(&self, path: &Path) -> Result<SessionId> {
         if self.is_person() {
             return Ok(self.person);
         }
@@ -71,7 +72,11 @@ impl Service {
         .agent_session)
     }
 
-    fn workspace<M: Model>(&self, path: &Path, base: Option<RevisionId>) -> Result<Workspace<M>> {
+    pub(crate) fn workspace<M: Model>(
+        &self,
+        path: &Path,
+        base: Option<RevisionId>,
+    ) -> Result<Workspace<M>> {
         let mut workspace = if self.is_person() {
             Workspace::<M>::open_at(path, self.actor.clone(), self.person, base)?
         } else {
@@ -143,6 +148,7 @@ impl Service {
         match asset.kind {
             AssetKind::Image => follow::<ImageModel>(&path, self.person),
             AssetKind::Canvas => follow::<CanvasModel>(&path, self.person),
+            AssetKind::Video => follow::<VideoModel>(&path, self.person),
             kind => bail!("{kind} assets have no history yet"),
         }
     }
@@ -238,6 +244,7 @@ impl Service {
         let session = match kind {
             AssetKind::Image => self.writer::<ImageModel>(&path)?,
             AssetKind::Canvas => self.writer::<CanvasModel>(&path)?,
+            AssetKind::Video => self.writer::<VideoModel>(&path)?,
             kind => bail!("{kind} assets have no editor yet"),
         };
         Ok((path, session))
@@ -253,6 +260,7 @@ impl Service {
         let session = match kind {
             AssetKind::Image => self.reader::<ImageModel>(&path)?,
             AssetKind::Canvas => self.reader::<CanvasModel>(&path)?,
+            AssetKind::Video => self.reader::<VideoModel>(&path)?,
             kind => bail!("{kind} assets have no editor yet"),
         };
         Ok((path, session))
@@ -288,6 +296,9 @@ impl Service {
             AssetKind::Canvas => {
                 Workspace::<CanvasModel>::history_of(&path, self.reader::<CanvasModel>(&path)?)
             }
+            AssetKind::Video => {
+                Workspace::<VideoModel>::history_of(&path, self.reader::<VideoModel>(&path)?)
+            }
             kind => bail!("{kind} assets have no history yet"),
         }
     }
@@ -305,6 +316,10 @@ impl Service {
             AssetKind::Canvas => {
                 self.workspace::<CanvasModel>(&path, Some(revision))?;
                 self.index_canvas(id)?;
+            }
+            AssetKind::Video => {
+                self.workspace::<VideoModel>(&path, Some(revision))?;
+                self.index_video(id)?;
             }
             kind => bail!("{kind} assets have no history yet"),
         }
@@ -332,6 +347,7 @@ impl Service {
         match asset.kind {
             AssetKind::Image => start::<ImageModel>(&path, self.person, actor, mode),
             AssetKind::Canvas => start::<CanvasModel>(&path, self.person, actor, mode),
+            AssetKind::Video => start::<VideoModel>(&path, self.person, actor, mode),
             kind => bail!("{kind} assets have no history yet"),
         }
     }
@@ -343,6 +359,7 @@ impl Service {
         match asset.kind {
             AssetKind::Image => Workspace::<ImageModel>::collaboration(&path, session),
             AssetKind::Canvas => Workspace::<CanvasModel>::collaboration(&path, session),
+            AssetKind::Video => Workspace::<VideoModel>::collaboration(&path, session),
             kind => bail!("{kind} assets have no history yet"),
         }
     }

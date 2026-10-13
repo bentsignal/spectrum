@@ -99,13 +99,15 @@ impl Scaler {
             _ if self.key.height >= 720 => ffi::SWS_CS_ITU709,
             _ => ffi::SWS_CS_ITU601,
         };
-        let full = i32::from(self.key.range == ffi::AVColorRange::AVCOL_RANGE_JPEG);
-        // Screens get full-range RGB; copies keep the source's matrix in
-        // video range.
-        let (out_matrix, out_full) = if self.key.output == Pixel::YUV420P {
-            (matrix, 0)
-        } else {
-            (ffi::SWS_CS_DEFAULT, 1)
+        let rgb_in = is_rgb(self.key.format);
+        let rgb_out = is_rgb(self.key.output);
+        let full = i32::from(rgb_in || self.key.range == ffi::AVColorRange::AVCOL_RANGE_JPEG);
+        // Screens get full-range RGB; encoders get video-range YUV, in the
+        // source's matrix for copies and BT.709 for exports from RGB.
+        let (out_matrix, out_full) = match (rgb_in, rgb_out) {
+            (_, true) => (ffi::SWS_CS_DEFAULT, 1),
+            (true, false) => (ffi::SWS_CS_ITU709, 0),
+            (false, false) => (matrix, 0),
         };
         unsafe {
             ffi::sws_setColorspaceDetails(
@@ -125,6 +127,13 @@ impl Scaler {
 impl Drop for Scaler {
     fn drop(&mut self) {
         unsafe { ffi::sws_freeContext(self.context) };
+    }
+}
+
+fn is_rgb(format: Pixel) -> bool {
+    unsafe {
+        let descriptor = ffi::av_pix_fmt_desc_get(format.into());
+        !descriptor.is_null() && (*descriptor).flags & ffi::AV_PIX_FMT_FLAG_RGB as u64 != 0
     }
 }
 

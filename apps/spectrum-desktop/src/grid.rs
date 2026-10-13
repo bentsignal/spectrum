@@ -136,6 +136,7 @@ impl Workspace {
             (Place::Project(_), AssetKind::Footage | AssetKind::Audio) => {
                 self.open_item(Open::Media(id), window, cx)
             }
+            (Place::Project(_), AssetKind::Video) => self.open_item(Open::Video(id), window, cx),
             _ => {}
         }
     }

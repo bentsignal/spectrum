@@ -22,6 +22,7 @@ spectrum-document = { path = "../../crates/spectrum-document" }
 spectrum-image = { path = "../../crates/spectrum-image" }
 spectrum-library = { path = "../../crates/spectrum-library" }
 spectrum-media = { path = "../../crates/spectrum-media" }
+spectrum-video = { path = "../../crates/spectrum-video" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

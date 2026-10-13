@@ -17,7 +17,10 @@ mod media;
 mod sessions;
 pub mod thumbnail;
 pub mod trash;
+mod video;
+pub mod video_render;
 pub use export::ExportOptions;
+pub use video::STILL_SECONDS;
 
 type PreviewCache = std::collections::HashMap<AssetId, ((std::time::SystemTime, u64), PathBuf)>;
 
@@ -78,7 +81,7 @@ impl Service {
     }
 
     /// A new document path in the library's folder for `kind`.
-    fn new_document(&self, kind: AssetKind) -> PathBuf {
+    pub(crate) fn new_document(&self, kind: AssetKind) -> PathBuf {
         let folder = match kind {
             AssetKind::Image => "images",
             AssetKind::Canvas => "canvases",
@@ -90,7 +93,7 @@ impl Service {
             .join(format!("{}.spectrum", AssetId::new_v4()))
     }
 
-    fn document(&self, id: AssetId, kind: AssetKind) -> Result<PathBuf> {
+    pub(crate) fn document(&self, id: AssetId, kind: AssetKind) -> Result<PathBuf> {
         let asset = self.library.get(id)?;
         if asset.kind != kind {
             bail!("{} is a {}, not a {kind}", asset.name, asset.kind);
@@ -308,6 +311,7 @@ impl Service {
                 Ok(copy)
             }
             AssetKind::Footage | AssetKind::Audio => self.copy_media(id, &name),
+            AssetKind::Video => self.copy_video(id, &name),
             kind => bail!("copying is not implemented for {kind}"),
         }
     }

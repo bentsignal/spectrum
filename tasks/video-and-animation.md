@@ -24,12 +24,17 @@ benchmark with the heaviest real footage.
    copied into a content-addressed media store, posters and waveforms, CLI
    (`import`, `footage`, `audio`), automatic playback copies for heavy
    footage, and a player with sound, J/K/L, frame steps, and a typeable
-   timecode. Left: hardware decoding (VideoToolbox, VA-API), a real camera
-   clip from the user for the benchmark, and the user's review.
-2. **The edit**: video assets with tracks and clips, cut, trim, ripple, roll,
-   slip, linked sound, real-time playback, export (encode).
-3. **Speed**: velocity and time remap curves, repeat past the end, reverse,
-   freeze, audio that follows, frame interpolation.
+   timecode; hardware decoding. Left: a real camera clip from the user for
+   the benchmark, and the user's review.
+2. **The edit** (built 2026-10-13): `spectrum-video` with tracks and clips,
+   overwrite and insert, move, trim, ripple, roll, slip, slide, razor,
+   linked sound, track lock and mute, real-time playback, export (H.264,
+   HEVC, ProRes), the desktop editor and `spectrum video`. Left: clip
+   thumbnails and waveforms on the timeline, dragging media onto it.
+3. **Speed** (built 2026-10-13): velocity keyframes and time remaps with
+   Vegas's curves, repeat past the end, reverse, freeze, sound that follows
+   (or not), blend and motion interpolation; a velocity line on the
+   timeline and typeable keyframes. Left: the user's review of the feel.
 4. **Animate**: a neutral keyframe model for every property; clip and canvas
    layer lanes, graph editor, animated canvases playing in videos, grouping
    clips into a canvas.

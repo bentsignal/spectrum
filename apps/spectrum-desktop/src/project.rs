@@ -59,6 +59,46 @@ impl Workspace {
                     .w_full()
                     .on_click(cx.listener(|this, _, window, cx| this.new_canvas(window, cx))),
             )
+            .child(
+                Button::new("new-video")
+                    .icon(IconName::Plus)
+                    .label("New video")
+                    .w_full()
+                    .on_click(cx.listener(|this, _, window, cx| this.new_video(window, cx))),
+            )
+    }
+
+    /// Creates a video in the open project, shaped like its newest footage
+    /// (or 1080p at 30 fps), and opens it.
+    fn new_video(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Place::Project(project), Ok(store)) = (self.place, &mut self.store) else {
+            return;
+        };
+        let service = &mut store.service;
+        let shape = service
+            .library
+            .project_assets(project)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|asset| asset.kind == spectrum_library::AssetKind::Footage)
+            .find_map(|asset| service.media(asset.id).ok()?.0.info.video)
+            .map(|video| (video.width & !1, video.height & !1, video.rate))
+            .unwrap_or((1920, 1080, spectrum_media::FrameRate::new(30, 1)));
+        let created = service
+            .create_video("Untitled video", shape.0, shape.1, shape.2)
+            .and_then(|video| {
+                service.library.add_to_project(project, &[video.id])?;
+                Ok(video.id)
+            });
+        match created {
+            Ok(id) => {
+                if let Err(error) = self.reload() {
+                    self.notify_error(error, window, cx);
+                }
+                self.open_item(Open::Video(id), window, cx);
+            }
+            Err(error) => self.notify_error(error, window, cx),
+        }
     }
 
     /// Creates a canvas in the open project and opens it.

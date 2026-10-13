@@ -30,6 +30,8 @@ pub enum Open {
     Canvas(AssetId),
     /// Footage or audio, in the player.
     Media(AssetId),
+    /// A video, in the editor.
+    Video(AssetId),
 }
 
 /// Sidebar modes are capabilities; only those that apply are offered.
@@ -45,6 +47,9 @@ pub enum Mode {
     Info,
     Canvas,
     History,
+    Edit,
+    Media,
+    Export,
 }
 
 impl Mode {
@@ -60,12 +65,18 @@ impl Mode {
             Mode::Overview => "Overview",
             Mode::Canvas => "Canvas",
             Mode::History => "History",
+            Mode::Edit => "Edit",
+            Mode::Media => "Media",
+            Mode::Export => "Export",
         }
     }
 
     pub fn icon(self) -> gpui_component::Icon {
         let name = match self {
             Mode::History => return crate::icons::icon("history"),
+            Mode::Edit => return crate::icons::icon("scissors"),
+            Mode::Media => IconName::Inbox,
+            Mode::Export => IconName::ExternalLink,
             Mode::Projects => IconName::FolderClosed,
             Mode::Assets => IconName::LayoutDashboard,
             Mode::Color => IconName::Sun,
@@ -158,6 +169,9 @@ pub struct Workspace {
     /// The open footage or audio, and the player's controls.
     pub player: Option<crate::player::Player>,
     pub player_controls: Option<crate::player_view::PlayerControls>,
+    /// The open video and its export choices.
+    pub video: Option<crate::video_state::VideoEditor>,
+    pub video_export: crate::video_sidebar::ExportChoice,
     /// The open canvas, when one fills the main area.
     pub canvas: Option<crate::canvas_state::CanvasState>,
     /// A check for an agent's newer work is running.
@@ -422,6 +436,8 @@ impl Workspace {
             colors: crate::colors::Colors::new(window, cx),
             player: None,
             player_controls: None,
+            video: None,
+            video_export: Default::default(),
             canvas: None,
             following: false,
             followed_stamp: None,
@@ -448,6 +464,7 @@ impl Workspace {
             (_, Open::Overview) => Vec::new(),
             (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop, Mode::Info, Mode::History],
             (_, Open::Media(_)) => vec![Mode::Info],
+            (_, Open::Video(_)) => vec![Mode::Edit, Mode::Media, Mode::Export, Mode::History],
             (_, Open::Canvas(_)) => vec![
                 Mode::Overview,
                 Mode::Layers,
@@ -490,6 +507,7 @@ impl Workspace {
             return;
         }
         match self.open {
+            Open::Video(_) => self.delete_video_clips(false, window, cx),
             Open::Canvas(_) if self.has_canvas_selection() => self.delete_in_selection(window, cx),
             Open::Canvas(_) => self.on_selected(window, cx, |id| {
                 spectrum_canvas::Command::RemoveLayer { id }
@@ -562,8 +580,9 @@ impl Workspace {
         self.save_now(window, cx);
         self.open = open;
         self.settle = 1;
-        // Closing the player stops its sound.
+        // Closing the player or the editor stops its sound.
         self.player = None;
+        self.video = None;
         self.mode = match open {
             Open::Overview => Mode::Assets,
             Open::Image(id) => {
@@ -577,6 +596,10 @@ impl Workspace {
             Open::Media(id) => {
                 self.load_player(id, window, cx);
                 Mode::Info
+            }
+            Open::Video(id) => {
+                self.load_video(id, window, cx);
+                Mode::Edit
             }
         };
         cx.notify();
@@ -717,13 +740,16 @@ impl Render for Workspace {
             (Place::Home, _) | (_, Open::Overview) => {
                 self.asset_grid(area.width, cx).into_any_element()
             }
-            (_, Open::Image(_) | Open::Canvas(_)) if self.mode == Mode::History => {
+            (_, Open::Image(_) | Open::Canvas(_) | Open::Video(_))
+                if self.mode == Mode::History =>
+            {
                 self.history_main(window, cx)
             }
             (_, Open::Image(_)) if self.mode == Mode::Crop => self.crop_view(cx).into_any_element(),
             (_, Open::Image(_)) => self.image_view(window, cx).into_any_element(),
             (_, Open::Canvas(_)) => self.canvas_main(window, cx).into_any_element(),
             (_, Open::Media(_)) => self.player_main(window, cx),
+            (_, Open::Video(_)) => self.video_main(window, cx),
         };
         let main = div()
             .flex_1()

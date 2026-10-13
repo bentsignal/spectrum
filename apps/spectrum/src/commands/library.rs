@@ -63,6 +63,11 @@ enum Domain {
         #[command(subcommand)]
         command: super::media::Audio,
     },
+    /// Make, edit, and export videos: tracks of clips.
+    Video {
+        #[command(subcommand)]
+        command: super::video::Video,
+    },
     /// Rename an asset.
     Rename { asset: AssetId, name: String },
     /// Move an asset to the trash for 30 days. Canvases that use it show a
@@ -239,7 +244,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
         Domain::Imports => serde_json::to_value(service.library.imports()?)?,
         Domain::Copy { asset } => serde_json::to_value(service.copy(asset)?)?,
         Domain::Schema => {
-            serde_json::json!({"images":{"adjust":{"exposure":1.0},"command":{"action":"set_adjustments","adjustments":spectrum_image::Adjustments::default()}},"canvas":{"command":{"command":"add_text","text":"Hello","name":null,"font_size":48,"color":[255,255,255,255],"x":0,"y":0}},"asset_types":["image","canvas","footage","audio"],"references":"live","copy":"independent, recursively copies referenced content"})
+            serde_json::json!({"images":{"adjust":{"exposure":1.0},"command":{"action":"set_adjustments","adjustments":spectrum_image::Adjustments::default()}},"canvas":{"command":{"command":"add_text","text":"Hello","name":null,"font_size":48,"color":[255,255,255,255],"x":0,"y":0}},"asset_types":["image","canvas","footage","audio","video"],"references":"live","copy":"independent, recursively copies referenced content"})
         }
         Domain::Images {
             command: Images::List,
@@ -277,6 +282,7 @@ pub(super) fn run(cli: Cli) -> Result<serde_json::Value> {
         } => super::media::import(&mut service, paths, project, new_project)?,
         Domain::Footage { command } => super::media::run_footage(&service, command)?,
         Domain::Audio { command } => super::media::run_audio(&service, command)?,
+        Domain::Video { command } => super::video::run(&mut service, command)?,
         Domain::Images {
             command:
                 Images::Export {

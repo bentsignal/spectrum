@@ -69,6 +69,9 @@ impl Workspace {
             }
             (_, Mode::Info) => self.info_sidebar(cx).into_any_element(),
             (_, Mode::History) => self.history_sidebar(cx).into_any_element(),
+            (_, Mode::Edit) => self.video_edit_sidebar(cx).into_any_element(),
+            (_, Mode::Media) => self.video_media_sidebar(cx).into_any_element(),
+            (_, Mode::Export) => self.video_export_sidebar(cx).into_any_element(),
             _ => self.layers_sidebar(cx).into_any_element(),
         };
         // Every canvas mode starts with the tool, so it can change from any

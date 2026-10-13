@@ -208,6 +208,7 @@ impl Workspace {
             .child(kind("canvases", "Canvases", AssetKind::Canvas))
             .child(kind("footage", "Footage", AssetKind::Footage))
             .child(kind("audio", "Audio", AssetKind::Audio))
+            .child(kind("videos", "Videos", AssetKind::Video))
     }
 
     /// Sort order, at the right of the title row above a grid.

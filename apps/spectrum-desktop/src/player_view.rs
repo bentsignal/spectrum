@@ -40,10 +40,7 @@ impl PlayerControls {
                     this.focus_handle.focus(window);
                 }
                 let text = state.read(cx).value().to_string();
-                let rate = this
-                    .player
-                    .as_ref()
-                    .and_then(|p| p.media.info.video.as_ref().map(|v| v.rate));
+                let rate = this.active_player().map(|p| p.rate());
                 if let Ok(time) = Time::parse(&text, rate) {
                     this.seek_player(time, cx);
                 }
@@ -65,9 +62,43 @@ impl PlayerControls {
 
 impl Workspace {
     pub fn player_main(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(transport) = self.transport(true, window, cx) else {
+            return div().into_any_element();
+        };
         let Some(player) = &self.player else {
             return div().into_any_element();
         };
+        let share =
+            (player.now().seconds() / player.duration().seconds().max(1e-9)).clamp(0., 1.) as f32;
+        let picture = if player.has_picture() {
+            div()
+                .size_full()
+                .children(player.shown.as_ref().map(|(image, _)| {
+                    img(image.clone())
+                        .size_full()
+                        .object_fit(ObjectFit::Contain)
+                }))
+        } else {
+            self.waveform_view(share)
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(div().flex_1().min_h_0().bg(rgb(0x000000)).child(picture))
+            .child(transport)
+            .into_any_element()
+    }
+
+    /// The play button, a typeable timecode, a scrub bar (when `scrub`),
+    /// the length, and the mute button, for the player on screen.
+    pub fn transport(
+        &mut self,
+        scrub: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let player = self.active_player()?;
         // The timecode field follows the playhead unless someone is typing.
         let now = player.now();
         let text = player.timecode(now);
@@ -85,25 +116,14 @@ impl Workspace {
                 .update(cx, |state, cx| state.set_value(text.clone(), window, cx));
             controls.shown = Some(text);
         }
-        let Some(player) = &self.player else {
-            return div().into_any_element();
-        };
-        let controls = self.player_controls.as_ref().expect("player controls");
+        let timecode = self.player_controls.as_ref()?.timecode.clone();
+        let bounds = self.player_controls.as_ref()?.scrub.clone();
+        let player = self.active_player()?;
         let duration = player.duration();
         let share = (now.seconds() / duration.seconds().max(1e-9)).clamp(0., 1.) as f32;
-        let picture = if player.has_picture() {
-            div()
-                .size_full()
-                .children(player.shown.as_ref().map(|(image, _)| {
-                    img(image.clone())
-                        .size_full()
-                        .object_fit(ObjectFit::Contain)
-                }))
-        } else {
-            self.waveform_view(share)
-        };
-        let bounds = controls.scrub.clone();
-        let scrub = div()
+        let (playing, muted, sound) = (player.playing(), player.muted, player.has_sound());
+        let length = player.timecode(duration);
+        let bar = div()
             .id("scrub")
             .flex_1()
             .h(px(28.))
@@ -152,94 +172,83 @@ impl Workspace {
                     this.scrub_to(event.position, cx);
                 }),
             );
-        let playing = player.playing();
-        let transport = div()
-            .h(px(TRANSPORT_HEIGHT))
-            .flex_shrink_0()
-            .px_6()
-            .flex()
-            .items_center()
-            .gap_4()
-            .border_t_1()
-            .border_color(rgb(BORDER))
-            .child(
-                Button::new("play")
-                    .ghost()
-                    .icon(if playing {
-                        crate::icons::icon("pause")
-                    } else {
-                        crate::icons::icon("play")
-                    })
-                    .tooltip(if playing {
-                        "Pause (Space)"
-                    } else {
-                        "Play (Space)"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.toggle_play(cx);
-                    })),
-            )
-            .child(
-                div()
-                    .w(px(120.))
-                    .child(Input::new(&controls.timecode).small()),
-            )
-            .child(scrub)
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(FAINT))
-                    .child(player.timecode(duration)),
-            )
-            .when(!player.media.info.audio.is_empty(), |el| {
-                el.child(
-                    Button::new("mute")
+        Some(
+            div()
+                .h(px(TRANSPORT_HEIGHT))
+                .flex_shrink_0()
+                .px_6()
+                .flex()
+                .items_center()
+                .gap_4()
+                .border_t_1()
+                .border_color(rgb(BORDER))
+                .child(
+                    Button::new("play")
                         .ghost()
-                        .small()
-                        .icon(crate::icons::icon(if player.muted {
-                            "volume-off"
+                        .icon(crate::icons::icon(if playing { "pause" } else { "play" }))
+                        .tooltip(if playing {
+                            "Pause (Space)"
                         } else {
-                            "volume"
-                        }))
-                        .tooltip(if player.muted { "Unmute" } else { "Mute" })
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))),
+                            "Play (Space)"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_play(cx);
+                        })),
                 )
-            });
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(div().flex_1().min_h_0().bg(rgb(0x000000)).child(picture))
-            .child(transport)
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if this.player_controls.as_ref().is_some_and(|c| c.scrubbing) {
-                    if event.pressed_button == Some(MouseButton::Left) {
-                        this.scrub_to(event.position, cx);
-                    } else if let Some(controls) = &mut this.player_controls {
-                        controls.scrubbing = false;
+                .child(div().w(px(120.)).child(Input::new(&timecode).small()))
+                .map(|el| {
+                    if scrub {
+                        el.child(bar)
+                    } else {
+                        el.child(div().flex_1())
                     }
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| {
-                    if let Some(controls) = &mut this.player_controls {
-                        controls.scrubbing = false;
+                })
+                .child(div().text_sm().text_color(rgb(FAINT)).child(length))
+                .when(sound, |el| {
+                    el.child(
+                        Button::new("mute")
+                            .ghost()
+                            .small()
+                            .icon(crate::icons::icon(if muted {
+                                "volume-off"
+                            } else {
+                                "volume"
+                            }))
+                            .tooltip(if muted { "Unmute" } else { "Mute" })
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))),
+                    )
+                })
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    if this.player_controls.as_ref().is_some_and(|c| c.scrubbing) {
+                        if event.pressed_button == Some(MouseButton::Left) {
+                            this.scrub_to(event.position, cx);
+                        } else if let Some(controls) = &mut this.player_controls {
+                            controls.scrubbing = false;
+                        }
                     }
-                }),
-            )
-            .into_any_element()
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, _| {
+                        if let Some(controls) = &mut this.player_controls {
+                            controls.scrubbing = false;
+                        }
+                    }),
+                ),
+        )
     }
 
     /// Moves the playhead to the scrub bar's point under `position`.
     fn scrub_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let (Some(controls), Some(player)) = (&self.player_controls, &self.player) else {
+        let Some(bounds) = self.player_controls.as_ref().map(|c| *c.scrub.borrow()) else {
             return;
         };
-        let bounds = *controls.scrub.borrow();
+        let Some(duration) = self.active_player().map(|p| p.duration()) else {
+            return;
+        };
         let width = f32::from(bounds.size.width).max(1.);
         let share = (f32::from(position.x - bounds.origin.x) / width).clamp(0., 1.);
-        let time = Time((player.duration().0 as f64 * f64::from(share)) as i64);
+        let time = Time((duration.0 as f64 * f64::from(share)) as i64);
         self.seek_player(time, cx);
     }
 
@@ -271,7 +280,7 @@ impl Workspace {
         let Some(player) = &self.player else {
             return SharedString::default();
         };
-        match &player.media.info.video {
+        match player.media.as_ref().and_then(|m| m.info.video.as_ref()) {
             Some(video) => format!(
                 "Footage · {} × {} · {}",
                 video.width, video.height, video.rate
@@ -283,11 +292,15 @@ impl Workspace {
 
     /// Info mode for footage and audio: what the file holds.
     pub fn media_info_sidebar(&self, cx: &mut Context<Self>) -> Div {
-        let Some(player) = &self.player else {
+        let Some((player, media)) = self
+            .player
+            .as_ref()
+            .and_then(|p| Some((p, p.media.as_ref()?)))
+        else {
             return div();
         };
-        let info = &player.media.info;
-        let megabytes = player.media.bytes as f64 / 1_048_576.;
+        let info = &media.info;
+        let megabytes = media.bytes as f64 / 1_048_576.;
         let size = if megabytes >= 1024. {
             format!("{:.1} GB", megabytes / 1024.)
         } else if megabytes >= 1. {
@@ -297,12 +310,12 @@ impl Workspace {
         };
         let file = group("File", None)
             .gap_2()
-            .child(row("Name", player.media.original_name.clone()))
+            .child(row("Name", media.original_name.clone()))
             .child(row("Duration", player.timecode(info.duration)))
             .child(row("Size", size))
             .child(row(
                 "Format",
-                format_name(&player.media.original_name, &info.container),
+                format_name(&media.original_name, &info.container),
             ));
         let playback = match self
             .store
@@ -332,6 +345,10 @@ impl Workspace {
                 ))
                 .child(row("Range", dynamic.to_string()))
                 .child(row("Playback", playback.clone()))
+                .child(row(
+                    "Decoding",
+                    player.hardware.unwrap_or("Software").to_string(),
+                ))
         });
         let tracks = info.audio.iter().map(|track| {
             let label = track
