@@ -54,6 +54,8 @@ impl Workspace {
             }
             store.waveforms.insert(key, None);
             let root = root.clone();
+            // Waits while the program plays, as playback copies do.
+            let hold = store.copies.hold.clone();
             let (done, finished) = flume::bounded(1);
             std::thread::Builder::new()
                 .name("spectrum-waveform".into())
@@ -63,7 +65,11 @@ impl Workspace {
                         let (media, file) = service.media(key.0)?;
                         let duration = media.info.duration;
                         let buckets = (duration.seconds() * PER_SECOND).ceil().max(1.) as usize;
-                        spectrum_media::waveform(&file, key.1, duration, buckets)
+                        spectrum_media::waveform_with(&file, key.1, duration, buckets, &mut || {
+                            while hold.load(std::sync::atomic::Ordering::Relaxed) {
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                        })
                     });
                     let _ = done.send(peaks);
                 })

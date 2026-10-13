@@ -293,9 +293,11 @@ impl Workspace {
     }
 
     /// Whether queued thumbnails render: for a grid, or for the clips on a
-    /// video's timeline (which queues only those).
+    /// video's timeline (which queues only those) while it is not playing.
     fn thumbnails_wanted(&self) -> bool {
-        self.thumbnails_shown() || matches!(self.open, crate::workspace::Open::Video(_))
+        let playing = self.video.as_ref().is_some_and(|v| v.monitor.playing());
+        self.thumbnails_shown()
+            || (matches!(self.open, crate::workspace::Open::Video(_)) && !playing)
     }
 
     /// Renders queued thumbnails one at a time while a grid shows them, so

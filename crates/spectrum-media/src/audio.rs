@@ -295,12 +295,25 @@ fn open_resampler(raw: &ffi::AVFrame) -> Result<*mut ffi::SwrContext> {
 /// The loudest sample in each of `buckets` equal spans of a sound track,
 /// from 0 to 1, for drawing its waveform.
 pub fn waveform(path: &Path, track: usize, duration: Time, buckets: usize) -> Result<Vec<f32>> {
+    waveform_with(path, track, duration, buckets, &mut || {})
+}
+
+/// The same, calling `between` before each chunk it reads, so background
+/// work can wait there while something more pressing runs.
+pub fn waveform_with(
+    path: &Path,
+    track: usize,
+    duration: Time,
+    buckets: usize,
+    between: &mut dyn FnMut(),
+) -> Result<Vec<f32>> {
     let mut reader = AudioReader::open(path, track)?;
     let total = duration.samples(SAMPLE_RATE).max(1) as usize;
     let mut peaks = vec![0f32; buckets.max(1)];
     let mut chunk = vec![0f32; 8192 * CHANNELS];
     let mut position = 0usize;
     loop {
+        between();
         let frames = reader.read(&mut chunk)?;
         for frame in chunk[..frames * CHANNELS].as_chunks::<CHANNELS>().0 {
             let bucket = (position * peaks.len() / total).min(peaks.len() - 1);
