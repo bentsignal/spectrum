@@ -84,6 +84,13 @@ impl FrameReader {
         } else {
             stream.start_time()
         };
+        // MPEG-1 and -2 (playback copies among them) decode faster in
+        // software than they download from the GPU, and VideoToolbox
+        // refuses them on Apple silicon.
+        let light = matches!(
+            stream.parameters().id(),
+            codec::Id::MPEG1VIDEO | codec::Id::MPEG2VIDEO
+        );
         let open = |hardware: bool| -> Result<(ffmpeg::decoder::Video, Option<&'static str>)> {
             let mut context = codec::Context::from_parameters(stream.parameters())?;
             let mut used = None;
@@ -92,7 +99,7 @@ impl FrameReader {
                 (*raw).pkt_timebase = time_base.into();
                 (*raw).thread_count = 0;
                 (*raw).thread_type = ffi::FF_THREAD_FRAME | ffi::FF_THREAD_SLICE;
-                if hardware {
+                if hardware && !light {
                     used = crate::hardware::attach(raw);
                 }
             }

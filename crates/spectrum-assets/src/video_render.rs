@@ -28,8 +28,12 @@ pub struct VideoSources<S: std::ops::Deref<Target = Service>> {
     sounds: HashMap<u64, (AudioReader, Time)>,
     scratch: Vec<f32>,
     /// Footage frames decoded lately, newest last: slow motion and blends
-    /// ask for the same few frames again and again, often out of order.
+    /// ask for the same few frames again and again, often out of order,
+    /// and playing backward takes them from a group decoded at once.
     recent: Vec<(FrameKey, Arc<RgbaImage>)>,
+    /// The frame each footage was last asked for, to tell playing
+    /// backward.
+    last: HashMap<AssetId, i64>,
     /// The last pair of frames motion was worked out between: slow motion
     /// draws many moments of one pair.
     motion: Option<(FrameKey, spectrum_imaging::flow::MotionPair)>,
@@ -47,6 +51,7 @@ impl<S: std::ops::Deref<Target = Service>> VideoSources<S> {
             sounds: HashMap::new(),
             scratch: Vec::new(),
             recent: Vec::new(),
+            last: HashMap::new(),
             motion: None,
         }
     }
@@ -77,20 +82,49 @@ impl<S: std::ops::Deref<Target = Service>> VideoSources<S> {
         index: i64,
         fit: (u32, u32),
     ) -> Result<Arc<RgbaImage>> {
-        const RECENT: usize = 4;
         let key = (asset, index, fit);
+        let previous = self.last.insert(asset, index);
         if let Some((_, frame)) = self.recent.iter().find(|(k, _)| *k == key) {
             return Ok(frame.clone());
         }
-        let frame = Arc::new(self.decode_frame(asset, index, fit)?);
-        if self.recent.len() >= RECENT {
-            self.recent.remove(0);
+        // A frame or a few before the last: playing backward.
+        let backward = previous.is_some_and(|last| index < last && last - index <= 4);
+        let frames = self.decode_frames(asset, index, fit, backward)?;
+        let mut wanted = None;
+        for (at, frame) in frames {
+            let frame = Arc::new(frame);
+            if at == index {
+                wanted = Some(frame.clone());
+            }
+            self.keep((asset, at, fit), frame);
         }
-        self.recent.push((key, frame.clone()));
-        Ok(frame)
+        wanted.context("the frame was not decoded")
     }
 
-    fn decode_frame(&mut self, asset: AssetId, index: i64, fit: (u32, u32)) -> Result<RgbaImage> {
+    /// Keeps a decoded frame among the recent ones, forgetting the oldest
+    /// past a few frames and a memory budget.
+    fn keep(&mut self, key: FrameKey, frame: Arc<RgbaImage>) {
+        const FEWEST: usize = 4;
+        const BUDGET: usize = 256 << 20;
+        self.recent.retain(|(k, _)| *k != key);
+        self.recent.push((key, frame));
+        let mut bytes: usize = self.recent.iter().map(|(_, f)| f.as_raw().len()).sum();
+        while self.recent.len() > FEWEST && bytes > BUDGET {
+            bytes -= self.recent.remove(0).1.as_raw().len();
+        }
+    }
+
+    /// Frame `index`, or (playing backward) the frames from the keyframe
+    /// before it up to it, by frame number.
+    fn decode_frames(
+        &mut self,
+        asset: AssetId,
+        index: i64,
+        fit: (u32, u32),
+        backward: bool,
+    ) -> Result<Vec<(i64, RgbaImage)>> {
+        /// Frames kept from a group decoded for playing backward.
+        const BACK: usize = 12;
         let (media, file, copy) = self.media(asset)?.clone();
         let video = media.info.video.context("footage has a picture")?;
         if !self.readers.contains_key(&asset) {
@@ -103,9 +137,24 @@ impl<S: std::ops::Deref<Target = Service>> VideoSources<S> {
         }
         let (width, height) = fitted((video.width, video.height), fit);
         let reader = self.readers.get_mut(&asset).context("no reader")?;
-        let index = index.clamp(0, reader.frames().max(1) as i64 - 1);
-        let frame = reader.frame_at(video.rate.time_of(index), Some(width.max(height)))?;
-        Ok(scale_to(frame.image, (width, height)))
+        let last = reader.frames().max(1) as i64 - 1;
+        let clamped = index.clamp(0, last);
+        let long = Some(width.max(height));
+        if backward {
+            let frames = reader.frames_before(clamped, BACK, long)?;
+            if frames.iter().any(|f| f.index == clamped) {
+                return Ok(frames
+                    .into_iter()
+                    .map(|f| {
+                        // Asked-for frames past the end show the last.
+                        let at = if f.index == clamped { index } else { f.index };
+                        (at, scale_to(f.image, (width, height)))
+                    })
+                    .collect());
+            }
+        }
+        let frame = reader.frame_at(video.rate.time_of(clamped), long)?;
+        Ok(vec![(index, scale_to(frame.image, (width, height)))])
     }
 
     /// Footage at exact source seconds: the frame showing then, or (for a
