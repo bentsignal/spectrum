@@ -103,6 +103,8 @@ jobs:
           unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP"
           echo "FFMPEG_DIR=$RUNNER_TEMP/$name" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+          # FFmpeg's binding generator runs deeper than Windows' 1 MB stack.
+          echo "RUSTFLAGS=-C link-arg=/STACK:16777216" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - name: Ensure Metal compiler is available
         if: runner.os == 'macOS'

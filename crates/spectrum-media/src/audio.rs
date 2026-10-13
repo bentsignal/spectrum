@@ -302,7 +302,7 @@ pub fn waveform(path: &Path, track: usize, duration: Time, buckets: usize) -> Re
     let mut position = 0usize;
     loop {
         let frames = reader.read(&mut chunk)?;
-        for frame in chunk[..frames * CHANNELS].chunks_exact(CHANNELS) {
+        for frame in chunk[..frames * CHANNELS].as_chunks::<CHANNELS>().0 {
             let bucket = (position * peaks.len() / total).min(peaks.len() - 1);
             let level = frame
                 .iter()
