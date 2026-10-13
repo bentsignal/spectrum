@@ -29,12 +29,21 @@ benchmark with the heaviest real footage.
 2. **The edit** (built 2026-10-13): `spectrum-video` with tracks and clips,
    overwrite and insert, move, trim, ripple, roll, slip, slide, razor,
    linked sound, track lock and mute, real-time playback, export (H.264,
-   HEVC, ProRes), the desktop editor and `spectrum video`. Left: clip
-   thumbnails and waveforms on the timeline, dragging media onto it.
+   HEVC, ProRes), the desktop editor and `spectrum video`, pictures and
+   waveforms on clips, media dragged onto the timeline or placed with `,`
+   (insert) and `.` (overwrite), rows dragged taller from under their
+   headers, and a timeline that scrolls (Shift-wheel) rather than squeeze
+   the monitor. Left: the user's review, and an intermittent GPUI crash
+   seen once in the benchmark's `video_tools` (2026-10-13; two reruns
+   passed): `blade_atlas.rs:229` flushed an upload for a texture already
+   freed, the race `retire.rs` guards against. Find which image is freed
+   within two frames of its upload in the video editor.
 3. **Speed** (built 2026-10-13): velocity keyframes and time remaps with
    Vegas's curves, repeat past the end, reverse, freeze, sound that follows
    (or not), blend and motion interpolation; a velocity line on the
-   timeline and typeable keyframes. Left: the user's review of the feel.
+   timeline and typeable keyframes; one-click Freeze frame (a held frame,
+   then the clip plays on) and Reverse (the same frames backward, ramps
+   mirrored). Left: the user's review of the feel.
 4. **Animate**: a neutral keyframe model for every property; clip and canvas
    layer lanes, graph editor, animated canvases playing in videos, grouping
    clips into a canvas.

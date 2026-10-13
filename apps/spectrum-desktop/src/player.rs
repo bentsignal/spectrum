@@ -635,6 +635,14 @@ impl Workspace {
                 self.split_at_playhead(window, cx);
                 return true;
             }
+            let placement = match key.key.as_str() {
+                "," | "comma" => Some(spectrum_video::Placement::Insert),
+                "." | "period" => Some(spectrum_video::Placement::Overwrite),
+                _ => None,
+            };
+            if let Some(placement) = placement {
+                return self.add_chosen_media(placement, window, cx);
+            }
         }
         match key.key.as_str() {
             "space" => self.toggle_play(cx),

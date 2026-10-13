@@ -131,6 +131,18 @@ pub enum Command {
         clip: u64,
         speed: Speed,
     },
+    /// Holds the frame showing at `at` (on the timeline) for `length`, or
+    /// to the clip's end, then plays on; the clip keeps its length.
+    Freeze {
+        clip: u64,
+        at: Time,
+        #[serde(default)]
+        length: Option<Time>,
+    },
+    /// Plays the clip's frames backward, ramps and all.
+    Reverse {
+        clip: u64,
+    },
     Undo,
     Redo,
 }
@@ -399,6 +411,34 @@ fn apply_to(video: &mut Video, command: Command) -> Result<CommandOutput> {
                 video.clip_mut(id).context("no such clip")?.speed = speed.clone();
             }
             output("set_speed", "Changed a clip's speed")
+        }
+        Command::Freeze { clip, at, length } => {
+            let found = video.clip(clip).context("no such clip")?.1;
+            if !found.covers(at) {
+                bail!("the clip is not at {}", at.timecode(video.rate));
+            }
+            if length.is_some_and(|length| length <= Time::ZERO) {
+                bail!("a freeze lasts longer than nothing");
+            }
+            let speed = found.speed.frozen(at - found.start, length);
+            for id in video.with_links(&[clip]) {
+                video.clip_mut(id).context("no such clip")?.speed = speed.clone();
+            }
+            output("freeze", "Froze a frame")
+        }
+        Command::Reverse { clip } => {
+            let frame = video.rate.frame_duration();
+            for id in video.with_links(&[clip]) {
+                let clip = video.clip_mut(id).context("no such clip")?;
+                let (speed, moved) = clip.speed.reversed(clip.duration, frame);
+                clip.speed = speed;
+                // Sound kept at normal speed plays on from the same place.
+                if clip.sound_follows_speed || !matches!(clip.source, Source::Sound { .. }) {
+                    clip.source_in =
+                        Time::from_seconds(clip.wrap(clip.source_in.seconds() + moved));
+                }
+            }
+            output("reverse", "Reversed a clip")
         }
         Command::Undo | Command::Redo => bail!("history is stepped by the workspace"),
     })

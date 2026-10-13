@@ -1,14 +1,14 @@
 //! The video editor on a 4K edit of camera footage with cuts, a photo over
 //! it, and a song: opening, scrubbing, playing across cuts, dragging a
-//! trim, and every timeline tool, each checked to work, be saved, and undo
-//! and redo.
+//! trim, and every timeline tool and clip edit (placing media, freezing,
+//! reversing), each checked to work, be saved, and undo and redo.
 use super::{
     Outcome,
     scenarios::{This, key, ms, outcome, pause, read, until},
 };
 use crate::{
     video_state::Tool,
-    video_timeline::{HEADER, rows},
+    video_timeline::HEADER,
     workspace::{Open, Workspace},
 };
 use anyhow::{Context as _, Result};
@@ -240,7 +240,7 @@ pub(super) async fn speed(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
 fn spot(ws: &Workspace, track: u64, time: Time) -> Option<Point<Pixels>> {
     let video = ws.video.as_ref()?;
     let bounds = *video.timeline.borrow();
-    let (_, _, top, height) = rows(&video.doc).into_iter().find(|(id, ..)| *id == track)?;
+    let (_, _, top, height) = video.rows().into_iter().find(|(id, ..)| *id == track)?;
     let x = HEADER + ((time.seconds() - video.scroll) as f32) * video.zoom;
     Some(bounds.origin + point(px(x), px(top + height / 2.)))
 }
@@ -378,12 +378,17 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
         restore(this, cx, &before).await;
     }
     // The edits a key or a button makes.
-    let keyed: [(&str, &str); 3] = [
-        ("Cut at playhead", "s"),
-        ("Delete", "delete"),
-        ("Ripple delete", "shift-delete"),
+    type Button = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
+    let keyed: [(&str, &str, Option<Button>); 7] = [
+        ("Cut at playhead", "s", None),
+        ("Delete", "delete", None),
+        ("Ripple delete", "shift-delete", None),
+        ("Insert media", ",", None),
+        ("Overwrite media", ".", None),
+        ("Freeze frame", "", Some(Workspace::freeze_frame)),
+        ("Reverse", "", Some(Workspace::reverse_clip)),
     ];
-    for (name, keys) in keyed {
+    for (name, keys, button) in keyed {
         let before = doc(this, cx)
             .unwrap_or_else(|| Video::new("", 2, 2, spectrum_media::FrameRate::new(30, 1)));
         this.update_in(cx, |ws, window, cx| {
@@ -398,16 +403,88 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
                     video.selected = video.doc.linked(id);
                     video.monitor.seek(middle);
                 }
+                // The footage, chosen in the Media sidebar for , and .
+                video.media = video.doc.tracks[0].clips.first().map(|c| c.source.asset());
             }
             ws.focus_handle.focus(window);
         })
         .ok();
         let started = Instant::now();
-        key(cx, keys);
+        match button {
+            Some(press) => {
+                this.update_in(cx, press).ok();
+            }
+            None => key(cx, keys),
+        }
         if let Err(problem) = check(this, cx, video_id, &before, started).await {
             problems.push(format!("{name}: {problem}"));
         }
         restore(this, cx, &before).await;
+    }
+    // Footage dragged from the sidebar onto the empty track above.
+    let before = doc(this, cx)
+        .unwrap_or_else(|| Video::new("", 2, 2, spectrum_media::FrameRate::new(30, 1)));
+    let started = Instant::now();
+    let dropped = this
+        .update_in(cx, |ws, window, cx| {
+            let video = ws.video.as_ref()?;
+            let footage = video.doc.tracks[0].clips.first()?.source.asset();
+            let track = video.doc.tracks.get(1)?;
+            let at = track.clips.last().map_or(Time::ZERO, |c| c.end()) + Time::from_seconds(1.);
+            let position = spot(ws, track.id, at)?;
+            ws.drop_media(footage, position, window, cx);
+            Some(())
+        })
+        .ok()
+        .flatten();
+    match dropped {
+        None => problems.push("Drop media: no room to drop it".into()),
+        Some(()) => {
+            if let Err(problem) = check(this, cx, video_id, &before, started).await {
+                problems.push(format!("Drop media: {problem}"));
+            }
+        }
+    }
+    restore(this, cx, &before).await;
+    // A row dragged taller by the line under its header: a view change, so
+    // the edit stays as it was.
+    let edge = read(this, cx, |ws| {
+        let video = ws.video.as_ref()?;
+        let bounds = *video.timeline.borrow();
+        let (track, _, top, height) = video.rows().into_iter().next()?;
+        Some((
+            track,
+            height,
+            bounds.origin + point(px(HEADER / 2.), px(top + height)),
+        ))
+    })
+    .flatten();
+    match edge {
+        None => problems.push("Row height: no row".into()),
+        Some((track, height, from)) => {
+            drag(this, cx, from, from + point(px(0.), px(60.)), 10).await;
+            let (grown, same) = read(this, cx, |ws| {
+                let video = ws.video.as_ref()?;
+                let grown = video.heights.get(&track).copied().unwrap_or(height);
+                Some((grown, video.doc.tracks == before.tracks))
+            })
+            .flatten()
+            .unwrap_or((height, false));
+            if (grown - height - 60.).abs() > 1. {
+                problems.push(format!(
+                    "Row height: {height} became {grown}, not 60 taller"
+                ));
+            }
+            if !same {
+                problems.push("Row height: changed the edit".into());
+            }
+            this.update(cx, |ws, _| {
+                if let Some(video) = &mut ws.video {
+                    video.heights.clear();
+                }
+            })
+            .ok();
+        }
     }
     let problem = (!problems.is_empty()).then(|| problems.join("; "));
     outcome("video_tools", vec![], problem)

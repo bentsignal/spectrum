@@ -13,7 +13,7 @@ mod hardware;
 mod probe;
 mod video;
 
-pub use audio::{AudioReader, CHANNELS, SAMPLE_RATE, waveform};
+pub use audio::{AudioReader, CHANNELS, SAMPLE_RATE, waveform, waveform_with};
 pub use copy::{COPY_LONG_EDGE, make_playback_copy, needs_playback_copy};
 pub use document::{Command, CommandOutput, Media, MediaModel, Workspace};
 pub use export::{ExportSettings, VideoCodec, Writer};

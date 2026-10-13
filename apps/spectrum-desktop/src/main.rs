@@ -74,6 +74,7 @@ mod tool_panel;
 mod tools;
 mod trash;
 mod unit_drag;
+mod video_clips;
 mod video_program;
 mod video_sidebar;
 mod video_speed;

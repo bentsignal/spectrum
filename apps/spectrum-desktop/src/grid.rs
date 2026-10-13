@@ -292,11 +292,19 @@ impl Workspace {
             || self.palette_open
     }
 
+    /// Whether queued thumbnails render: for a grid, or for the clips on a
+    /// video's timeline (which queues only those) while it is not playing.
+    fn thumbnails_wanted(&self) -> bool {
+        let playing = self.video.as_ref().is_some_and(|v| v.monitor.playing());
+        self.thumbnails_shown()
+            || (matches!(self.open, crate::workspace::Open::Video(_)) && !playing)
+    }
+
     /// Renders queued thumbnails one at a time while a grid shows them, so
     /// a grid of large photos and canvases never takes the cores, disk, or
     /// memory that editing needs; leaving the grid pauses the queue.
-    fn render_next_thumbnail(&mut self, cx: &mut Context<Self>) {
-        let shown = self.thumbnails_shown();
+    pub fn render_next_thumbnail(&mut self, cx: &mut Context<Self>) {
+        let shown = self.thumbnails_wanted();
         let Ok(store) = &mut self.store else {
             return;
         };
