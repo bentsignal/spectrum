@@ -94,7 +94,8 @@ fn lay(out: &mut RgbaImage, picture: &RgbaImage, opacity: f32) {
         let row = &picture.as_raw()[(y * w * 4) as usize..((y + 1) * w * 4) as usize];
         let start = (((y0 + y) * width + x0) * 4) as usize;
         let target = &mut out.as_mut()[start..start + (w.min(width) * 4) as usize];
-        for (dst, src) in target.chunks_exact_mut(4).zip(row.chunks_exact(4)) {
+        let (pixels, sources) = (target.as_chunks_mut::<4>().0, row.as_chunks::<4>().0);
+        for (dst, src) in pixels.iter_mut().zip(sources) {
             let alpha = u32::from(src[3]) * opacity / 255;
             if alpha == 255 {
                 dst[..3].copy_from_slice(&src[..3]);
