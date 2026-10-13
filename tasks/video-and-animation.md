@@ -37,7 +37,9 @@ benchmark with the heaviest real footage.
    seen once in the benchmark's `video_tools` (2026-10-13; two reruns
    passed): `blade_atlas.rs:229` flushed an upload for a texture already
    freed, the race `retire.rs` guards against. Find which image is freed
-   within two frames of its upload in the video editor.
+   within two frames of its upload in the video editor. On main at
+   afdfb80 the macOS runner's `video_speed` caught up twice (budget 0)
+   while Linux passed everything; reproduce on the macOS runner.
 3. **Speed** (built 2026-10-13): velocity keyframes and time remaps with
    Vegas's curves, repeat past the end, reverse, freeze, sound that follows
    (or not), blend and motion interpolation; a velocity line on the
