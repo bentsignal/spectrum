@@ -173,7 +173,9 @@ nothing is waiting to save. The desktop executable is also the CLI: started as
 
 The video editor (`video_*.rs`) applies each timeline edit on screen at once
 and saves batches after a pause, as the canvas does; its program monitor is
-the same player fed by the video's composited frames and mixed sound. The
+the same player fed by the video's composited frames and mixed sound. Clips
+show their media's thumbnail and, for sound, a waveform worked out once per
+track in the background (`video_clips.rs`). The
 player (`player*.rs`) shows footage and audio. A picture thread decodes
 from the playback copy (ahead of the playhead while playing, newest request
 first while scrubbing), and a paused frame then redraws from the original. The

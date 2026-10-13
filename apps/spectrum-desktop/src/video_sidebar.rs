@@ -16,6 +16,23 @@ use spectrum_library::{AssetId, AssetKind};
 use spectrum_media::{ExportSettings, VideoCodec};
 use spectrum_video::{Command, Placement, TrackKind};
 
+/// Media dragged from the sidebar onto the timeline.
+#[derive(Clone)]
+pub struct DraggedMedia(pub AssetId, pub String);
+
+impl Render for DraggedMedia {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_1p5()
+            .rounded_md()
+            .bg(rgb(SELECTED))
+            .shadow_lg()
+            .text_sm()
+            .child(self.1.clone())
+    }
+}
+
 /// Export choices, kept for the session.
 #[derive(Clone, Copy, PartialEq)]
 pub struct ExportChoice {
@@ -207,9 +224,24 @@ impl Workspace {
                     AssetKind::Footage | AssetKind::Audio | AssetKind::Image | AssetKind::Canvas
                 )
             });
+        let chosen = self.video.as_ref().and_then(|v| v.media);
         let rows = assets.map(|asset| {
             let id = asset.id;
+            let name = asset.name.clone();
             div()
+                .id(SharedString::from(format!("media-{id}")))
+                .when(chosen == Some(id), |el| el.bg(rgb(SELECTED)))
+                // Drag onto the timeline, or choose it for , (insert) and
+                // . (overwrite) at the playhead.
+                .on_drag(DraggedMedia(id, name), |media, _, _, cx| {
+                    cx.new(|_| media.clone())
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(video) = &mut this.video {
+                        video.media = Some(id);
+                    }
+                    cx.notify();
+                }))
                 .flex()
                 .items_center()
                 .gap_2()
@@ -396,6 +428,55 @@ impl Workspace {
             Command::Unlink { clips }
         };
         self.video_commands(vec![command], window, cx);
+    }
+
+    /// Adds media dropped on the timeline where it was dropped: at that
+    /// time, on that track when it is the right kind.
+    pub fn drop_media(
+        &mut self,
+        asset: AssetId,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(video), Ok(store)) = (&self.video, &self.store) else {
+            return;
+        };
+        let bounds = *video.timeline.borrow();
+        let x = f32::from(position.x - bounds.origin.x) - crate::video_timeline::HEADER;
+        let at = video.doc.snap(spectrum_media::Time::from_seconds(
+            (f64::from(x / video.zoom) + video.scroll).max(0.),
+        ));
+        let y = f32::from(position.y - bounds.origin.y);
+        let row = crate::video_timeline::rows(&video.doc)
+            .into_iter()
+            .find(|(_, _, top, height)| y >= *top && y < top + height);
+        let kind = match store.service.library.get(asset).map(|a| a.kind) {
+            Ok(AssetKind::Audio) => TrackKind::Audio,
+            _ => TrackKind::Video,
+        };
+        let track = row.filter(|(_, k, ..)| *k == kind).map(|(id, ..)| id);
+        match store
+            .service
+            .clip_command(asset, at, track, Placement::Overwrite)
+        {
+            Ok(command) => self.video_commands(vec![command], window, cx),
+            Err(error) => self.notify_error(error, window, cx),
+        }
+    }
+
+    /// , and .: the chosen media at the playhead, inserted or overwriting.
+    pub fn add_chosen_media(
+        &mut self,
+        placement: Placement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(asset) = self.video.as_ref().and_then(|v| v.media) else {
+            return false;
+        };
+        self.add_to_timeline(asset, placement, window, cx);
+        true
     }
 
     /// Adds an asset at the playhead.

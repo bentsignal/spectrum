@@ -711,6 +711,7 @@ impl Render for Workspace {
         if self.thumbnails_shown() {
             self.request_thumbnails(cx);
         }
+        self.request_clip_visuals(cx);
         self.ensure_preview(window, cx);
         self.fit_canvas_resolution(window, cx);
         self.step_zoom_animation(window, cx);

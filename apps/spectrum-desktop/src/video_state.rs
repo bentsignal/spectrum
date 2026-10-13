@@ -136,6 +136,8 @@ pub struct VideoEditor {
     /// The selected clips' opacity and volume.
     /// The selected speed keyframe: its clip and place.
     pub key: Option<(u64, usize)>,
+    /// The media chosen in the Media sidebar, for , and .
+    pub media: Option<AssetId>,
     pub keys: crate::video_speed::KeyFields,
     pub opacity: Entity<gpui_component::slider::SliderState>,
     pub volume: Entity<gpui_component::slider::SliderState>,
@@ -276,6 +278,7 @@ impl Workspace {
             exporting: None,
             edited_at: None,
             key: None,
+            media: None,
             keys: crate::video_speed::KeyFields::new(window, cx),
             opacity,
             volume,

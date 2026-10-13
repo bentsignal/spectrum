@@ -378,10 +378,12 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
         restore(this, cx, &before).await;
     }
     // The edits a key or a button makes.
-    let keyed: [(&str, &str); 3] = [
+    let keyed: [(&str, &str); 5] = [
         ("Cut at playhead", "s"),
         ("Delete", "delete"),
         ("Ripple delete", "shift-delete"),
+        ("Insert media", ","),
+        ("Overwrite media", "."),
     ];
     for (name, keys) in keyed {
         let before = doc(this, cx)
@@ -398,6 +400,8 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
                     video.selected = video.doc.linked(id);
                     video.monitor.seek(middle);
                 }
+                // The footage, chosen in the Media sidebar for , and .
+                video.media = video.doc.tracks[0].clips.first().map(|c| c.source.asset());
             }
             ws.focus_handle.focus(window);
         })
@@ -409,6 +413,31 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
         }
         restore(this, cx, &before).await;
     }
+    // Footage dragged from the sidebar onto the empty track above.
+    let before = doc(this, cx)
+        .unwrap_or_else(|| Video::new("", 2, 2, spectrum_media::FrameRate::new(30, 1)));
+    let started = Instant::now();
+    let dropped = this
+        .update_in(cx, |ws, window, cx| {
+            let video = ws.video.as_ref()?;
+            let footage = video.doc.tracks[0].clips.first()?.source.asset();
+            let track = video.doc.tracks.get(1)?;
+            let at = track.clips.last().map_or(Time::ZERO, |c| c.end()) + Time::from_seconds(1.);
+            let position = spot(ws, track.id, at)?;
+            ws.drop_media(footage, position, window, cx);
+            Some(())
+        })
+        .ok()
+        .flatten();
+    match dropped {
+        None => problems.push("Drop media: no room to drop it".into()),
+        Some(()) => {
+            if let Err(problem) = check(this, cx, video_id, &before, started).await {
+                problems.push(format!("Drop media: {problem}"));
+            }
+        }
+    }
+    restore(this, cx, &before).await;
     let problem = (!problems.is_empty()).then(|| problems.join("; "));
     outcome("video_tools", vec![], problem)
 }

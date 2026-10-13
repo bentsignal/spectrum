@@ -287,8 +287,10 @@ impl Workspace {
 
     /// Whether a grid of thumbnails is on screen.
     pub fn thumbnails_shown(&self) -> bool {
-        matches!(self.open, crate::workspace::Open::Overview)
-            || self.picker_open
+        matches!(
+            self.open,
+            crate::workspace::Open::Overview | crate::workspace::Open::Video(_)
+        ) || self.picker_open
             || self.palette_open
     }
 

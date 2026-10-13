@@ -545,8 +545,22 @@ impl Workspace {
                         .overflow_hidden()
                         .text_xs()
                         .text_color(rgb(TEXT))
+                        .flex()
+                        .gap_1p5()
+                        .children(self.clip_picture(clip).map(|path| {
+                            img(path)
+                                .h_full()
+                                .flex_none()
+                                .rounded_sm()
+                                .object_fit(ObjectFit::Cover)
+                                .w(px(((row - 14.) * 16. / 9.).min(right - left - 12.).max(0.)))
+                        }))
                         .child(div().truncate().child(clip.name.clone())),
                 );
+                if let Some(waveform) = self.clip_waveform(clip, (left, top + 3., right, row - 6.))
+                {
+                    lines.push(waveform);
+                }
                 let key = video.key.filter(|(id, _)| *id == clip.id).map(|(_, i)| i);
                 if let Some(line) =
                     self.speed_line(clip, (left, top + 3., right - left, row - 6.), key)
@@ -651,6 +665,11 @@ impl Workspace {
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                 this.timeline_wheel(event, window, cx)
             }))
+            .on_drop(cx.listener(
+                |this, media: &crate::video_sidebar::DraggedMedia, window, cx| {
+                    this.drop_media(media.0, window.mouse_position(), window, cx)
+                },
+            ))
             .into_any_element()
     }
 

@@ -37,7 +37,7 @@ impl Copies {
 
 /// Lowers this thread's priority; threads it starts (the decoder's) inherit
 /// it.
-fn background_priority() {
+pub fn background_priority() {
     #[cfg(target_os = "linux")]
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, 0, 10);

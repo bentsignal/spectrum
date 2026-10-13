@@ -42,6 +42,9 @@ pub struct Store {
     pub covers: HashMap<ProjectId, AssetId>,
     /// Footage's playback copies, made in the background.
     pub copies: crate::copies::Copies,
+    /// Sound tracks' waveforms for the timeline, by asset and track; `None`
+    /// while one is being worked out.
+    pub waveforms: HashMap<(AssetId, usize), Option<std::sync::Arc<crate::video_clips::Waveform>>>,
 }
 
 /// Files and folders are expanded to the image files inside them.
@@ -87,6 +90,7 @@ impl Store {
             thumb_queue: Default::default(),
             thumb_rendering: false,
             copies: Default::default(),
+            waveforms: HashMap::new(),
             covers: HashMap::new(),
         })
     }

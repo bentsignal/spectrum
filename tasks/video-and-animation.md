@@ -29,8 +29,9 @@ benchmark with the heaviest real footage.
 2. **The edit** (built 2026-10-13): `spectrum-video` with tracks and clips,
    overwrite and insert, move, trim, ripple, roll, slip, slide, razor,
    linked sound, track lock and mute, real-time playback, export (H.264,
-   HEVC, ProRes), the desktop editor and `spectrum video`. Left: clip
-   thumbnails and waveforms on the timeline, dragging media onto it.
+   HEVC, ProRes), the desktop editor and `spectrum video`, pictures and
+   waveforms on clips, media dragged onto the timeline or placed with `,`
+   (insert) and `.` (overwrite). Left: the user's review.
 3. **Speed** (built 2026-10-13): velocity keyframes and time remaps with
    Vegas's curves, repeat past the end, reverse, freeze, sound that follows
    (or not), blend and motion interpolation; a velocity line on the
