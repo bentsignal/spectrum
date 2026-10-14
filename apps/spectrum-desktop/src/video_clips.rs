@@ -34,6 +34,10 @@ impl Workspace {
                 source => pictures.push(source.asset()),
             }
         }
+        // The Media tab's tiles.
+        if self.mode == crate::workspace::Mode::Media {
+            pictures.extend(self.video_media(cx).into_iter().map(|a| a.id));
+        }
         let Ok(store) = &mut self.store else {
             return;
         };
@@ -123,7 +127,7 @@ impl Workspace {
         let video = self.video.as_ref()?;
         let (zoom, scroll) = (video.zoom, video.scroll);
         let clip = clip.clone();
-        let header = crate::video_timeline::HEADER;
+        let header = crate::video_layout::HEADER;
         // Only the part on screen, drawn as one shape: a clip far wider
         // than the timeline would otherwise paint thousands of pieces each
         // time the playhead moves.

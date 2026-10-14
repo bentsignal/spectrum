@@ -30,6 +30,7 @@ mod history;
 mod image_zoom;
 mod scenarios;
 mod video;
+mod video_views;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Profile {
@@ -50,6 +51,12 @@ pub struct Options {
     pub photo: Option<PathBuf>,
     /// Footage to use instead of the generated clip, such as a camera's.
     pub footage: Option<PathBuf>,
+}
+
+/// Whether the app is running the benchmark, which must leave a person's
+/// preferences alone.
+pub fn running() -> bool {
+    std::env::args().any(|arg| arg == "--benchmark")
 }
 
 /// The benchmark's options, when the app was started with `--benchmark`.
@@ -369,6 +376,13 @@ const BUDGETS: &[Budget] = &[
     budget("video_speed", "slow_frame", "max", 250.0, 350.0),
     budget("video_speed", "main_thread_lag", "max", 60.0, 150.0),
     budget("video_speed", "error_shown", "count", 0.0, 0.0),
+    // A second rendered ahead plays from memory in step, and renders in
+    // about the time it lasts.
+    budget("video_preview", "preview_render", "max", 2000.0, 2500.0),
+    budget("video_preview", "player_frames_behind", "p95", 1.0, 1.0),
+    budget("video_preview", "player_catch_up", "count", 0.0, 0.0),
+    budget("video_preview", "main_thread_lag", "max", 60.0, 150.0),
+    budget("video_preview", "error_shown", "count", 0.0, 0.0),
     budget("video_tools", "feature_shown", "max", 300.0, 400.0),
     budget("video_tools", "feature_saved", "max", 700.0, 900.0),
     budget("video_tools", "main_thread_lag", "max", 60.0, 150.0),

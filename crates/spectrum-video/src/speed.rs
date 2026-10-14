@@ -385,7 +385,7 @@ fn velocity(keys: &[VelocityKey], t: f64) -> f64 {
 
 /// Seconds of source played from the clip's start to `t`: the area under
 /// the velocity curve, worked out exactly segment by segment.
-fn velocity_area(keys: &[VelocityKey], t: f64) -> f64 {
+pub(crate) fn velocity_area(keys: &[VelocityKey], t: f64) -> f64 {
     let Some(first) = keys.first() else {
         return t;
     };
@@ -416,7 +416,7 @@ fn velocity_area(keys: &[VelocityKey], t: f64) -> f64 {
 }
 
 /// The source seconds a time remap shows at `t` seconds into the clip.
-fn remap(keys: &[RemapKey], t: f64) -> f64 {
+pub(crate) fn remap(keys: &[RemapKey], t: f64) -> f64 {
     let Some(first) = keys.first() else {
         return t;
     };

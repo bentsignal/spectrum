@@ -26,6 +26,9 @@ enum Choice {
     NewProject,
     Create(String),
     Tool(Tool),
+    VideoTool(crate::video_state::Tool),
+    /// One of the video editor's commands, by its place in the list.
+    VideoAction(usize),
     /// A branch: go to its newest revision.
     Branch(spectrum_document::RevisionId),
 }
@@ -33,6 +36,8 @@ enum Choice {
 struct Item {
     /// Drawn instead of `icon` for tools.
     tool: Option<Tool>,
+    /// The key that does it, shown as a key cap.
+    key: Option<SharedString>,
     icon: IconName,
     label: SharedString,
     detail: Option<SharedString>,
@@ -53,7 +58,7 @@ impl Workspace {
         if self.mode == Mode::History && self.history.shown.is_some() {
             return self.open_branches(window, cx);
         }
-        if self.canvas.is_none() {
+        if self.canvas.is_none() && self.video.is_none() {
             return;
         }
         self.palette_adding.clear();
@@ -154,6 +159,8 @@ impl Workspace {
         self.palette_index = 0;
         let placeholder = if self.palette_branches {
             "Find a branch by name or who made it"
+        } else if self.palette_tools && self.video.is_some() {
+            "Choose a tool or a command"
         } else if self.palette_tools {
             "Choose a tool"
         } else {
@@ -200,6 +207,7 @@ impl Workspace {
                 .into_iter()
                 .map(|(tip, title, detail)| Item {
                     tool: None,
+                    key: None,
                     icon: IconName::GalleryVerticalEnd,
                     label: title.into(),
                     detail: Some(detail.into()),
@@ -207,12 +215,39 @@ impl Workspace {
                 })
                 .collect();
         }
+        if self.palette_tools && self.video.is_some() {
+            let tools = crate::video_state::Tool::ALL
+                .into_iter()
+                .filter(|tool| matches(tool.label()))
+                .map(|tool| Item {
+                    tool: None,
+                    key: Some(tool.key().to_uppercase().into()),
+                    icon: IconName::Menu,
+                    label: tool.label().into(),
+                    detail: Some("Tool".into()),
+                    choice: Choice::VideoTool(tool),
+                });
+            let actions = crate::video_menu::ACTIONS
+                .iter()
+                .enumerate()
+                .filter(|(_, action)| matches(action.name) || matches(action.detail))
+                .map(|(index, action)| Item {
+                    tool: None,
+                    key: action.key.map(Into::into),
+                    icon: IconName::ChevronRight,
+                    label: action.name.into(),
+                    detail: Some(action.detail.into()),
+                    choice: Choice::VideoAction(index),
+                });
+            return tools.chain(actions).collect();
+        }
         if self.palette_tools {
             return TOOLS
                 .iter()
                 .filter(|(_, name, ..)| matches(name))
                 .map(|(tool, name, detail)| Item {
                     tool: Some(*tool),
+                    key: crate::tools::tool_letter(*tool).map(Into::into),
                     icon: IconName::Menu,
                     label: (*name).into(),
                     detail: Some((*detail).into()),
@@ -228,6 +263,7 @@ impl Workspace {
                     .filter(|p| self.place != Place::Project(p.id) && matches(&p.name))
                     .map(|p| Item {
                         tool: None,
+                        key: None,
                         icon: IconName::FolderClosed,
                         label: p.name.clone().into(),
                         detail: Some(
@@ -241,6 +277,7 @@ impl Workspace {
             if matches("Overview") {
                 items.push(Item {
                     tool: None,
+                    key: None,
                     icon: IconName::LayoutDashboard,
                     label: "Overview".into(),
                     detail: Some(self.view_name()),
@@ -256,6 +293,7 @@ impl Workspace {
                         let canvas = e.asset.kind == spectrum_library::AssetKind::Canvas;
                         Item {
                             tool: None,
+                            key: None,
                             icon: if canvas {
                                 IconName::LayoutDashboard
                             } else {
@@ -290,6 +328,7 @@ impl Workspace {
                         let canvas = a.kind == spectrum_library::AssetKind::Canvas;
                         Item {
                             tool: None,
+                            key: None,
                             icon: if canvas {
                                 IconName::LayoutDashboard
                             } else {
@@ -322,6 +361,7 @@ impl Workspace {
                 .filter(|(_, label, _)| matches(label))
                 .map(|(icon, label, choice)| Item {
                     tool: None,
+                    key: None,
                     icon,
                     label: label.into(),
                     detail: Some("Home".into()),
@@ -335,6 +375,7 @@ impl Workspace {
                     .filter(|p| matches(&p.name))
                     .map(|p| Item {
                         tool: None,
+                        key: None,
                         icon: IconName::FolderClosed,
                         label: p.name.clone().into(),
                         detail: Some(
@@ -352,6 +393,7 @@ impl Workspace {
         items.push(if query.is_empty() || exact {
             Item {
                 tool: None,
+                key: None,
                 icon: IconName::Plus,
                 label: "New project…".into(),
                 detail: None,
@@ -360,6 +402,7 @@ impl Workspace {
         } else {
             Item {
                 tool: None,
+                key: None,
                 icon: IconName::Plus,
                 label: format!("Create project \"{query}\"").into(),
                 detail: None,
@@ -382,6 +425,12 @@ impl Workspace {
             Choice::Open(open) => self.open_item(open, window, cx),
             Choice::Reveal(id) => self.reveal(id, window, cx),
             Choice::Tool(tool) => self.set_tool(tool, window, cx),
+            Choice::VideoTool(tool) => self.set_video_tool(tool, cx),
+            Choice::VideoAction(index) => {
+                if let Some(action) = crate::video_menu::ACTIONS.get(index) {
+                    (action.run)(self, window, cx);
+                }
+            }
             Choice::Branch(tip) => {
                 self.center_on_revision(tip);
                 self.go_to_revision(tip, window, cx);
@@ -436,11 +485,11 @@ impl Workspace {
                     item.detail
                         .map(|d| div().text_xs().text_color(rgb(FAINT)).child(d)),
                 )
-                // A tool's one-key shortcut, as a key cap in a slot as wide
-                // as the widest, so the text beside every tool lines up.
-                .children(item.tool.map(|tool| {
-                    div().flex_none().w(px(34.)).flex().justify_end().children(
-                        crate::tools::tool_letter(tool).map(|key| {
+                // The key that does it, as a key cap in a slot as wide as
+                // the widest, so the text beside every item lines up.
+                .children((item.tool.is_some() || item.key.is_some()).then(|| {
+                    div().flex_none().w(px(48.)).flex().justify_end().children(
+                        item.key.clone().map(|key| {
                             div()
                                 .min_w(px(22.))
                                 .h(px(22.))

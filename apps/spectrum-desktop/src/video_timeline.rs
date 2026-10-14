@@ -1,137 +1,32 @@
-//! The timeline: a ruler, video tracks (the top one in front) over audio
-//! tracks, their clips, and the playhead. Pressing a clip selects it and
-//! starts the current tool's drag (move or trim with Select, ripple trim,
-//! roll, slip, slide); the Razor cuts where clicked. Edges and moves snap
-//! to the playhead and other clips' edges.
+//! The timeline's input. Pressing a clip selects it and starts the current
+//! tool's drag (move or trim with Select, ripple trim, roll, slip, slide);
+//! the Razor cuts where clicked. Edges and moves snap to the playhead and
+//! other clips' edges. The grip above the ruler sets how tall the timeline
+//! is, the divider how video and audio share it, and a track's outer edge
+//! its height. A swipe up or down zooms around the pointer, as the wheel
+//! does in Vegas; sideways (or Shift) scrolls time; over the track names, or
+//! with Option, it scrolls the tracks.
 use crate::{
-    theme::*,
-    video_state::{Drag, DragKind, Tool},
+    video_layout::{DIVIDER, HEADER, Hit, PANEL_MIN, ROW_RANGE, TOP},
+    video_state::{Drag, DragKind, MenuTarget, Tool},
     workspace::Workspace,
 };
-use gpui::{prelude::*, *};
+use gpui::*;
 use spectrum_media::Time;
-use spectrum_video::{Command, Edge, TrackKind, Video};
-use std::{collections::HashMap, time::Instant};
+use spectrum_video::{Command, Edge, TrackKind};
 
-pub const HEADER: f32 = 76.;
-pub const RULER: f32 = 26.;
-const VIDEO_ROW: f32 = 54.;
-const AUDIO_ROW: f32 = 42.;
-/// How short and tall a dragged row can be.
-const ROW_RANGE: (f32, f32) = (30., 240.);
-/// How near an edge, in points, counts as grabbing it.
-const EDGE: f32 = 6.;
 /// How near, in points, an edge snaps.
 const SNAP: f32 = 8.;
 
-/// The rows from the top: video tracks (highest first), then audio, at
-/// the heights they were dragged to.
-pub fn rows(video: &Video, heights: &HashMap<u64, f32>) -> Vec<(u64, TrackKind, f32, f32)> {
-    let mut rows = Vec::new();
-    let mut y = RULER;
-    let tracks = video
-        .tracks
-        .iter()
-        .filter(|t| t.kind == TrackKind::Video)
-        .rev()
-        .chain(video.tracks.iter().filter(|t| t.kind == TrackKind::Audio));
-    for track in tracks {
-        let height = heights.get(&track.id).copied().unwrap_or(match track.kind {
-            TrackKind::Video => VIDEO_ROW,
-            TrackKind::Audio => AUDIO_ROW,
-        });
-        rows.push((track.id, track.kind, y, height));
-        y += height;
-    }
-    rows
-}
-
-/// The tallest the timeline gets: under half the window, so the monitor
-/// keeps its room.
-pub fn timeline_cap(window: &Window) -> f32 {
-    (f32::from(window.viewport_size().height) * 0.45).max(RULER + VIDEO_ROW + 24.)
-}
-
-/// What is under a point on the timeline.
-enum Hit {
-    Ruler,
-    /// A track's name, switches, and nothing to drag.
-    Header,
-    /// The line under a track's header, which drags the row taller or
-    /// shorter.
-    RowEdge {
-        track: u64,
-        height: f32,
-    },
-    Clip {
-        clip: u64,
-        edge: Option<Edge>,
-    },
-    Empty,
-}
-
 impl Workspace {
     pub(crate) fn timeline_x(&self, time: Time) -> f32 {
-        let video = self.video.as_ref().expect("video");
-        HEADER + ((time.seconds() - video.scroll) as f32) * video.zoom
+        self.video.as_ref().expect("video").x_of(time)
     }
 
     /// The timeline time under a window point.
     fn timeline_time(&self, position: Point<Pixels>) -> Time {
         let video = self.video.as_ref().expect("video");
-        let bounds = *video.timeline.borrow();
-        let x = f32::from(position.x - bounds.origin.x) - HEADER;
-        Time::from_seconds((f64::from(x / video.zoom) + video.scroll).max(0.))
-    }
-
-    fn hit(&self, position: Point<Pixels>) -> Hit {
-        let video = self.video.as_ref().expect("video");
-        let bounds = *video.timeline.borrow();
-        let (x, y) = (
-            f32::from(position.x - bounds.origin.x),
-            f32::from(position.y - bounds.origin.y),
-        );
-        if y < RULER {
-            return Hit::Ruler;
-        }
-        let rows = video.rows();
-        if x < HEADER {
-            return rows
-                .into_iter()
-                .find(|(_, _, top, height)| (y - (top + height)).abs() <= 4.)
-                .map_or(Hit::Header, |(track, _, _, height)| Hit::RowEdge {
-                    track,
-                    height,
-                });
-        }
-        let Some((track, ..)) = rows
-            .into_iter()
-            .find(|(_, _, top, height)| y >= *top && y < top + height)
-        else {
-            return Hit::Empty;
-        };
-        let Some(track) = video.doc.track(track) else {
-            return Hit::Empty;
-        };
-        for clip in &track.clips {
-            let (left, right) = (self.timeline_x(clip.start), self.timeline_x(clip.end()));
-            if x >= left - EDGE && x <= right + EDGE {
-                let edge = if (x - left).abs() <= EDGE {
-                    Some(Edge::Start)
-                } else if (x - right).abs() <= EDGE {
-                    Some(Edge::End)
-                } else if x < left || x > right {
-                    continue;
-                } else {
-                    None
-                };
-                return Hit::Clip {
-                    clip: clip.id,
-                    edge,
-                };
-            }
-        }
-        Hit::Empty
+        video.time_at(video.local(position).0)
     }
 
     pub fn timeline_down(
@@ -140,21 +35,42 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.speed_down(event, window, cx) {
+        if self.speed_down(event, cx) {
+            self.sync_key_fields(window, cx);
             return;
         }
-        let hit = self.hit(event.position);
+        let Some(video) = &self.video else {
+            return;
+        };
+        let hit = video.hit(event.position);
         let time = self.timeline_time(event.position);
         let shift = event.modifiers.shift;
+        let layout = video.layout();
         let Some(video) = &mut self.video else {
             return;
         };
+        let mut clicked = None;
         let kind = match hit {
-            Hit::Header => return,
-            Hit::RowEdge { track, height } => DragKind::Resize { track, height },
-            Hit::Ruler | Hit::Empty => {
-                if matches!(hit, Hit::Empty) && !shift {
+            Hit::Header { .. } => return,
+            Hit::Grip => DragKind::Panel {
+                height: layout.height,
+            },
+            Hit::Divider => DragKind::Divider {
+                share: (layout.video.1 - layout.video.0) / (layout.height - TOP - DIVIDER).max(1.),
+            },
+            Hit::RowEdge {
+                track,
+                kind,
+                height,
+            } => DragKind::Resize {
+                track,
+                kind,
+                height,
+            },
+            Hit::Ruler | Hit::Empty { .. } => {
+                if matches!(hit, Hit::Empty { .. }) && !shift {
                     video.selected.clear();
+                    video.key = None;
                 }
                 DragKind::Playhead
             }
@@ -180,6 +96,10 @@ impl Workspace {
                     }
                 } else if !video.selected.contains(&clip) {
                     video.selected = linked;
+                } else {
+                    // One of a larger selection: it alone once no drag
+                    // follows.
+                    clicked = Some(clip);
                 }
                 match (video.tool, edge) {
                     (Tool::Select, Some(edge)) => DragKind::Trim {
@@ -207,17 +127,59 @@ impl Workspace {
                 }
             }
         };
-        let row = f32::from(event.position.y);
-        video.drag = Some(Drag {
-            base: video.doc.clone(),
+        let mut drag = Drag::new(
+            video.doc.clone(),
             kind,
-            from: (time.seconds(), row),
-            command: None,
-            started: Instant::now(),
-        });
+            (time.seconds(), f32::from(event.position.y)),
+        );
+        drag.clicked = clicked;
+        video.drag = Some(drag);
         if kind == DragKind::Playhead {
             self.seek_player(time, cx);
         }
+        self.sync_video_controls(window, cx);
+        cx.notify();
+    }
+
+    /// A right-click: notes what it was on for the menu, selecting the clip
+    /// (or keyframe) if it was not.
+    pub fn timeline_right_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(video) = &self.video else {
+            return;
+        };
+        let hit = video.hit(event.position);
+        let (x, y) = video.local(event.position);
+        let key = self.speed_clip().and_then(|clip| {
+            let track = video.doc.clip(clip.id)?.0.id;
+            let row = video.layout().row(track)?;
+            let (left, right) = (video.x_of(clip.start), video.x_of(clip.end()));
+            let boxed = (left, row.top + 3., right - left, row.height - 6.);
+            Some((clip.id, self.speed_key_at(&clip, boxed, x, y)?))
+        });
+        let Some(video) = &mut self.video else {
+            return;
+        };
+        video.menu = match (key, hit) {
+            (Some((clip, index)), _) => {
+                video.key = Some((clip, index));
+                MenuTarget::Key { clip, index }
+            }
+            (None, Hit::Clip { clip, .. }) => {
+                if !video.selected.contains(&clip) {
+                    video.selected = video.doc.linked(clip);
+                }
+                MenuTarget::Clip(clip)
+            }
+            (None, Hit::Header { track }) => MenuTarget::Track(track),
+            (None, Hit::Empty { track: Some(track) }) => MenuTarget::Track(track),
+            _ => MenuTarget::Timeline,
+        };
+        self.sync_key_fields(window, cx);
         self.sync_video_controls(window, cx);
         cx.notify();
     }
@@ -228,35 +190,68 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(drag) = self.video.as_ref().and_then(|v| v.drag.as_ref()) else {
+        let Some(video) = &mut self.video else {
+            return;
+        };
+        let Some(drag) = video.drag.as_ref() else {
+            // The razor marks where it would cut.
+            if video.tool == Tool::Razor {
+                video.hover = Some(event.position);
+                cx.notify();
+            }
             return;
         };
         if event.pressed_button != Some(MouseButton::Left) {
             return self.timeline_release(window, cx);
         }
-        let time = self.timeline_time(event.position);
         let (kind, from) = (drag.kind, drag.from);
-        if kind == DragKind::Playhead {
-            self.seek_player(time, cx);
-            return;
-        }
-        if let DragKind::Resize { track, height } = kind {
-            let y = f32::from(event.position.y);
-            if let Some(video) = &mut self.video {
-                let height = (height + y - from.1).clamp(ROW_RANGE.0, ROW_RANGE.1);
-                video.heights.insert(track, height);
-                let room = (video.content_height() - timeline_cap(window)).max(0.);
-                video.scroll_y = video.scroll_y.min(room);
+        let y = f32::from(event.position.y);
+        match kind {
+            DragKind::Playhead => {
+                let time = self.timeline_time(event.position);
+                self.seek_player(time, cx);
+                return;
             }
-            cx.notify();
-            return;
+            DragKind::Panel { height } => {
+                let most = f32::from(window.viewport_size().height) - 180.;
+                video.panel = (height + from.1 - y).clamp(PANEL_MIN, most.max(PANEL_MIN));
+                cx.notify();
+                return;
+            }
+            DragKind::Divider { .. } => {
+                let layout = video.layout();
+                let local = video.local(event.position).1;
+                let room = (layout.height - TOP - DIVIDER).max(1.);
+                video.split = Some(((local - TOP) / room).clamp(0.12, 0.88));
+                cx.notify();
+                return;
+            }
+            DragKind::Resize {
+                track,
+                kind,
+                height,
+            } => {
+                // Away from the divider: video up, audio down.
+                let grown = match kind {
+                    TrackKind::Video => from.1 - y,
+                    TrackKind::Audio => y - from.1,
+                };
+                video
+                    .heights
+                    .insert(track, (height + grown).clamp(ROW_RANGE.0, ROW_RANGE.1));
+                cx.notify();
+                return;
+            }
+            _ => {}
         }
+        let time = self.timeline_time(event.position);
         let by = self.snapped_by(Time::from_seconds(time.seconds() - from.0), kind);
-        // Rows dragged up move pictures up a track.
-        let rows = self.rows_between(from.1, f32::from(event.position.y));
-        let Some(selected) = self.video.as_ref().map(|v| v.selected.clone()) else {
+        let Some(video) = &self.video else {
             return;
         };
+        // Rows dragged up move pictures up a track.
+        let rows = video.rows_between(from.1, y);
+        let selected = video.selected.clone();
         let command = match kind {
             DragKind::Move => Command::Move {
                 clips: selected,
@@ -274,19 +269,24 @@ impl Workspace {
             DragKind::Slip { clip } => Command::Slip { clip, by: -by },
             DragKind::Slide { clip } => Command::Slide { clip, by },
             DragKind::Key { clip, index } => {
-                let Some(command) = self.key_drag(clip, index, time, event.position) else {
+                let Some(command) = self.key_drag(clip, index, event.position) else {
                     return;
                 };
                 command
             }
-            DragKind::Playhead | DragKind::Resize { .. } => return,
+            _ => return,
         };
         let Some(video) = &mut self.video else {
             return;
         };
         let drag = video.drag.as_mut().expect("drag");
         let mut doc = drag.base.clone();
-        if spectrum_video::apply(&mut doc, command.clone()).is_ok() {
+        let applied = drag
+            .prefix
+            .iter()
+            .chain([&command])
+            .all(|c| spectrum_video::apply(&mut doc, c.clone()).is_ok());
+        if applied {
             drag.command = Some(command);
             self.show_video_doc(doc);
         }
@@ -302,10 +302,20 @@ impl Workspace {
             return;
         };
         crate::perf::record("video_drag", drag.started.elapsed());
-        if let Some(command) = drag.command {
+        match drag.kind {
+            DragKind::Panel { .. } if !crate::benchmark::running() => {
+                crate::prefs::set("timeline_height", video.panel.into());
+            }
+            _ => {}
+        }
+        if drag.command.is_some() {
             // The edit applies again, to the edit from before the drag.
+            let commands = drag.commands();
             video.doc = drag.base;
-            self.video_commands(vec![command], window, cx);
+            self.video_commands(commands, window, cx);
+        } else if let Some(clip) = drag.clicked {
+            video.selected = video.doc.linked(clip);
+            self.sync_video_controls(window, cx);
         }
         cx.notify();
     }
@@ -330,7 +340,7 @@ impl Workspace {
             | DragKind::Roll { clip }
             | DragKind::Slip { clip }
             | DragKind::Slide { clip } => doc.linked(clip),
-            DragKind::Playhead | DragKind::Key { .. } | DragKind::Resize { .. } => return by,
+            _ => return by,
         };
         let edges: Vec<Time> = moving
             .iter()
@@ -368,8 +378,6 @@ impl Workspace {
         best.map_or(by, |(_, snapped)| snapped)
     }
 
-    /// Scrolls the timeline sideways, or zooms it around the pointer with
-    /// the Command or Alt key held.
     pub fn timeline_wheel(
         &mut self,
         event: &ScrollWheelEvent,
@@ -378,129 +386,31 @@ impl Workspace {
     ) {
         let time = self.timeline_time(event.position);
         let delta = event.delta.pixel_delta(window.line_height());
+        let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
         let Some(video) = &mut self.video else {
             return;
         };
-        if event.modifiers.shift {
-            // Up and down through tracks taller than the timeline.
-            let room = (video.content_height() - timeline_cap(window)).max(0.);
-            video.scroll_y = (video.scroll_y - f32::from(delta.y)).clamp(0., room);
-        } else if event.modifiers.platform || event.modifiers.alt || event.modifiers.control {
-            let factor = (1. + f32::from(delta.y) / 200.).clamp(0.5, 2.);
-            let x = (time.seconds() - video.scroll) as f32 * video.zoom;
-            video.zoom = (video.zoom * factor).clamp(2., 2000.);
-            video.scroll = (time.seconds() - f64::from(x / video.zoom)).max(0.);
-        } else {
-            let sideways = if f32::from(delta.x).abs() > f32::from(delta.y).abs() {
-                f32::from(delta.x)
+        let (x, y) = video.local(event.position);
+        let layout = video.layout();
+        let tracks = x < HEADER || event.modifiers.alt;
+        if tracks && dy.abs() >= dx.abs() {
+            // Up and down through the pane under the pointer.
+            if y >= layout.audio.0 {
+                video.audio_scroll = (video.audio_scroll - dy).clamp(0., layout.audio_room);
             } else {
-                f32::from(delta.y)
-            };
+                video.video_scroll = (video.video_scroll + dy).clamp(0., layout.video_room);
+            }
+        } else if dx.abs() > dy.abs() || event.modifiers.shift {
+            let sideways = if dx.abs() > dy.abs() { dx } else { dy };
             video.scroll = (video.scroll - f64::from(sideways / video.zoom)).max(0.);
+        } else {
+            // Up zooms in around the pointer.
+            let factor = (1. + dy / 200.).clamp(0.5, 2.);
+            let at = (time.seconds() - video.scroll) as f32 * video.zoom;
+            video.zoom = (video.zoom * factor).clamp(2., 2000.);
+            video.scroll = (time.seconds() - f64::from(at / video.zoom)).max(0.);
         }
         cx.notify();
-    }
-
-    /// Presses on a speed line: a keyframe starts its drag; a double-click
-    /// on the line adds one there. Returns whether the line took the press.
-    fn speed_down(
-        &mut self,
-        event: &MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(clip) = self.speed_clip().filter(|c| !c.speed.is_normal()) else {
-            return false;
-        };
-        let Some(video) = &self.video else {
-            return false;
-        };
-        let bounds = *video.timeline.borrow();
-        let (x, y) = (
-            f32::from(event.position.x - bounds.origin.x),
-            f32::from(event.position.y - bounds.origin.y),
-        );
-        let Some((_, _, top, row)) = video.rows().into_iter().find(|(id, ..)| {
-            video
-                .doc
-                .track(*id)
-                .is_some_and(|t| t.clips.iter().any(|c| c.id == clip.id))
-        }) else {
-            return false;
-        };
-        let (left, right) = (self.timeline_x(clip.start), self.timeline_x(clip.end()));
-        let boxed = (left, top + 3., right - left, row - 6.);
-        if let Some(index) = self.speed_key_at(&clip, boxed, x, y) {
-            let time = self.timeline_time(event.position);
-            let Some(video) = &mut self.video else {
-                return false;
-            };
-            video.key = Some((clip.id, index));
-            video.drag = Some(Drag {
-                base: video.doc.clone(),
-                kind: DragKind::Key {
-                    clip: clip.id,
-                    index,
-                },
-                from: (time.seconds(), f32::from(event.position.y)),
-                command: None,
-                started: Instant::now(),
-            });
-            self.sync_key_fields(window, cx);
-            cx.notify();
-            return true;
-        }
-        if event.click_count == 2 && x >= left && x <= right && y >= top && y <= top + row {
-            let time = self.timeline_time(event.position);
-            self.add_speed_key_at(time, window, cx);
-            return true;
-        }
-        false
-    }
-
-    /// The speed command a keyframe drag to `position` makes.
-    fn key_drag(
-        &self,
-        clip: u64,
-        index: usize,
-        time: Time,
-        position: Point<Pixels>,
-    ) -> Option<Command> {
-        let video = self.video.as_ref()?;
-        let drag = video.drag.as_ref()?;
-        let base = drag.base.clip(clip)?.1.clone();
-        let bounds = *video.timeline.borrow();
-        let (_, _, top, row) = video.rows_of(&drag.base).into_iter().find(|(id, ..)| {
-            drag.base
-                .track(*id)
-                .is_some_and(|t| t.clips.iter().any(|c| c.id == clip))
-        })?;
-        let y = f32::from(position.y - bounds.origin.y);
-        let speed = self.dragged_speed(&base, index, drag.base.snap(time), y, (top + 3., row - 6.));
-        Some(Command::SetSpeed { clip, speed })
-    }
-
-    /// How many rows up from window height `from` to `to`, counting the
-    /// rows between them as they are drawn.
-    fn rows_between(&self, from: f32, to: f32) -> i32 {
-        let Some(video) = &self.video else {
-            return 0;
-        };
-        let top = f32::from(video.timeline.borrow().origin.y);
-        let rows = video.rows();
-        let index = |y: f32| -> f32 {
-            let y = y - top;
-            let mut index = 0.;
-            for (_, _, row_top, height) in &rows {
-                if y >= row_top + height {
-                    index += 1.;
-                } else {
-                    return index + ((y - row_top) / height).max(0.);
-                }
-            }
-            index + (y - rows.last().map_or(RULER, |r| r.2 + r.3)) / VIDEO_ROW
-        };
-        (index(from) - index(to)).round() as i32
     }
 
     /// Moves the playhead to the next (or previous) cut on any track.
@@ -543,282 +453,4 @@ impl Workspace {
         }
         cx.notify();
     }
-
-    pub fn timeline(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(video) = &self.video else {
-            return div().into_any_element();
-        };
-        let doc = &video.doc;
-        let rows = video.rows();
-        // Up to most of the window's height; taller tracks scroll.
-        let height = video.content_height().min(timeline_cap(window));
-        let bounds = video.timeline.clone();
-        let width = f32::from(bounds.borrow().size.width).max(400.);
-        let visible = (
-            video.scroll,
-            video.scroll + f64::from((width - HEADER) / video.zoom),
-        );
-        let mut layer = div()
-            .id("timeline")
-            .relative()
-            .w_full()
-            .h(px(height))
-            .overflow_hidden()
-            .bg(rgb(BACKGROUND))
-            .child(
-                canvas(move |b, _, _| *bounds.borrow_mut() = b, |_, _, _, _| {})
-                    .absolute()
-                    .size_full(),
-            );
-        let mut lines = Vec::new();
-        for (track_id, kind, top, row) in &rows {
-            let Some(track) = doc.track(*track_id) else {
-                continue;
-            };
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(*top))
-                    .w_full()
-                    .h(px(*row))
-                    .border_b_1()
-                    .border_color(rgb(BORDER)),
-            );
-            for clip in track
-                .clips
-                .iter()
-                .filter(|c| c.end().seconds() >= visible.0 && c.start.seconds() <= visible.1)
-            {
-                let left = self.timeline_x(clip.start).max(HEADER);
-                let right = self.timeline_x(clip.end());
-                let selected = video.selected.contains(&clip.id);
-                let fill = match (kind, clip.enabled) {
-                    (_, false) => 0x262626,
-                    (TrackKind::Video, _) => 0x36404f,
-                    (TrackKind::Audio, _) => 0x34473d,
-                };
-                layer = layer.child(
-                    div()
-                        .absolute()
-                        .left(px(left))
-                        .top(px(top + 3.))
-                        .w(px((right - left).max(2.)))
-                        .h(px(row - 6.))
-                        .rounded(px(4.))
-                        .bg(rgb(fill))
-                        .border_1()
-                        .border_color(rgb(if selected { 0xececec } else { 0x4a4a4a }))
-                        .px_1p5()
-                        .py_1()
-                        .overflow_hidden()
-                        .text_xs()
-                        .text_color(rgb(TEXT))
-                        .flex()
-                        .gap_1p5()
-                        .children(self.clip_picture(clip).map(|path| {
-                            img(path)
-                                .h_full()
-                                .flex_none()
-                                .rounded_sm()
-                                .object_fit(ObjectFit::Cover)
-                                .w(px(((row - 14.) * 16. / 9.).min(right - left - 12.).max(0.)))
-                        }))
-                        .child(div().truncate().child(clip.name.clone())),
-                );
-                if let Some(waveform) = self.clip_waveform(clip, (left, top + 3., right, row - 6.))
-                {
-                    lines.push(waveform);
-                }
-                let key = video.key.filter(|(id, _)| *id == clip.id).map(|(_, i)| i);
-                if let Some(line) =
-                    self.speed_line(clip, (left, top + 3., right - left, row - 6.), key)
-                {
-                    lines.push(line);
-                }
-            }
-            let name = track.name.clone();
-            let (muted, locked) = (track.muted, track.locked);
-            let id = *track_id;
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(*top))
-                    .w(px(HEADER))
-                    .h(px(*row))
-                    .bg(rgb(SIDEBAR))
-                    .border_r_1()
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .text_xs()
-                    .child(div().w(px(22.)).text_color(rgb(MUTED)).child(name))
-                    .child(toggle(
-                        ("mute", id),
-                        match (kind, muted) {
-                            (TrackKind::Video, false) => {
-                                gpui_component::Icon::new(gpui_component::IconName::Eye)
-                            }
-                            (TrackKind::Video, true) => {
-                                gpui_component::Icon::new(gpui_component::IconName::EyeOff)
-                            }
-                            (_, false) => crate::icons::icon("volume"),
-                            (_, true) => crate::icons::icon("volume-off"),
-                        },
-                        !muted,
-                        cx,
-                        move |this, window, cx| {
-                            this.video_commands(
-                                vec![Command::SetTrack {
-                                    track: id,
-                                    name: None,
-                                    muted: Some(!muted),
-                                    locked: None,
-                                }],
-                                window,
-                                cx,
-                            );
-                        },
-                    ))
-                    .child(toggle(
-                        ("lock", id),
-                        crate::icons::icon(if locked { "lock" } else { "lock-open" }),
-                        locked,
-                        cx,
-                        move |this, window, cx| {
-                            this.video_commands(
-                                vec![Command::SetTrack {
-                                    track: id,
-                                    name: None,
-                                    muted: None,
-                                    locked: Some(!locked),
-                                }],
-                                window,
-                                cx,
-                            );
-                        },
-                    )),
-            );
-        }
-        // The line under each header drags its row taller or shorter.
-        for (track, _, top, row) in &rows {
-            layer = layer.child(
-                div()
-                    .id(("row-edge", *track))
-                    .absolute()
-                    .left_0()
-                    .top(px(top + row - 4.))
-                    .w(px(HEADER))
-                    .h(px(8.))
-                    .cursor(CursorStyle::ResizeRow),
-            );
-        }
-        // Over the rows, which scroll under it.
-        layer = layer.children(lines).child(self.ruler(width, visible));
-        let playhead = self.timeline_x(video.monitor.now());
-        if playhead >= HEADER {
-            layer = layer.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(playhead))
-                    .w(px(1.5))
-                    .bg(rgb(0xff5a5a)),
-            );
-        }
-        layer
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    this.timeline_down(event, window, cx)
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                this.timeline_move(event, window, cx)
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.timeline_release(window, cx)),
-            )
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
-                this.timeline_wheel(event, window, cx)
-            }))
-            .on_drop(cx.listener(
-                |this, media: &crate::video_sidebar::DraggedMedia, window, cx| {
-                    this.drop_media(media.0, window.mouse_position(), window, cx)
-                },
-            ))
-            .into_any_element()
-    }
-
-    fn ruler(&self, width: f32, (from, to): (f64, f64)) -> Div {
-        let video = self.video.as_ref().expect("video");
-        // A label every 80 points or more, on a round number of seconds.
-        let step = [
-            0.1, 0.25, 0.5, 1., 2., 5., 10., 15., 30., 60., 120., 300., 600.,
-        ]
-        .into_iter()
-        .find(|step| step * f64::from(video.zoom) >= 80.)
-        .unwrap_or(1200.);
-        let mut ruler = div()
-            .absolute()
-            .left_0()
-            .top_0()
-            .w(px(width))
-            .h(px(RULER))
-            .bg(rgb(SIDEBAR))
-            .border_b_1()
-            .border_color(rgb(BORDER));
-        // Ticks fall on whole timecode frames, so 59.94 fps labels read
-        // 00:00:01:00 rather than 00:00:00:59.
-        let rate = video.doc.rate;
-        let per = ((step * f64::from(rate.nominal())).round() as i64).max(1);
-        let mut frame = (rate.frame_at(Time::from_seconds(from)) / per) * per;
-        while rate.time_of(frame).seconds() <= to {
-            let time = rate.time_of(frame);
-            let x = self.timeline_x(time);
-            if x >= HEADER {
-                ruler = ruler.child(
-                    div()
-                        .absolute()
-                        .left(px(x))
-                        .top(px(4.))
-                        .pl_1()
-                        .border_l_1()
-                        .border_color(rgb(FAINT))
-                        .text_xs()
-                        .text_color(rgb(FAINT))
-                        .child(time.timecode(rate)),
-                );
-            }
-            frame += per;
-        }
-        ruler
-    }
-}
-
-fn toggle(
-    id: (&'static str, u64),
-    icon: gpui_component::Icon,
-    on: bool,
-    cx: &mut Context<Workspace>,
-    act: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(SharedString::from(format!("{}-{}", id.0, id.1)))
-        .size(px(18.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_sm()
-        .text_color(rgb(if on { TEXT } else { FAINT }))
-        .hover(|el| el.bg(rgb(HOVER)))
-        .child(icon.size(px(12.)))
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(cx.listener(move |this, _, window, cx| act(this, window, cx)))
 }

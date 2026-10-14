@@ -80,7 +80,50 @@ pub struct Drag {
     pub from: (f64, f32),
     /// The command the drag makes so far.
     pub command: Option<Command>,
+    /// Commands applied first, such as keeping a speed as the keyframes of
+    /// the view being edited.
+    pub prefix: Vec<Command>,
+    /// A keyframe drag starts from this speed (with any keyframe it added).
+    pub start: Option<spectrum_video::Speed>,
+    /// The clip pressed: a click on one clip of a larger selection selects
+    /// just it when no drag follows.
+    pub clicked: Option<u64>,
     pub started: Instant,
+}
+
+impl Drag {
+    pub fn new(base: Video, kind: DragKind, from: (f64, f32)) -> Self {
+        Self {
+            base,
+            kind,
+            from,
+            command: None,
+            prefix: Vec::new(),
+            start: None,
+            clicked: None,
+            started: Instant::now(),
+        }
+    }
+
+    /// Every command the drag makes, in order.
+    pub fn commands(&self) -> Vec<Command> {
+        let mut commands = self.prefix.clone();
+        commands.extend(self.command.clone());
+        commands
+    }
+}
+
+/// What a right-click was on, for the menu it opens.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum MenuTarget {
+    #[default]
+    Timeline,
+    Clip(u64),
+    Key {
+        clip: u64,
+        index: usize,
+    },
+    Track(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -109,6 +152,15 @@ pub enum DragKind {
     /// A track's row, from the height it had.
     Resize {
         track: u64,
+        kind: spectrum_video::TrackKind,
+        height: f32,
+    },
+    /// The bar between video and audio, from the share video had.
+    Divider {
+        share: f32,
+    },
+    /// The grip above the ruler, from the timeline's height.
+    Panel {
         height: f32,
     },
 }
@@ -145,40 +197,38 @@ pub struct VideoEditor {
     pub media: Option<AssetId>,
     /// Rows dragged taller or shorter, by track, for this session.
     pub heights: std::collections::HashMap<u64, f32>,
-    /// How far the rows are scrolled up under the ruler.
-    pub scroll_y: f32,
-    pub keys: crate::video_speed::KeyFields,
+    /// How far the video tracks are scrolled up, and the audio down.
+    pub video_scroll: f32,
+    pub audio_scroll: f32,
+    /// The share of the tracks' room video takes, once the divider moves.
+    pub split: Option<f32>,
+    /// How tall the timeline is, kept between launches.
+    pub panel: f32,
+    /// The pointer over the timeline, for the razor's mark.
+    pub hover: Option<Point<Pixels>>,
+    /// Whether speed shows as velocity or as a time remap; either view
+    /// shows the same timing.
+    pub speed_view: spectrum_video::SpeedForm,
+    /// What the last right-click was on.
+    pub menu: MenuTarget,
+    /// Stopping returns the playhead to where play began, and from where.
+    pub return_to_start: bool,
+    pub played_from: Option<Time>,
+    /// In and Out, which bound a preview render (and later, exports).
+    pub in_point: Option<Time>,
+    pub out_point: Option<Time>,
+    /// Frames rendered ahead, played from memory.
+    pub preview: std::sync::Arc<crate::video_preview::Preview>,
+    pub strip: crate::video_preview::Strip,
+    pub keys: crate::video_speed_panel::KeyFields,
+    /// The Media tab's search.
+    pub media_query: Entity<gpui_component::input::InputState>,
     pub opacity: Entity<gpui_component::slider::SliderState>,
     pub volume: Entity<gpui_component::slider::SliderState>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl VideoEditor {
-    /// The timeline's rows, as drawn.
-    pub fn rows(&self) -> Vec<(u64, spectrum_video::TrackKind, f32, f32)> {
-        self.rows_of(&self.doc)
-    }
-
-    /// `doc`'s rows, as drawn: at the heights dragged, scrolled.
-    pub fn rows_of(
-        &self,
-        doc: &spectrum_video::Video,
-    ) -> Vec<(u64, spectrum_video::TrackKind, f32, f32)> {
-        let mut rows = crate::video_timeline::rows(doc, &self.heights);
-        for row in &mut rows {
-            row.2 -= self.scroll_y;
-        }
-        rows
-    }
-
-    /// The height of every row, the ruler, and room below.
-    pub fn content_height(&self) -> f32 {
-        let rows = crate::video_timeline::rows(&self.doc, &self.heights);
-        rows.last()
-            .map_or(crate::video_timeline::RULER, |(_, _, y, h)| y + h)
-            + 24.
-    }
-
     /// Saves are done and nothing waits.
     pub fn idle(&self) -> bool {
         !self.saving && self.queue.is_empty() && !self.save_waiting
@@ -213,10 +263,12 @@ impl Workspace {
         };
         let root = store.root.clone();
         let size = self.player_size(window);
+        let preview = std::sync::Arc::new(crate::video_preview::Preview::default());
         let pictures = {
-            let (root, doc) = (root.clone(), doc.clone());
+            let (root, doc, preview) = (root.clone(), doc.clone(), preview.clone());
             player_decode::start_with(move || {
-                Ok(Box::new(ProgramPictures::open(root, doc)?) as Box<dyn player_decode::Pictures>)
+                Ok(Box::new(ProgramPictures::open(root, doc, preview)?)
+                    as Box<dyn player_decode::Pictures>)
             })
         };
         let (requests, frames) = match pictures {
@@ -247,7 +299,15 @@ impl Workspace {
         let opacity = crate::controls::in_sidebar(crate::workspace::slider(cx, 0., 100., 1., 100.));
         let volume = crate::controls::in_sidebar(crate::workspace::slider(cx, -60., 12., 0.5, 0.));
         use gpui_component::slider::SliderEvent;
+        let media_query = cx.new(|cx| {
+            gpui_component::input::InputState::new(window, cx).placeholder("Search media")
+        });
         let subscriptions = vec![
+            cx.subscribe_in(
+                &media_query,
+                window,
+                |_, _, _: &gpui_component::input::InputEvent, _, cx| cx.notify(),
+            ),
             cx.subscribe_in(
                 &opacity,
                 window,
@@ -314,8 +374,25 @@ impl Workspace {
             key: None,
             media: None,
             heights: Default::default(),
-            scroll_y: 0.,
-            keys: crate::video_speed::KeyFields::new(window, cx),
+            video_scroll: 0.,
+            audio_scroll: 0.,
+            split: None,
+            panel: crate::prefs::get("timeline_height")
+                .and_then(|v| v.as_f64())
+                .map_or(crate::video_layout::PANEL, |h| h as f32),
+            hover: None,
+            speed_view: spectrum_video::SpeedForm::Velocity,
+            menu: MenuTarget::Timeline,
+            return_to_start: crate::prefs::get("return_to_start")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            played_from: None,
+            in_point: None,
+            out_point: None,
+            preview,
+            strip: Default::default(),
+            keys: crate::video_speed_panel::KeyFields::new(window, cx),
+            media_query,
             opacity,
             volume,
             _subscriptions: subscriptions,
@@ -551,5 +628,12 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+}
+
+impl Drop for VideoEditor {
+    fn drop(&mut self) {
+        // A render for a closed video is wasted work.
+        self.preview.cancel();
     }
 }

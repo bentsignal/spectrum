@@ -135,7 +135,8 @@ lowest free track. A clip's speed is velocity keyframes or a time remap
 (`speed.rs`, integrated exactly per curve), anchored by an origin so trims
 and cuts never move its frames; footage that runs out repeats. `Freeze`
 holds a frame and plays on; `Reverse` mirrors the speed about the clip's
-last frame, so it plays the same frames backward. `render`
+last frame, so it plays the same frames backward; `ConvertSpeed` keeps a
+clip's timing as the other form within a quarter frame. `render`
 composites a frame (top-down, stopping at the first opaque full-frame clip)
 and mixes sound through providers; `spectrum-assets::video_render` supplies
 them from playback copies or originals. Slow motion between source frames
@@ -175,9 +176,15 @@ nothing is waiting to save. The desktop executable is also the CLI: started as
 
 The video editor (`video_*.rs`) applies each timeline edit on screen at once
 and saves batches after a pause, as the canvas does; its program monitor is
-the same player fed by the video's composited frames and mixed sound. Clips
-show their media's thumbnail and, for sound, a waveform worked out once per
-track in the background (`video_clips.rs`). The
+the same player fed by the video's composited frames and mixed sound. Tools
+and commands are in the tool button, Command+P (`video_menu.rs`), and the
+timeline's right-click menu; tabs are Clip, Speed, Media, Export, History.
+`video_layout.rs` lays out the grip, ruler, video tracks (anchored at the
+divider), and audio tracks, each pane scrolling and clipped. Speed shows as
+velocity or time remap from one timing (`video_speed.rs`); editing in the
+other view converts first. Preview renders (`video_preview.rs`) keep JPEG
+frames keyed by what makes each frame, so an edit loses only its frames.
+Clip thumbnails and waveforms wait while the program plays. The
 player (`player*.rs`) shows footage and audio. A picture thread decodes
 from the playback copy (ahead of the playhead while playing, newest request
 first while scrubbing), and a paused frame then redraws from the original. The

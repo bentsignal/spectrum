@@ -66,6 +66,25 @@ impl Workspace {
             store.copies.checked.insert(id);
             store.copies.queue.push_back(id);
         }
+        // What is open plays first: the footage in the player, then the
+        // open video's.
+        let mut wanted: Vec<AssetId> = self.player.iter().map(|p| p.id).collect();
+        if let Some(video) = &self.video {
+            wanted.extend(
+                video
+                    .doc
+                    .tracks
+                    .iter()
+                    .flat_map(|t| t.clips.iter())
+                    .map(|c| c.source.asset()),
+            );
+        }
+        for id in wanted.into_iter().rev() {
+            if let Some(index) = store.copies.queue.iter().position(|q| *q == id) {
+                store.copies.queue.remove(index);
+                store.copies.queue.push_front(id);
+            }
+        }
         if store.copies.making.is_some() {
             return;
         }

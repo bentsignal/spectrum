@@ -24,6 +24,24 @@ pub struct PendingImport {
     pub token: u64,
     pub project: Option<spectrum_library::ProjectId>,
     pub names: Vec<SharedString>,
+    /// Each file's size; footage and audio count toward progress.
+    pub sizes: Vec<u64>,
+    /// Bytes of footage and audio copied so far, across the batch.
+    pub copied: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl PendingImport {
+    /// How much of file `index` is in, from 0 to 1, when it is footage or
+    /// audio (which copy in order, after the batch's images are read).
+    pub fn share(&self, index: usize) -> Option<f32> {
+        let size = *self.sizes.get(index)?;
+        if size == 0 {
+            return None;
+        }
+        let before: u64 = self.sizes[..index].iter().sum();
+        let copied = self.copied.load(std::sync::atomic::Ordering::Relaxed);
+        Some((copied.saturating_sub(before) as f32 / size as f32).clamp(0., 1.))
+    }
 }
 
 impl Workspace {
@@ -293,15 +311,49 @@ impl Workspace {
                     .into()
             })
             .collect();
+        // Footage and audio are copied in, so their sizes measure progress.
+        let sizes = files
+            .iter()
+            .map(|f| {
+                if spectrum_media::is_media_file(f) {
+                    std::fs::metadata(f).map_or(0, |m| m.len())
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let copied = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         self.pending_imports.push(PendingImport {
             token,
             project,
             names,
+            sizes,
+            copied: copied.clone(),
         });
         cx.notify();
-        let import = cx
-            .background_executor()
-            .spawn(async move { Service::open(&root)?.import_into(files, project) });
+        let import = cx.background_executor().spawn(async move {
+            Service::open(&root)?.import_with_progress(files, project, &mut |bytes| {
+                copied.store(bytes, std::sync::atomic::Ordering::Relaxed)
+            })
+        });
+        // Redraw now and then so the cards' progress moves.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                let going = this
+                    .update(cx, |this, cx| {
+                        cx.notify();
+                        this.pending_imports.iter().any(|p| p.token == token)
+                    })
+                    .unwrap_or(false);
+                if !going {
+                    break;
+                }
+            }
+        })
+        .detach();
         cx.spawn_in(window, async move |this, cx| {
             let result = import.await;
             this.update_in(cx, |this, window, cx| {

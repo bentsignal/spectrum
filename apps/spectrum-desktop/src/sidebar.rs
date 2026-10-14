@@ -69,7 +69,8 @@ impl Workspace {
             }
             (_, Mode::Info) => self.info_sidebar(cx).into_any_element(),
             (_, Mode::History) => self.history_sidebar(cx).into_any_element(),
-            (_, Mode::Edit) => self.video_edit_sidebar(cx).into_any_element(),
+            (_, Mode::Edit) => self.video_clip_sidebar(cx).into_any_element(),
+            (_, Mode::Speed) => self.video_speed_sidebar(cx).into_any_element(),
             (_, Mode::Media) => self.video_media_sidebar(cx).into_any_element(),
             (_, Mode::Export) => self.video_export_sidebar(cx).into_any_element(),
             _ => self.layers_sidebar(cx).into_any_element(),
@@ -85,6 +86,15 @@ impl Workspace {
                 .flex_col()
                 .gap_5()
                 .child(self.tool_button(cx))
+                .child(content)
+                .into_any_element()
+        } else if matches!(self.open, Open::Video(_)) && self.place != Place::Home {
+            // So is every video tab.
+            div()
+                .flex()
+                .flex_col()
+                .gap_5()
+                .child(self.video_tool_button(cx))
                 .child(content)
                 .into_any_element()
         } else {

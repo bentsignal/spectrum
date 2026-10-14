@@ -71,6 +71,10 @@ pub(super) enum Video {
         /// Play the clip's frames backward, after any other change.
         #[arg(long)]
         reverse: bool,
+        /// Keep the clip's timing as velocity or remap keyframes (every
+        /// frame stays where it is).
+        #[arg(long = "as")]
+        form: Option<String>,
         /// How each keyframe moves to the next: smooth, linear, fast, slow,
         /// sharp, or hold.
         #[arg(long, default_value = "smooth")]
@@ -264,6 +268,7 @@ pub(super) fn run(service: &mut Service, command: Video) -> Result<serde_json::V
             freeze,
             hold,
             reverse,
+            form,
             curve,
             interpolate,
             sound,
@@ -340,6 +345,14 @@ pub(super) fn run(service: &mut Service, command: Video) -> Result<serde_json::V
             if reverse {
                 commands.push(Command::Reverse { clip });
             }
+            if let Some(form) = form {
+                let to = match form.as_str() {
+                    "velocity" => spectrum_video::SpeedForm::Velocity,
+                    "remap" => spectrum_video::SpeedForm::Remap,
+                    other => bail!("{other} is not velocity or remap"),
+                };
+                commands.push(Command::ConvertSpeed { clip, to });
+            }
             let interpolation = interpolate
                 .map(|text| match text.as_str() {
                     "off" => Ok(Interpolation::Off),
@@ -399,12 +412,13 @@ fn schema() -> serde_json::Value {
                 {"at": 0, "source": 1411200000, "curve": "hold"}]}},
             {"command": "freeze", "clip": 3, "at": 705600000, "length": 705600000},
             {"command": "reverse", "clip": 3},
+            {"command": "convert_speed", "clip": 3, "to": "remap"},
             {"command": "set_track", "track": 1, "muted": true},
             {"command": "add_track", "kind": "video"},
             {"command": "undo"}
         ],
         "commands": ["rename", "set_format", "add_track", "remove_track", "set_track", "add_clip",
             "move", "trim", "roll", "slip", "slide", "split", "delete", "link", "unlink",
-            "set_clip", "set_speed", "freeze", "reverse", "undo", "redo"],
+            "set_clip", "set_speed", "freeze", "reverse", "convert_speed", "undo", "redo"],
     })
 }

@@ -32,14 +32,21 @@ pub fn fitted(video: &Video, long: u32) -> (u32, u32) {
 pub struct ProgramPictures {
     video: Video,
     sources: VideoSources<Box<Service>>,
+    /// Frames rendered ahead, played as they are.
+    preview: std::sync::Arc<crate::video_preview::Preview>,
 }
 
 impl ProgramPictures {
-    pub fn open(root: PathBuf, video: Video) -> anyhow::Result<Self> {
+    pub fn open(
+        root: PathBuf,
+        video: Video,
+        preview: std::sync::Arc<crate::video_preview::Preview>,
+    ) -> anyhow::Result<Self> {
         let service = Box::new(Service::open(&root)?);
         Ok(Self {
             video,
             sources: VideoSources::new(service, true, true),
+            preview,
         })
     }
 }
@@ -56,6 +63,12 @@ impl Pictures for ProgramPictures {
     fn frame(&mut self, time: Time, size: u32, still: bool) -> anyhow::Result<(RgbaImage, i64)> {
         let index = self.video.rate.frame_at(time);
         let time = self.video.rate.time_of(index);
+        let fit = fitted(&self.video, size);
+        let key = crate::video_preview::frame_key(&self.video, fit, index);
+        if let Some(rendered) = self.preview.get(key) {
+            crate::perf::record("preview_frame", std::time::Duration::ZERO);
+            return Ok((rendered, index));
+        }
         // Rested frames are made as carefully as an export.
         let quality = if still {
             render::Quality::Final

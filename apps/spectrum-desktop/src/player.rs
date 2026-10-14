@@ -567,6 +567,21 @@ impl Workspace {
     }
 
     pub fn toggle_play(&mut self, cx: &mut Context<Self>) -> bool {
+        // In the video editor, stopping can return to where play began, as
+        // After Effects and Vegas do.
+        if let (Open::Video(_), Some(video)) = (self.open, &mut self.video) {
+            if video.monitor.playing() {
+                video.monitor.play(0);
+                if let Some(from) = video.played_from.take().filter(|_| video.return_to_start) {
+                    video.monitor.show(from);
+                }
+            } else {
+                video.played_from = Some(video.monitor.now());
+                video.monitor.play(1);
+            }
+            cx.notify();
+            return true;
+        }
         self.with_player(cx, |player| {
             let speed = if player.playing() { 0 } else { 1 };
             player.play(speed);
@@ -619,11 +634,36 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let video = matches!(self.open, Open::Video(_));
+        if video && key.modifiers.secondary() && !key.modifiers.shift && key.key == "l" {
+            self.toggle_link(window, cx);
+            return true;
+        }
+        // Option-X clears In and Out, as in Premiere.
+        if video && key.modifiers.alt && !key.modifiers.secondary() && key.key == "x" {
+            self.clear_in_out(cx);
+            return true;
+        }
         let plain = !key.modifiers.platform && !key.modifiers.control && !key.modifiers.alt;
         if !plain || !matches!(self.open, Open::Media(_) | Open::Video(_)) {
             return false;
         }
-        if matches!(self.open, Open::Video(_)) {
+        if video && key.modifiers.shift && key.key == "e" {
+            self.toggle_enabled(window, cx);
+            return true;
+        }
+        if video && !key.modifiers.shift {
+            match key.key.as_str() {
+                "i" => self.set_in_point(cx),
+                "o" => self.set_out_point(cx),
+                "enter" => self.render_video_preview(cx),
+                _ => {}
+            }
+            if matches!(key.key.as_str(), "i" | "o" | "enter") {
+                return true;
+            }
+        }
+        if video {
             if let Some(tool) = crate::video_state::Tool::ALL
                 .into_iter()
                 .find(|tool| tool.key() == key.key)
