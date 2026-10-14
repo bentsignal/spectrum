@@ -78,9 +78,11 @@ Decided 2026-10-13, designed as one piece ([plan](../tasks/video-and-animation.m
   keyframes is animated and plays in a video. Edit (tracks) and Animate
   (property keyframes and graph) are two views of one timeline: animate a
   clip or a canvas's layers, go back, and see it.
-- **Speed** per clip is either velocity keyframes (Sony Vegas) or a time
-  remap (After Effects), not both. Neither changes the clip's length on the
-  timeline: running out of footage repeats it, as Vegas does. Reverse and
+- **Speed** per clip shows as velocity (Sony Vegas) or as a time remap
+  (After Effects): two views of one timing (user, 2026-10-13). Switching
+  views never changes or loses work; editing in the other view converts
+  the keyframes, keeping every frame. Speed never changes the clip's length
+  on the timeline: running out of footage repeats it, as Vegas does. Reverse and
   freeze are required. Slowing below the project's frame rate offers
   easy, high-quality frame interpolation. Audio follows the speed by
   default, with a one-click switch to leave it unchanged.

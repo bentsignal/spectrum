@@ -143,6 +143,12 @@ pub enum Command {
     Reverse {
         clip: u64,
     },
+    /// Keeps the clip's timing as velocity or time remap keyframes; every
+    /// frame stays where it was (within a quarter frame).
+    ConvertSpeed {
+        clip: u64,
+        to: crate::SpeedForm,
+    },
     Undo,
     Redo,
 }
@@ -439,6 +445,24 @@ fn apply_to(video: &mut Video, command: Command) -> Result<CommandOutput> {
                 }
             }
             output("reverse", "Reversed a clip")
+        }
+        Command::ConvertSpeed { clip, to } => {
+            // A quarter frame: every frame shows the same moment.
+            let tolerance = video.rate.frame_duration().seconds() / 4.;
+            let mut exact = true;
+            for id in video.with_links(&[clip]) {
+                let clip = video.clip_mut(id).context("no such clip")?;
+                let converted = clip.converted(to, tolerance);
+                exact &= converted.exact;
+                clip.speed = converted.speed.checked()?;
+                clip.source_in = converted.source_in;
+            }
+            let message = if exact {
+                "Kept the clip's timing as other keyframes"
+            } else {
+                "Kept the clip's timing; a jump or a speed past 1000% became the nearest velocity"
+            };
+            output("convert_speed", message)
         }
         Command::Undo | Command::Redo => bail!("history is stepped by the workspace"),
     })

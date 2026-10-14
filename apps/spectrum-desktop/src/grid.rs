@@ -635,23 +635,50 @@ impl Workspace {
                 p.names
                     .iter()
                     .enumerate()
-                    .map(move |(i, name)| (p.token, i, name))
+                    .map(move |(i, name)| (p.token, i, name, p.share(i)))
             })
-            .map(|(token, index, name)| {
+            .map(|(token, index, name, share)| {
+                let status = match share {
+                    Some(share) => format!("Importing… {:.0}%", share * 100.),
+                    None => "Importing…".into(),
+                };
+                let bar = share.map(|share| {
+                    div()
+                        .absolute()
+                        .left(px(10.))
+                        .right(px(10.))
+                        .bottom(px(10.))
+                        .h(px(3.))
+                        .rounded_full()
+                        .bg(rgb(BORDER))
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded_full()
+                                .bg(rgb(TEXT))
+                                .w(relative(share)),
+                        )
+                });
                 div()
                     .id(SharedString::from(format!("pending-{token}-{index}")))
                     .w(px(width + 8.))
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(div().p(px(4.)).child(frame(None, width, width * 0.75)))
+                    .child(
+                        div()
+                            .p(px(4.))
+                            .relative()
+                            .child(frame(None, width, width * 0.75))
+                            .children(bar),
+                    )
                     .child(
                         div()
                             .px_1()
                             .flex()
                             .flex_col()
                             .child(div().text_sm().truncate().child(name.clone()))
-                            .child(div().text_xs().text_color(rgb(FAINT)).child("Importing…")),
+                            .child(div().text_xs().text_color(rgb(FAINT)).child(status)),
                     )
                     .into_any_element()
             })

@@ -7,8 +7,8 @@ use super::{
     scenarios::{This, key, ms, outcome, pause, read, until},
 };
 use crate::{
+    video_layout::HEADER,
     video_state::Tool,
-    video_timeline::HEADER,
     workspace::{Open, Workspace},
 };
 use anyhow::{Context as _, Result};
@@ -80,17 +80,17 @@ pub(super) fn make(
     Ok(edit.id)
 }
 
-fn settled(ws: &Workspace) -> bool {
+pub(super) fn settled(ws: &Workspace) -> bool {
     ws.video.as_ref().is_some_and(|v| v.monitor.settled())
 }
 
-fn idle(ws: &Workspace) -> bool {
+pub(super) fn idle(ws: &Workspace) -> bool {
     ws.video
         .as_ref()
         .is_some_and(|v| v.idle() && v.drag.is_none() && v.monitor.settled())
 }
 
-fn doc(this: &This, cx: &mut AsyncWindowContext) -> Option<Video> {
+pub(super) fn doc(this: &This, cx: &mut AsyncWindowContext) -> Option<Video> {
     read(this, cx, |ws| ws.video.as_ref().map(|v| v.doc.clone())).flatten()
 }
 
@@ -237,17 +237,18 @@ pub(super) async fn speed(this: &This, cx: &mut AsyncWindowContext) -> Outcome {
 }
 
 /// Where a time on a track is in the window.
-fn spot(ws: &Workspace, track: u64, time: Time) -> Option<Point<Pixels>> {
+pub(super) fn spot(ws: &Workspace, track: u64, time: Time) -> Option<Point<Pixels>> {
     let video = ws.video.as_ref()?;
     let bounds = *video.timeline.borrow();
-    let (_, _, top, height) = video.rows().into_iter().find(|(id, ..)| *id == track)?;
+    let row = video.layout().row(track)?;
+    let (top, height) = (row.top, row.height);
     let x = HEADER + ((time.seconds() - video.scroll) as f32) * video.zoom;
     Some(bounds.origin + point(px(x), px(top + height / 2.)))
 }
 
 /// Presses on the timeline at `from`, moves to `to` over `steps` moves at
 /// 60 a second, and lets go, through the timeline's own handlers.
-async fn drag(
+pub(super) async fn drag(
     this: &This,
     cx: &mut AsyncWindowContext,
     from: Point<Pixels>,
@@ -379,14 +380,21 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
     }
     // The edits a key or a button makes.
     type Button = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
-    let keyed: [(&str, &str, Option<Button>); 7] = [
+    let keyed: [(&str, &str, Option<Button>); 10] = [
         ("Cut at playhead", "s", None),
         ("Delete", "delete", None),
         ("Ripple delete", "shift-delete", None),
         ("Insert media", ",", None),
         ("Overwrite media", ".", None),
+        ("Enable or disable", "shift-e", None),
+        ("Link or unlink", "secondary-l", None),
         ("Freeze frame", "", Some(Workspace::freeze_frame)),
         ("Reverse", "", Some(Workspace::reverse_clip)),
+        (
+            "Keyframe added in the other view",
+            "",
+            Some(super::video_views::key_in_remap_view),
+        ),
     ];
     for (name, keys, button) in keyed {
         let before = doc(this, cx)
@@ -446,52 +454,13 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
         }
     }
     restore(this, cx, &before).await;
-    // A row dragged taller by the line under its header: a view change, so
-    // the edit stays as it was.
-    let edge = read(this, cx, |ws| {
-        let video = ws.video.as_ref()?;
-        let bounds = *video.timeline.borrow();
-        let (track, _, top, height) = video.rows().into_iter().next()?;
-        Some((
-            track,
-            height,
-            bounds.origin + point(px(HEADER / 2.), px(top + height)),
-        ))
-    })
-    .flatten();
-    match edge {
-        None => problems.push("Row height: no row".into()),
-        Some((track, height, from)) => {
-            drag(this, cx, from, from + point(px(0.), px(60.)), 10).await;
-            let (grown, same) = read(this, cx, |ws| {
-                let video = ws.video.as_ref()?;
-                let grown = video.heights.get(&track).copied().unwrap_or(height);
-                Some((grown, video.doc.tracks == before.tracks))
-            })
-            .flatten()
-            .unwrap_or((height, false));
-            if (grown - height - 60.).abs() > 1. {
-                problems.push(format!(
-                    "Row height: {height} became {grown}, not 60 taller"
-                ));
-            }
-            if !same {
-                problems.push("Row height: changed the edit".into());
-            }
-            this.update(cx, |ws, _| {
-                if let Some(video) = &mut ws.video {
-                    video.heights.clear();
-                }
-            })
-            .ok();
-        }
-    }
+    problems.extend(super::video_views::views(this, cx, video_id).await);
     let problem = (!problems.is_empty()).then(|| problems.join("; "));
     outcome("video_tools", vec![], problem)
 }
 
 /// Undoes a check's edit, so the next starts from the same video.
-async fn restore(this: &This, cx: &mut AsyncWindowContext, before: &Video) {
+pub(super) async fn restore(this: &This, cx: &mut AsyncWindowContext, before: &Video) {
     this.update_in(cx, |ws, window, _| ws.focus_handle.focus(window))
         .ok();
     if doc(this, cx).as_ref().map(|v| &v.tracks) != Some(&before.tracks) {
@@ -502,7 +471,7 @@ async fn restore(this: &This, cx: &mut AsyncWindowContext, before: &Video) {
 
 /// Waits for an edit to show and save, then checks it changed the video,
 /// matches what was saved, and undoes and redoes.
-async fn check(
+pub(super) async fn check(
     this: &This,
     cx: &mut AsyncWindowContext,
     video: AssetId,

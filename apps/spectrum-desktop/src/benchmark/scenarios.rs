@@ -152,6 +152,9 @@ pub(super) async fn run_all(
     if wanted("video_tools") {
         outcomes.push(super::video::tools(this, cx, fixtures.video).await);
     }
+    if wanted("video_preview") {
+        outcomes.push(super::video_views::preview(this, cx).await);
+    }
     if wanted("audio_play") {
         outcomes.push(super::footage::audio(this, cx, fixtures.motion, fixtures.song).await);
     }

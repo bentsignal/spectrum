@@ -1,6 +1,8 @@
-//! The video editor's sidebar modes. Edit: the timeline's tools and the
-//! selected clips. Media: the project's footage, audio, images, and
-//! canvases, added at the playhead. Export: writing the video out.
+//! The video editor's sidebar tabs, each about one thing, under the tool
+//! button. Clip: the selected clips' settings. Media: the project's
+//! footage, audio, images, and canvases, to search and add. Export: writing
+//! the video out. (Speed has its own file; actions are in Command+P and the
+//! timeline's right-click menu.)
 use crate::{
     controls::{chip, group, slider_row, toggle},
     theme::*,
@@ -11,6 +13,7 @@ use gpui::{prelude::*, *};
 use gpui_component::{
     Sizable,
     button::{Button, ButtonVariants},
+    input::Input,
 };
 use spectrum_library::{AssetId, AssetKind};
 use spectrum_media::{ExportSettings, VideoCodec};
@@ -51,40 +54,56 @@ impl Default for ExportChoice {
 }
 
 impl Workspace {
-    pub fn video_edit_sidebar(&self, cx: &mut Context<Self>) -> Div {
+    /// The current tool, at the top of every video tab; it and Command+P
+    /// list the tools and the editor's commands.
+    pub fn video_tool_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let tool = self.video.as_ref().map_or(Tool::Select, |v| v.tool);
+        div()
+            .id("video-tool")
+            .h(px(34.))
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_2p5()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(SURFACE))
+            .hover(|el| el.bg(rgb(HOVER)))
+            .child(key_cap(tool.key()))
+            .child(div().flex_1().text_sm().child(tool.label()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(FAINT))
+                    .child(crate::tools::SHORTCUT),
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.open_tools(window, cx)))
+    }
+
+    /// The Clip tab: the selected clips' settings.
+    pub fn video_clip_sidebar(&self, cx: &mut Context<Self>) -> Div {
         let Some(video) = &self.video else {
             return div();
         };
-        let tools = div()
-            .flex()
-            .flex_col()
-            .gap_0p5()
-            .children(Tool::ALL.map(|tool| {
-                let on = video.tool == tool;
-                div()
-                    .id(SharedString::from(format!("tool-{}", tool.key())))
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .flex()
-                    .justify_between()
-                    .text_sm()
-                    .when(on, |el| el.bg(rgb(SELECTED)))
-                    .hover(|el| el.bg(rgb(HOVER)))
-                    .child(tool.label())
-                    .child(
-                        div()
-                            .text_color(rgb(FAINT))
-                            .child(tool.key().to_uppercase()),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_video_tool(tool, cx)))
-            }));
         let snapping = video.snapping;
+        let tool = group("Timeline", None).child(
+            toggle("snapping", "Snap to edges and the playhead", snapping)
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_video_snapping(cx))),
+        );
         let selected: Vec<_> = video
             .selected
             .iter()
             .filter_map(|id| video.doc.clip(*id).map(|(t, c)| (t.kind, c)))
             .collect();
+        if selected.is_empty() {
+            return div().flex().flex_col().gap_7().child(tool).child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(FAINT))
+                    .child("Select a clip to see its settings. Right-click a clip, or press ⌘P, for what it can do."),
+            );
+        }
         let pictures = selected
             .iter()
             .filter(|(k, _)| *k == TrackKind::Video)
@@ -93,126 +112,133 @@ impl Workspace {
         let enabled = selected.iter().all(|(_, c)| c.enabled);
         let opacity = video.opacity.read(cx).value().start();
         let volume = video.volume.read(cx).value().start();
-        let actions = div()
-            .flex()
-            .flex_wrap()
-            .gap_2()
-            .child(action(
-                "split",
-                "Cut at playhead (S)",
-                cx,
-                |this, window, cx| this.split_at_playhead(window, cx),
-            ))
-            .child(action("delete", "Delete", cx, |this, window, cx| {
-                this.delete_video_clips(false, window, cx)
-            }))
-            .child(action("ripple", "Ripple delete", cx, |this, window, cx| {
-                this.delete_video_clips(true, window, cx)
-            }))
-            .child(action("link", "Link", cx, |this, window, cx| {
-                this.link_video_clips(true, window, cx)
-            }))
-            .child(action("unlink", "Unlink", cx, |this, window, cx| {
-                this.link_video_clips(false, window, cx)
-            }));
+        let rate = video.doc.rate;
+        let title = match selected.as_slice() {
+            [(_, clip)] => clip.name.clone(),
+            [(_, first), (_, second)] if first.link.is_some() && first.link == second.link => {
+                first.name.clone()
+            }
+            _ => format!("{} clips", selected.len()),
+        };
+        let first = selected[0].1;
+        let facts = format!(
+            "Starts {} · lasts {}",
+            first.start.timecode(rate),
+            first.duration.timecode(rate)
+        );
+        div().flex().flex_col().gap_7().child(tool).child(
+            group("Clip", None)
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_sm().truncate().child(title))
+                        .child(div().text_xs().text_color(rgb(FAINT)).child(facts)),
+                )
+                .child(
+                    toggle("enabled", "Enabled", enabled).on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_enabled(window, cx)),
+                    ),
+                )
+                .when(pictures > 0, |el| {
+                    el.child(slider_row(
+                        "Opacity",
+                        format!("{opacity:.0}%"),
+                        &video.opacity,
+                    ))
+                })
+                .when(sounds > 0, |el| {
+                    el.child(slider_row(
+                        "Volume",
+                        format!("{volume:+.1} dB"),
+                        &video.volume,
+                    ))
+                }),
+        )
+    }
+
+    /// The Media tab: the project's footage, audio, images, and canvases
+    /// as a grid to search, drag onto the timeline, or choose for , and .
+    pub fn video_media_sidebar(&self, cx: &mut Context<Self>) -> Div {
+        let (Ok(store), Some(video)) = (&self.store, &self.video) else {
+            return div();
+        };
+        let query = video.media_query.read(cx).value().to_lowercase();
+        let chosen = video.media;
+        let width = (crate::workspace::SIDEBAR_WIDTH - 32. - 10.) / 2.;
+        let tiles = self
+            .video_media(cx)
+            .into_iter()
+            .filter(|asset| query.is_empty() || asset.name.to_lowercase().contains(&query));
+        let tiles = tiles.map(|asset| {
+            let id = asset.id;
+            let name = asset.name.clone();
+            let detail = crate::grid::kind_label(asset.kind);
+            div()
+                .id(SharedString::from(format!("media-{id}")))
+                .w(px(width))
+                .p_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .rounded_md()
+                .when(chosen == Some(id), |el| el.bg(rgb(SELECTED)))
+                .hover(|el| el.bg(rgb(HOVER)))
+                .child(crate::grid::frame(
+                    store.thumbs.get(&id),
+                    width - 8.,
+                    (width - 8.) * 9. / 16.,
+                ))
+                .child(
+                    div()
+                        .px_0p5()
+                        .text_xs()
+                        .truncate()
+                        .child(asset.name.clone()),
+                )
+                .child(
+                    div()
+                        .px_0p5()
+                        .text_xs()
+                        .text_color(rgb(FAINT))
+                        .child(detail),
+                )
+                // Drag onto the timeline; a click chooses it for , (insert)
+                // and . (overwrite); a double-click adds it at the playhead.
+                .on_drag(DraggedMedia(id, name), |media, _, _, cx| {
+                    cx.new(|_| media.clone())
+                })
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    if let Some(video) = &mut this.video {
+                        video.media = Some(id);
+                    }
+                    if event.click_count() == 2 {
+                        this.add_to_timeline(id, Placement::Overwrite, window, cx);
+                    }
+                    cx.notify();
+                }))
+        });
         div()
             .flex()
             .flex_col()
-            .gap_7()
-            .child(group("Tools", None).gap_2().child(tools).child(
-                toggle("snapping", "Snap to edges and playhead", snapping).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        if let Some(video) = &mut this.video {
-                            video.snapping = !video.snapping;
-                        }
-                        cx.notify();
-                    },
-                )),
-            ))
+            .gap_3()
+            .child(Input::new(&video.media_query).small())
+            .child(div().flex().flex_wrap().gap(px(10.)).children(tiles))
             .child(
-                group("Clips", None)
-                    .gap_3()
-                    .child(actions)
-                    .when(!selected.is_empty(), |el| {
-                        el.child(toggle("enabled", "Enabled", enabled).on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.set_video_clips(
-                                    |id| Command::SetClip {
-                                        clip: id,
-                                        name: None,
-                                        enabled: Some(!enabled),
-                                        opacity: None,
-                                        gain_db: None,
-                                        interpolation: None,
-                                        sound_follows_speed: None,
-                                    },
-                                    window,
-                                    cx,
-                                )
-                            },
-                        )))
-                        .when(pictures > 0, |el| {
-                            el.child(slider_row(
-                                "Opacity",
-                                format!("{opacity:.0}%"),
-                                &video.opacity,
-                            ))
-                        })
-                        .when(sounds > 0, |el| {
-                            el.child(slider_row(
-                                "Volume",
-                                format!("{volume:+.1} dB"),
-                                &video.volume,
-                            ))
-                        })
-                    }),
-            )
-            .children(self.speed_section(cx))
-            .child(
-                group("Tracks", None).child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(action(
-                            "add-video",
-                            "Add video track",
-                            cx,
-                            |this, window, cx| {
-                                this.video_commands(
-                                    vec![Command::AddTrack {
-                                        kind: TrackKind::Video,
-                                    }],
-                                    window,
-                                    cx,
-                                )
-                            },
-                        ))
-                        .child(action(
-                            "add-audio",
-                            "Add audio track",
-                            cx,
-                            |this, window, cx| {
-                                this.video_commands(
-                                    vec![Command::AddTrack {
-                                        kind: TrackKind::Audio,
-                                    }],
-                                    window,
-                                    cx,
-                                )
-                            },
-                        )),
-                ),
+                div()
+                    .text_xs()
+                    .text_color(rgb(FAINT))
+                    .child("Drag onto a track, or choose one and press , to insert or . to overwrite at the playhead."),
             )
     }
 
-    pub fn video_media_sidebar(&self, cx: &mut Context<Self>) -> Div {
-        let Ok(store) = &self.store else {
-            return div();
+    /// The project's assets a video can use.
+    pub fn video_media(&self, _: &App) -> Vec<spectrum_library::Asset> {
+        let (Ok(store), Place::Project(project)) = (&self.store, self.place) else {
+            return Vec::new();
         };
-        let Place::Project(project) = self.place else {
-            return div();
-        };
-        let assets = store
+        store
             .service
             .library
             .project_assets(project)
@@ -223,78 +249,8 @@ impl Workspace {
                     asset.kind,
                     AssetKind::Footage | AssetKind::Audio | AssetKind::Image | AssetKind::Canvas
                 )
-            });
-        let chosen = self.video.as_ref().and_then(|v| v.media);
-        let rows = assets.map(|asset| {
-            let id = asset.id;
-            let name = asset.name.clone();
-            div()
-                .id(SharedString::from(format!("media-{id}")))
-                .when(chosen == Some(id), |el| el.bg(rgb(SELECTED)))
-                // Drag onto the timeline, or choose it for , (insert) and
-                // . (overwrite) at the playhead.
-                .on_drag(DraggedMedia(id, name), |media, _, _, cx| {
-                    cx.new(|_| media.clone())
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(video) = &mut this.video {
-                        video.media = Some(id);
-                    }
-                    cx.notify();
-                }))
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_1p5()
-                .rounded_md()
-                .hover(|el| el.bg(rgb(HOVER)))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().text_sm().truncate().child(asset.name.clone()))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(FAINT))
-                                .child(crate::grid::kind_label(asset.kind)),
-                        ),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("overwrite-{id}")))
-                        .ghost()
-                        .xsmall()
-                        .label("Add")
-                        .tooltip("Add at the playhead, over what is there (.)")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.add_to_timeline(id, Placement::Overwrite, window, cx)
-                        })),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("insert-{id}")))
-                        .ghost()
-                        .xsmall()
-                        .label("Insert")
-                        .tooltip("Insert at the playhead, pushing later clips along (,)")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.add_to_timeline(id, Placement::Insert, window, cx)
-                        })),
-                )
-        });
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(FAINT))
-                    .child("This project's footage, audio, images, and canvases."),
-            )
-            .children(rows)
+            })
+            .collect()
     }
 
     pub fn video_export_sidebar(&self, cx: &mut Context<Self>) -> Div {
@@ -414,22 +370,6 @@ impl Workspace {
         }
     }
 
-    fn link_video_clips(&mut self, linked: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(video) = &self.video else {
-            return;
-        };
-        let clips = video.selected.clone();
-        if clips.is_empty() {
-            return;
-        }
-        let command = if linked {
-            Command::Link { clips }
-        } else {
-            Command::Unlink { clips }
-        };
-        self.video_commands(vec![command], window, cx);
-    }
-
     /// Adds media dropped on the timeline where it was dropped: at that
     /// time, on that track when it is the right kind.
     pub fn drop_media(
@@ -442,21 +382,18 @@ impl Workspace {
         let (Some(video), Ok(store)) = (&self.video, &self.store) else {
             return;
         };
-        let bounds = *video.timeline.borrow();
-        let x = f32::from(position.x - bounds.origin.x) - crate::video_timeline::HEADER;
-        let at = video.doc.snap(spectrum_media::Time::from_seconds(
-            (f64::from(x / video.zoom) + video.scroll).max(0.),
-        ));
-        let y = f32::from(position.y - bounds.origin.y);
-        let row = video
-            .rows()
-            .into_iter()
-            .find(|(_, _, top, height)| y >= *top && y < top + height);
+        let (x, y) = video.local(position);
+        let at = video.doc.snap(video.time_at(x));
+        let layout = video.layout();
+        let row = layout.rows.iter().find(|r| {
+            let (top, bottom) = layout.pane(r.kind);
+            y >= top.max(r.top) && y < bottom.min(r.top + r.height)
+        });
         let kind = match store.service.library.get(asset).map(|a| a.kind) {
             Ok(AssetKind::Audio) => TrackKind::Audio,
             _ => TrackKind::Video,
         };
-        let track = row.filter(|(_, k, ..)| *k == kind).map(|(id, ..)| id);
+        let track = row.filter(|r| r.kind == kind).map(|r| r.track);
         match store
             .service
             .clip_command(asset, at, track, Placement::Overwrite)
@@ -596,14 +533,19 @@ impl Workspace {
     }
 }
 
-fn action(
-    id: &'static str,
-    label: &'static str,
-    cx: &mut Context<Workspace>,
-    act: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
-) -> Button {
-    Button::new(id)
-        .small()
-        .label(label)
-        .on_click(cx.listener(move |this, _, window, cx| act(this, window, cx)))
+/// A tool's key, as a key cap.
+fn key_cap(key: &'static str) -> impl IntoElement {
+    div()
+        .min_w(px(20.))
+        .h(px(20.))
+        .px_1()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(BORDER))
+        .text_xs()
+        .text_color(rgb(MUTED))
+        .child(key.to_uppercase())
 }

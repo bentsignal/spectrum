@@ -17,6 +17,29 @@ impl Workspace {
                 .object_fit(ObjectFit::Contain)
         });
         let empty = video.doc.duration().0 == 0;
+        // Footage in the edit still getting its playback copy plays
+        // slowly until it has one; say so.
+        let rendering = video.preview.progress().map(|share| {
+            format!(
+                "Rendering a preview: {:.0}%. It plays perfectly once rendered.",
+                share * 100.
+            )
+        });
+        let copying = self.store.as_ref().ok().and_then(|store| {
+            let making = store.copies.making?;
+            let used = video
+                .doc
+                .tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.source.asset() == making)?;
+            let share = store.copies.progress(making).unwrap_or(0.);
+            Some(format!(
+                "Making a smooth-playback copy of {}: {:.0}%. Until it is ready, playing and jumping may be slow.",
+                used.name,
+                share * 100.
+            ))
+        });
         div()
             .size_full()
             .flex()
@@ -35,7 +58,22 @@ impl Workspace {
                             .text_color(rgb(FAINT))
                             .child("Add footage, audio, images, or canvases from Media (or drop files here).")
                     })
-                    .when(!empty, |el| el.children(picture)),
+                    .when(!empty, |el| el.children(picture))
+                    .relative()
+                    .children(rendering.or(copying).map(|text| {
+                        div()
+                            .absolute()
+                            .left(px(12.))
+                            .bottom(px(12.))
+                            .max_w(px(420.))
+                            .px_3()
+                            .py_1p5()
+                            .rounded_md()
+                            .bg(hsla(0., 0., 0., 0.7))
+                            .text_xs()
+                            .text_color(rgb(MUTED))
+                            .child(text)
+                    })),
             )
             .child(transport)
             .child(

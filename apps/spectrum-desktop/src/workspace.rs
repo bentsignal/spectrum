@@ -47,7 +47,9 @@ pub enum Mode {
     Info,
     Canvas,
     History,
+    /// A video's selected clips.
     Edit,
+    Speed,
     Media,
     Export,
 }
@@ -65,7 +67,8 @@ impl Mode {
             Mode::Overview => "Overview",
             Mode::Canvas => "Canvas",
             Mode::History => "History",
-            Mode::Edit => "Edit",
+            Mode::Edit => "Clip",
+            Mode::Speed => "Speed",
             Mode::Media => "Media",
             Mode::Export => "Export",
         }
@@ -74,7 +77,8 @@ impl Mode {
     pub fn icon(self) -> gpui_component::Icon {
         let name = match self {
             Mode::History => return crate::icons::icon("history"),
-            Mode::Edit => return crate::icons::icon("scissors"),
+            Mode::Edit => return crate::icons::icon("film"),
+            Mode::Speed => return crate::icons::icon("gauge"),
             Mode::Media => IconName::Inbox,
             Mode::Export => IconName::ExternalLink,
             Mode::Projects => IconName::FolderClosed,
@@ -464,7 +468,13 @@ impl Workspace {
             (_, Open::Overview) => Vec::new(),
             (_, Open::Image(_)) => vec![Mode::Color, Mode::Crop, Mode::Info, Mode::History],
             (_, Open::Media(_)) => vec![Mode::Info],
-            (_, Open::Video(_)) => vec![Mode::Edit, Mode::Media, Mode::Export, Mode::History],
+            (_, Open::Video(_)) => vec![
+                Mode::Edit,
+                Mode::Speed,
+                Mode::Media,
+                Mode::Export,
+                Mode::History,
+            ],
             (_, Open::Canvas(_)) => vec![
                 Mode::Overview,
                 Mode::Layers,

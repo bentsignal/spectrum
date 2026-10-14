@@ -35,7 +35,9 @@ impl Library {
     }
 
     /// Copies `source` into the store, hashing as it copies, and returns its
-    /// store name. A file already in the store is not copied twice.
+    /// store name. A file already in the store is not copied twice. On the
+    /// same volume (APFS, btrfs, XFS) the copy is a clone that shares the
+    /// original's blocks until either changes, so only the hash reads it.
     /// `progress` hears the bytes copied so far.
     pub fn ingest(&self, source: &Path, progress: &mut dyn FnMut(u64)) -> Result<StoredMedia> {
         let directory = self.media_directory();
@@ -56,7 +58,12 @@ impl Library {
             File::open(source).with_context(|| format!("could not read {}", source.display()))?;
         let temporary = directory.join(format!(".incoming-{}", AssetId::new_v4()));
         let copied = (|| -> Result<(String, u64)> {
-            let mut writer = File::create(&temporary)?;
+            let cloned = clone_file(source, &temporary);
+            let mut writer = if cloned {
+                None
+            } else {
+                Some(File::create(&temporary)?)
+            };
             let mut hasher = Sha256::new();
             let mut buffer = vec![0u8; 8 << 20];
             let mut bytes = 0u64;
@@ -66,11 +73,16 @@ impl Library {
                     break;
                 }
                 hasher.update(&buffer[..read]);
-                writer.write_all(&buffer[..read])?;
+                if let Some(writer) = &mut writer {
+                    writer.write_all(&buffer[..read])?;
+                }
                 bytes += read as u64;
                 progress(bytes);
             }
-            writer.sync_all()?;
+            match writer {
+                Some(writer) => writer.sync_all()?,
+                None => File::open(&temporary)?.sync_all()?,
+            }
             let hash: String = hasher
                 .finalize()
                 .iter()
@@ -209,6 +221,41 @@ pub fn is_store_name(name: &str) -> bool {
         && extension
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
+/// Makes `destination` a clone of `source` sharing its blocks, where the
+/// file system can; false when it cannot (another volume, or no support).
+fn clone_file(source: &Path, destination: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        let (Ok(from), Ok(to)) = (
+            CString::new(source.as_os_str().as_bytes()),
+            CString::new(destination.as_os_str().as_bytes()),
+        ) else {
+            return false;
+        };
+        unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), 0) == 0 }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        const FICLONE: libc::c_ulong = 0x4004_9409;
+        let (Ok(from), Ok(to)) = (File::open(source), File::create(destination)) else {
+            return false;
+        };
+        let cloned = unsafe { libc::ioctl(to.as_raw_fd(), FICLONE as _, from.as_raw_fd()) == 0 };
+        if !cloned {
+            drop(to);
+            let _ = fs::remove_file(destination);
+        }
+        cloned
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (source, destination);
+        false
+    }
 }
 
 #[cfg(test)]

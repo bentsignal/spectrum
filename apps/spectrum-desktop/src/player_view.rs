@@ -195,6 +195,33 @@ impl Workspace {
                             this.toggle_play(cx);
                         })),
                 )
+                // The video editor's switch: stopping returns to where play
+                // began (Space), as in After Effects and Vegas.
+                .when_some(
+                    self.video
+                        .as_ref()
+                        .filter(|_| !scrub)
+                        .map(|v| v.return_to_start),
+                    |el, on| {
+                        el.child(
+                            gpui_component::Selectable::selected(
+                                Button::new("return-to-start"),
+                                on,
+                            )
+                            .ghost()
+                            .small()
+                            .icon(crate::icons::icon("rotate-ccw"))
+                            .tooltip(if on {
+                                "Stopping returns to where play began (on)"
+                            } else {
+                                "Stopping stays where it stops (return to start is off)"
+                            })
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.toggle_return_to_start(cx)),
+                            ),
+                        )
+                    },
+                )
                 .child(div().w(px(120.)).child(Input::new(&timecode).small()))
                 .map(|el| {
                     if scrub {

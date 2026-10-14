@@ -4,16 +4,20 @@
 //! same commands.
 
 mod commands;
+mod convert;
 mod document;
 mod edit;
 pub mod render;
 mod speed;
 
 pub use commands::{Command, CommandOutput, Placement, VideoModel, Workspace, apply};
+pub use convert::{Converted, SpeedForm};
 pub use document::{Clip, Interpolation, Source, Track, TrackKind, Video};
 pub use edit::Edge;
 pub use spectrum_time::{FrameRate, Time};
 pub use speed::{Curve, MAX_PERCENT, RemapKey, Speed, VelocityKey};
 
+#[cfg(test)]
+mod convert_tests;
 #[cfg(test)]
 mod tests;

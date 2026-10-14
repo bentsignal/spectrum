@@ -73,7 +73,7 @@ spectrum video new "Cut" [--like <footage> | --width 3840 --height 2160 --rate 5
 spectrum video add <video> <asset> [--at 00:00:02:00] [--track <id>] [--insert]
 spectrum video speed <video> <clip> --velocity "0=100,1s=25,2s=-100" [--curve smooth] [--interpolate motion] [--sound follow]
 spectrum video speed <video> <clip> --remap "0=2s,1s=2s,3s=0" | --normal
-spectrum video speed <video> <clip> --freeze 1s [--hold 2s] | --reverse
+spectrum video speed <video> <clip> --freeze 1s [--hold 2s] | --reverse | --as velocity|remap
 spectrum video command <video> '[{"command":"split","at":705600000,"clips":[]}]'
 spectrum video inspect | frame <video> out.png --at 3s | export <video> out.mp4 [--codec h264|hevc|prores]
 spectrum schema
