@@ -149,7 +149,14 @@ impl Preview {
 pub fn frame_key(video: &Video, size: (u32, u32), index: i64) -> u64 {
     let time = video.rate.time_of(index);
     let mut hasher = DefaultHasher::new();
-    (video.width, video.height, video.rate.fps().to_bits(), size).hash(&mut hasher);
+    (
+        video.width,
+        video.height,
+        video.rate.fps().to_bits(),
+        video.background,
+        size,
+    )
+        .hash(&mut hasher);
     for (order, track) in video.tracks.iter().enumerate() {
         if track.kind != TrackKind::Video || track.muted {
             continue;

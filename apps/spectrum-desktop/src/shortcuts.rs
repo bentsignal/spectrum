@@ -36,7 +36,7 @@ impl Workspace {
             .on_action(cx.listener(|this, _: &Mode6, window, cx| this.nth_mode(5, window, cx)))
             .on_action(cx.listener(|this, _: &OpenPalette, window, cx| {
                 if this.palette_open {
-                    this.close_palette(cx)
+                    this.close_palette(window, cx)
                 } else {
                     this.open_palette(window, cx)
                 }
@@ -150,7 +150,11 @@ impl Workspace {
                 this.start_sampling(window, cx)
             }))
             .on_action(cx.listener(|this, _: &ClearSelection, window, cx| {
-                if this.stop_sampling(cx) {
+                if this.video.as_ref().is_some_and(|v| v.adding.is_some()) {
+                    this.close_adding(window, cx);
+                } else if this.video.as_ref().is_some_and(|v| v.key_editor.is_some()) {
+                    this.close_key_field(window, cx);
+                } else if this.stop_sampling(cx) {
                     // Escape ended taking a color for a picker.
                 } else if this.canvas.as_ref().is_some_and(|c| !c.pen.is_empty()) {
                     if let Some(canvas) = &mut this.canvas {
@@ -162,7 +166,7 @@ impl Workspace {
                 } else if this.picker_open {
                     this.close_picker(window, cx)
                 } else if this.palette_open {
-                    this.close_palette(cx)
+                    this.close_palette(window, cx)
                 } else {
                     this.clear_selection(cx)
                 }

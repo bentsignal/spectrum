@@ -71,7 +71,7 @@ impl Workspace {
                     .bg(rgb(0xff5a5a)),
             );
         }
-        // The razor in place of the pointer over the tracks.
+        // A razor beside the pointer (a crosshair) over the tracks.
         if let Some((x, y)) = video.hover.filter(|_| razor).map(|p| video.local(p))
             && x >= HEADER
             && y >= TOP
@@ -79,34 +79,69 @@ impl Workspace {
             layer = layer.child(
                 div()
                     .absolute()
-                    .left(px(x - 7.))
-                    .top(px(y - 7.))
+                    .left(px(x + 9.))
+                    .top(px(y + 9.))
                     .size(px(14.))
                     .text_color(rgb(TEXT))
                     .child(crate::icons::icon("scissors").size(px(14.))),
             );
         }
-        // Where a moved track would go.
-        if let (Some(y), Some(DragKind::TrackOrder { .. })) =
-            (video.track_drop, video.drag.as_ref().map(|d| d.kind))
-        {
-            let place = layout.place_at(y);
-            let index = layout.rows.len().saturating_sub(place + 1);
-            let line = layout.rows.get(index).map_or(TOP, |r| {
-                if y < r.top + r.height / 2. {
-                    r.top
-                } else {
-                    r.top + r.height
-                }
-            });
+        // A keyframe's value (or time), typed where it is.
+        if let Some((time, (x, y))) = video.key_editor {
+            let field = if time {
+                &video.keys.time
+            } else {
+                &video.keys.value
+            };
             layer = layer.child(
                 div()
                     .absolute()
-                    .left_0()
-                    .top(px(line - 1.))
-                    .w_full()
-                    .h(px(2.))
-                    .bg(rgb(0x5b8def)),
+                    .left(px((x - 60.).max(HEADER)))
+                    .top(px((y - 40.).max(TOP)))
+                    .w(px(120.))
+                    .p_1()
+                    .rounded_md()
+                    .bg(rgb(0x101010))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .shadow_lg()
+                    .child(gpui_component::Sizable::small(
+                        gpui_component::input::Input::new(field),
+                    )),
+            );
+        }
+        // A dragged speed keyframe's value, above the pointer.
+        if let (Some(DragKind::Key { clip, index }), Some(pointer)) =
+            (video.drag.as_ref().map(|d| d.kind), video.hover)
+            && let Some((_, dragged)) = video.doc.clip(clip)
+            && let Some(value) = crate::video_speed::key_value(dragged, video.speed_view, index)
+        {
+            let rate = video.doc.rate;
+            let at = crate::video_speed::keys(&dragged.speed)
+                .get(index)
+                .map(|k| (k.0 - dragged.speed.origin()).timecode(rate))
+                .unwrap_or_default();
+            let value = match video.speed_view {
+                spectrum_video::SpeedForm::Velocity => format!("{value:.0}%"),
+                spectrum_video::SpeedForm::Remap => Time::from_seconds(value).timecode(rate),
+            };
+            let (x, y) = video.local(pointer);
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(x - 40.))
+                    .top(px((y - 46.).max(0.)))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(0x101010))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(div().text_sm().text_color(rgb(TEXT)).child(value))
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(at)),
             );
         }
         // While a drag runs, it follows the pointer anywhere in the window,
@@ -204,7 +239,7 @@ impl Workspace {
             .top_0()
             .bottom_0()
             .overflow_hidden()
-            .when(razor, |el| el.cursor(CursorStyle::None));
+            .when(razor, |el| el.cursor(CursorStyle::Crosshair));
         // Lines and waveforms paint in timeline points, offset back here.
         let mut overlays = div()
             .absolute()
@@ -218,6 +253,10 @@ impl Workspace {
                 continue;
             };
             let y = row.top - top;
+            let moving = matches!(
+                video.drag.as_ref().map(|d| d.kind),
+                Some(DragKind::TrackOrder { track }) if track == row.track
+            );
             content = content.child(
                 div()
                     .absolute()
@@ -225,6 +264,7 @@ impl Workspace {
                     .top(px(y))
                     .w_full()
                     .h(px(row.height))
+                    .when(moving, |el| el.bg(rgba(0x5b8def22)))
                     .border_b_1()
                     .border_color(rgb(BORDER)),
             );
@@ -304,7 +344,7 @@ impl Workspace {
                     );
                 }
             }
-            headers = headers.child(self.track_header(track, kind, y, row.height, cx));
+            headers = headers.child(self.track_header(track, kind, y, row.height, moving, cx));
             // The top edge drags the row taller or shorter.
             let edge = y - 4.;
             headers = headers.child(
@@ -335,6 +375,7 @@ impl Workspace {
         kind: TrackKind,
         y: f32,
         height: f32,
+        moving: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let (muted, locked, id) = (track.muted, track.locked, track.id);
@@ -344,7 +385,8 @@ impl Workspace {
             .top(px(y))
             .w(px(HEADER))
             .h(px(height))
-            .bg(rgb(SIDEBAR))
+            .bg(rgb(if moving { SELECTED } else { SIDEBAR }))
+            .when(moving, |el| el.cursor(CursorStyle::ClosedHand))
             .border_r_1()
             .border_b_1()
             .border_color(rgb(BORDER))

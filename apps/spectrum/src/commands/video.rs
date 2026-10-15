@@ -112,8 +112,30 @@ pub(super) enum Video {
         /// Bits a second for H.264 and HEVC.
         #[arg(long)]
         bitrate: Option<u64>,
+        /// Frames a second (29.97, 30000/1001); the video's own by default.
+        #[arg(long)]
+        rate: Option<String>,
+        /// Where to start and stop (1.5, 36f, 00:00:01:12); the whole video
+        /// by default.
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
         #[arg(long)]
         no_sound: bool,
+    },
+    /// Set a video's size, frame rate, or background (the color where no
+    /// clip covers the frame, as rrggbb).
+    Settings {
+        video: AssetId,
+        #[arg(long)]
+        width: Option<u32>,
+        #[arg(long)]
+        height: Option<u32>,
+        #[arg(long)]
+        rate: Option<String>,
+        #[arg(long)]
+        background: Option<String>,
     },
     /// Show the command formats with examples.
     Schema,
@@ -121,17 +143,17 @@ pub(super) enum Video {
 
 /// A typed frame rate: decimal (29.97) or a fraction (30000/1001).
 pub(super) fn parse_rate(text: &str) -> Result<FrameRate> {
-    let rate = match text.split_once('/') {
-        Some((n, d)) => FrameRate::new(n.trim().parse()?, d.trim().parse()?),
-        None => {
-            let fps: f64 = text.trim().parse().context("not a frame rate")?;
-            FrameRate::new((fps * 1000.).round() as u32, 1000).standardized()
-        }
-    };
-    if rate.numerator == 0 || rate.denominator == 0 {
-        bail!("{text} is not a frame rate");
+    FrameRate::from_text(text)
+}
+
+/// A color as rrggbb (a leading # is fine).
+fn parse_color(text: &str) -> Result<[u8; 3]> {
+    let hex = text.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        bail!("{text} is not a color like 1a1a1a");
     }
-    Ok(rate)
+    let channel = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16);
+    Ok([channel(0)?, channel(2)?, channel(4)?])
 }
 
 fn videos(service: &Service) -> Result<serde_json::Value> {
@@ -234,9 +256,23 @@ pub(super) fn run(service: &mut Service, command: Video) -> Result<serde_json::V
             width,
             height,
             bitrate,
+            rate,
+            from,
+            to,
             no_sound,
         } => {
             let edit = service.video(video)?;
+            let rate = rate
+                .map(|r| parse_rate(&r))
+                .transpose()?
+                .unwrap_or(edit.rate);
+            let time = |text: Option<String>| -> Result<Option<Time>> {
+                text.map(|t| Time::parse(&t, Some(edit.rate))).transpose()
+            };
+            let range = match (time(from)?, time(to)?) {
+                (None, None) => None,
+                (from, to) => Some((from.unwrap_or(Time::ZERO), to.unwrap_or(edit.duration()))),
+            };
             let codec = match codec.as_str() {
                 "h264" => VideoCodec::H264,
                 "hevc" | "h265" => VideoCodec::Hevc,
@@ -247,12 +283,13 @@ pub(super) fn run(service: &mut Service, command: Video) -> Result<serde_json::V
                 codec,
                 width: width.unwrap_or(edit.width) & !1,
                 height: height.unwrap_or(edit.height) & !1,
-                rate: edit.rate,
+                rate,
                 bitrate,
                 sound: !no_sound,
             };
             let started = std::time::Instant::now();
-            let encoder = service.export_video(video, &path, settings, &mut |_| true)?;
+            let encoder =
+                service.export_video_range(video, &path, settings, range, &mut |_| true)?;
             Ok(json!({
                 "exported": path,
                 "encoder": encoder,
@@ -389,6 +426,36 @@ pub(super) fn run(service: &mut Service, command: Video) -> Result<serde_json::V
             let outputs = service.edit_video(video, commands)?;
             Ok(json!({"video": video, "clip": clip, "results": outputs}))
         }
+        Video::Settings {
+            video,
+            width,
+            height,
+            rate,
+            background,
+        } => {
+            let edit = service.video(video)?;
+            let mut commands = Vec::new();
+            if width.is_some() || height.is_some() || rate.is_some() {
+                commands.push(Command::SetFormat {
+                    width: width.unwrap_or(edit.width),
+                    height: height.unwrap_or(edit.height),
+                    rate: rate
+                        .map(|r| parse_rate(&r))
+                        .transpose()?
+                        .unwrap_or(edit.rate),
+                });
+            }
+            if let Some(text) = background {
+                commands.push(Command::SetBackground {
+                    color: parse_color(&text)?,
+                });
+            }
+            if commands.is_empty() {
+                bail!("give --width, --height, --rate, or --background");
+            }
+            let outputs = service.edit_video(video, commands)?;
+            Ok(json!({"video": video, "results": outputs}))
+        }
         Video::Schema => Ok(schema()),
     }
 }
@@ -416,9 +483,10 @@ fn schema() -> serde_json::Value {
             {"command": "set_track", "track": 1, "muted": true},
             {"command": "add_track", "kind": "video"},
             {"command": "move_track", "track": 2, "to": 0},
+            {"command": "set_background", "color": [16, 16, 16]},
             {"command": "undo"}
         ],
-        "commands": ["rename", "set_format", "add_track", "remove_track", "move_track", "set_track", "add_clip",
+        "commands": ["rename", "set_format", "add_track", "remove_track", "move_track", "set_background", "set_track", "add_clip",
             "move", "trim", "roll", "slip", "slide", "split", "delete", "link", "unlink",
             "set_clip", "set_speed", "freeze", "reverse", "convert_speed", "undo", "redo"],
     })

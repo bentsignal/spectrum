@@ -176,6 +176,28 @@ impl Workspace {
             div()
                 .h(px(TRANSPORT_HEIGHT))
                 .flex_shrink_0()
+                .relative()
+                // In the video editor, the top edge resizes the timeline
+                // too, as the grip under the transport does.
+                .when(self.video.is_some() && !scrub, |el| {
+                    el.child(
+                        div()
+                            .id("transport-grip")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .h(px(6.))
+                            .cursor(CursorStyle::ResizeRow)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.start_panel_drag(event, cx)
+                                }),
+                            ),
+                    )
+                })
                 .px_6()
                 .flex()
                 .items_center()

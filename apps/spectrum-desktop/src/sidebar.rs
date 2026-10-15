@@ -71,6 +71,7 @@ impl Workspace {
             (_, Mode::History) => self.history_sidebar(cx).into_any_element(),
             (_, Mode::Edit) => self.video_clip_sidebar(cx).into_any_element(),
             (_, Mode::Speed) => self.video_speed_sidebar(cx).into_any_element(),
+            (_, Mode::Format) => self.video_settings_sidebar(cx).into_any_element(),
             (_, Mode::Media) => self.video_media_sidebar(cx).into_any_element(),
             (_, Mode::Export) => self.video_export_sidebar(cx).into_any_element(),
             _ => self.layers_sidebar(cx).into_any_element(),

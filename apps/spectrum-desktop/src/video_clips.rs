@@ -35,7 +35,7 @@ impl Workspace {
             }
         }
         // The Media tab's tiles.
-        if self.mode == crate::workspace::Mode::Media {
+        if self.mode == crate::workspace::Mode::Media || video.adding.is_some() {
             pictures.extend(self.video_media(cx).into_iter().map(|a| a.id));
         }
         let Ok(store) = &mut self.store else {

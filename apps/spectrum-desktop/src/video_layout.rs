@@ -81,8 +81,32 @@ pub fn row_height(heights: &HashMap<u64, f32>, track: u64, kind: TrackKind) -> f
     })
 }
 
-/// Lays out `doc`'s tracks in a timeline `height` points tall.
+/// Lays out `doc`'s tracks in a timeline `height` points tall. While a
+/// track is dragged by its name, the tracks show in the order they would
+/// take if it were let go there.
 pub fn layout(doc: &Video, view: &VideoEditor, height: f32) -> Layout {
+    let laid = laid_out(doc, view, height);
+    let moving = match view.drag.as_ref().map(|d| d.kind) {
+        Some(crate::video_state::DragKind::TrackOrder { track }) => track,
+        _ => return laid,
+    };
+    let (Some(y), Some(from)) = (
+        view.track_drop,
+        doc.tracks.iter().position(|t| t.id == moving),
+    ) else {
+        return laid;
+    };
+    let to = laid.place_at(y);
+    if to == from {
+        return laid;
+    }
+    let mut moved = doc.clone();
+    let track = moved.tracks.remove(from);
+    moved.tracks.insert(to.min(moved.tracks.len()), track);
+    laid_out(&moved, view, height)
+}
+
+fn laid_out(doc: &Video, view: &VideoEditor, height: f32) -> Layout {
     let content: f32 = doc
         .tracks
         .iter()

@@ -20,6 +20,24 @@ pub struct Action {
     pub run: Run,
 }
 
+impl Action {
+    /// What sort of command it is, shown beside its name.
+    pub fn kind(&self) -> &'static str {
+        match self.name {
+            "Freeze frame" | "Reverse" | "Reset speed" | "Add speed keyframe" => "Speed",
+            "Show speed as velocity" | "Show speed as time remap" | "Zoom to fit" => "View",
+            "Add video track" | "Add audio track" => "Track",
+            "Snapping" | "Return to start when stopping" => "Setting",
+            "Render preview" | "Stop rendering" | "Set In" | "Set Out" | "Clear In and Out" => {
+                "Preview"
+            }
+            "Go to the next cut" => "Move",
+            "Add media…" => "Media",
+            _ => "Edit",
+        }
+    }
+}
+
 const fn action(
     name: &'static str,
     detail: &'static str,
@@ -40,7 +58,13 @@ const LINK_KEY: &str = if cfg!(target_os = "macos") {
     "Ctrl+L"
 };
 
-pub const ACTIONS: [Action; 22] = [
+pub const ACTIONS: [Action; 23] = [
+    action(
+        "Add media…",
+        "Search the project's media; Enter adds it at the playhead",
+        None,
+        |this, window, cx| this.open_adding(window, cx),
+    ),
     action(
         "Cut at playhead",
         "Cut the selected clips, or every clip, at the playhead",
@@ -291,6 +315,13 @@ impl Workspace {
                         )
                     });
                     menu.separator()
+                        .item(item("Set value…", |this, window, cx| {
+                            this.edit_key_field(false, window, cx)
+                        }))
+                        .item(item("Set time…", |this, window, cx| {
+                            this.edit_key_field(true, window, cx)
+                        }))
+                        .separator()
                         .item(item("Delete keyframe", |this, window, cx| {
                             this.delete_speed_key(window, cx)
                         }))

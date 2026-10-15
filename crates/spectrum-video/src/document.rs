@@ -14,7 +14,11 @@ pub struct Video {
     pub width: u32,
     pub height: u32,
     pub rate: FrameRate,
-    /// Video tracks first (V1 at the bottom of the picture), then audio.
+    /// What shows where no clip covers the frame.
+    #[serde(default)]
+    pub background: [u8; 3],
+    /// Every track from the bottom of the timeline up; later video tracks
+    /// are in front.
     pub tracks: Vec<Track>,
     /// The next track or clip ID.
     pub next_id: u64,
@@ -199,6 +203,7 @@ impl Video {
             width: width.max(2),
             height: height.max(2),
             rate,
+            background: [0, 0, 0],
             tracks: Vec::new(),
             next_id: 1,
         };

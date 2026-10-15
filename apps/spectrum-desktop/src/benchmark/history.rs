@@ -239,7 +239,7 @@ pub(super) async fn history(
         .update_in(cx, |ws, window, cx| {
             ws.open_branches(window, cx);
             let found = ws.branch_choices("benchmark pick");
-            ws.close_palette(cx);
+            ws.close_palette(window, cx);
             found
         })
         .unwrap_or_default();

@@ -21,6 +21,16 @@ higher video tracks are in front. The project sidebar has Import and New
 dropdowns and a quiet list of kinds: a click shows only that kind, and
 Command-click or a right-click adds kinds.
 
+A third pass (2026-10-15) settled tracks in any order. It also brought:
+- The transport's top edge resizes too; Escape refocuses after Command+P.
+- Keyframe values are typed from a keyframe's right-click menu, with a value
+  tooltip while dragging. The Speed tab dropped its keyframe list and curve
+  row.
+- Track moves show live. "Add media…" is in Command+P (arrows and Enter).
+- Command+P rows show what each item does.
+- There is a Video tab (size, rate, background) and a fuller Export tab.
+- Retired images wait for time as well as renders, after the atlas crash.
+
 Left:
 - A tall time remap graph, which comes with Animate.
 - Preview frames don't see edits made to an image or canvas the video uses.

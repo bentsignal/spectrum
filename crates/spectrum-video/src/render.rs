@@ -68,7 +68,8 @@ pub fn frame(
     {
         return Ok(picture.as_ref().clone());
     }
-    let mut out = RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+    let [r, g, b] = video.background;
+    let mut out = RgbaImage::from_pixel(width, height, image::Rgba([r, g, b, 255]));
     for (clip, picture) in &layers {
         if let Some(picture) = picture {
             lay(&mut out, picture, clip.opacity);

@@ -176,6 +176,27 @@ impl FrameRate {
         self.time_of(1)
     }
 
+    /// A typed rate: frames a second ("29.97", snapped to the exact rate)
+    /// or a fraction ("30000/1001").
+    pub fn from_text(text: &str) -> Result<Self> {
+        let rate = match text.trim().trim_end_matches("fps").trim().split_once('/') {
+            Some((n, d)) => FrameRate::new(n.trim().parse()?, d.trim().parse()?),
+            None => {
+                let fps: f64 = text
+                    .trim()
+                    .trim_end_matches("fps")
+                    .trim()
+                    .parse()
+                    .context("not a frame rate")?;
+                FrameRate::new((fps * 1000.).round() as u32, 1000).standardized()
+            }
+        };
+        if rate.numerator == 0 || rate.denominator == 0 {
+            bail!("{text} is not a frame rate");
+        }
+        Ok(rate)
+    }
+
     /// A rate within 0.1% of a common one snaps to it, so a file that
     /// reports 29.97003 runs at exactly 30000/1001.
     pub fn standardized(self) -> Self {
@@ -193,11 +214,14 @@ impl FrameRate {
             (120000, 1001),
             (120, 1),
         ];
+        // The nearest one: 24 and 23.976 are themselves 0.1% apart.
         let fps = self.fps();
+        let gap = |rate: &Self| (rate.fps() - fps).abs() / rate.fps();
         COMMON
             .iter()
             .map(|&(n, d)| Self::new(n, d))
-            .find(|rate| (rate.fps() - fps).abs() / rate.fps() < 0.001)
+            .filter(|rate| gap(rate) < 0.001)
+            .min_by(|a, b| gap(a).total_cmp(&gap(b)))
             .unwrap_or(self)
     }
 }
@@ -275,6 +299,18 @@ mod tests {
             FrameRate::new(2997003, 100000).standardized(),
             FrameRate::new(30000, 1001)
         );
+        // Typed rates land on the nearest standard one.
+        for (typed, rate) in [
+            ("24", FrameRate::new(24, 1)),
+            ("23.976", FrameRate::new(24000, 1001)),
+            ("29.97", FrameRate::new(30000, 1001)),
+            ("59.94 fps", FrameRate::new(60000, 1001)),
+            ("30000/1001", FrameRate::new(30000, 1001)),
+            ("25", FrameRate::new(25, 1)),
+        ] {
+            assert_eq!(FrameRate::from_text(typed).unwrap(), rate, "{typed}");
+        }
+        assert!(FrameRate::from_text("fast").is_err());
         assert_eq!(serde_json::to_string(&Time(5)).unwrap(), "5");
     }
 }

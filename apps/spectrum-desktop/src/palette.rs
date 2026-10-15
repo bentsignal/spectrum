@@ -38,6 +38,8 @@ struct Item {
     tool: Option<Tool>,
     /// The key that does it, shown as a key cap.
     key: Option<SharedString>,
+    /// What sort of thing it is, such as Tool or Edit, as a small tag.
+    tag: Option<&'static str>,
     icon: IconName,
     label: SharedString,
     detail: Option<SharedString>,
@@ -174,8 +176,11 @@ impl Workspace {
         cx.notify();
     }
 
-    pub fn close_palette(&mut self, cx: &mut Context<Self>) {
+    /// Closes the palette and gives the keyboard back to the workspace, so
+    /// its shortcuts (Command+P again, a Command hold) keep working.
+    pub fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette_open = false;
+        self.refocus(window);
         cx.notify();
     }
 
@@ -208,6 +213,7 @@ impl Workspace {
                 .map(|(tip, title, detail)| Item {
                     tool: None,
                     key: None,
+                    tag: None,
                     icon: IconName::GalleryVerticalEnd,
                     label: title.into(),
                     detail: Some(detail.into()),
@@ -222,9 +228,10 @@ impl Workspace {
                 .map(|tool| Item {
                     tool: None,
                     key: Some(tool.key().to_uppercase().into()),
+                    tag: Some("Tool"),
                     icon: IconName::Menu,
                     label: tool.label().into(),
-                    detail: Some("Tool".into()),
+                    detail: Some(tool.description().into()),
                     choice: Choice::VideoTool(tool),
                 });
             let actions = crate::video_menu::ACTIONS
@@ -234,6 +241,7 @@ impl Workspace {
                 .map(|(index, action)| Item {
                     tool: None,
                     key: action.key.map(Into::into),
+                    tag: Some(action.kind()),
                     icon: IconName::ChevronRight,
                     label: action.name.into(),
                     detail: Some(action.detail.into()),
@@ -248,6 +256,7 @@ impl Workspace {
                 .map(|(tool, name, detail)| Item {
                     tool: Some(*tool),
                     key: crate::tools::tool_letter(*tool).map(Into::into),
+                    tag: None,
                     icon: IconName::Menu,
                     label: (*name).into(),
                     detail: Some((*detail).into()),
@@ -264,6 +273,7 @@ impl Workspace {
                     .map(|p| Item {
                         tool: None,
                         key: None,
+                        tag: None,
                         icon: IconName::FolderClosed,
                         label: p.name.clone().into(),
                         detail: Some(
@@ -278,6 +288,7 @@ impl Workspace {
                 items.push(Item {
                     tool: None,
                     key: None,
+                    tag: None,
                     icon: IconName::LayoutDashboard,
                     label: "Overview".into(),
                     detail: Some(self.view_name()),
@@ -294,6 +305,7 @@ impl Workspace {
                         Item {
                             tool: None,
                             key: None,
+                            tag: None,
                             icon: if canvas {
                                 IconName::LayoutDashboard
                             } else {
@@ -329,6 +341,7 @@ impl Workspace {
                         Item {
                             tool: None,
                             key: None,
+                            tag: None,
                             icon: if canvas {
                                 IconName::LayoutDashboard
                             } else {
@@ -362,6 +375,7 @@ impl Workspace {
                 .map(|(icon, label, choice)| Item {
                     tool: None,
                     key: None,
+                    tag: None,
                     icon,
                     label: label.into(),
                     detail: Some("Home".into()),
@@ -376,6 +390,7 @@ impl Workspace {
                     .map(|p| Item {
                         tool: None,
                         key: None,
+                        tag: None,
                         icon: IconName::FolderClosed,
                         label: p.name.clone().into(),
                         detail: Some(
@@ -394,6 +409,7 @@ impl Workspace {
             Item {
                 tool: None,
                 key: None,
+                tag: None,
                 icon: IconName::Plus,
                 label: "New project…".into(),
                 detail: None,
@@ -403,6 +419,7 @@ impl Workspace {
             Item {
                 tool: None,
                 key: None,
+                tag: None,
                 icon: IconName::Plus,
                 label: format!("Create project \"{query}\"").into(),
                 detail: None,
@@ -413,8 +430,7 @@ impl Workspace {
     }
 
     fn choose(&mut self, choice: Choice, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_palette(cx);
-        self.refocus(window);
+        self.close_palette(window, cx);
         match choice {
             Choice::Home => self.go_home(Mode::Projects, window, cx),
             Choice::Place(view) => {
@@ -460,6 +476,8 @@ impl Workspace {
         let items = self.palette_items(cx);
         let count = items.len();
         let selected = self.palette_index.min(count.saturating_sub(1));
+        // Lists of tools and commands keep a column for keys.
+        let keys = self.palette_tools;
         let rows = items.into_iter().enumerate().map(|(index, item)| {
             let choice = item.choice.clone();
             div()
@@ -480,15 +498,36 @@ impl Workspace {
                         .text_color(rgb(MUTED))
                         .into_any_element(),
                 })
-                .child(div().flex_1().truncate().child(item.label))
-                .children(
-                    item.detail
-                        .map(|d| div().text_xs().text_color(rgb(FAINT)).child(d)),
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w(px(220.))
+                        .truncate()
+                        .child(item.label),
                 )
-                // The key that does it, as a key cap in a slot as wide as
-                // the widest, so the text beside every item lines up.
-                .children((item.tool.is_some() || item.key.is_some()).then(|| {
-                    div().flex_none().w(px(48.)).flex().justify_end().children(
+                .children(item.tag.map(|tag| {
+                    div()
+                        .flex_none()
+                        .px_1p5()
+                        .rounded_sm()
+                        .bg(rgb(HOVER))
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child(tag)
+                }))
+                // The description fills the middle and stops before the key
+                // column, which every row keeps, key or not.
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(rgb(FAINT))
+                        .children(item.detail),
+                )
+                .when(keys, |el| {
+                    el.child(div().flex_none().w(px(52.)).flex().justify_end().children(
                         item.key.clone().map(|key| {
                             div()
                                 .min_w(px(22.))
@@ -504,8 +543,8 @@ impl Workspace {
                                 .text_color(rgb(MUTED))
                                 .child(key)
                         }),
-                    )
-                }))
+                    ))
+                })
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.choose(choice.clone(), window, cx)),
                 )
@@ -523,7 +562,7 @@ impl Workspace {
             .bg(hsla(0., 0., 0., 0.45))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.close_palette(cx)),
+                cx.listener(|this, _, window, cx| this.close_palette(window, cx)),
             )
             .child(
                 div()
@@ -572,8 +611,7 @@ impl Workspace {
                                         }
                                         "up" => this.palette_index = selected.saturating_sub(1),
                                         "escape" => {
-                                            this.close_palette(cx);
-                                            this.refocus(window);
+                                            this.close_palette(window, cx);
                                         }
                                         "enter" => {
                                             let items = this.palette_items(cx);
