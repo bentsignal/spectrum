@@ -193,6 +193,12 @@ impl Video {
             .min()
             .context("no such clip")?;
         let by = self.snap(by).max(-earliest);
+        let pictures_moving = ids.iter().any(|id| {
+            self.track_of(*id)
+                .ok()
+                .and_then(|t| self.track(t))
+                .is_some_and(|t| t.kind == TrackKind::Video)
+        });
         let mut moving = Vec::new();
         for id in &ids {
             let from = self.track_of(*id)?;
@@ -205,8 +211,13 @@ impl Video {
                 .map(|t| t.id)
                 .collect();
             let index = same.iter().position(|t| *t == from).unwrap_or(0) as i32;
-            // Only pictures move between tracks; sound follows its picture.
-            let shift = if kind == TrackKind::Video { tracks } else { 0 };
+            // Pictures move between tracks and their sound follows; sound
+            // moved on its own moves between sound tracks.
+            let shift = if kind == TrackKind::Video || !pictures_moving {
+                tracks
+            } else {
+                0
+            };
             let to = same[(index + shift).clamp(0, same.len() as i32 - 1) as usize];
             self.unlocked(to)?;
             let track = self.track_mut(from).context("no such track")?;

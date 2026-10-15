@@ -37,6 +37,12 @@ pub enum Command {
     RemoveTrack {
         track: u64,
     },
+    /// Moves a track to place `to`, counting from the bottom track. Video
+    /// tracks later in the order are in front.
+    MoveTrack {
+        track: u64,
+        to: usize,
+    },
     SetTrack {
         track: u64,
         #[serde(default)]
@@ -288,6 +294,17 @@ fn apply_to(video: &mut Video, command: Command) -> Result<CommandOutput> {
             video.tracks.retain(|t| t.id != track);
             output("remove_track", "Removed a track")
         }
+        Command::MoveTrack { track, to } => {
+            let from = video
+                .tracks
+                .iter()
+                .position(|t| t.id == track)
+                .context("no such track")?;
+            let moved = video.tracks.remove(from);
+            let to = to.min(video.tracks.len());
+            video.tracks.insert(to, moved);
+            output("move_track", "Moved a track")
+        }
         Command::SetTrack {
             track,
             name,
@@ -501,9 +518,15 @@ fn target(
         }
         return Ok(id);
     }
-    let free = video.tracks.iter().find(|t| {
+    // The free track nearest the middle of the timeline: V1 upward for
+    // pictures, A1 downward for sound.
+    let fits = |t: &&crate::Track| {
         t.kind == kind && !t.locked && t.clips.iter().all(|c| c.end() <= from || c.start >= to)
-    });
+    };
+    let free = match kind {
+        TrackKind::Video => video.tracks.iter().find(fits),
+        TrackKind::Audio => video.tracks.iter().rev().find(fits),
+    };
     match free {
         Some(track) => Ok(track.id),
         None => Ok(video.add_track(kind)),

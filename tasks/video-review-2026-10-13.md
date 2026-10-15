@@ -12,26 +12,15 @@ belong in a button and a Command+P list (as on canvases), and actions belong
 in keys, commands, and right-click menus. Speed modes also lost work. Part of
 [video and animation](video-and-animation.md).
 
-All twenty items were built on 2026-10-13 and await the user's review:
-
-- Imports clone files on the same volume, and the cards show progress.
-- A swipe up or down zooms; sideways scrolls time; Option or the track names
-  scroll tracks.
-- Video and audio panes scroll and grow from the divider. A grip sets the
-  timeline's height, and the divider sets the split.
-- There is a tool button and Command+P list, plus right-click menus. Shift+E
-  enables or disables a clip, Command+L links or unlinks, and I, O, Option+X
-  and Enter mark and render.
-- The tabs are Clip, Speed, Media (a searchable grid), Export, and History.
-- Velocity and time remap are two views of one timing. The velocity scale is
-  non-linear, a double-click adds a keyframe and drags it, and a right-click
-  sets its curve.
-- The razor shows a cut line. Stopping returns to where play began (a
-  switch, on by default). Preview renders show green on the ruler.
-- The open video's footage gets its playback copy first, and the monitor
-  says when one is still being made.
+All twenty items were built on 2026-10-13 (PR #113). In the second pass
+(2026-10-15), the user found the timeline grip dropping drags and capped
+too low. Drags now follow the pointer window-wide, and the grip goes up to
+a sliver of monitor; a double-click resets it. The tracks are one list that
+scrolls as one, Vegas-style: drag a track's name to put it anywhere, and
+higher video tracks are in front. The project sidebar has Import and New
+dropdowns and a quiet list of kinds: a click shows only that kind, and
+Command-click or a right-click adds kinds.
 
 Left:
 - A tall time remap graph, which comes with Animate.
 - Preview frames don't see edits made to an image or canvas the video uses.
-  The video's own stills share that gap.

@@ -40,6 +40,7 @@ mod home;
 mod icons;
 mod image_zoom;
 mod info;
+mod kinds;
 mod layer_cache;
 mod layer_clipboard;
 mod layer_detail;

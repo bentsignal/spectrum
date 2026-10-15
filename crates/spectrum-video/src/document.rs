@@ -219,7 +219,9 @@ impl Video {
         id
     }
 
-    /// Adds a track above the others of its kind, returning its ID.
+    /// Adds a track, returning its ID: video above the other video tracks,
+    /// audio at the bottom. Tracks run from the bottom up, as the timeline
+    /// shows them reversed; later video tracks are in front.
     pub fn add_track(&mut self, kind: TrackKind) -> u64 {
         let id = self.take_id();
         let number = self.tracks.iter().filter(|t| t.kind == kind).count() + 1;
@@ -233,7 +235,7 @@ impl Video {
                 .iter()
                 .rposition(|t| t.kind == TrackKind::Video)
                 .map_or(0, |i| i + 1),
-            TrackKind::Audio => self.tracks.len(),
+            TrackKind::Audio => 0,
         };
         self.tracks.insert(
             at,
@@ -247,6 +249,11 @@ impl Video {
             },
         );
         id
+    }
+
+    /// The track with `name`, such as "V1".
+    pub fn track_named(&self, name: &str) -> Option<&Track> {
+        self.tracks.iter().find(|t| t.name == name)
     }
 
     /// The timeline's length: where its last clip ends.

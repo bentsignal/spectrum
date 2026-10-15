@@ -1,9 +1,8 @@
 //! Where everything on the timeline is, from the top: a grip that sets how
-//! tall the timeline is, the ruler, the video tracks (anchored at the
-//! divider, the top one in front, scrolling up), the divider, and the
-//! audio tracks (anchored below it, scrolling down). As in Premiere, a
-//! video track grows from its top edge and an audio track from its bottom
-//! edge, away from the divider, so the edge follows the pointer.
+//! tall the timeline is, the ruler, and the tracks, top to bottom in one
+//! list that scrolls as one, as in Vegas. Any track can go anywhere (drag
+//! its name); video tracks higher in the list are in front. A track grows
+//! from its top edge, which follows the pointer.
 use crate::video_state::VideoEditor;
 use gpui::*;
 use spectrum_media::Time;
@@ -13,21 +12,27 @@ use std::collections::HashMap;
 /// The track names and switches, left of the clips.
 pub const HEADER: f32 = 76.;
 /// The strip above the ruler that drags the timeline taller or shorter.
-pub const GRIP: f32 = 6.;
+pub const GRIP: f32 = 10.;
 pub const RULER: f32 = 26.;
 /// Where the tracks start.
 pub const TOP: f32 = GRIP + RULER;
-/// The bar between video and audio tracks.
-pub const DIVIDER: f32 = 6.;
 pub const VIDEO_ROW: f32 = 54.;
 pub const AUDIO_ROW: f32 = 42.;
 /// How short and tall a dragged row can be.
 pub const ROW_RANGE: (f32, f32) = (30., 240.);
 /// How near an edge, in points, counts as grabbing it.
 pub const EDGE: f32 = 6.;
-/// How tall the timeline starts, and its limits.
+/// How tall the timeline starts, and how short it can get.
 pub const PANEL: f32 = 320.;
-pub const PANEL_MIN: f32 = TOP + DIVIDER + 2. * AUDIO_ROW;
+pub const PANEL_MIN: f32 = TOP + AUDIO_ROW;
+/// What the monitor keeps however tall the timeline grows: the header, the
+/// transport, and a sliver of picture.
+pub const MONITOR_MIN: f32 = crate::workspace::HEADER_HEIGHT + 56. + 48.;
+
+/// The tallest the timeline can be in a window this tall.
+pub fn panel_most(window: &Window) -> f32 {
+    (f32::from(window.viewport_size().height) - MONITOR_MIN).max(PANEL_MIN)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Row {
@@ -40,35 +45,36 @@ pub struct Row {
 /// The timeline's parts, in points from its top-left corner.
 pub struct Layout {
     pub height: f32,
-    /// Each track's row, top to bottom; rows may reach outside their pane.
+    /// Each track's row, top to bottom; rows may reach past the tracks'
+    /// area, which clips them.
     pub rows: Vec<Row>,
-    /// The video and audio panes, top and bottom.
-    pub video: (f32, f32),
-    pub audio: (f32, f32),
-    /// How far each pane can scroll.
-    pub video_room: f32,
-    pub audio_room: f32,
+    /// How far the tracks can scroll.
+    pub room: f32,
 }
 
 impl Layout {
-    pub fn divider(&self) -> f32 {
-        self.video.1
-    }
-
-    /// The pane a row is drawn in.
-    pub fn pane(&self, kind: TrackKind) -> (f32, f32) {
-        match kind {
-            TrackKind::Video => self.video,
-            TrackKind::Audio => self.audio,
-        }
-    }
-
     pub fn row(&self, track: u64) -> Option<Row> {
         self.rows.iter().copied().find(|r| r.track == track)
     }
+
+    /// Where the tracks' area is, top and bottom.
+    pub fn area(&self) -> (f32, f32) {
+        (TOP, self.height.max(TOP))
+    }
+
+    /// The place a track dropped at timeline height `y` goes, counted from
+    /// the bottom track as the document keeps them.
+    pub fn place_at(&self, y: f32) -> usize {
+        let above = self
+            .rows
+            .iter()
+            .filter(|r| r.top + r.height / 2. < y)
+            .count();
+        self.rows.len().saturating_sub(above + 1)
+    }
 }
 
-fn row_height(heights: &HashMap<u64, f32>, track: u64, kind: TrackKind) -> f32 {
+pub fn row_height(heights: &HashMap<u64, f32>, track: u64, kind: TrackKind) -> f32 {
     heights.get(&track).copied().unwrap_or(match kind {
         TrackKind::Video => VIDEO_ROW,
         TrackKind::Audio => AUDIO_ROW,
@@ -77,49 +83,17 @@ fn row_height(heights: &HashMap<u64, f32>, track: u64, kind: TrackKind) -> f32 {
 
 /// Lays out `doc`'s tracks in a timeline `height` points tall.
 pub fn layout(doc: &Video, view: &VideoEditor, height: f32) -> Layout {
-    let video_tracks: Vec<_> = doc
+    let content: f32 = doc
         .tracks
         .iter()
-        .filter(|t| t.kind == TrackKind::Video)
-        .collect();
-    let audio_tracks: Vec<_> = doc
-        .tracks
-        .iter()
-        .filter(|t| t.kind == TrackKind::Audio)
-        .collect();
-    let content = |tracks: &[&spectrum_video::Track]| -> f32 {
-        tracks
-            .iter()
-            .map(|t| row_height(&view.heights, t.id, t.kind))
-            .sum()
-    };
-    let (video_content, audio_content) = (content(&video_tracks), content(&audio_tracks));
-    let room = (height - TOP - DIVIDER).max(0.);
-    // Each pane takes its share; at first, in proportion to its tracks.
-    let share = view.split.unwrap_or_else(|| {
-        (video_content / (video_content + audio_content).max(1.)).clamp(0.3, 0.7)
-    });
-    let video_height = (room * share).round().clamp(AUDIO_ROW.min(room), room);
-    let video = (TOP, TOP + video_height);
-    let audio = (video.1 + DIVIDER, height.max(video.1 + DIVIDER));
-    let video_room = (video_content - (video.1 - video.0)).max(0.);
-    let audio_room = (audio_content - (audio.1 - audio.0)).max(0.);
-    let mut rows = Vec::new();
-    // Video from the divider up: V1 at the bottom.
-    let mut bottom = video.1 + view.video_scroll.clamp(0., video_room);
-    for track in &video_tracks {
-        let h = row_height(&view.heights, track.id, track.kind);
-        rows.push(Row {
-            track: track.id,
-            kind: track.kind,
-            top: bottom - h,
-            height: h,
-        });
-        bottom -= h;
-    }
-    rows.reverse();
-    let mut top = audio.0 - view.audio_scroll.clamp(0., audio_room);
-    for track in &audio_tracks {
+        .map(|t| row_height(&view.heights, t.id, t.kind))
+        .sum();
+    // A little room below the last track, to drop onto.
+    let room = (content + 24. - (height - TOP)).max(0.);
+    let mut top = TOP - view.scroll_y.clamp(0., room);
+    let mut rows = Vec::with_capacity(doc.tracks.len());
+    // The document keeps tracks from the bottom up.
+    for track in doc.tracks.iter().rev() {
         let h = row_height(&view.heights, track.id, track.kind);
         rows.push(Row {
             track: track.id,
@@ -129,14 +103,7 @@ pub fn layout(doc: &Video, view: &VideoEditor, height: f32) -> Layout {
         });
         top += h;
     }
-    Layout {
-        height,
-        rows,
-        video,
-        audio,
-        video_room,
-        audio_room,
-    }
+    Layout { height, rows, room }
 }
 
 /// What is under a point on the timeline.
@@ -144,16 +111,13 @@ pub enum Hit {
     /// The strip above the ruler.
     Grip,
     Ruler,
-    /// The bar between video and audio.
-    Divider,
-    /// A track's name and switches.
+    /// A track's name: dragging it moves the track.
     Header {
         track: u64,
     },
-    /// The edge that drags a row taller or shorter.
+    /// The top edge that drags a row taller or shorter.
     RowEdge {
         track: u64,
-        kind: TrackKind,
         height: f32,
     },
     Clip {
@@ -200,37 +164,25 @@ impl VideoEditor {
     pub fn hit(&self, position: Point<Pixels>) -> Hit {
         let (x, y) = self.local(position);
         let layout = self.layout();
-        if y < GRIP {
+        // The grip reaches a little into the ruler, so it is easy to catch.
+        if y < GRIP + 3. {
             return Hit::Grip;
         }
         if y < TOP {
             return Hit::Ruler;
         }
-        if y >= layout.divider() - 2. && y < layout.divider() + DIVIDER + 2. {
-            return Hit::Divider;
-        }
-        let in_pane = |row: &Row| {
-            let (top, bottom) = layout.pane(row.kind);
-            y >= top && y < bottom
-        };
         let row = layout
             .rows
             .iter()
-            .find(|r| in_pane(r) && y >= r.top && y < r.top + r.height);
+            .find(|r| y >= r.top && y < r.top + r.height);
         if x < HEADER {
-            // Video rows grow from their top edge, audio rows from their
-            // bottom edge.
-            let edge = layout.rows.iter().find(|r| {
-                in_pane(r)
-                    && match r.kind {
-                        TrackKind::Video => (y - r.top).abs() <= 4.,
-                        TrackKind::Audio => (y - (r.top + r.height)).abs() <= 4.,
-                    }
-            });
+            let edge = layout
+                .rows
+                .iter()
+                .find(|r| r.top > TOP - 4. && (y - r.top).abs() <= 4.);
             if let Some(r) = edge {
                 return Hit::RowEdge {
                     track: r.track,
-                    kind: r.kind,
                     height: r.height,
                 };
             }
@@ -266,25 +218,5 @@ impl VideoEditor {
         Hit::Empty {
             track: Some(row.track),
         }
-    }
-
-    /// How many rows up from window height `from` to `to`, counting the
-    /// rows between them as they are drawn.
-    pub fn rows_between(&self, from: f32, to: f32) -> i32 {
-        let top = f32::from(self.timeline.borrow().origin.y);
-        let rows = self.layout().rows;
-        let index = |y: f32| -> f32 {
-            let y = y - top;
-            let mut index = 0.;
-            for row in &rows {
-                if y >= row.top + row.height {
-                    index += 1.;
-                } else {
-                    return index + ((y - row.top) / row.height).max(0.);
-                }
-            }
-            index
-        };
-        (index(from) - index(to)).round() as i32
     }
 }

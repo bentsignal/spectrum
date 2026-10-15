@@ -415,9 +415,10 @@ fn schema() -> serde_json::Value {
             {"command": "convert_speed", "clip": 3, "to": "remap"},
             {"command": "set_track", "track": 1, "muted": true},
             {"command": "add_track", "kind": "video"},
+            {"command": "move_track", "track": 2, "to": 0},
             {"command": "undo"}
         ],
-        "commands": ["rename", "set_format", "add_track", "remove_track", "set_track", "add_clip",
+        "commands": ["rename", "set_format", "add_track", "remove_track", "move_track", "set_track", "add_clip",
             "move", "trim", "roll", "slip", "slide", "split", "delete", "link", "unlink",
             "set_clip", "set_speed", "freeze", "reverse", "convert_speed", "undo", "redo"],
     })

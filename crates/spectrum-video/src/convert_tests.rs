@@ -7,7 +7,7 @@ const RATE: FrameRate = FrameRate::new(30, 1);
 /// origin is past zero, with `speed`.
 fn clip(speed: Speed) -> (Video, u64) {
     let mut video = Video::new("Edit", 1920, 1080, RATE);
-    let track = video.tracks[0].id;
+    let track = video.track_named("V1").unwrap().id;
     let out = apply(
         &mut video,
         Command::AddClip {

@@ -149,15 +149,16 @@ pub enum DragKind {
         clip: u64,
         index: usize,
     },
-    /// A track's row, from the height it had.
+    /// A track's row by its top edge, from the height it had and the
+    /// scroll there was.
     Resize {
         track: u64,
-        kind: spectrum_video::TrackKind,
         height: f32,
+        scroll: f32,
     },
-    /// The bar between video and audio, from the share video had.
-    Divider {
-        share: f32,
+    /// A track by its name, to another place in the list.
+    TrackOrder {
+        track: u64,
     },
     /// The grip above the ruler, from the timeline's height.
     Panel {
@@ -197,11 +198,10 @@ pub struct VideoEditor {
     pub media: Option<AssetId>,
     /// Rows dragged taller or shorter, by track, for this session.
     pub heights: std::collections::HashMap<u64, f32>,
-    /// How far the video tracks are scrolled up, and the audio down.
-    pub video_scroll: f32,
-    pub audio_scroll: f32,
-    /// The share of the tracks' room video takes, once the divider moves.
-    pub split: Option<f32>,
+    /// How far the tracks are scrolled up under the ruler.
+    pub scroll_y: f32,
+    /// Where a track being moved would go, as a timeline height.
+    pub track_drop: Option<f32>,
     /// How tall the timeline is, kept between launches.
     pub panel: f32,
     /// The pointer over the timeline, for the razor's mark.
@@ -374,9 +374,8 @@ impl Workspace {
             key: None,
             media: None,
             heights: Default::default(),
-            video_scroll: 0.,
-            audio_scroll: 0.,
-            split: None,
+            scroll_y: 0.,
+            track_drop: None,
             panel: crate::prefs::get("timeline_height")
                 .and_then(|v| v.as_f64())
                 .map_or(crate::video_layout::PANEL, |h| h as f32),
