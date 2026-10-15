@@ -30,6 +30,10 @@ pub enum Command {
         height: u32,
         rate: FrameRate,
     },
+    /// What shows where no clip covers the frame.
+    SetBackground {
+        color: [u8; 3],
+    },
     AddTrack {
         kind: TrackKind,
     },
@@ -278,6 +282,10 @@ fn apply_to(video: &mut Video, command: Command) -> Result<CommandOutput> {
                 clip.duration = (end - clip.start).max(rate.frame_duration());
             }
             output("set_format", format!("{width} × {height} at {rate}"))
+        }
+        Command::SetBackground { color } => {
+            video.background = color;
+            output("set_background", "Changed the background")
         }
         Command::AddTrack { kind } => {
             let id = video.add_track(kind);

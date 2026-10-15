@@ -40,8 +40,10 @@ impl Workspace {
                 share * 100.
             ))
         });
+        let adding = self.adding_overlay(cx);
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .child(
@@ -83,6 +85,7 @@ impl Workspace {
                     .border_color(rgb(BORDER))
                     .child(self.timeline(window, cx)),
             )
+            .children(adding)
             .into_any_element()
     }
 }

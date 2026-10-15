@@ -474,7 +474,7 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
 pub(super) async fn restore(this: &This, cx: &mut AsyncWindowContext, before: &Video) {
     this.update_in(cx, |ws, window, _| ws.focus_handle.focus(window))
         .ok();
-    if doc(this, cx).as_ref().map(|v| &v.tracks) != Some(&before.tracks) {
+    if !doc(this, cx).is_some_and(|v| same(&v, before)) {
         key(cx, "secondary-z");
         until(this, cx, 20_000, idle).await;
     }
@@ -498,7 +498,7 @@ pub(super) async fn check(
         .ok_or("was not saved within 20 s")?;
     crate::perf::record("feature_saved", started.elapsed());
     let after = doc(this, cx).ok_or("the video closed")?;
-    if after.tracks == before.tracks {
+    if same(&after, before) {
         return Err("changed nothing".into());
     }
     let saved = read(this, cx, |ws| {
@@ -516,13 +516,20 @@ pub(super) async fn check(
     }
     key(cx, "secondary-z");
     until(this, cx, 20_000, idle).await;
-    if doc(this, cx).as_ref().map(|v| &v.tracks) != Some(&before.tracks) {
+    if !doc(this, cx).is_some_and(|v| same(&v, before)) {
         return Err("undo did not restore the edit".into());
     }
     key(cx, "secondary-shift-z");
     until(this, cx, 20_000, idle).await;
-    if doc(this, cx).as_ref().map(|v| &v.tracks) != Some(&after.tracks) {
+    if !doc(this, cx).is_some_and(|v| same(&v, &after)) {
         return Err("redo did not bring the change back".into());
     }
     Ok(())
+}
+
+/// Whether two edits look the same: tracks, background, size, and rate.
+pub(super) fn same(a: &Video, b: &Video) -> bool {
+    a.tracks == b.tracks
+        && a.background == b.background
+        && (a.width, a.height, a.rate) == (b.width, b.height, b.rate)
 }

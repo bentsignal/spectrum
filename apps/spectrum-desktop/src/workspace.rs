@@ -50,6 +50,8 @@ pub enum Mode {
     /// A video's selected clips.
     Edit,
     Speed,
+    /// A video's own size, frame rate, and background.
+    Format,
     Media,
     Export,
 }
@@ -69,6 +71,7 @@ impl Mode {
             Mode::History => "History",
             Mode::Edit => "Clip",
             Mode::Speed => "Speed",
+            Mode::Format => "Video",
             Mode::Media => "Media",
             Mode::Export => "Export",
         }
@@ -79,6 +82,7 @@ impl Mode {
             Mode::History => return crate::icons::icon("history"),
             Mode::Edit => return crate::icons::icon("film"),
             Mode::Speed => return crate::icons::icon("gauge"),
+            Mode::Format => IconName::Settings,
             Mode::Media => IconName::Inbox,
             Mode::Export => IconName::ExternalLink,
             Mode::Projects => IconName::FolderClosed,
@@ -175,7 +179,6 @@ pub struct Workspace {
     pub player_controls: Option<crate::player_view::PlayerControls>,
     /// The open video and its export choices.
     pub video: Option<crate::video_state::VideoEditor>,
-    pub video_export: crate::video_sidebar::ExportChoice,
     /// The open canvas, when one fills the main area.
     pub canvas: Option<crate::canvas_state::CanvasState>,
     /// A check for an agent's newer work is running.
@@ -441,7 +444,6 @@ impl Workspace {
             player: None,
             player_controls: None,
             video: None,
-            video_export: Default::default(),
             canvas: None,
             following: false,
             followed_stamp: None,
@@ -472,6 +474,7 @@ impl Workspace {
                 Mode::Edit,
                 Mode::Speed,
                 Mode::Media,
+                Mode::Format,
                 Mode::Export,
                 Mode::History,
             ],
@@ -499,6 +502,9 @@ impl Workspace {
         self.settle = 1;
         if mode == Mode::History {
             self.load_history(window, cx);
+        }
+        if matches!(mode, Mode::Format | Mode::Export) {
+            self.sync_video_settings(window, cx);
         }
         if mode == Mode::Assets && self.place == Place::Home {
             let view = match self.view {

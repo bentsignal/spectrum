@@ -143,6 +143,28 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Starts resizing the timeline from the transport's top edge, as the
+    /// grip below it does.
+    pub fn start_panel_drag(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        let Some(video) = &mut self.video else {
+            return;
+        };
+        if event.click_count == 2 {
+            video.panel = PANEL;
+            if !crate::benchmark::running() {
+                crate::prefs::set("timeline_height", PANEL.into());
+            }
+        } else {
+            let height = video.layout().height;
+            video.drag = Some(Drag::new(
+                video.doc.clone(),
+                DragKind::Panel { height },
+                (0., f32::from(event.position.y)),
+            ));
+        }
+        cx.notify();
+    }
+
     /// A right-click: notes what it was on for the menu, selecting the clip
     /// (or keyframe) if it was not.
     pub fn timeline_right_down(
@@ -195,10 +217,14 @@ impl Workspace {
         let Some(video) = &mut self.video else {
             return;
         };
+        let dragging = video.drag.is_some();
+        if dragging || video.tool == Tool::Razor {
+            // The razor marks where it would cut; a dragged keyframe shows
+            // its value by the pointer.
+            video.hover = Some(event.position);
+        }
         let Some(drag) = video.drag.as_ref() else {
-            // The razor marks where it would cut.
             if video.tool == Tool::Razor {
-                video.hover = Some(event.position);
                 cx.notify();
             }
             return;

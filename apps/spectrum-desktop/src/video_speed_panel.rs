@@ -6,13 +6,10 @@
 use crate::{
     controls::{chip, group, toggle},
     theme::*,
-    video_speed::{key_value, keys},
     workspace::Workspace,
 };
 use gpui::{prelude::*, *};
-use gpui_component::Sizable;
-use gpui_component::input::{Input, InputEvent, InputState};
-use spectrum_media::Time;
+use gpui_component::input::{InputEvent, InputState};
 use spectrum_video::{Command, Curve, Interpolation, SpeedForm};
 
 /// The curves a keyframe can take, as Vegas names them.
@@ -43,8 +40,12 @@ impl KeyFields {
                   window: &mut Window,
                   cx: &mut Context<Workspace>| {
                 if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                    let text = state.read(cx).value().to_string();
-                    this.type_key(field, &text, window, cx);
+                    let open = this.video.as_ref().and_then(|v| v.key_editor);
+                    if open.is_some_and(|(time, _)| time == field) {
+                        let text = state.read(cx).value().to_string();
+                        this.type_key(field, &text, window, cx);
+                        this.close_key_field(window, cx);
+                    }
                 }
             }
         };
@@ -88,80 +89,6 @@ impl Workspace {
                 .child(shown)
                 .child(note("Select a clip to see its speed."));
         };
-        let rate = video.doc.rate;
-        let selected = video
-            .key
-            .filter(|(id, i)| *id == clip.id && *i < keys(&clip.speed).len())
-            .map(|(_, i)| i);
-        let list = keys(&clip.speed);
-        let rows = list.iter().enumerate().map(|(index, (at, _, curve))| {
-            let at = (*at - clip.speed.origin()).timecode(rate);
-            let value = match (view, key_value(&clip, view, index)) {
-                (SpeedForm::Remap, Some(source)) => Time::from_seconds(source).timecode(rate),
-                (SpeedForm::Velocity, Some(percent)) => format!("{percent:.0}%"),
-                (_, None) => String::new(),
-            };
-            let curve = CURVES
-                .iter()
-                .find(|(c, ..)| c == curve)
-                .map_or("", |(_, name, _)| name);
-            let id = clip.id;
-            div()
-                .id(("key", index))
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .flex()
-                .gap_2()
-                .text_sm()
-                .when(selected == Some(index), |el| el.bg(rgb(SELECTED)))
-                .hover(|el| el.bg(rgb(HOVER)))
-                .child(div().flex_1().child(at))
-                .child(div().w(px(84.)).text_color(rgb(MUTED)).child(value))
-                .child(
-                    div()
-                        .w(px(52.))
-                        .text_xs()
-                        .text_color(rgb(FAINT))
-                        .child(curve),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if let Some(video) = &mut this.video {
-                        video.key = Some((id, index));
-                    }
-                    this.sync_key_fields(window, cx);
-                    cx.notify();
-                }))
-        });
-        let keyframes = if list.is_empty() {
-            group("Keyframes", None).child(note(
-                "Plays at the source's speed. Double-click the line on the clip to add a keyframe.",
-            ))
-        } else {
-            group("Keyframes", None)
-                .gap_2()
-                .child(div().flex().flex_col().gap_0p5().children(rows))
-                .when_some(selected, |el, index| {
-                    let current = list[index].2;
-                    el.child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(div().flex_1().child(Input::new(&video.keys.time).small()))
-                            .child(div().flex_1().child(Input::new(&video.keys.value).small())),
-                    )
-                    .child(div().flex().flex_wrap().gap_2().children(CURVES.map(
-                        |(curve, label, id)| {
-                            chip(id, label, current == curve).on_click(cx.listener(
-                                move |this, _, window, cx| this.set_key_curve(curve, window, cx),
-                            ))
-                        },
-                    )))
-                })
-                .child(note(
-                    "Right-click a keyframe on the clip for its curve, or to delete it.",
-                ))
-        };
         let method = clip.interpolation;
         let interpolation = group("Slow motion", None).gap_2().child(
             div().flex().gap_2().children(
@@ -187,15 +114,61 @@ impl Workspace {
             .flex_col()
             .gap_7()
             .child(shown)
-            .child(keyframes)
             .child(interpolation)
             .child(
                 toggle("sound-follows", "Sound follows the speed", follows).on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.set_speed_options(id, None, Some(!follows), window, cx)
-                    },
+                    move |this, _, window, cx| this.set_speed_options(id, None, Some(!follows), window, cx),
                 )),
             )
+            .child(note(
+                "Double-click the line on the clip to add a keyframe; right-click one for its curve, or to type its value or time.",
+            ))
+    }
+
+    /// Opens a field at the chosen keyframe for its value (or its time),
+    /// from its right-click menu.
+    pub fn edit_key_field(&mut self, time: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((clip, index)) = self.selected_key() else {
+            return;
+        };
+        let Some(video) = &self.video else {
+            return;
+        };
+        let track = video.doc.clip(clip.id).map(|(t, _)| t.id);
+        let row = track.and_then(|t| video.layout().row(t));
+        let (left, right) = (video.x_of(clip.start), video.x_of(clip.end()));
+        let place = row.and_then(|row| {
+            let boxed = (left, row.top + 3., right - left, row.height - 6.);
+            let geometry = self.speed_geometry(&clip, boxed, None)?;
+            let at = geometry.indices.iter().position(|i| *i == index)?;
+            let (x, y, _) = geometry.dots[at];
+            Some((x, y))
+        });
+        let Some(place) = place else {
+            return;
+        };
+        self.sync_key_fields(window, cx);
+        let Some(video) = &mut self.video else {
+            return;
+        };
+        video.key_editor = Some((time, place));
+        let field = if time {
+            &video.keys.time
+        } else {
+            &video.keys.value
+        };
+        field.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Closes the keyframe field, back to the workspace's keys.
+    pub fn close_key_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(video) = &mut self.video
+            && video.key_editor.take().is_some()
+        {
+            self.focus_handle.focus(window);
+            cx.notify();
+        }
     }
 
     /// Sets a clip's slow-motion frames or whether its sound follows, on it

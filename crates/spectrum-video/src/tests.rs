@@ -781,3 +781,54 @@ fn tracks_move_anywhere_and_sound_moves_between_sound_tracks() {
     assert_eq!(video.track_of(sound).unwrap(), a2);
     assert!(apply(&mut video, Command::MoveTrack { track: 999, to: 0 }).is_err());
 }
+
+#[test]
+fn the_background_shows_where_no_clip_covers() {
+    let mut video = Video::new("Edit", 40, 20, RATE);
+    apply(
+        &mut video,
+        Command::SetBackground {
+            color: [10, 200, 30],
+        },
+    )
+    .unwrap();
+    let empty = render::frame(
+        &video,
+        Time::ZERO,
+        (40, 20),
+        &mut Solid,
+        render::Quality::Final,
+    )
+    .unwrap();
+    assert_eq!(empty.get_pixel(3, 3).0, [10, 200, 30, 255]);
+    // A still covers a quarter; the background shows around it.
+    let v1 = video.track_named("V1").unwrap().id;
+    apply(
+        &mut video,
+        Command::AddClip {
+            source: Source::Image {
+                asset: AssetId::new_v4(),
+            },
+            track: Some(v1),
+            at: Time::ZERO,
+            source_in: Time::ZERO,
+            duration: frames(10),
+            source_duration: None,
+            name: "Still".into(),
+            placement: Placement::Overwrite,
+            sound: false,
+            sound_track: None,
+        },
+    )
+    .unwrap();
+    let framed = render::frame(
+        &video,
+        Time::ZERO,
+        (40, 20),
+        &mut Solid,
+        render::Quality::Final,
+    )
+    .unwrap();
+    assert_eq!(framed.get_pixel(0, 0).0, [10, 200, 30, 255]);
+    assert_eq!(framed.get_pixel(20, 10).0, [0, 0, 200, 255]);
+}

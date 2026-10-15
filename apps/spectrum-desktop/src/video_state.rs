@@ -59,6 +59,18 @@ impl Tool {
         }
     }
 
+    /// What the tool does, in a line.
+    pub fn description(self) -> &'static str {
+        match self {
+            Tool::Select => "Select, move, and trim clips",
+            Tool::Razor => "Cut a clip where you click",
+            Tool::Ripple => "Trim a clip and move what follows, so no gap opens",
+            Tool::Roll => "Move the cut between two clips; together they keep their length",
+            Tool::Slip => "Show another part of a clip's source in the same place",
+            Tool::Slide => "Move a clip between its neighbors, which trim to fit",
+        }
+    }
+
     pub fn key(self) -> &'static str {
         match self {
             Tool::Select => "v",
@@ -211,6 +223,10 @@ pub struct VideoEditor {
     pub speed_view: spectrum_video::SpeedForm,
     /// What the last right-click was on.
     pub menu: MenuTarget,
+    /// The "Add media" list, while it is open.
+    pub adding: Option<crate::video_adding::Adding>,
+    /// A field open at a keyframe for its time (true) or value, and where.
+    pub key_editor: Option<(bool, (f32, f32))>,
     /// Stopping returns the playhead to where play began, and from where.
     pub return_to_start: bool,
     pub played_from: Option<Time>,
@@ -221,6 +237,8 @@ pub struct VideoEditor {
     pub preview: std::sync::Arc<crate::video_preview::Preview>,
     pub strip: crate::video_preview::Strip,
     pub keys: crate::video_speed_panel::KeyFields,
+    /// The Video and Export tabs' fields.
+    pub forms: crate::video_export::Forms,
     /// The Media tab's search.
     pub media_query: Entity<gpui_component::input::InputState>,
     pub opacity: Entity<gpui_component::slider::SliderState>,
@@ -382,6 +400,8 @@ impl Workspace {
             hover: None,
             speed_view: spectrum_video::SpeedForm::Velocity,
             menu: MenuTarget::Timeline,
+            key_editor: None,
+            adding: None,
             return_to_start: crate::prefs::get("return_to_start")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true),
@@ -392,6 +412,7 @@ impl Workspace {
             strip: Default::default(),
             keys: crate::video_speed_panel::KeyFields::new(window, cx),
             media_query,
+            forms: crate::video_export::Forms::new(window, cx),
             opacity,
             volume,
             _subscriptions: subscriptions,

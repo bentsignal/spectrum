@@ -4,19 +4,14 @@
 //! the video out. (Speed has its own file; actions are in Command+P and the
 //! timeline's right-click menu.)
 use crate::{
-    controls::{chip, group, slider_row, toggle},
+    controls::{group, slider_row, toggle},
     theme::*,
     video_state::Tool,
     workspace::{Place, Workspace},
 };
 use gpui::{prelude::*, *};
-use gpui_component::{
-    Sizable,
-    button::{Button, ButtonVariants},
-    input::Input,
-};
+use gpui_component::{Sizable, input::Input};
 use spectrum_library::{AssetId, AssetKind};
-use spectrum_media::{ExportSettings, VideoCodec};
 use spectrum_video::{Command, Placement, TrackKind};
 
 /// Media dragged from the sidebar onto the timeline.
@@ -33,23 +28,6 @@ impl Render for DraggedMedia {
             .shadow_lg()
             .text_sm()
             .child(self.1.clone())
-    }
-}
-
-/// Export choices, kept for the session.
-#[derive(Clone, Copy, PartialEq)]
-pub struct ExportChoice {
-    pub codec: VideoCodec,
-    /// The long edge, or the video's own size when `None`.
-    pub long_edge: Option<u32>,
-}
-
-impl Default for ExportChoice {
-    fn default() -> Self {
-        Self {
-            codec: VideoCodec::H264,
-            long_edge: None,
-        }
     }
 }
 
@@ -253,66 +231,6 @@ impl Workspace {
             .collect()
     }
 
-    pub fn video_export_sidebar(&self, cx: &mut Context<Self>) -> Div {
-        let Some(video) = &self.video else {
-            return div();
-        };
-        let choice = self.video_export;
-        let codecs = div().flex().flex_wrap().gap_2().children(
-            [
-                (VideoCodec::H264, "h264", "H.264 (MP4)"),
-                (VideoCodec::Hevc, "hevc", "HEVC (MP4)"),
-                (VideoCodec::ProRes, "prores", "ProRes (MOV)"),
-            ]
-            .map(|(codec, id, label)| {
-                chip(id, label, choice.codec == codec).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.video_export.codec = codec;
-                        cx.notify();
-                    },
-                ))
-            }),
-        );
-        let long = video.doc.width.max(video.doc.height);
-        let sizes = div().flex().flex_wrap().gap_2().children(
-            [
-                (None, "full", "Full size"),
-                (Some(1920), "hd", "1080p"),
-                (Some(1280), "720", "720p"),
-            ]
-            .into_iter()
-            .filter(|(edge, ..)| edge.is_none_or(|edge| edge < long))
-            .map(|(edge, id, label)| {
-                chip(id, label, choice.long_edge == edge).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.video_export.long_edge = edge;
-                        cx.notify();
-                    },
-                ))
-            }),
-        );
-        let exporting = video.exporting;
-        div()
-            .flex()
-            .flex_col()
-            .gap_7()
-            .child(group("Format", None).gap_2().child(codecs))
-            .child(group("Size", None).gap_2().child(sizes))
-            .child(
-                Button::new("export-video")
-                    .primary()
-                    .w_full()
-                    .label(match exporting {
-                        Some(share) => format!("Exporting {:.0}%…", share * 100.),
-                        None => "Export…".into(),
-                    })
-                    .loading(exporting.is_some())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.choose_video_export(window, cx)),
-                    ),
-            )
-    }
-
     pub fn set_video_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
         if let Some(video) = &mut self.video {
             video.tool = tool;
@@ -435,14 +353,17 @@ impl Workspace {
         }
     }
 
-    fn choose_video_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn choose_video_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(video) = &self.video else {
             return;
         };
         if video.exporting.is_some() {
             return;
         }
-        let extension = self.video_export.codec.extension();
+        let Some((settings, _)) = self.export_choice(cx) else {
+            return;
+        };
+        let extension = settings.codec.extension();
         let directory = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
@@ -467,19 +388,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (Some(video), Ok(store)) = (&mut self.video, &self.store) else {
+        let Some((settings, range)) = self.export_choice(cx) else {
             return;
         };
-        let choice = self.video_export;
-        let (width, height) =
-            crate::video_program::fitted(&video.doc, choice.long_edge.unwrap_or(u32::MAX));
-        let settings = ExportSettings {
-            codec: choice.codec,
-            width: width & !1,
-            height: height & !1,
-            rate: video.doc.rate,
-            bitrate: None,
-            sound: true,
+        let (Some(video), Ok(store)) = (&mut self.video, &self.store) else {
+            return;
         };
         video.exporting = Some(0.);
         let (root, id) = (store.root.clone(), video.id);
@@ -488,7 +401,7 @@ impl Workspace {
         let (progress, done) = (share.clone(), finished.clone());
         let task = cx.background_executor().spawn(async move {
             let result = spectrum_assets::Service::open(&root).and_then(|service| {
-                service.export_video(id, &path, settings, &mut |part| {
+                service.export_video_range(id, &path, settings, range, &mut |part| {
                     progress.store(part.to_bits(), std::sync::atomic::Ordering::Relaxed);
                     true
                 })

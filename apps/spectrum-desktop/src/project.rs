@@ -24,7 +24,7 @@ impl Workspace {
             })
             .loading(importing > 0)
             .dropdown_caret(true)
-            .flex_1()
+            .w_full()
             .dropdown_menu(move |menu, _, _| {
                 let (files, library) = (view.clone(), view.clone());
                 menu.min_w(px(256.))
@@ -45,7 +45,7 @@ impl Workspace {
             .icon(IconName::Plus)
             .label("New")
             .dropdown_caret(true)
-            .flex_1()
+            .w_full()
             .dropdown_menu(move |menu, _, _| {
                 let (canvas, video) = (made.clone(), made.clone());
                 menu.min_w(px(200.))
@@ -60,7 +60,14 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_5()
-            .child(div().flex().gap_2().child(import).child(new))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .gap_2()
+                    .child(div().flex_1().min_w_0().child(import))
+                    .child(div().flex_1().min_w_0().child(new)),
+            )
             .child(
                 Input::new(&self.search)
                     .prefix(Icon::new(IconName::Search).small().text_color(rgb(MUTED)))

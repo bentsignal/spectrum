@@ -167,6 +167,7 @@ pub(super) async fn views(
             restore(this, cx, &before).await;
         }
     }
+    problems.extend(keyboard(this, cx, video_id, &before).await);
     problems.extend(speed_views(this, cx, video_id, &before).await);
     problems.extend(return_to_start(this, cx).await);
     problems
@@ -452,4 +453,73 @@ async fn click(this: &This, cx: &mut AsyncWindowContext, at: Point<Pixels>, coun
         .ok();
         pause(cx, 16).await;
     }
+}
+
+/// The keyboard paths: Command+P, Escape, and Command+P again; "Add media"
+/// with Enter; a background typed in the Video tab.
+async fn keyboard(
+    this: &This,
+    cx: &mut AsyncWindowContext,
+    video_id: AssetId,
+    before: &Video,
+) -> Vec<String> {
+    use super::scenarios::key;
+    let mut problems = Vec::new();
+    this.update_in(cx, |ws, window, _| ws.focus_handle.focus(window))
+        .ok();
+    key(cx, "secondary-p");
+    pause(cx, 50).await;
+    key(cx, "escape");
+    pause(cx, 50).await;
+    key(cx, "secondary-p");
+    pause(cx, 50).await;
+    let open = read(this, cx, |ws| Some(ws.palette_open)).flatten();
+    if open != Some(true) {
+        problems.push("Command+P after Escape: the palette did not open again".into());
+    }
+    key(cx, "escape");
+    pause(cx, 50).await;
+    // Add media: the first match goes in at the playhead.
+    this.update_in(cx, |ws, window, cx| {
+        ws.seek_player(Time::from_seconds(1.), cx);
+        ws.open_adding(window, cx);
+    })
+    .ok();
+    pause(cx, 100).await;
+    let started = Instant::now();
+    key(cx, "enter");
+    if let Err(problem) = check(this, cx, video_id, before, started).await {
+        problems.push(format!("Add media: {problem}"));
+    }
+    restore(this, cx, before).await;
+    // A background, typed and confirmed in the Video tab.
+    this.update_in(cx, |ws, window, cx| {
+        ws.set_mode(crate::workspace::Mode::Format, window, cx)
+    })
+    .ok();
+    pause(cx, 100).await;
+    this.update_in(cx, |ws, window, cx| {
+        if let Some(video) = &ws.video {
+            video.forms.background.update(cx, |state, cx| {
+                state.set_value("203040", window, cx);
+                state.focus(window, cx);
+            });
+        }
+    })
+    .ok();
+    pause(cx, 50).await;
+    let started = Instant::now();
+    key(cx, "enter");
+    if let Err(problem) = check(this, cx, video_id, before, started).await {
+        problems.push(format!("Background: {problem}"));
+    } else if doc(this, cx).map(|d| d.background) != Some([0x20, 0x30, 0x40]) {
+        problems.push("Background: the color did not take".into());
+    }
+    restore(this, cx, before).await;
+    this.update_in(cx, |ws, window, cx| {
+        ws.set_mode(crate::workspace::Mode::Edit, window, cx);
+        ws.focus_handle.focus(window)
+    })
+    .ok();
+    problems
 }

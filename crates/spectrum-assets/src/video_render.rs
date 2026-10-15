@@ -405,6 +405,18 @@ impl Service {
         settings: ExportSettings,
         progress: &mut dyn FnMut(f32) -> bool,
     ) -> Result<String> {
+        self.export_video_range(id, path, settings, None, progress)
+    }
+
+    /// Exports `from` to `to` of the video (all of it when `None`).
+    pub fn export_video_range(
+        &self,
+        id: AssetId,
+        path: &std::path::Path,
+        settings: ExportSettings,
+        range: Option<(Time, Time)>,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<String> {
         self.check_export(path)?;
         let video = self.video(id)?;
         let duration = video.duration();
@@ -412,18 +424,25 @@ impl Service {
             anyhow::bail!("the video is empty");
         }
         let rate = settings.rate;
-        let frames = rate.frame_at(duration - Time(1)) + 1;
+        let (from, to) = range.unwrap_or((Time::ZERO, duration));
+        let to = to.min(duration);
+        if to <= from {
+            anyhow::bail!("the range to export is empty");
+        }
+        let first = rate.frame_at(from);
+        let frames = (rate.frame_at(to - Time(1)) + 1 - first).max(1);
         let mut sources = VideoSources::new(self, false, false);
         let mut writer = Writer::create(path, settings)?;
         let encoder = writer.encoder.to_string();
         let size = (settings.width, settings.height);
         let mut sound = Vec::new();
         for index in 0..frames {
-            let time = rate.time_of(index);
+            let time = rate.time_of(first + index);
             let picture = render::frame(&video, time, size, &mut sources, render::Quality::Final)?;
             writer.push_frame(&picture)?;
             if settings.sound {
-                let samples = rate.time_of(index + 1).samples(48_000) - time.samples(48_000);
+                let samples =
+                    rate.time_of(first + index + 1).samples(48_000) - time.samples(48_000);
                 sound.resize(samples as usize * 2, 0.);
                 render::sound(&video, time, &mut sound, &mut sources)?;
                 writer.push_sound(&sound)?;
