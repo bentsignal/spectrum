@@ -17,15 +17,14 @@ impl Workspace {
         let importing = self.importing;
         let import = Button::new("import")
             .primary()
-            .icon(IconName::Plus)
             .label(if importing > 0 {
                 format!("Importing {importing}…")
             } else {
-                "Import assets".into()
+                "Import".into()
             })
             .loading(importing > 0)
             .dropdown_caret(true)
-            .w_full()
+            .flex_1()
             .dropdown_menu(move |menu, _, _| {
                 let (files, library) = (view.clone(), view.clone());
                 menu.min_w(px(256.))
@@ -40,32 +39,34 @@ impl Workspace {
                         },
                     ))
             });
-        let chips = self.kind_chips(cx).into_any_element();
+        // Something new for the project: a canvas or a video.
+        let made = cx.entity();
+        let new = Button::new("new")
+            .icon(IconName::Plus)
+            .label("New")
+            .dropdown_caret(true)
+            .flex_1()
+            .dropdown_menu(move |menu, _, _| {
+                let (canvas, video) = (made.clone(), made.clone());
+                menu.min_w(px(200.))
+                    .item(PopupMenuItem::new("Canvas").on_click(move |_, window, cx| {
+                        canvas.update(cx, |this, cx| this.new_canvas(window, cx))
+                    }))
+                    .item(PopupMenuItem::new("Video").on_click(move |_, window, cx| {
+                        video.update(cx, |this, cx| this.new_video(window, cx))
+                    }))
+            });
         div()
             .flex()
             .flex_col()
             .gap_5()
-            .child(import)
+            .child(div().flex().gap_2().child(import).child(new))
             .child(
                 Input::new(&self.search)
                     .prefix(Icon::new(IconName::Search).small().text_color(rgb(MUTED)))
                     .cleanable(true),
             )
-            .child(chips)
-            .child(
-                Button::new("new-canvas")
-                    .icon(IconName::Plus)
-                    .label("New canvas")
-                    .w_full()
-                    .on_click(cx.listener(|this, _, window, cx| this.new_canvas(window, cx))),
-            )
-            .child(
-                Button::new("new-video")
-                    .icon(IconName::Plus)
-                    .label("New video")
-                    .w_full()
-                    .on_click(cx.listener(|this, _, window, cx| this.new_video(window, cx))),
-            )
+            .child(self.kind_list(cx))
     }
 
     /// Creates a video in the open project, shaped like its newest footage

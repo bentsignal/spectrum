@@ -6,10 +6,10 @@
 //! stopping returns to where play began.
 use super::{
     scenarios::{This, pause, read, until},
-    video::{check, doc, drag, idle, restore},
+    video::{check, doc, idle, restore},
 };
 use crate::{
-    video_layout::{DIVIDER, GRIP, HEADER, PANEL},
+    video_layout::{GRIP, HEADER, PANEL, TOP},
     workspace::Workspace,
 };
 use gpui::*;
@@ -44,21 +44,21 @@ pub(super) async fn views(
     let Some(before) = doc(this, cx) else {
         return vec!["Views: the video closed".into()];
     };
-    // Rows grow away from the divider.
-    for (kind, by) in [(TrackKind::Video, -50.), (TrackKind::Audio, 40.)] {
+    // A track grows from its top edge, which follows the pointer.
+    for kind in [TrackKind::Video, TrackKind::Audio] {
         let edge = read(this, cx, |ws| {
             let video = ws.video.as_ref()?;
             let origin = video.timeline.borrow().origin;
             let layout = video.layout();
-            let row = layout.rows.iter().copied().find(|r| r.kind == kind)?;
-            let y = match kind {
-                TrackKind::Video => row.top,
-                TrackKind::Audio => row.top + row.height,
-            };
+            let row = layout
+                .rows
+                .iter()
+                .copied()
+                .find(|r| r.kind == kind && r.top > TOP)?;
             Some((
                 row.track,
                 row.height,
-                origin + point(px(HEADER / 2.), px(y)),
+                origin + point(px(HEADER / 2.), px(row.top)),
             ))
         })
         .flatten();
@@ -66,71 +66,107 @@ pub(super) async fn views(
             problems.push(format!("Row height: no {kind:?} row"));
             continue;
         };
-        drag(this, cx, from, from + point(px(0.), px(by)), 10).await;
+        real_drag(this, cx, from, from - point(px(0.), px(40.)), 8).await;
         let grown = read(this, cx, |ws| {
             ws.video.as_ref()?.heights.get(&track).copied()
         })
         .flatten()
         .unwrap_or(height);
-        if (grown - height - by.abs()).abs() > 1. {
+        if (grown - height - 40.).abs() > 1. {
             problems.push(format!(
-                "Row height: the {kind:?} row went from {height} to {grown}, not {} taller",
-                by.abs()
+                "Row height: the {kind:?} row went from {height} to {grown}, not 40 taller"
             ));
         }
     }
-    // The divider gives video more room; the grip, the timeline.
-    let spots = read(this, cx, |ws| {
+    // The grip: pulled far up with real pointer events, past where the
+    // timeline was, it keeps following until the monitor is a sliver; a
+    // double-click puts it back.
+    let grip = read(this, cx, |ws| {
         let video = ws.video.as_ref()?;
-        let origin = video.timeline.borrow().origin;
-        let layout = video.layout();
-        let x = HEADER + 200.;
-        Some((
-            origin + point(px(x), px(layout.divider() + DIVIDER / 2.)),
-            origin + point(px(x), px(GRIP / 2.)),
-            layout.video.1 - layout.video.0,
-            layout.height,
-        ))
+        let bounds = *video.timeline.borrow();
+        Some(bounds.origin + point(px(HEADER + 200.), px(GRIP / 2.)))
     })
     .flatten();
-    if let Some((divider, grip, video_room, height)) = spots {
-        drag(this, cx, divider, divider + point(px(0.), px(30.)), 10).await;
-        let after = read(this, cx, |ws| {
-            let layout = ws.video.as_ref()?.layout();
-            Some(layout.video.1 - layout.video.0)
+    if let Some(grip) = grip {
+        real_drag(this, cx, grip, point(grip.x, px(0.)), 30).await;
+        pause(cx, 100).await;
+        let (panel, most) = read(this, cx, |ws| {
+            let video = ws.video.as_ref()?;
+            Some((video.panel, f32::from(video.timeline.borrow().size.height)))
         })
         .flatten()
-        .unwrap_or(video_room);
-        if after <= video_room + 10. {
+        .unwrap_or((0., 0.));
+        let tallest = this
+            .update_in(cx, |_, window, _| crate::video_layout::panel_most(window))
+            .unwrap_or(0.);
+        if (panel - tallest).abs() > 2. || (most - tallest).abs() > 2. {
             problems.push(format!(
-                "Divider: video's room went from {video_room} to {after}"
+                "Grip: pulled to the top, the timeline is {panel} (drawn {most}), not {tallest}"
             ));
         }
-        drag(this, cx, grip, grip - point(px(0.), px(40.)), 10).await;
+        let top = read(this, cx, |ws| {
+            Some(
+                ws.video.as_ref()?.timeline.borrow().origin
+                    + point(px(HEADER + 200.), px(GRIP / 2.)),
+            )
+        })
+        .flatten()
+        .unwrap_or(grip);
+        click(this, cx, top, 2).await;
         pause(cx, 100).await;
-        let panel = read(this, cx, |ws| Some(ws.video.as_ref()?.panel))
-            .flatten()
-            .unwrap_or(height);
-        if (panel - height - 40.).abs() > 1. {
+        let panel = read(this, cx, |ws| Some(ws.video.as_ref()?.panel)).flatten();
+        if panel != Some(PANEL) {
             problems.push(format!(
-                "Grip: the timeline went from {height} to {panel}, not 40 taller"
+                "Grip: a double-click left it at {panel:?}, not {PANEL}"
             ));
         }
     }
     let same = doc(this, cx).is_some_and(|d| d.tracks == before.tracks);
     if !same {
-        problems.push("Rows, divider, and grip: changed the edit".into());
+        problems.push("Rows and grip: changed the edit".into());
     }
     this.update(cx, |ws, cx| {
         if let Some(video) = &mut ws.video {
             video.heights.clear();
-            video.split = None;
+            video.scroll_y = 0.;
             video.panel = PANEL;
         }
         cx.notify();
     })
     .ok();
     pause(cx, 100).await;
+    // A track dragged by its name to the top: saved, undone, redone.
+    let header = read(this, cx, |ws| {
+        let video = ws.video.as_ref()?;
+        let origin = video.timeline.borrow().origin;
+        let row = video
+            .layout()
+            .rows
+            .into_iter()
+            .find(|r| r.kind == TrackKind::Audio)?;
+        Some((
+            origin + point(px(12.), px(row.top + row.height / 2.)),
+            origin + point(px(12.), px(TOP + 2.)),
+        ))
+    })
+    .flatten();
+    match header {
+        None => problems.push("Track order: no audio track".into()),
+        Some((from, to)) => {
+            real_drag(this, cx, from, to, 10).await;
+            let started = Instant::now();
+            match check(this, cx, video_id, &before, started).await {
+                Err(problem) => problems.push(format!("Track order: {problem}")),
+                Ok(()) => {
+                    let top = doc(this, cx).and_then(|d| d.tracks.last().map(|t| t.kind));
+                    if top != Some(TrackKind::Audio) {
+                        problems.push("Track order: the audio track did not go to the top".into());
+                    }
+                }
+            }
+            restore(this, cx, &before).await;
+        }
+    }
     problems.extend(speed_views(this, cx, video_id, &before).await);
     problems.extend(return_to_start(this, cx).await);
     problems
@@ -139,7 +175,7 @@ pub(super) async fn views(
 /// The ramped clip, selected.
 fn select_ramp(ws: &mut Workspace) -> Option<u64> {
     let video = ws.video.as_mut()?;
-    let id = video.doc.tracks[0].clips.last()?.id;
+    let id = video.doc.track_named("V1")?.clips.last()?.id;
     video.selected = video.doc.linked(id);
     video.key = None;
     Some(id)
@@ -211,7 +247,7 @@ async fn speed_views(
         Err(problem) => problems.push(format!("Speed line double-click: {problem}")),
         Ok(()) => {
             let remap = doc(this, cx).and_then(|d| {
-                let id = d.tracks[0].clips.last()?.id;
+                let id = d.track_named("V1")?.clips.last()?.id;
                 Some(matches!(
                     d.clip(id)?.1.speed,
                     spectrum_video::Speed::Remap { .. }
@@ -329,7 +365,7 @@ pub(super) async fn preview(this: &This, cx: &mut AsyncWindowContext) -> super::
         let Some(clip) = ws
             .video
             .as_ref()
-            .and_then(|v| v.doc.tracks[0].clips.first().map(|c| c.id))
+            .and_then(|v| v.doc.track_named("V1")?.clips.first().map(|c| c.id))
         else {
             return;
         };
@@ -358,4 +394,62 @@ pub(super) async fn preview(this: &This, cx: &mut AsyncWindowContext) -> super::
     }
     this.update(cx, |ws, cx| ws.clear_in_out(cx)).ok();
     result
+}
+
+/// A press, moves, and a release through the timeline's handlers, the
+/// moves reaching wherever they go (the window follows a drag anywhere).
+async fn real_drag(
+    this: &This,
+    cx: &mut AsyncWindowContext,
+    from: Point<Pixels>,
+    to: Point<Pixels>,
+    steps: u32,
+) {
+    this.update_in(cx, |ws, window, cx| {
+        let event = MouseDownEvent {
+            button: MouseButton::Left,
+            position: from,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        };
+        ws.timeline_down(&event, window, cx);
+    })
+    .ok();
+    pause(cx, 16).await;
+    for step in 1..=steps.max(1) {
+        let share = step as f32 / steps.max(1) as f32;
+        this.update_in(cx, |ws, window, cx| {
+            let event = MouseMoveEvent {
+                position: from + (to - from) * share,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            };
+            ws.timeline_move(&event, window, cx);
+        })
+        .ok();
+        pause(cx, 16).await;
+    }
+    this.update_in(cx, |ws, window, cx| ws.timeline_release(window, cx))
+        .ok();
+    pause(cx, 16).await;
+}
+
+/// A click (or double-click) on the timeline.
+async fn click(this: &This, cx: &mut AsyncWindowContext, at: Point<Pixels>, count: usize) {
+    for click_count in 1..=count {
+        this.update_in(cx, |ws, window, cx| {
+            let event = MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            };
+            ws.timeline_down(&event, window, cx);
+            ws.timeline_release(window, cx);
+        })
+        .ok();
+        pause(cx, 16).await;
+    }
 }

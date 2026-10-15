@@ -179,8 +179,9 @@ and saves batches after a pause, as the canvas does; its program monitor is
 the same player fed by the video's composited frames and mixed sound. Tools
 and commands are in the tool button, Command+P (`video_menu.rs`), and the
 timeline's right-click menu; tabs are Clip, Speed, Media, Export, History.
-`video_layout.rs` lays out the grip, ruler, video tracks (anchored at the
-divider), and audio tracks, each pane scrolling and clipped. Speed shows as
+`video_layout.rs` lays out the grip, ruler, and tracks: one list scrolling
+as one, in any order (the document keeps them bottom up; later video is in
+front). Speed shows as
 velocity or time remap from one timing (`video_speed.rs`); editing in the
 other view converts first. Preview renders (`video_preview.rs`) keep JPEG
 frames keyed by what makes each frame, so an edit loses only its frames.

@@ -2,18 +2,19 @@
 //! tool's drag (move or trim with Select, ripple trim, roll, slip, slide);
 //! the Razor cuts where clicked. Edges and moves snap to the playhead and
 //! other clips' edges. The grip above the ruler sets how tall the timeline
-//! is, the divider how video and audio share it, and a track's outer edge
-//! its height. A swipe up or down zooms around the pointer, as the wheel
-//! does in Vegas; sideways (or Shift) scrolls time; over the track names, or
-//! with Option, it scrolls the tracks.
+//! is (a double-click resets it), a track's top edge its height, and
+//! dragging a track's name moves the track. A swipe up or down zooms around
+//! the pointer, as the wheel does in Vegas; sideways (or Shift) scrolls
+//! time; over the track names, or with Option, it scrolls the tracks. Drags
+//! follow the pointer anywhere in the window.
 use crate::{
-    video_layout::{DIVIDER, HEADER, Hit, PANEL_MIN, ROW_RANGE, TOP},
+    video_layout::{HEADER, Hit, PANEL, PANEL_MIN, ROW_RANGE, panel_most},
     video_state::{Drag, DragKind, MenuTarget, Tool},
     workspace::Workspace,
 };
 use gpui::*;
 use spectrum_media::Time;
-use spectrum_video::{Command, Edge, TrackKind};
+use spectrum_video::{Command, Edge};
 
 /// How near, in points, an edge snaps.
 const SNAP: f32 = 8.;
@@ -51,21 +52,22 @@ impl Workspace {
         };
         let mut clicked = None;
         let kind = match hit {
-            Hit::Header { .. } => return,
+            Hit::Header { track } => DragKind::TrackOrder { track },
+            Hit::Grip if event.click_count == 2 => {
+                video.panel = PANEL;
+                if !crate::benchmark::running() {
+                    crate::prefs::set("timeline_height", PANEL.into());
+                }
+                cx.notify();
+                return;
+            }
             Hit::Grip => DragKind::Panel {
                 height: layout.height,
             },
-            Hit::Divider => DragKind::Divider {
-                share: (layout.video.1 - layout.video.0) / (layout.height - TOP - DIVIDER).max(1.),
-            },
-            Hit::RowEdge {
+            Hit::RowEdge { track, height } => DragKind::Resize {
                 track,
-                kind,
                 height,
-            } => DragKind::Resize {
-                track,
-                kind,
-                height,
+                scroll: video.scroll_y.min(layout.room),
             },
             Hit::Ruler | Hit::Empty { .. } => {
                 if matches!(hit, Hit::Empty { .. }) && !shift {
@@ -213,32 +215,25 @@ impl Workspace {
                 return;
             }
             DragKind::Panel { height } => {
-                let most = f32::from(window.viewport_size().height) - 180.;
-                video.panel = (height + from.1 - y).clamp(PANEL_MIN, most.max(PANEL_MIN));
-                cx.notify();
-                return;
-            }
-            DragKind::Divider { .. } => {
-                let layout = video.layout();
-                let local = video.local(event.position).1;
-                let room = (layout.height - TOP - DIVIDER).max(1.);
-                video.split = Some(((local - TOP) / room).clamp(0.12, 0.88));
+                video.panel = (height + from.1 - y).clamp(PANEL_MIN, panel_most(window));
                 cx.notify();
                 return;
             }
             DragKind::Resize {
                 track,
-                kind,
                 height,
+                scroll,
             } => {
-                // Away from the divider: video up, audio down.
-                let grown = match kind {
-                    TrackKind::Video => from.1 - y,
-                    TrackKind::Audio => y - from.1,
-                };
-                video
-                    .heights
-                    .insert(track, (height + grown).clamp(ROW_RANGE.0, ROW_RANGE.1));
+                // The top edge follows the pointer: the row grows upward,
+                // the tracks above scrolling up to make room.
+                let grown = (height + from.1 - y).clamp(ROW_RANGE.0, ROW_RANGE.1);
+                video.heights.insert(track, grown);
+                video.scroll_y = (scroll + grown - height).max(0.);
+                cx.notify();
+                return;
+            }
+            DragKind::TrackOrder { .. } => {
+                video.track_drop = Some(video.local(event.position).1);
                 cx.notify();
                 return;
             }
@@ -246,11 +241,10 @@ impl Workspace {
         }
         let time = self.timeline_time(event.position);
         let by = self.snapped_by(Time::from_seconds(time.seconds() - from.0), kind);
+        let rows = self.track_shift(event.position);
         let Some(video) = &self.video else {
             return;
         };
-        // Rows dragged up move pictures up a track.
-        let rows = video.rows_between(from.1, y);
         let selected = video.selected.clone();
         let command = match kind {
             DragKind::Move => Command::Move {
@@ -305,6 +299,19 @@ impl Workspace {
         match drag.kind {
             DragKind::Panel { .. } if !crate::benchmark::running() => {
                 crate::prefs::set("timeline_height", video.panel.into());
+            }
+            DragKind::TrackOrder { track } => {
+                let at = video.track_drop.take();
+                let from = video.doc.tracks.iter().position(|t| t.id == track);
+                let to = at.map(|y| video.layout().place_at(y));
+                if let (Some(from), Some(to)) = (from, to)
+                    && from != to
+                {
+                    let command = Command::MoveTrack { track, to };
+                    self.video_commands(vec![command], window, cx);
+                }
+                cx.notify();
+                return;
             }
             _ => {}
         }
@@ -390,16 +397,12 @@ impl Workspace {
         let Some(video) = &mut self.video else {
             return;
         };
-        let (x, y) = video.local(event.position);
+        let (x, _) = video.local(event.position);
         let layout = video.layout();
         let tracks = x < HEADER || event.modifiers.alt;
         if tracks && dy.abs() >= dx.abs() {
-            // Up and down through the pane under the pointer.
-            if y >= layout.audio.0 {
-                video.audio_scroll = (video.audio_scroll - dy).clamp(0., layout.audio_room);
-            } else {
-                video.video_scroll = (video.video_scroll + dy).clamp(0., layout.video_room);
-            }
+            // Up and down through the tracks.
+            video.scroll_y = (video.scroll_y.min(layout.room) - dy).clamp(0., layout.room);
         } else if dx.abs() > dy.abs() || event.modifiers.shift {
             let sideways = if dx.abs() > dy.abs() { dx } else { dy };
             video.scroll = (video.scroll - f64::from(sideways / video.zoom)).max(0.);
@@ -411,6 +414,62 @@ impl Workspace {
             video.scroll = (time.seconds() - f64::from(at / video.zoom)).max(0.);
         }
         cx.notify();
+    }
+
+    /// How many tracks of its kind a moved selection goes: to the track of
+    /// that kind nearest the pointer, counting up. Pictures lead; sound on
+    /// its own moves among sound tracks.
+    fn track_shift(&self, position: Point<Pixels>) -> i32 {
+        let Some(video) = &self.video else {
+            return 0;
+        };
+        let Some(drag) = &video.drag else {
+            return 0;
+        };
+        let tracks: Vec<_> = video
+            .selected
+            .iter()
+            .filter_map(|id| drag.base.clip(*id).map(|(t, _)| (t.id, t.kind)))
+            .collect();
+        let pictures = tracks
+            .iter()
+            .any(|(_, k)| *k == spectrum_video::TrackKind::Video);
+        let kind = if pictures {
+            spectrum_video::TrackKind::Video
+        } else {
+            spectrum_video::TrackKind::Audio
+        };
+        // The pressed clip's track, or the first of the kind that leads.
+        let pressed = drag
+            .clicked
+            .and_then(|id| drag.base.clip(id))
+            .filter(|(t, _)| t.kind == kind)
+            .map(|(t, _)| t.id);
+        let Some(source) =
+            pressed.or_else(|| tracks.iter().find(|(_, k)| *k == kind).map(|(id, _)| *id))
+        else {
+            return 0;
+        };
+        let y = video.local(position).1;
+        let layout = video.layout_of(&drag.base);
+        let distance = |r: &crate::video_layout::Row| (r.top + r.height / 2. - y).abs();
+        let nearest = layout
+            .rows
+            .iter()
+            .filter(|r| r.kind == kind)
+            .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+            .map(|r| r.track);
+        let rank = |track: u64| {
+            drag.base
+                .tracks
+                .iter()
+                .filter(|t| t.kind == kind)
+                .position(|t| t.id == track)
+        };
+        match (nearest.and_then(rank), rank(source)) {
+            (Some(to), Some(from)) => to as i32 - from as i32,
+            _ => 0,
+        }
     }
 
     /// Moves the playhead to the next (or previous) cut on any track.

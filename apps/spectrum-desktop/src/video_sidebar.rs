@@ -386,7 +386,7 @@ impl Workspace {
         let at = video.doc.snap(video.time_at(x));
         let layout = video.layout();
         let row = layout.rows.iter().find(|r| {
-            let (top, bottom) = layout.pane(r.kind);
+            let (top, bottom) = layout.area();
             y >= top.max(r.top) && y < bottom.min(r.top + r.height)
         });
         let kind = match store.service.library.get(asset).map(|a| a.kind) {

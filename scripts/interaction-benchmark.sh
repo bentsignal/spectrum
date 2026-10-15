@@ -51,4 +51,5 @@ for argument in "$@"; do
     profile=""
   fi
 done
-exec "$app" --benchmark --strict ${profile:+--profile "$profile"} "$@"
+# Not exec: the shell stays to stop Xvfb when the app exits.
+"$app" --benchmark --strict ${profile:+--profile "$profile"} "$@"

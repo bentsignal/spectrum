@@ -1,5 +1,4 @@
 use crate::{
-    controls::chip,
     store::{Store, importable},
     theme::*,
     workspace::{LibraryView, Place, Workspace},
@@ -150,7 +149,7 @@ impl Workspace {
     /// Home's Assets mode: the whole library.
     pub fn library_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let buttons = self.import_button(cx).into_any_element();
-        let chips = self.kind_chips(cx).into_any_element();
+        let chips = self.kind_list(cx).into_any_element();
         let place = |id: &'static str, icon, label: &'static str, view: LibraryView| {
             let selected = self.view == view;
             div()
@@ -203,30 +202,6 @@ impl Workspace {
                     )),
             )
             .child(chips)
-    }
-
-    pub fn kind_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        use spectrum_library::AssetKind;
-        let kind = |id: &'static str, label: &'static str, kind: AssetKind| {
-            let on = !self.hidden_kinds.contains(&kind);
-            chip(id, label, on).on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(at) = this.hidden_kinds.iter().position(|k| *k == kind) {
-                    this.hidden_kinds.remove(at);
-                } else {
-                    this.hidden_kinds.push(kind);
-                }
-                cx.notify();
-            }))
-        };
-        div()
-            .flex()
-            .flex_wrap()
-            .gap_2()
-            .child(kind("images", "Images", AssetKind::Image))
-            .child(kind("canvases", "Canvases", AssetKind::Canvas))
-            .child(kind("footage", "Footage", AssetKind::Footage))
-            .child(kind("audio", "Audio", AssetKind::Audio))
-            .child(kind("videos", "Videos", AssetKind::Video))
     }
 
     /// Sort order, at the right of the title row above a grid.

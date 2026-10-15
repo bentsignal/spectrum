@@ -1,10 +1,10 @@
-//! Drawing the timeline: the grip, the ruler, the video and audio panes
-//! (each clipped, so clips and their lines never draw over the track names
-//! or the other pane), the divider, the playhead, and the razor's mark.
+//! Drawing the timeline: the grip, the ruler, the tracks (clipped, so
+//! clips and their lines never draw over the track names or the ruler), the
+//! playhead, the razor's mark, and where a moved track would go.
 use crate::{
     theme::*,
-    video_layout::{DIVIDER, GRIP, HEADER, Layout, PANEL_MIN, RULER, TOP, layout},
-    video_state::Tool,
+    video_layout::{GRIP, HEADER, Layout, PANEL_MIN, RULER, TOP, layout, panel_most},
+    video_state::{DragKind, Tool},
     workspace::Workspace,
 };
 use gpui::{prelude::*, *};
@@ -17,8 +17,7 @@ impl Workspace {
         let Some(video) = &self.video else {
             return div().into_any_element();
         };
-        let most = f32::from(window.viewport_size().height) - 180.;
-        let height = video.panel.clamp(PANEL_MIN, most.max(PANEL_MIN));
+        let height = video.panel.clamp(PANEL_MIN, panel_most(window));
         let layout = layout(&video.doc, video, height);
         let bounds = video.timeline.clone();
         let width = f32::from(bounds.borrow().size.width).max(400.);
@@ -40,36 +39,26 @@ impl Workspace {
                     .size_full(),
             )
             .child(
-                // The grip: drag to give the timeline more or less room.
+                // The grip: drag to give the timeline more or less room;
+                // a double-click resets it.
                 div()
                     .id("timeline-grip")
                     .absolute()
                     .top_0()
                     .left_0()
                     .w_full()
-                    .h(px(GRIP))
+                    .h(px(GRIP + 3.))
                     .bg(rgb(SIDEBAR))
                     .border_t_1()
                     .border_color(rgb(BORDER))
-                    .cursor(CursorStyle::ResizeRow),
+                    .flex()
+                    .justify_center()
+                    .pt(px(3.))
+                    .cursor(CursorStyle::ResizeRow)
+                    .child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgb(FAINT))),
             )
             .child(self.ruler(width, visible))
-            .child(self.pane(&layout, TrackKind::Video, width, visible, cx))
-            .child(
-                div()
-                    .id("track-divider")
-                    .absolute()
-                    .left_0()
-                    .top(px(layout.divider()))
-                    .w_full()
-                    .h(px(DIVIDER))
-                    .bg(rgb(SIDEBAR))
-                    .border_t_1()
-                    .border_b_1()
-                    .border_color(rgb(BORDER))
-                    .cursor(CursorStyle::ResizeRow),
-            )
-            .child(self.pane(&layout, TrackKind::Audio, width, visible, cx));
+            .child(self.tracks(&layout, width, visible, cx));
         let playhead = self.timeline_x(video.monitor.now());
         if playhead >= HEADER {
             layer = layer.child(
@@ -97,6 +86,59 @@ impl Workspace {
                     .child(crate::icons::icon("scissors").size(px(14.))),
             );
         }
+        // Where a moved track would go.
+        if let (Some(y), Some(DragKind::TrackOrder { .. })) =
+            (video.track_drop, video.drag.as_ref().map(|d| d.kind))
+        {
+            let place = layout.place_at(y);
+            let index = layout.rows.len().saturating_sub(place + 1);
+            let line = layout.rows.get(index).map_or(TOP, |r| {
+                if y < r.top + r.height / 2. {
+                    r.top
+                } else {
+                    r.top + r.height
+                }
+            });
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(line - 1.))
+                    .w_full()
+                    .h(px(2.))
+                    .bg(rgb(0x5b8def)),
+            );
+        }
+        // While a drag runs, it follows the pointer anywhere in the window,
+        // however the timeline moves under it.
+        if video.drag.is_some() {
+            let view = cx.entity().downgrade();
+            layer = layer.child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        let moved = view.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if phase.bubble() {
+                                moved
+                                    .update(cx, |this, cx| this.timeline_move(event, window, cx))
+                                    .ok();
+                            }
+                        });
+                        let released = view.clone();
+                        window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
+                            if phase.bubble() {
+                                released
+                                    .update(cx, |this, cx| this.timeline_release(window, cx))
+                                    .ok();
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
+        }
         let menu = self.timeline_menu(cx);
         layer
             .on_mouse_down(
@@ -111,8 +153,12 @@ impl Workspace {
                     this.timeline_right_down(event, window, cx)
                 }),
             )
+            // Drags are followed window-wide (above); here only the
+            // razor's mark follows the pointer.
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                this.timeline_move(event, window, cx)
+                if this.video.as_ref().is_some_and(|v| v.drag.is_none()) {
+                    this.timeline_move(event, window, cx)
+                }
             }))
             .on_mouse_up(
                 MouseButton::Left,
@@ -136,19 +182,18 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// One pane's tracks: names on the left, clips to the right, each
-    /// clipped to the pane.
-    fn pane(
+    /// The tracks: names on the left, clips to the right, clipped to the
+    /// tracks' area.
+    fn tracks(
         &self,
         layout: &Layout,
-        kind: TrackKind,
         width: f32,
         visible: (f64, f64),
         cx: &mut Context<Self>,
     ) -> Div {
         let video = self.video.as_ref().expect("video");
         let doc = &video.doc;
-        let (top, bottom) = layout.pane(kind);
+        let (top, bottom) = layout.area();
         let razor = video.tool == Tool::Razor;
         let hover = video.hover.filter(|_| razor).map(|p| video.local(p));
         let mut headers = div().absolute().left_0().top_0().w(px(HEADER)).h_full();
@@ -167,7 +212,8 @@ impl Workspace {
             .top(px(-top))
             .w(px(width))
             .h(px(layout.height));
-        for row in layout.rows.iter().filter(|r| r.kind == kind) {
+        for row in &layout.rows {
+            let kind = row.kind;
             let Some(track) = doc.track(row.track) else {
                 continue;
             };
@@ -259,11 +305,8 @@ impl Workspace {
                 }
             }
             headers = headers.child(self.track_header(track, kind, y, row.height, cx));
-            // The outer edge drags the row taller or shorter.
-            let edge = match kind {
-                TrackKind::Video => y - 4.,
-                TrackKind::Audio => y + row.height - 4.,
-            };
+            // The top edge drags the row taller or shorter.
+            let edge = y - 4.;
             headers = headers.child(
                 div()
                     .id(("row-edge", row.track))

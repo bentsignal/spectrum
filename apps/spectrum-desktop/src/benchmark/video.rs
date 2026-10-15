@@ -33,7 +33,7 @@ pub(super) fn make(
     service.library.add_to_project(project, &[edit.id])?;
     let rate = video.rate;
     let seconds = |s: f64| rate.time_of((s * rate.fps()).round() as i64);
-    let v1 = service.video(edit.id)?.tracks[0].id;
+    let v1 = service.video(edit.id)?.track_named("V1").context("V1")?.id;
     let mut commands = vec![
         service.clip_command(footage, Time::ZERO, Some(v1), Placement::Overwrite)?,
         service.clip_command(footage, seconds(6.), Some(v1), Placement::Overwrite)?,
@@ -52,8 +52,14 @@ pub(super) fn make(
     // The photo shows for two seconds over the cut at four; the footage
     // after six slows to a quarter, then plays backward.
     let doc = service.video(edit.id)?;
-    let still = doc.tracks[1].clips[0].id;
-    let ramped = doc.tracks[0].clips.last().context("clips")?.id;
+    let still = doc.track_named("V2").context("V2")?.clips[0].id;
+    let ramped = doc
+        .track_named("V1")
+        .context("V1")?
+        .clips
+        .last()
+        .context("clips")?
+        .id;
     let key = |at: f64, percent: f64| spectrum_video::VelocityKey {
         at: seconds(at),
         percent,
@@ -286,7 +292,7 @@ pub(super) async fn drag(
 
 /// The first clip on the first video track: its track, start, and end.
 fn first_clip(video: &Video, index: usize) -> Option<(u64, u64, Time, Time)> {
-    let track = &video.tracks[0];
+    let track = video.track_named("V1")?;
     let clip = track.clips.get(index)?;
     Some((track.id, clip.id, clip.start, clip.end()))
 }
@@ -403,16 +409,21 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
             ws.set_video_tool(Tool::Select, cx);
             if let Some(video) = &mut ws.video {
                 // The second clip, selected, with the playhead inside it.
-                let clip = video.doc.tracks[0]
-                    .clips
-                    .get(1)
+                let clip = video
+                    .doc
+                    .track_named("V1")
+                    .and_then(|t| t.clips.get(1))
                     .map(|c| (c.id, c.start + Time(c.duration.0 / 2)));
                 if let Some((id, middle)) = clip {
                     video.selected = video.doc.linked(id);
                     video.monitor.seek(middle);
                 }
                 // The footage, chosen in the Media sidebar for , and .
-                video.media = video.doc.tracks[0].clips.first().map(|c| c.source.asset());
+                video.media = video
+                    .doc
+                    .track_named("V1")
+                    .and_then(|t| t.clips.first())
+                    .map(|c| c.source.asset());
             }
             ws.focus_handle.focus(window);
         })
@@ -436,7 +447,7 @@ pub(super) async fn tools(this: &This, cx: &mut AsyncWindowContext, video_id: As
     let dropped = this
         .update_in(cx, |ws, window, cx| {
             let video = ws.video.as_ref()?;
-            let footage = video.doc.tracks[0].clips.first()?.source.asset();
+            let footage = video.doc.track_named("V1")?.clips.first()?.source.asset();
             let track = video.doc.tracks.get(1)?;
             let at = track.clips.last().map_or(Time::ZERO, |c| c.end()) + Time::from_seconds(1.);
             let position = spot(ws, track.id, at)?;

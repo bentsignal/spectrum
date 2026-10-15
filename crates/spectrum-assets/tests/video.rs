@@ -77,7 +77,7 @@ fn videos_compose_the_library_and_export() {
         .unwrap();
     // The photo shows for five seconds; trim it to one.
     let edit = service.video(video.id).unwrap();
-    let photo_clip = edit.tracks[0].clips[1].id;
+    let photo_clip = edit.track_named("V1").unwrap().clips[1].id;
     service
         .edit_video(
             video.id,
@@ -92,7 +92,10 @@ fn videos_compose_the_library_and_export() {
     let edit = service.video(video.id).unwrap();
     assert_eq!(edit.duration(), rate.time_of(240));
     // The canvas moved up behind the trimmed photo.
-    assert_eq!(edit.tracks[0].clips[2].start, rate.time_of(90));
+    assert_eq!(
+        edit.track_named("V1").unwrap().clips[2].start,
+        rate.time_of(90)
+    );
 
     let red = service
         .video_frame(video.id, rate.time_of(10), (64, 36))
@@ -141,7 +144,9 @@ fn videos_compose_the_library_and_export() {
     // A copy gets its own photo and canvas, and shares the footage.
     let copy = service.copy(video.id).unwrap();
     let copied = service.video(copy.id).unwrap();
-    let assets: Vec<_> = copied.tracks[0]
+    let assets: Vec<_> = copied
+        .track_named("V1")
+        .unwrap()
         .clips
         .iter()
         .map(|c| c.source.asset())

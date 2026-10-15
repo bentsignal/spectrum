@@ -13,7 +13,10 @@ fn video() -> Video {
 
 fn footage(video: &mut Video, at: i64, length: i64, source_frames: i64) -> (u64, u64) {
     // Always onto V1 and A1, overwriting what is there.
-    let (picture, sound) = (video.tracks[0].id, video.tracks[2].id);
+    let (picture, sound) = (
+        video.track_named("V1").unwrap().id,
+        video.track_named("A1").unwrap().id,
+    );
     let out = apply(
         video,
         Command::AddClip {
@@ -52,15 +55,17 @@ fn footage_brings_its_sound_linked() {
         .iter()
         .map(|t| (t.name.clone(), t.kind))
         .collect();
-    assert_eq!(kinds[0].0, "V1");
-    assert_eq!(kinds[2], ("A1".into(), TrackKind::Audio));
+    // From the bottom up; the timeline shows them reversed: V2, V1, A1, A2.
+    let names: Vec<_> = kinds.iter().map(|k| k.0.as_str()).collect();
+    assert_eq!(names, ["A2", "A1", "V1", "V2"]);
+    assert_eq!(kinds[1], ("A1".into(), TrackKind::Audio));
     // Asking for more than the footage has gives all of it.
     let (picture, sound) = footage(&mut video, 10, 500, 90);
     assert_eq!(span(&video, picture), (10, 90, 0));
     assert_eq!(span(&video, sound), (10, 90, 0));
     assert_eq!(video.linked(picture).len(), 2);
-    assert_eq!(video.tracks[0].clips.len(), 1);
-    assert_eq!(video.tracks[2].clips.len(), 1);
+    assert_eq!(video.track_named("V1").unwrap().clips.len(), 1);
+    assert_eq!(video.track_named("A1").unwrap().clips.len(), 1);
     assert_eq!(video.duration(), frames(100));
     // A clip off the frame grid lands on a frame.
     let video_snap = video.snap(Time(frames(5).0 + 7));
@@ -73,17 +78,19 @@ fn overwrite_cuts_into_clips_and_insert_pushes_them_along() {
     let (a, _) = footage(&mut video, 0, 100, 1000);
     // Overwriting the middle splits A around the new clip.
     footage(&mut video, 40, 20, 1000);
-    let starts: Vec<_> = video.tracks[0]
+    let starts: Vec<_> = video
+        .track_named("V1")
+        .unwrap()
         .clips
         .iter()
         .map(|c| RATE.frame_at(c.start))
         .collect();
     assert_eq!(starts, [0, 40, 60]);
     assert_eq!(span(&video, a), (0, 40, 0));
-    let right = &video.tracks[0].clips[2];
+    let right = &video.track_named("V1").unwrap().clips[2];
     assert_eq!(RATE.frame_at(right.source_in), 60);
     // Inserting pushes everything after the point, on every track.
-    let v1 = video.tracks[0].id;
+    let v1 = video.track_named("V1").unwrap().id;
     apply(
         &mut video,
         Command::AddClip {
@@ -102,13 +109,17 @@ fn overwrite_cuts_into_clips_and_insert_pushes_them_along() {
         },
     )
     .unwrap();
-    let starts: Vec<_> = video.tracks[0]
+    let starts: Vec<_> = video
+        .track_named("V1")
+        .unwrap()
         .clips
         .iter()
         .map(|c| RATE.frame_at(c.start))
         .collect();
     assert_eq!(starts, [0, 40, 70, 90]);
-    let sound: Vec<_> = video.tracks[2]
+    let sound: Vec<_> = video
+        .track_named("A1")
+        .unwrap()
         .clips
         .iter()
         .map(|c| RATE.frame_at(c.start))
@@ -124,9 +135,14 @@ fn moving_takes_linked_sound_and_overwrites_where_it_lands() {
     video.move_clips(&[a], frames(90), 1).unwrap();
     // The picture moved up to V2; its sound stayed on A1, moved in time,
     // and overwrote B's sound where they now overlap.
-    assert_eq!(video.track_of(a).unwrap(), video.tracks[1].id);
+    assert_eq!(
+        video.track_of(a).unwrap(),
+        video.track_named("V2").unwrap().id
+    );
     assert_eq!(span(&video, a_sound).0, 90);
-    let b_sound = video.tracks[2]
+    let b_sound = video
+        .track_named("A1")
+        .unwrap()
         .clips
         .iter()
         .find(|c| c.id != a_sound)
@@ -205,7 +221,7 @@ fn razor_and_ripple_delete() {
     assert_eq!(span(&video, made[0]), (20, 40, 20));
     video.delete(&[made[0]], true).unwrap();
     assert_eq!(span(&video, b).0, 20);
-    assert_eq!(video.tracks[2].clips.len(), 2);
+    assert_eq!(video.track_named("A1").unwrap().clips.len(), 2);
     video.delete(&[a], false).unwrap();
     assert_eq!(span(&video, b).0, 20);
     assert!(video.split(frames(1000), &[]).unwrap().is_empty());
@@ -251,7 +267,7 @@ fn new_clips_go_on_a_free_track() {
 fn locked_tracks_do_not_change() {
     let mut video = video();
     let (a, _) = footage(&mut video, 0, 30, 300);
-    let audio = video.tracks[2].id;
+    let audio = video.track_named("A1").unwrap().id;
     apply(
         &mut video,
         Command::SetTrack {
@@ -363,7 +379,7 @@ impl render::Sounds for Tone {
 fn frames_stack_tracks_and_sound_mixes_clips() {
     let mut video = Video::new("Edit", 40, 20, RATE);
     footage(&mut video, 0, 30, 300);
-    let still = video.tracks[1].id;
+    let still = video.track_named("V2").unwrap().id;
     apply(
         &mut video,
         Command::AddClip {
@@ -730,4 +746,38 @@ fn freezing_holds_a_frame_then_plays_on() {
             "only where the clip is"
         );
     }
+}
+
+#[test]
+fn tracks_move_anywhere_and_sound_moves_between_sound_tracks() {
+    let mut video = video();
+    let (picture, sound) = footage(&mut video, 0, 30, 90);
+    // V1 to the very top: in front of V2, above the sound.
+    let v1 = video.track_named("V1").unwrap().id;
+    apply(&mut video, Command::MoveTrack { track: v1, to: 99 }).unwrap();
+    assert_eq!(video.tracks.last().unwrap().id, v1);
+    // Audio between the video tracks.
+    let a2 = video.track_named("A2").unwrap().id;
+    apply(&mut video, Command::MoveTrack { track: a2, to: 2 }).unwrap();
+    let names: Vec<_> = video.tracks.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["A1", "V2", "A2", "V1"]);
+    // Sound on its own moves up to the next sound track.
+    apply(
+        &mut video,
+        Command::Unlink {
+            clips: vec![picture],
+        },
+    )
+    .unwrap();
+    apply(
+        &mut video,
+        Command::Move {
+            clips: vec![sound],
+            by: Time::ZERO,
+            tracks: 1,
+        },
+    )
+    .unwrap();
+    assert_eq!(video.track_of(sound).unwrap(), a2);
+    assert!(apply(&mut video, Command::MoveTrack { track: 999, to: 0 }).is_err());
 }
