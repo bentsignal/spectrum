@@ -7,6 +7,7 @@ mod commands;
 mod convert;
 mod document;
 mod edit;
+mod fades;
 pub mod render;
 mod speed;
 
@@ -19,5 +20,7 @@ pub use speed::{Curve, MAX_PERCENT, RemapKey, Speed, VelocityKey};
 
 #[cfg(test)]
 mod convert_tests;
+#[cfg(test)]
+mod fade_tests;
 #[cfg(test)]
 mod tests;

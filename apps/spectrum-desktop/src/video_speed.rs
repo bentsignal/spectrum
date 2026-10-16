@@ -431,6 +431,13 @@ impl Workspace {
     /// adds one there and drags it while held. Returns whether the line
     /// took the press.
     pub fn speed_down(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) -> bool {
+        // A keyframe on another clip's line selects that clip first.
+        if let Some(other) = self.key_owner(event.position)
+            && self.speed_clip().is_none_or(|c| c.id != other)
+            && let Some(video) = &mut self.video
+        {
+            video.selected = video.doc.linked(other);
+        }
         let Some(clip) = self.speed_clip() else {
             return false;
         };
@@ -512,6 +519,28 @@ impl Workspace {
         }
         cx.notify();
         true
+    }
+
+    /// The clip whose speed keyframe is under `position`, if any.
+    fn key_owner(&self, position: Point<Pixels>) -> Option<u64> {
+        let video = self.video.as_ref()?;
+        let (x, y) = video.local(position);
+        let layout = video.layout();
+        let row = layout
+            .rows
+            .iter()
+            .find(|r| y >= r.top && y < r.top + r.height)?;
+        let track = video.doc.track(row.track)?;
+        track
+            .clips
+            .iter()
+            .filter(|c| !c.speed.is_normal())
+            .find(|c| {
+                let (left, right) = (video.x_of(c.start), video.x_of(c.end()));
+                let boxed = (left, row.top + 3., right - left, row.height - 6.);
+                self.speed_key_at(c, boxed, x, y).is_some()
+            })
+            .map(|c| c.id)
     }
 
     /// The speed command a keyframe drag to `position` makes.
@@ -615,8 +644,14 @@ impl Workspace {
         clip: &Clip,
         bounds: (f32, f32, f32, f32),
         selected: Option<usize>,
+        dim: bool,
     ) -> Option<AnyElement> {
         let geometry = self.speed_geometry(clip, bounds, selected)?;
+        let (line_color, dot_color) = if dim {
+            (rgba(0xf2c14e80), rgba(0xf2c14e99))
+        } else {
+            (rgba(0xf2c14eff), rgba(0xf2c14eff))
+        };
         let (left, width) = (bounds.0.max(HEADER), bounds.2);
         let right = bounds.0 + width;
         Some(
@@ -639,13 +674,13 @@ impl Workspace {
                         }
                     }
                     if let Ok(path) = line.build() {
-                        window.paint_path(path, rgb(0xf2c14e));
+                        window.paint_path(path, line_color);
                     }
                     for (x, y, on) in &geometry.dots {
                         let r = if *on { 5. } else { 4. };
                         window.paint_quad(fill(
                             Bounds::new(at(x - r, y - r), size(px(r * 2.), px(r * 2.))),
-                            rgb(if *on { 0xffffff } else { 0xf2c14e }),
+                            if *on { rgba(0xffffffff) } else { dot_color },
                         ));
                     }
                 },

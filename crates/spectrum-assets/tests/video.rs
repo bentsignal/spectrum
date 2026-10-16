@@ -86,6 +86,7 @@ fn videos_compose_the_library_and_export() {
                 edge: Edge::End,
                 by: rate.time_of(-120),
                 ripple: true,
+                crossfade: false,
             }],
         )
         .unwrap();
@@ -235,4 +236,56 @@ fn velocity_shows_the_right_source_frames() {
         .unwrap();
     let info = spectrum_media::probe(&out).unwrap();
     assert_eq!(info.video.unwrap().frames, 60);
+}
+
+#[test]
+fn backward_sound_reads_ahead_instead_of_seeking_every_step() {
+    let tmp = tempfile::tempdir().unwrap();
+    let clip = tmp.path().join("tone.mp4");
+    make(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=gray:s=64x48:r=30:d=3",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=3",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+        ],
+        &clip,
+    );
+    let mut service = Service::open(&tmp.path().join("library")).unwrap();
+    let footage = service.import(vec![clip]).unwrap()[0].id;
+    let rate = FrameRate::new(30, 1);
+    let video = service.create_video("Back", 64, 48, rate).unwrap();
+    let made = service
+        .add_to_video(video.id, footage, Time::ZERO, None, Placement::Overwrite)
+        .unwrap();
+    service
+        .edit_video(video.id, vec![Command::Reverse { clip: made[0] }])
+        .unwrap();
+    let edit = service.video(video.id).unwrap();
+    let mut sources = spectrum_assets::video_render::VideoSources::new(&service, false, false);
+    // Two seconds, as the player asks for it, in small blocks.
+    let mut loudest = 0f32;
+    let mut block = vec![0f32; 1024 * 2];
+    let mut time = Time::ZERO;
+    while time < Time::from_seconds(2.) {
+        spectrum_video::render::sound(&edit, time, &mut block, &mut sources).unwrap();
+        loudest = block.iter().fold(loudest, |l, s| l.max(s.abs()));
+        time = time + Time::from_samples(1024, 48_000);
+    }
+    assert!(loudest > 0.1, "the reversed tone plays: {loudest}");
+    assert!(
+        sources.sound_opens() <= 4,
+        "about a seek a second, not one a step: {}",
+        sources.sound_opens()
+    );
 }

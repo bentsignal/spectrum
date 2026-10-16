@@ -77,6 +77,7 @@ spectrum video speed <video> <clip> --freeze 1s [--hold 2s] | --reverse | --as v
 spectrum video command <video> '[{"command":"split","at":705600000,"clips":[]}]'
 spectrum video inspect | frame <video> out.png --at 3s | export <video> out.mp4 [--codec h264|hevc|prores] [--width --height --rate --bitrate --from --to]
 spectrum video settings <video> [--width 3840 --height 2160 --rate 59.94 --background 101010]
+spectrum video fade <video> <clip> [--in 1s] [--out 15f]   # picture and sound
 spectrum schema
 ```
 

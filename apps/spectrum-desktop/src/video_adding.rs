@@ -1,7 +1,9 @@
 //! Adding media from the keyboard: Command+P, "Add media…", then type to
-//! search the project's footage, audio, images, and canvases, move with the
-//! arrow keys, and press Enter to place the chosen one at the playhead
-//! (over what is there; Shift+Enter inserts, pushing later clips along).
+//! search the project's footage, audio, images, and canvases. Tab (or Down)
+//! moves into the grid, where the arrow keys choose; Enter places the chosen
+//! one at the playhead (over what is there; Shift+Enter inserts, pushing
+//! later clips along). Shift+Tab, Up from the top row, or typing goes back
+//! to the search.
 use crate::{grid::frame, theme::*, workspace::Workspace};
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -17,6 +19,8 @@ const COLUMNS: usize = 5;
 pub struct Adding {
     pub query: Entity<InputState>,
     pub index: usize,
+    /// The grid, which takes the arrow keys once Tab moves to it.
+    pub grid: FocusHandle,
 }
 
 impl Workspace {
@@ -27,7 +31,13 @@ impl Workspace {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search media"));
         query.update(cx, |state, cx| state.focus(window, cx));
         cx.observe(&query, |_, _, cx| cx.notify()).detach();
-        video.adding = Some(Adding { query, index: 0 });
+        // A tab stop, so Tab and Shift+Tab move between search and grid.
+        let grid = cx.focus_handle().tab_stop(true);
+        video.adding = Some(Adding {
+            query,
+            index: 0,
+            grid,
+        });
         cx.notify();
     }
 
@@ -54,42 +64,96 @@ impl Workspace {
             .collect()
     }
 
+    /// Keys while the list is open: Tab and Down go from the search to the
+    /// grid; in the grid the arrows choose; Enter adds; Escape closes.
     fn adding_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let count = self.adding_matches(cx).len();
         let Some(adding) = self.video.as_mut().and_then(|v| v.adding.as_mut()) else {
             return;
         };
+        let in_grid = adding.grid.is_focused(window);
         let last = count.saturating_sub(1);
         let index = adding.index.min(last);
-        let moved = match event.keystroke.key.as_str() {
-            "left" => Some(index.saturating_sub(1)),
-            "right" => Some((index + 1).min(last)),
-            "up" => Some(index.saturating_sub(COLUMNS)),
-            "down" => Some((index + COLUMNS).min(last)),
-            _ => None,
+        let key = event.keystroke.key.as_str();
+        let shift = event.keystroke.modifiers.shift;
+        let to_search = |adding: &Adding, window: &mut Window, cx: &mut Context<Self>| {
+            adding.query.update(cx, |state, cx| state.focus(window, cx));
         };
-        if let Some(moved) = moved {
-            adding.index = moved;
-            cx.stop_propagation();
-            cx.notify();
-            return;
-        }
-        match event.keystroke.key.as_str() {
-            "enter" => {
+        match (in_grid, key) {
+            (false, "tab") if !shift => {
+                window.focus(&adding.grid);
                 cx.stop_propagation();
-                let placement = if event.keystroke.modifiers.shift {
+            }
+            (false, "down") => {
+                window.focus(&adding.grid);
+                cx.stop_propagation();
+            }
+            (true, "tab") if shift => {
+                to_search(adding, window, cx);
+                cx.stop_propagation();
+            }
+            (true, "up") if index < COLUMNS => {
+                to_search(adding, window, cx);
+                cx.stop_propagation();
+            }
+            (true, "left" | "right" | "up" | "down") => {
+                adding.index = match key {
+                    "left" => index.saturating_sub(1),
+                    "right" => (index + 1).min(last),
+                    "up" => index.saturating_sub(COLUMNS),
+                    _ => (index + COLUMNS).min(last),
+                };
+                cx.stop_propagation();
+            }
+            (_, "enter") => {
+                cx.stop_propagation();
+                let placement = if shift {
                     Placement::Insert
                 } else {
                     Placement::Overwrite
                 };
                 self.add_adding(index, placement, window, cx);
+                return;
             }
-            "escape" => {
+            (_, "escape") => {
                 cx.stop_propagation();
                 self.close_adding(window, cx);
+                return;
+            }
+            // Typing in the grid goes back to the search, with the key.
+            (true, _)
+                if event.keystroke.key_char.is_some() && !event.keystroke.modifiers.secondary() =>
+            {
+                let typed = event.keystroke.key_char.clone().unwrap_or_default();
+                adding.query.update(cx, |state, cx| {
+                    let text = format!("{}{typed}", state.value());
+                    state.set_value(text, window, cx);
+                    state.focus(window, cx);
+                });
+                adding.index = 0;
+                cx.stop_propagation();
             }
             _ => {}
         }
+        cx.notify();
+    }
+
+    /// Moves the choice one tile (or one row) in the grid; up from the top
+    /// row goes back to the search.
+    fn adding_step(&mut self, by: i32, row: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.adding_matches(cx).len();
+        let Some(adding) = self.video.as_mut().and_then(|v| v.adding.as_mut()) else {
+            return;
+        };
+        let last = count.saturating_sub(1) as i32;
+        let index = adding.index.min(last.max(0) as usize) as i32;
+        if row && by < 0 && index < COLUMNS as i32 {
+            adding.query.update(cx, |state, cx| state.focus(window, cx));
+        } else {
+            let step = if row { by * COLUMNS as i32 } else { by };
+            adding.index = (index + step).clamp(0, last.max(0)) as usize;
+        }
+        cx.notify();
     }
 
     fn add_adding(
@@ -110,11 +174,12 @@ impl Workspace {
     }
 
     /// The "Add media" list, over the editor.
-    pub fn adding_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub fn adding_overlay(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let adding = self.video.as_ref()?.adding.as_ref()?;
         let thumbs = self.store.as_ref().ok().map(|s| &s.thumbs);
         let matches = self.adding_matches(cx);
         let chosen = adding.index.min(matches.len().saturating_sub(1));
+        let grid_focused = adding.grid.is_focused(window);
         let tiles = matches.iter().enumerate().map(|(index, asset)| {
             let on = index == chosen;
             div()
@@ -203,6 +268,22 @@ impl Workspace {
                         .child(
                             div()
                                 .id("adding-grid")
+                                .track_focus(&adding.grid)
+                                // The arrows are the workspace's nudges;
+                                // here they choose.
+                                .on_action(cx.listener(|this, _: &crate::NudgeLeft, window, cx| {
+                                    this.adding_step(-1, false, window, cx)
+                                }))
+                                .on_action(cx.listener(|this, _: &crate::NudgeRight, window, cx| {
+                                    this.adding_step(1, false, window, cx)
+                                }))
+                                .on_action(cx.listener(|this, _: &crate::NudgeUp, window, cx| {
+                                    this.adding_step(-1, true, window, cx)
+                                }))
+                                .on_action(cx.listener(|this, _: &crate::NudgeDown, window, cx| {
+                                    this.adding_step(1, true, window, cx)
+                                }))
+                                .when(grid_focused, |el| el.bg(rgb(0x1e1e1e)))
                                 .max_h(px(420.))
                                 .overflow_y_scroll()
                                 .p_3()
@@ -226,7 +307,11 @@ impl Workspace {
                                 .border_color(rgb(BORDER))
                                 .text_xs()
                                 .text_color(rgb(FAINT))
-                                .child("Arrows choose · Enter adds at the playhead · Shift+Enter inserts · Esc closes"),
+                                .child(if grid_focused {
+                                    "Arrows choose · Enter adds at the playhead · Shift+Enter inserts · Shift+Tab searches"
+                                } else {
+                                    "Type to search · Tab to choose with the arrows · Enter adds the first · Esc closes"
+                                }),
                         ),
                 )
                 .into_any_element(),

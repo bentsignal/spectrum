@@ -68,7 +68,7 @@ fn swap_arrow() -> impl IntoElement {
 }
 
 /// A label with a color well at the right.
-fn color_row(label: &'static str, well: impl IntoElement) -> Div {
+pub fn color_row(label: &'static str, well: impl IntoElement) -> Div {
     div()
         .flex()
         .items_center()

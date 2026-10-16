@@ -166,6 +166,13 @@ pub fn frame_key(video: &Video, size: (u32, u32), index: i64) -> u64 {
             if let Ok(json) = serde_json::to_vec(clip) {
                 json.hash(&mut hasher);
             }
+            // A crossfade shows the clip before too.
+            if clip.crossfading(time)
+                && let Some(before) = track.before(clip)
+                && let Ok(json) = serde_json::to_vec(before)
+            {
+                json.hash(&mut hasher);
+            }
         }
     }
     hasher.finish()

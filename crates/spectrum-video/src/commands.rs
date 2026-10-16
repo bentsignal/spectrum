@@ -79,18 +79,34 @@ pub enum Command {
         sound_track: Option<u64>,
     },
     /// Moves clips (with their linked clips) in time and between tracks.
+    /// With `crossfade`, landing across a neighbor's end or start makes the
+    /// overlap a crossfade instead of overwriting it.
     Move {
         clips: Vec<u64>,
         by: Time,
         #[serde(default)]
         tracks: i32,
+        #[serde(default)]
+        crossfade: bool,
     },
+    /// With `crossfade` (and no ripple), an edge dragged across its
+    /// neighbor makes the overlap a crossfade instead of stopping.
     Trim {
         clip: u64,
         edge: Edge,
         by: Time,
         #[serde(default)]
         ripple: bool,
+        #[serde(default)]
+        crossfade: bool,
+    },
+    /// How long a clip (and those linked to it) fades in and out.
+    SetFades {
+        clip: u64,
+        #[serde(default)]
+        fade_in: Option<Time>,
+        #[serde(default)]
+        fade_out: Option<Time>,
     },
     /// Moves the cut after `clip`.
     Roll {
@@ -357,17 +373,43 @@ fn apply_to(video: &mut Video, command: Command) -> Result<CommandOutput> {
                 sound_track,
             },
         )?,
-        Command::Move { clips, by, tracks } => {
-            video.move_clips(&clips, by, tracks)?;
+        Command::Move {
+            clips,
+            by,
+            tracks,
+            crossfade,
+        } => {
+            video.move_clips_with(&clips, by, tracks, crossfade)?;
             output("move", "Moved clips")
+        }
+        Command::SetFades {
+            clip,
+            fade_in,
+            fade_out,
+        } => {
+            for id in video.with_links(&[clip]) {
+                let found = video.clip_mut(id).context("no such clip")?;
+                let length = found.duration;
+                if let Some(fade) = fade_in {
+                    found.fade_in = fade.clamp(Time::ZERO, length);
+                    if found.fade_in == Time::ZERO {
+                        found.crossfade = false;
+                    }
+                }
+                if let Some(fade) = fade_out {
+                    found.fade_out = fade.clamp(Time::ZERO, length);
+                }
+            }
+            output("set_fades", "Changed a clip's fades")
         }
         Command::Trim {
             clip,
             edge,
             by,
             ripple,
+            crossfade,
         } => {
-            let by = video.trim(clip, edge, by, ripple)?;
+            let by = video.trim_with(clip, edge, by, ripple, crossfade)?;
             moved(
                 "trim",
                 if ripple { "Ripple trimmed" } else { "Trimmed" },
@@ -568,6 +610,9 @@ fn add_clip(video: &mut Video, new: NewClip) -> Result<CommandOutput> {
         speed: Speed::Normal,
         interpolation: crate::Interpolation::default(),
         sound_follows_speed: true,
+        fade_in: Time::ZERO,
+        fade_out: Time::ZERO,
+        crossfade: false,
     };
     made.push(clip.id);
     let insert = new.placement == Placement::Insert;

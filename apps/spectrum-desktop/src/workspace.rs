@@ -249,6 +249,13 @@ impl Workspace {
             .map(|field| in_sidebar(slider(cx, field.min, field.max, field.step, 0.)))
             .collect();
         let mut subscriptions = vec![
+            // Whenever focus is lost (a field or a list closes under it),
+            // the keyboard comes back to the workspace, so its shortcuts
+            // never stop answering until a click.
+            cx.on_focus_lost(window, |this, window, cx| {
+                this.focus_handle.focus(window);
+                cx.notify();
+            }),
             cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()),
             cx.subscribe(&project_search, |_, _, _: &InputEvent, cx| cx.notify()),
             cx.subscribe(&picker_query, |_, _, _: &InputEvent, cx| cx.notify()),
@@ -728,6 +735,10 @@ impl Render for Workspace {
             self.request_thumbnails(cx);
         }
         self.request_clip_visuals(cx);
+        // Nothing focused at all: the keyboard belongs to the workspace.
+        if window.focused(cx).is_none() {
+            self.focus_handle.focus(window);
+        }
         self.ensure_preview(window, cx);
         self.fit_canvas_resolution(window, cx);
         self.step_zoom_animation(window, cx);

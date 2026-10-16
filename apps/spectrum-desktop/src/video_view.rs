@@ -40,7 +40,7 @@ impl Workspace {
                 share * 100.
             ))
         });
-        let adding = self.adding_overlay(cx);
+        let adding = self.adding_overlay(window, cx);
         div()
             .size_full()
             .relative()

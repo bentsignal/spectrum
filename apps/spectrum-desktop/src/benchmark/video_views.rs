@@ -168,6 +168,7 @@ pub(super) async fn views(
         }
     }
     problems.extend(keyboard(this, cx, video_id, &before).await);
+    problems.extend(fades(this, cx, video_id, &before).await);
     problems.extend(speed_views(this, cx, video_id, &before).await);
     problems.extend(return_to_start(this, cx).await);
     problems
@@ -479,6 +480,32 @@ async fn keyboard(
     }
     key(cx, "escape");
     pause(cx, 50).await;
+    // Add media from the grid: Tab into it, an arrow, Enter.
+    this.update_in(cx, |ws, window, cx| {
+        ws.seek_player(Time::from_seconds(1.), cx);
+        ws.open_adding(window, cx);
+    })
+    .ok();
+    pause(cx, 100).await;
+    key(cx, "tab");
+    pause(cx, 30).await;
+    key(cx, "right");
+    pause(cx, 30).await;
+    let chosen = read(this, cx, |ws| {
+        ws.video.as_ref()?.adding.as_ref().map(|a| a.index)
+    })
+    .flatten();
+    if chosen != Some(1) {
+        problems.push(format!(
+            "Add media grid: the arrow chose {chosen:?}, not the second"
+        ));
+    }
+    let started = Instant::now();
+    key(cx, "enter");
+    if let Err(problem) = check(this, cx, video_id, before, started).await {
+        problems.push(format!("Add media grid: {problem}"));
+    }
+    restore(this, cx, before).await;
     // Add media: the first match goes in at the playhead.
     this.update_in(cx, |ws, window, cx| {
         ws.seek_player(Time::from_seconds(1.), cx);
@@ -492,24 +519,21 @@ async fn keyboard(
         problems.push(format!("Add media: {problem}"));
     }
     restore(this, cx, before).await;
-    // A background, typed and confirmed in the Video tab.
+    // A background, picked with the canvas's color picker in the Video tab.
     this.update_in(cx, |ws, window, cx| {
         ws.set_mode(crate::workspace::Mode::Format, window, cx)
     })
     .ok();
     pause(cx, 100).await;
+    let started = Instant::now();
     this.update_in(cx, |ws, window, cx| {
         if let Some(video) = &ws.video {
-            video.forms.background.update(cx, |state, cx| {
-                state.set_value("203040", window, cx);
-                state.focus(window, cx);
+            video.forms.background.update(cx, |picker, cx| {
+                picker.take([0x20, 0x30, 0x40, 255], window, cx)
             });
         }
     })
     .ok();
-    pause(cx, 50).await;
-    let started = Instant::now();
-    key(cx, "enter");
     if let Err(problem) = check(this, cx, video_id, before, started).await {
         problems.push(format!("Background: {problem}"));
     } else if doc(this, cx).map(|d| d.background) != Some([0x20, 0x30, 0x40]) {
@@ -521,5 +545,114 @@ async fn keyboard(
         ws.focus_handle.focus(window)
     })
     .ok();
+    problems
+}
+
+/// A fade dragged from a clip's top corner, a crossfade made by dragging a
+/// clip across its neighbor, and In dragged on the ruler.
+async fn fades(
+    this: &This,
+    cx: &mut AsyncWindowContext,
+    video_id: AssetId,
+    before: &Video,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    this.update(cx, |ws, cx| {
+        ws.set_video_tool(crate::video_state::Tool::Select, cx)
+    })
+    .ok();
+    // The first clip on V1, by its top-left corner.
+    let corner = read(this, cx, |ws| {
+        let video = ws.video.as_ref()?;
+        let origin = video.timeline.borrow().origin;
+        let track = video.doc.track_named("V1")?;
+        let clip = track.clips.first()?;
+        let row = video.layout().row(track.id)?;
+        Some((
+            clip.id,
+            origin + point(px(video.x_of(clip.start) + 5.), px(row.top + 7.)),
+        ))
+    })
+    .flatten();
+    if let Some((clip, from)) = corner {
+        real_drag(this, cx, from, from + point(px(40.), px(0.)), 8).await;
+        let started = Instant::now();
+        match check(this, cx, video_id, before, started).await {
+            Err(problem) => problems.push(format!("Fade in: {problem}")),
+            Ok(()) => {
+                let faded = doc(this, cx)
+                    .and_then(|d| d.clip(clip).map(|(_, c)| c.fade_in))
+                    .unwrap_or(Time::ZERO);
+                if faded == Time::ZERO {
+                    problems.push("Fade in: the clip did not fade".into());
+                }
+            }
+        }
+        restore(this, cx, before).await;
+    } else {
+        problems.push("Fade in: no clip on V1".into());
+    }
+    // The second clip dragged across the first's end.
+    let crossing = read(this, cx, |ws| {
+        let video = ws.video.as_ref()?;
+        let origin = video.timeline.borrow().origin;
+        let track = video.doc.track_named("V1")?;
+        let second = track.clips.get(1)?;
+        let row = video.layout().row(track.id)?;
+        let middle = second.start + Time(second.duration.0 / 2);
+        Some((
+            second.id,
+            origin + point(px(video.x_of(middle)), px(row.top + row.height - 8.)),
+        ))
+    })
+    .flatten();
+    if let Some((second, from)) = crossing {
+        this.update(cx, |ws, _| {
+            if let Some(video) = &mut ws.video {
+                video.selected = video.doc.linked(second);
+            }
+        })
+        .ok();
+        real_drag(this, cx, from, from - point(px(30.), px(0.)), 8).await;
+        let started = Instant::now();
+        match check(this, cx, video_id, before, started).await {
+            Err(problem) => problems.push(format!("Crossfade: {problem}")),
+            Ok(()) => {
+                let crossed = doc(this, cx).and_then(|d| d.clip(second).map(|(_, c)| c.crossfade));
+                if crossed != Some(true) {
+                    problems.push("Crossfade: crossing the neighbor did not crossfade".into());
+                }
+            }
+        }
+        restore(this, cx, before).await;
+    }
+    // In, marked and dragged on the ruler.
+    let mark = read(this, cx, |ws| {
+        let video = ws.video.as_ref()?;
+        let origin = video.timeline.borrow().origin;
+        let at = Time::from_seconds(1.);
+        Some((
+            at,
+            origin + point(px(video.x_of(at)), px(crate::video_layout::GRIP + 10.)),
+        ))
+    })
+    .flatten();
+    if let Some((at, from)) = mark {
+        this.update(cx, |ws, cx| {
+            if let Some(video) = &mut ws.video {
+                video.in_point = Some(at);
+                video.out_point = None;
+            }
+            cx.notify();
+        })
+        .ok();
+        pause(cx, 50).await;
+        real_drag(this, cx, from, from + point(px(60.), px(0.)), 8).await;
+        let moved = read(this, cx, |ws| ws.video.as_ref()?.in_point).flatten();
+        if moved.is_none_or(|t| t <= at) {
+            problems.push(format!("In: dragging it left it at {moved:?}"));
+        }
+        this.update(cx, |ws, cx| ws.clear_in_out(cx)).ok();
+    }
     problems
 }

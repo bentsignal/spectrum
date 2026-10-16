@@ -73,6 +73,7 @@ pub(super) fn make(
                 edge: Edge::End,
                 by: seconds(-3.),
                 ripple: false,
+                crossfade: false,
             },
             Command::SetSpeed {
                 clip: ramped,

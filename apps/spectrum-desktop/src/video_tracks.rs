@@ -174,6 +174,9 @@ impl Workspace {
                 .size_full(),
             );
         }
+        if let Some(cursor) = video.cursor.filter(|_| video.drag.is_none()) {
+            layer = layer.cursor(cursor);
+        }
         let menu = self.timeline_menu(cx);
         layer
             .on_mouse_down(
@@ -316,11 +319,22 @@ impl Workspace {
                 if let Some(waveform) = self.clip_waveform(clip, boxed) {
                     overlays = overlays.child(waveform);
                 }
-                let is_speed_clip = self.speed_clip().is_some_and(|c| c.id == clip.id);
-                if is_speed_clip {
+                if let Some(fades) = self.clip_fades(clip, boxed, selected) {
+                    overlays = overlays.child(fades);
+                }
+                // The selected clip's speed line, and every other clip's
+                // that changes speed, dimmed (sound linked to a picture
+                // shares the picture's line).
+                let chosen = self.speed_clip().is_some_and(|c| c.id == clip.id);
+                let own = kind == TrackKind::Video
+                    || !doc.linked(clip.id).iter().any(|id| {
+                        doc.clip(*id)
+                            .is_some_and(|(t, _)| t.kind == TrackKind::Video)
+                    });
+                if chosen || (own && !clip.speed.is_normal()) {
                     let key = video.key.filter(|(id, _)| *id == clip.id).map(|(_, i)| i);
                     let boxed = (left, row.top + 3., right - left, row.height - 6.);
-                    if let Some(line) = self.speed_line(clip, boxed, key) {
+                    if let Some(line) = self.speed_line(clip, boxed, key, !chosen) {
                         overlays = overlays.child(line);
                     }
                 }

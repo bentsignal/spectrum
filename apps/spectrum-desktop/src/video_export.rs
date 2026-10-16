@@ -52,14 +52,21 @@ pub struct Forms {
     width: Entity<InputState>,
     height: Entity<InputState>,
     bitrate: Entity<InputState>,
+    /// Frames a second, typed, over the list.
+    fps: Entity<InputState>,
     pub sound: bool,
     pub in_to_out: bool,
+    /// Sizes keep the video's shape as either side is typed.
+    pub export_locked: bool,
+    pub video_locked: bool,
+    video_fps: Entity<InputState>,
     /// The Video tab's.
     video_size: List,
     video_rate: List,
     video_width: Entity<InputState>,
     video_height: Entity<InputState>,
-    pub(crate) background: Entity<InputState>,
+    /// The canvas's color picker, for the background.
+    pub(crate) background: Entity<crate::color_picker::ColorPicker>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -97,19 +104,6 @@ fn pixels(text: &str) -> Option<u32> {
         .map(|n| n & !1)
 }
 
-fn color_text([r, g, b]: [u8; 3]) -> String {
-    format!("{r:02x}{g:02x}{b:02x}")
-}
-
-fn parse_color(text: &str) -> Option<[u8; 3]> {
-    let hex = text.trim().trim_start_matches('#');
-    if hex.len() != 6 {
-        return None;
-    }
-    let channel = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
-    Some([channel(0)?, channel(2)?, channel(4)?])
-}
-
 impl Forms {
     pub fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Self {
         let codec = list(CODECS.map(|(_, name)| name.into()).to_vec(), 0, window, cx);
@@ -130,8 +124,10 @@ impl Forms {
         );
         let (width, height) = (field("Width", window, cx), field("Height", window, cx));
         let bitrate = field("Automatic", window, cx);
+        let fps = field("Or type: 47.952, 30000/1001", window, cx);
+        let video_fps = field("Or type: 47.952, 30000/1001", window, cx);
         let (video_width, video_height) = (field("Width", window, cx), field("Height", window, cx));
-        let background = field("000000", window, cx);
+        let background = crate::color_picker::ColorPicker::new([0, 0, 0, 255], window, cx);
         let subscriptions = vec![
             // A size from the list fills the fields.
             cx.subscribe_in(
@@ -165,26 +161,42 @@ impl Forms {
                     }
                 },
             ),
-            cx.subscribe_in(&video_width, window, Self::typed_size),
-            cx.subscribe_in(&video_height, window, Self::typed_size),
+            cx.subscribe_in(&video_width, window, |this, _, event, window, cx| {
+                Self::typed_size(this, true, true, event, window, cx)
+            }),
+            cx.subscribe_in(&video_height, window, |this, _, event, window, cx| {
+                Self::typed_size(this, true, false, event, window, cx)
+            }),
+            cx.subscribe_in(&width, window, |this, _, event, window, cx| {
+                Self::typed_size(this, false, true, event, window, cx)
+            }),
+            cx.subscribe_in(&height, window, |this, _, event, window, cx| {
+                Self::typed_size(this, false, false, event, window, cx)
+            }),
+            cx.subscribe_in(
+                &video_fps,
+                window,
+                |this, state, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        this.focus_handle.focus(window);
+                        let text = state.read(cx).value().to_string();
+                        if let Ok(rate) = FrameRate::from_text(&text) {
+                            this.set_video_format(None, Some(rate), window, cx);
+                        }
+                    }
+                },
+            ),
             cx.subscribe_in(
                 &background,
                 window,
-                |this, state, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                        if matches!(event, InputEvent::PressEnter { .. }) {
-                            // Done typing: the keyboard goes back to the editor.
-                            this.focus_handle.focus(window);
-                        }
-                        let text = state.read(cx).value().to_string();
-                        match parse_color(&text) {
-                            Some(color) => this.video_commands(
-                                vec![Command::SetBackground { color }],
-                                window,
-                                cx,
-                            ),
-                            None => this.sync_video_settings(window, cx),
-                        }
+                |this, _, crate::color_picker::Picked([r, g, b, _]), window, cx| {
+                    let color = [*r, *g, *b];
+                    if this
+                        .video
+                        .as_ref()
+                        .is_some_and(|v| v.doc.background != color)
+                    {
+                        this.video_commands(vec![Command::SetBackground { color }], window, cx);
                     }
                 },
             ),
@@ -196,8 +208,12 @@ impl Forms {
             width,
             height,
             bitrate,
+            fps,
+            video_fps,
             sound: true,
             in_to_out: false,
+            export_locked: true,
+            video_locked: true,
             video_size,
             video_rate,
             video_width,
@@ -207,9 +223,13 @@ impl Forms {
         }
     }
 
+    /// A width or height typed in the Video tab (`video`) or the Export
+    /// tab: with the shape kept, the other side follows; the Video tab then
+    /// applies the size.
     fn typed_size(
         this: &mut Workspace,
-        _: &Entity<InputState>,
+        video: bool,
+        width_typed: bool,
         event: &InputEvent,
         window: &mut Window,
         cx: &mut Context<Workspace>,
@@ -220,15 +240,50 @@ impl Forms {
         if matches!(event, InputEvent::PressEnter { .. }) {
             this.focus_handle.focus(window);
         }
-        let Some(forms) = this.video.as_ref().map(|v| &v.forms) else {
+        let Some(editor) = this.video.as_ref() else {
             return;
         };
-        let width = pixels(&forms.video_width.read(cx).value());
-        let height = pixels(&forms.video_height.read(cx).value());
-        match width.zip(height) {
-            Some(size) => this.set_video_format(Some(size), None, window, cx),
-            None => this.sync_video_settings(window, cx),
+        let forms = &editor.forms;
+        let ratio = f64::from(editor.doc.width) / f64::from(editor.doc.height.max(1));
+        let (width_field, height_field, locked) = if video {
+            (&forms.video_width, &forms.video_height, forms.video_locked)
+        } else {
+            (&forms.width, &forms.height, forms.export_locked)
+        };
+        let mut width = pixels(&width_field.read(cx).value());
+        let mut height = pixels(&height_field.read(cx).value());
+        if locked {
+            if width_typed {
+                height = width.map(|w| ((f64::from(w) / ratio).round() as u32).max(2) & !1);
+            } else {
+                width = height.map(|h| ((f64::from(h) * ratio).round() as u32).max(2) & !1);
+            }
+            let (width_field, height_field) = (width_field.clone(), height_field.clone());
+            if let (Some(w), Some(h)) = (width, height) {
+                width_field.update(cx, |s, cx| s.set_value(w.to_string(), window, cx));
+                height_field.update(cx, |s, cx| s.set_value(h.to_string(), window, cx));
+            }
         }
+        if video {
+            match width.zip(height) {
+                Some(size) => this.set_video_format(Some(size), None, window, cx),
+                None => this.sync_video_settings(window, cx),
+            }
+        }
+    }
+}
+
+/// A size's shape, as people say it: 16:9, 4:5, or 1.90:1.
+pub fn aspect(width: u32, height: u32) -> String {
+    fn gcd(a: u32, b: u32) -> u32 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+    let d = gcd(width, height).max(1);
+    let (w, h) = (width / d, height / d);
+    if w <= 32 && h <= 32 {
+        format!("{w}:{h}")
+    } else {
+        format!("{:.2}:1", f64::from(width) / f64::from(height.max(1)))
     }
 }
 
@@ -283,14 +338,16 @@ impl Workspace {
         };
         let doc = &video.doc;
         let forms = &video.forms;
-        let (w, h, background) = (doc.width, doc.height, color_text(doc.background));
+        let (w, h, [r, g, b]) = (doc.width, doc.height, doc.background);
         for (field, value) in [
             (&forms.video_width, w.to_string()),
             (&forms.video_height, h.to_string()),
-            (&forms.background, background),
         ] {
             field.update(cx, |s, cx| s.set_value(value, window, cx));
         }
+        forms
+            .background
+            .update(cx, |picker, cx| picker.set([r, g, b, 255], window, cx));
         // Export starts at the video's size until a size is chosen.
         for (field, value) in [(&forms.width, w), (&forms.height, h)] {
             if field.read(cx).value().is_empty() {
@@ -300,7 +357,7 @@ impl Workspace {
     }
 
     /// The Video tab: the video's own size, frame rate, and background.
-    pub fn video_settings_sidebar(&self, _: &mut Context<Self>) -> Div {
+    pub fn video_settings_sidebar(&self, cx: &mut Context<Self>) -> Div {
         let Some(video) = &self.video else {
             return div();
         };
@@ -318,30 +375,38 @@ impl Workspace {
                         Select::new(&forms.video_size)
                             .placeholder(format!("{} × {}", doc.width, doc.height)),
                     )
-                    .child(pair(&forms.video_width, "×", &forms.video_height)),
+                    .child(pair(&forms.video_width, "×", &forms.video_height))
+                    .child(
+                        toggle("video-aspect", "Keep the shape", forms.video_locked).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                if let Some(video) = &mut this.video {
+                                    video.forms.video_locked = !video.forms.video_locked;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(format!(
+                        "{} × {} is {}",
+                        doc.width,
+                        doc.height,
+                        aspect(doc.width, doc.height)
+                    ))),
             )
             .child(
                 group("Frame rate", None)
                     .gap_2()
-                    .child(Select::new(&forms.video_rate).placeholder(doc.rate.to_string())),
+                    .child(Select::new(&forms.video_rate).placeholder(doc.rate.to_string()))
+                    .child(Input::new(&forms.video_fps).small()),
             )
-            .child(
-                group("Background", None).gap_2().child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .size(px(28.))
-                                .rounded_md()
-                                .border_1()
-                                .border_color(rgb(BORDER))
-                                .bg(rgb(u32::from_be_bytes([0, r, g, b]))),
-                        )
-                        .child(div().flex_1().child(Input::new(&forms.background).small())),
+            .child(crate::colors::color_row(
+                "Background",
+                crate::color_picker::color_well(
+                    "video-background",
+                    [r, g, b, 255],
+                    &forms.background,
                 ),
-            )
+            ))
             .child(
                 div()
                     .text_xs()
@@ -367,9 +432,31 @@ impl Workspace {
                 group("Size", None)
                     .gap_2()
                     .child(Select::new(&forms.size))
-                    .child(pair(&forms.width, "×", &forms.height)),
+                    .child(pair(&forms.width, "×", &forms.height))
+                    .child(
+                        toggle(
+                            "export-aspect",
+                            "Keep the video's shape",
+                            forms.export_locked,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(video) = &mut this.video {
+                                video.forms.export_locked = !video.forms.export_locked;
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(div().text_xs().text_color(rgb(FAINT)).child(format!(
+                        "The video is {}",
+                        aspect(video.doc.width, video.doc.height)
+                    ))),
             )
-            .child(group("Frame rate", None).child(Select::new(&forms.rate)))
+            .child(
+                group("Frame rate", None)
+                    .gap_2()
+                    .child(Select::new(&forms.rate))
+                    .child(Input::new(&forms.fps).small()),
+            )
             .child(
                 group("Bitrate (Mb/s)", None)
                     .gap_2()
@@ -458,12 +545,17 @@ impl Workspace {
             .map_or(VideoCodec::H264, |(codec, _)| *codec);
         let width = pixels(&forms.width.read(cx).value()).unwrap_or(doc.width & !1);
         let height = pixels(&forms.height.read(cx).value()).unwrap_or(doc.height & !1);
-        let rate = forms
-            .rate
-            .read(cx)
-            .selected_value()
-            .filter(|name| name.as_ref() != SAME)
-            .and_then(|name| FrameRate::from_text(name).ok())
+        // A typed rate wins over the list.
+        let typed = FrameRate::from_text(&forms.fps.read(cx).value()).ok();
+        let rate = typed
+            .or_else(|| {
+                forms
+                    .rate
+                    .read(cx)
+                    .selected_value()
+                    .filter(|name| name.as_ref() != SAME)
+                    .and_then(|name| FrameRate::from_text(name).ok())
+            })
             .unwrap_or(doc.rate);
         let bitrate = forms
             .bitrate
