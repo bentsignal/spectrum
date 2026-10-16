@@ -26,6 +26,12 @@ pub struct VideoSources<S: std::ops::Deref<Target = Service>> {
     stills: HashMap<(AssetId, (u32, u32)), Arc<RgbaImage>>,
     /// Each sound clip's reader and where it will read next.
     sounds: HashMap<u64, (AudioReader, Time)>,
+    /// A second of each sped-up, slowed, or reversed sound clip's source,
+    /// decoded: its first sample and the samples. Playing backward reads
+    /// from here instead of seeking for every step.
+    windows: HashMap<u64, (i64, Vec<f32>)>,
+    /// Sound readers opened, which seeks cost.
+    opened: usize,
     scratch: Vec<f32>,
     /// Footage frames decoded lately, newest last: slow motion and blends
     /// ask for the same few frames again and again, often out of order,
@@ -49,6 +55,8 @@ impl<S: std::ops::Deref<Target = Service>> VideoSources<S> {
             readers: HashMap::new(),
             stills: HashMap::new(),
             sounds: HashMap::new(),
+            windows: HashMap::new(),
+            opened: 0,
             scratch: Vec::new(),
             recent: Vec::new(),
             last: HashMap::new(),
@@ -105,7 +113,7 @@ impl<S: std::ops::Deref<Target = Service>> VideoSources<S> {
     /// past a few frames and a memory budget.
     fn keep(&mut self, key: FrameKey, frame: Arc<RgbaImage>) {
         const FEWEST: usize = 4;
-        const BUDGET: usize = 256 << 20;
+        const BUDGET: usize = 512 << 20;
         self.recent.retain(|(k, _)| *k != key);
         self.recent.push((key, frame));
         let mut bytes: usize = self.recent.iter().map(|(_, f)| f.as_raw().len()).sum();
@@ -124,7 +132,7 @@ impl<S: std::ops::Deref<Target = Service>> VideoSources<S> {
         backward: bool,
     ) -> Result<Vec<(i64, RgbaImage)>> {
         /// Frames kept from a group decoded for playing backward.
-        const BACK: usize = 12;
+        const BACK: usize = 60;
         let (media, file, copy) = self.media(asset)?.clone();
         let video = media.info.video.context("footage has a picture")?;
         if !self.readers.contains_key(&asset) {
@@ -303,7 +311,7 @@ impl<S: std::ops::Deref<Target = Service>> render::Sounds for VideoSources<S> {
             if span >= 1 {
                 let start = clip.wrap(a.min(b));
                 let mut piece = vec![0f32; (span + 1) * 2];
-                self.read_into(clip, Time::from_seconds(start), 1., &mut piece)?;
+                self.read_window(clip, start, b < a, &mut piece)?;
                 if b < a {
                     piece.reverse_by_frames();
                 }
@@ -340,6 +348,7 @@ impl<S: std::ops::Deref<Target = Service>> VideoSources<S> {
         if !continues {
             let mut reader = AudioReader::open(&file, track)?;
             reader.seek(at)?;
+            self.opened += 1;
             self.sounds.insert(clip.id, (reader, at));
         }
         let (reader, next) = self.sounds.get_mut(&clip.id).context("no reader")?;
@@ -348,6 +357,51 @@ impl<S: std::ops::Deref<Target = Service>> VideoSources<S> {
         *next = at + Time::from_samples(read as i64, 48_000);
         for (sample, add) in out.iter_mut().zip(&self.scratch[..read * 2]) {
             *sample += add * gain;
+        }
+        Ok(())
+    }
+}
+
+impl<S: std::ops::Deref<Target = Service>> VideoSources<S> {
+    /// How many sound readers have been opened, each a seek.
+    pub fn sound_opens(&self) -> usize {
+        self.opened
+    }
+
+    /// Fills `out` with a sound clip's source from `start` seconds, from a
+    /// decoded second around it: ahead of it going forward, behind it going
+    /// backward, so playing backward seeks about once a second.
+    fn read_window(
+        &mut self,
+        clip: &Clip,
+        start: f64,
+        backward: bool,
+        out: &mut [f32],
+    ) -> Result<()> {
+        const WINDOW: i64 = 48_000;
+        let first = (start * 48_000.).round() as i64;
+        let frames = (out.len() / 2) as i64;
+        let covered = self.windows.get(&clip.id).is_some_and(|(at, samples)| {
+            first >= *at && first + frames <= at + (samples.len() / 2) as i64
+        });
+        if !covered {
+            let from = if backward {
+                (first + frames - WINDOW).max(0)
+            } else {
+                first
+            };
+            let length = WINDOW.max(frames);
+            let mut samples = vec![0f32; length as usize * 2];
+            self.read_into(clip, Time::from_samples(from, 48_000), 1., &mut samples)?;
+            self.windows.insert(clip.id, (from, samples));
+        }
+        let (at, samples) = self.windows.get(&clip.id).context("no window")?;
+        let offset = ((first - at).max(0) * 2) as usize;
+        let end = (offset + out.len()).min(samples.len());
+        if offset < end {
+            for (sample, add) in out.iter_mut().zip(&samples[offset..end]) {
+                *sample += add;
+            }
         }
         Ok(())
     }

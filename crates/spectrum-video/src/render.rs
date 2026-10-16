@@ -46,33 +46,35 @@ pub fn frame(
     pictures: &mut dyn Pictures,
     quality: Quality,
 ) -> Result<RgbaImage> {
-    let clips = video.at(time, TrackKind::Video);
+    // Each clip at how much of it shows (its opacity and fades; under a
+    // crossfade, the clip before plays on beneath).
+    let shown = video.layers(time);
     // From the top down, until a picture fills the frame opaquely: nothing
     // under it shows, so nothing under it is decoded.
-    let mut layers = Vec::with_capacity(clips.len());
-    for clip in clips.iter().rev() {
+    let mut layers = Vec::with_capacity(shown.len());
+    for (clip, opacity) in shown.iter().rev() {
         let picture =
             pictures.picture(clip, clip.source_seconds(time), (width, height), quality)?;
         let fills = picture
             .as_ref()
-            .is_some_and(|p| clip.opacity >= 1. && covers(p, width, height));
-        layers.push((*clip, picture));
+            .is_some_and(|p| *opacity >= 1. && covers(p, width, height));
+        layers.push((*opacity, picture));
         if fills {
             break;
         }
     }
     layers.reverse();
-    if let [(clip, Some(picture))] = layers.as_slice()
-        && clip.opacity >= 1.
+    if let [(opacity, Some(picture))] = layers.as_slice()
+        && *opacity >= 1.
         && picture.dimensions() == (width, height)
     {
         return Ok(picture.as_ref().clone());
     }
     let [r, g, b] = video.background;
     let mut out = RgbaImage::from_pixel(width, height, image::Rgba([r, g, b, 255]));
-    for (clip, picture) in &layers {
+    for (opacity, picture) in &layers {
         if let Some(picture) = picture {
-            lay(&mut out, picture, clip.opacity);
+            lay(&mut out, picture, *opacity);
         }
     }
     Ok(out)
@@ -137,7 +139,35 @@ pub fn sound(video: &Video, time: Time, out: &mut [f32], sounds: &mut dyn Sounds
                 continue;
             }
             let gain = 10f32.powf(clip.gain_db / 20.);
-            sounds.mix(clip, from, gain, &mut out[first * 2..last * 2])?;
+            let window = &mut out[first * 2..last * 2];
+            if !clip.has_fades() {
+                sounds.mix(clip, from, gain, window)?;
+                continue;
+            }
+            // Through its fades: mixed alone, then shaped sample by sample.
+            let mut piece = vec![0f32; window.len()];
+            sounds.mix(clip, from, gain, &mut piece)?;
+            let crossing = clip.crossfade.then(|| track.before(clip)).flatten();
+            let mut under = Vec::new();
+            if let Some(before) = crossing {
+                under = vec![0f32; window.len()];
+                let before_gain = 10f32.powf(before.gain_db / 20.);
+                sounds.mix(before, from, before_gain, &mut under)?;
+            }
+            for frame in 0..window.len() / 2 {
+                let at = from + Time::from_samples(frame as i64, 48_000);
+                let fade = clip.fade_at(at);
+                // The clip before fades out as this one fades in.
+                let rest = if crossing.is_some() && clip.crossfading(at) {
+                    1. - fade
+                } else {
+                    0.
+                };
+                for channel in 0..2 {
+                    let i = frame * 2 + channel;
+                    window[i] += piece[i] * fade + under.get(i).copied().unwrap_or(0.) * rest;
+                }
+            }
         }
     }
     for sample in out.iter_mut() {

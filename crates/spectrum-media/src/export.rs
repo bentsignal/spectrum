@@ -269,7 +269,15 @@ fn open_video(
     global: bool,
 ) -> Result<(encoder::video::Encoder, &'static str, Pixel)> {
     let mut failures = Vec::new();
-    for &name in settings.codec.encoders() {
+    // VideoToolbox first tries its constant quality; where a Mac's encoder
+    // has none, it tries again by average bitrate.
+    let attempts = settings.codec.encoders().iter().flat_map(|&name| {
+        let quality = name.contains("videotoolbox") && settings.bitrate.is_none();
+        [(name, quality), (name, false)]
+            .into_iter()
+            .take(if quality { 2 } else { 1 })
+    });
+    for (name, quality) in attempts {
         let Some(found) = encoder::find_by_name(name) else {
             continue;
         };
@@ -299,8 +307,32 @@ fn open_video(
         match (settings.codec, name) {
             (VideoCodec::ProRes, _) => options.set("profile", "3"),
             (_, "libx264" | "libx265") => {
-                options.set("crf", if name == "libx264" { "18" } else { "20" });
                 options.set("preset", "medium");
+                match settings.bitrate {
+                    // A bitrate asked for, with room for keyframes.
+                    Some(bitrate) => {
+                        context.set_bit_rate(bitrate as usize);
+                        options.set("maxrate", &(bitrate * 3 / 2).to_string());
+                        options.set("bufsize", &(bitrate * 2).to_string());
+                    }
+                    None => options.set("crf", if name == "libx264" { "18" } else { "20" }),
+                }
+            }
+            // Apple's encoder: no data rate limit, which starves the first
+            // keyframe (it is far larger than the frames after it) and left
+            // exports with a smeared first frame.
+            (_, name) if name.contains("videotoolbox") => {
+                if quality {
+                    unsafe {
+                        let raw = context.as_mut_ptr();
+                        (*raw).flags |= ffi::AV_CODEC_FLAG_QSCALE as i32;
+                        (*raw).global_quality = 65 * ffi::FF_QP2LAMBDA;
+                    }
+                } else {
+                    context.set_bit_rate(settings.bitrate() as usize);
+                }
+                options.set("realtime", "0");
+                options.set("prio_speed", "0");
             }
             _ => {
                 context.set_bit_rate(settings.bitrate() as usize);

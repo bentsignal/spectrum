@@ -177,3 +177,105 @@ impl Workspace {
         )
     }
 }
+
+/// The share of a fade done at `u`, eased as the engine eases it.
+fn ease(u: f32) -> f32 {
+    let u = u.clamp(0., 1.);
+    u * u * (3. - 2. * u)
+}
+
+impl Workspace {
+    /// A clip's fades drawn over its box: the faded part darkened under a
+    /// curve, a crossfade as an X, and (for the selected clip) the handles
+    /// that drag them. `(left, top, right, height)` in timeline points.
+    pub fn clip_fades(
+        &self,
+        clip: &Clip,
+        (left, top, right, height): (f32, f32, f32, f32),
+        selected: bool,
+    ) -> Option<AnyElement> {
+        let video = self.video.as_ref()?;
+        if !clip.has_fades() && !selected {
+            return None;
+        }
+        let in_x = video.x_of(clip.start + clip.fade_in);
+        let out_x = video.x_of(clip.end() - clip.fade_out);
+        let crossfade = clip.crossfade && clip.fade_in.0 > 0;
+        let (fade_in, fade_out) = (clip.fade_in.0 > 0, clip.fade_out.0 > 0);
+        let header = crate::video_layout::HEADER;
+        Some(
+            canvas(
+                |_, _, _| {},
+                move |area, _, window, _| {
+                    let at = |x: f32, y: f32| area.origin + point(px(x), px(y));
+                    let bottom = top + height;
+                    // A curve from (x0, bottom) rising to (x1, top), sampled.
+                    let curve = |x0: f32, x1: f32, rising: bool| -> Vec<(f32, f32)> {
+                        (0..=16)
+                            .map(|i| {
+                                let u = i as f32 / 16.;
+                                let share = if rising { ease(u) } else { 1. - ease(u) };
+                                (x0 + (x1 - x0) * u, bottom - share * height)
+                            })
+                            .collect()
+                    };
+                    let shade =
+                        |window: &mut Window, points: Vec<(f32, f32)>, corner: (f32, f32)| {
+                            let mut path = PathBuilder::fill();
+                            path.move_to(at(corner.0, corner.1));
+                            for (x, y) in &points {
+                                path.line_to(at(x.max(header), *y));
+                            }
+                            path.close();
+                            if let Ok(path) = path.build() {
+                                window.paint_path(path, rgba(0x00000070));
+                            }
+                        };
+                    let stroke = |window: &mut Window, points: &[(f32, f32)]| {
+                        let mut path = PathBuilder::stroke(px(1.));
+                        for (i, (x, y)) in points.iter().enumerate() {
+                            if i == 0 {
+                                path.move_to(at(x.max(header), *y));
+                            } else {
+                                path.line_to(at(x.max(header), *y));
+                            }
+                        }
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, rgba(0xffffffb0));
+                        }
+                    };
+                    if fade_in {
+                        let rising = curve(left, in_x, true);
+                        shade(window, rising.clone(), (left, top));
+                        stroke(window, &rising);
+                        if crossfade {
+                            // The clip before fading out: the other arm of the X.
+                            stroke(window, &curve(left, in_x, false));
+                        }
+                    }
+                    if fade_out {
+                        let falling = curve(out_x, right, false);
+                        shade(window, falling.clone(), (right, top));
+                        stroke(window, &falling);
+                    }
+                    if selected {
+                        for x in [
+                            if fade_in { in_x } else { left + 4. },
+                            if fade_out { out_x } else { right - 4. },
+                        ] {
+                            if x >= header {
+                                window.paint_quad(fill(
+                                    Bounds::new(at(x - 3., top), size(px(6.), px(6.))),
+                                    rgb(0xececec),
+                                ));
+                            }
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .size_full()
+            .into_any_element(),
+        )
+    }
+}

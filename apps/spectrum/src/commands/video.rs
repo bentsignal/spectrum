@@ -124,6 +124,16 @@ pub(super) enum Video {
         #[arg(long)]
         no_sound: bool,
     },
+    /// Fade a clip (and the clips linked to it) in or out, picture and
+    /// sound: lengths like 1s, 15f, or 0 for none.
+    Fade {
+        video: AssetId,
+        clip: u64,
+        #[arg(long = "in")]
+        fade_in: Option<String>,
+        #[arg(long = "out")]
+        fade_out: Option<String>,
+    },
     /// Set a video's size, frame rate, or background (the color where no
     /// clip covers the frame, as rrggbb).
     Settings {
@@ -426,6 +436,24 @@ pub(super) fn run(service: &mut Service, command: Video) -> Result<serde_json::V
             let outputs = service.edit_video(video, commands)?;
             Ok(json!({"video": video, "clip": clip, "results": outputs}))
         }
+        Video::Fade {
+            video,
+            clip,
+            fade_in,
+            fade_out,
+        } => {
+            let rate = service.video(video)?.rate;
+            let length = |text: Option<String>| -> Result<Option<Time>> {
+                text.map(|t| Time::parse(&t, Some(rate))).transpose()
+            };
+            let command = Command::SetFades {
+                clip,
+                fade_in: length(fade_in)?,
+                fade_out: length(fade_out)?,
+            };
+            let outputs = service.edit_video(video, vec![command])?;
+            Ok(json!({"video": video, "clip": clip, "results": outputs}))
+        }
         Video::Settings {
             video,
             width,
@@ -484,10 +512,12 @@ fn schema() -> serde_json::Value {
             {"command": "add_track", "kind": "video"},
             {"command": "move_track", "track": 2, "to": 0},
             {"command": "set_background", "color": [16, 16, 16]},
+            {"command": "set_fades", "clip": 3, "fade_in": 705600000},
+            {"command": "move", "clips": [3], "by": -352800000, "crossfade": true},
             {"command": "undo"}
         ],
         "commands": ["rename", "set_format", "add_track", "remove_track", "move_track", "set_background", "set_track", "add_clip",
             "move", "trim", "roll", "slip", "slide", "split", "delete", "link", "unlink",
-            "set_clip", "set_speed", "freeze", "reverse", "convert_speed", "undo", "redo"],
+            "set_clip", "set_fades", "set_speed", "freeze", "reverse", "convert_speed", "undo", "redo"],
     })
 }

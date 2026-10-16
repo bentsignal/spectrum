@@ -120,6 +120,16 @@ pub struct Clip {
     /// picture; off, it plays at normal speed from the clip's in point.
     #[serde(default = "enabled")]
     pub sound_follows_speed: bool,
+    /// How long the clip fades in from nothing and out to nothing, picture
+    /// and sound.
+    #[serde(default)]
+    pub fade_in: Time,
+    #[serde(default)]
+    pub fade_out: Time,
+    /// The fade in mixes from the clip before, which plays on beneath it
+    /// (a crossfade).
+    #[serde(default)]
+    pub crossfade: bool,
 }
 
 /// Frames made between a source's frames in slow motion.

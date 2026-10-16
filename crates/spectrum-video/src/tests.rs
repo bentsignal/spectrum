@@ -282,6 +282,7 @@ fn locked_tracks_do_not_change() {
         clips: vec![a],
         by: frames(5),
         tracks: 0,
+        crossfade: false,
     };
     assert!(apply(&mut video, moved).is_err());
     let deleted = Command::Delete {
@@ -326,6 +327,7 @@ fn edits_are_revisions() {
             edge: Edge::End,
             by: frames(-10),
             ripple: false,
+            crossfade: false,
         })
         .unwrap();
     workspace.execute(Command::Undo).unwrap();
@@ -775,6 +777,7 @@ fn tracks_move_anywhere_and_sound_moves_between_sound_tracks() {
             clips: vec![sound],
             by: Time::ZERO,
             tracks: 1,
+            crossfade: false,
         },
     )
     .unwrap();

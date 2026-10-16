@@ -69,6 +69,11 @@ impl Workspace {
                 height,
                 scroll: video.scroll_y.min(layout.room),
             },
+            Hit::Mark { out } => DragKind::Mark { out },
+            Hit::Fade { clip, out } => {
+                video.selected = video.doc.linked(clip);
+                DragKind::Fade { clip, out }
+            }
             Hit::Ruler | Hit::Empty { .. } => {
                 if matches!(hit, Hit::Empty { .. }) && !shift {
                     video.selected.clear();
@@ -137,6 +142,7 @@ impl Workspace {
         drag.clicked = clicked;
         video.drag = Some(drag);
         if kind == DragKind::Playhead {
+            let time = if shift { self.snapped_time(time) } else { time };
             self.seek_player(time, cx);
         }
         self.sync_video_controls(window, cx);
@@ -227,6 +233,14 @@ impl Workspace {
             if video.tool == Tool::Razor {
                 cx.notify();
             }
+            // The pointer shows what a press would grab.
+            let cursor = self.hover_cursor(event.position);
+            if let Some(video) = &mut self.video
+                && video.cursor != cursor
+            {
+                video.cursor = cursor;
+                cx.notify();
+            }
             return;
         };
         if event.pressed_button != Some(MouseButton::Left) {
@@ -237,7 +251,31 @@ impl Workspace {
         match kind {
             DragKind::Playhead => {
                 let time = self.timeline_time(event.position);
+                // Shift snaps to clip edges and to In and Out.
+                let time = if event.modifiers.shift {
+                    self.snapped_time(time)
+                } else {
+                    time
+                };
                 self.seek_player(time, cx);
+                return;
+            }
+            DragKind::Mark { out } => {
+                let time = self.timeline_time(event.position);
+                let time = if event.modifiers.shift {
+                    self.snapped_time(time)
+                } else {
+                    time
+                };
+                if let Some(video) = &mut self.video {
+                    let at = video.doc.snap(time);
+                    if out {
+                        video.out_point = Some(at.max(video.in_point.unwrap_or(Time::ZERO)));
+                    } else {
+                        video.in_point = Some(at.min(video.out_point.unwrap_or(at)));
+                    }
+                }
+                cx.notify();
                 return;
             }
             DragKind::Panel { height } => {
@@ -273,16 +311,20 @@ impl Workspace {
         };
         let selected = video.selected.clone();
         let command = match kind {
+            // With Select, crossing a neighbor makes a crossfade, as in
+            // Vegas.
             DragKind::Move => Command::Move {
                 clips: selected,
                 by,
                 tracks: rows,
+                crossfade: video.tool == Tool::Select,
             },
             DragKind::Trim { clip, edge, ripple } => Command::Trim {
                 clip,
                 edge,
                 by,
                 ripple,
+                crossfade: !ripple,
             },
             DragKind::Roll { clip } => Command::Roll { clip, by },
             // Dragging right moves the picture right: an earlier in point.
@@ -293,6 +335,23 @@ impl Workspace {
                     return;
                 };
                 command
+            }
+            DragKind::Fade { clip, out } => {
+                let Some((_, found)) = video.drag.as_ref().and_then(|d| d.base.clip(clip)) else {
+                    return;
+                };
+                let at = video.doc.snap(time);
+                let length = if out {
+                    found.end() - at
+                } else {
+                    at - found.start
+                };
+                let length = length.clamp(Time::ZERO, found.duration);
+                Command::SetFades {
+                    clip,
+                    fade_in: (!out).then_some(length),
+                    fade_out: out.then_some(length),
+                }
             }
             _ => return,
         };
@@ -351,6 +410,47 @@ impl Workspace {
             self.sync_video_controls(window, cx);
         }
         cx.notify();
+    }
+
+    /// `time` moved to the nearest clip edge, In, or Out within a few points.
+    fn snapped_time(&self, time: Time) -> Time {
+        let Some(video) = &self.video else {
+            return time;
+        };
+        let reach = f64::from(SNAP / video.zoom);
+        video
+            .doc
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .flat_map(|c| [c.start, c.end()])
+            .chain(video.in_point)
+            .chain(video.out_point)
+            .filter(|t| (t.seconds() - time.seconds()).abs() <= reach)
+            .min_by_key(|t| (t.0 - time.0).abs())
+            .unwrap_or(time)
+    }
+
+    /// What the pointer shows at `position`: an edge to extend, In or Out
+    /// to drag, a track's name to move.
+    fn hover_cursor(&self, position: Point<Pixels>) -> Option<CursorStyle> {
+        let video = self.video.as_ref()?;
+        match video.hit(position) {
+            Hit::Mark { .. } => Some(CursorStyle::ResizeColumn),
+            Hit::Fade { .. } => Some(CursorStyle::PointingHand),
+            Hit::Header { .. } => Some(CursorStyle::OpenHand),
+            Hit::Clip {
+                edge: Some(edge), ..
+            } => match video.tool {
+                Tool::Roll => Some(CursorStyle::ResizeLeftRight),
+                Tool::Select | Tool::Ripple => Some(match edge {
+                    Edge::Start => CursorStyle::ResizeLeft,
+                    Edge::End => CursorStyle::ResizeRight,
+                }),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// `by`, moved so the edges it moves land on the playhead or another

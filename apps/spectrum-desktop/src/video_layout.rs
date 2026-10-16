@@ -135,6 +135,10 @@ pub enum Hit {
     /// The strip above the ruler.
     Grip,
     Ruler,
+    /// In or Out on the ruler, which drags.
+    Mark {
+        out: bool,
+    },
     /// A track's name: dragging it moves the track.
     Header {
         track: u64,
@@ -147,6 +151,11 @@ pub enum Hit {
     Clip {
         clip: u64,
         edge: Option<Edge>,
+    },
+    /// A clip's fade handle at its top corner (or where its fade ends).
+    Fade {
+        clip: u64,
+        out: bool,
     },
     /// Track space with no clip, or no track.
     Empty {
@@ -193,6 +202,13 @@ impl VideoEditor {
             return Hit::Grip;
         }
         if y < TOP {
+            let near = |at: Option<Time>| at.is_some_and(|t| (self.x_of(t) - x).abs() <= 5.);
+            if near(self.out_point) {
+                return Hit::Mark { out: true };
+            }
+            if near(self.in_point) {
+                return Hit::Mark { out: false };
+            }
             return Hit::Ruler;
         }
         let row = layout
@@ -223,6 +239,26 @@ impl VideoEditor {
         };
         for clip in &track.clips {
             let (left, right) = (self.x_of(clip.start), self.x_of(clip.end()));
+            // Fade handles sit along the clip's top.
+            if x >= left && x <= right && y >= row.top + 2. && y < row.top + 14. {
+                let in_x = self.x_of(clip.start + clip.fade_in);
+                let out_x = self.x_of(clip.end() - clip.fade_out);
+                let near_in = (x - in_x).abs() <= 6. || (clip.fade_in.0 == 0 && x <= left + 12.);
+                let near_out =
+                    (x - out_x).abs() <= 6. || (clip.fade_out.0 == 0 && x >= right - 12.);
+                if near_in && (!near_out || (x - in_x).abs() <= (x - out_x).abs()) {
+                    return Hit::Fade {
+                        clip: clip.id,
+                        out: false,
+                    };
+                }
+                if near_out {
+                    return Hit::Fade {
+                        clip: clip.id,
+                        out: true,
+                    };
+                }
+            }
             if x >= left - EDGE && x <= right + EDGE {
                 let edge = if (x - left).abs() <= EDGE {
                     Some(Edge::Start)

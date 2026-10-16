@@ -172,6 +172,15 @@ pub enum DragKind {
     TrackOrder {
         track: u64,
     },
+    /// In or Out on the ruler.
+    Mark {
+        out: bool,
+    },
+    /// A clip's fade in or out, by its handle.
+    Fade {
+        clip: u64,
+        out: bool,
+    },
     /// The grip above the ruler, from the timeline's height.
     Panel {
         height: f32,
@@ -218,6 +227,9 @@ pub struct VideoEditor {
     pub panel: f32,
     /// The pointer over the timeline, for the razor's mark.
     pub hover: Option<Point<Pixels>>,
+    /// The pointer's shape over what is under it: a clip's edge, In or
+    /// Out, a track's name.
+    pub cursor: Option<CursorStyle>,
     /// Whether speed shows as velocity or as a time remap; either view
     /// shows the same timing.
     pub speed_view: spectrum_video::SpeedForm,
@@ -398,6 +410,7 @@ impl Workspace {
                 .and_then(|v| v.as_f64())
                 .map_or(crate::video_layout::PANEL, |h| h as f32),
             hover: None,
+            cursor: None,
             speed_view: spectrum_video::SpeedForm::Velocity,
             menu: MenuTarget::Timeline,
             key_editor: None,

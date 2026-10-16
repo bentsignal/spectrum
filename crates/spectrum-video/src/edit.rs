@@ -33,6 +33,10 @@ impl Clip {
         let mut right = self.clone();
         right.id = id;
         right.trim_front(time - self.start);
+        // The left part keeps the fade in, the right the fade out.
+        right.fade_in = Time::ZERO;
+        right.crossfade = false;
+        self.fade_out = Time::ZERO;
         self.duration = time - self.start;
         right
     }
@@ -186,6 +190,18 @@ impl Video {
     /// Moves clips (and their linked clips) by `by` in time and `tracks`
     /// tracks up (positive) or down, overwriting what they land on.
     pub fn move_clips(&mut self, clips: &[u64], by: Time, tracks: i32) -> Result<()> {
+        self.move_clips_with(clips, by, tracks, false)
+    }
+
+    /// As [`Self::move_clips`]; with `crossfade`, overlapping a neighbor's
+    /// end or start makes a crossfade instead of overwriting it.
+    pub fn move_clips_with(
+        &mut self,
+        clips: &[u64],
+        by: Time,
+        tracks: i32,
+        crossfade: bool,
+    ) -> Result<()> {
         let ids = self.with_links(clips);
         let earliest = ids
             .iter()
@@ -230,6 +246,12 @@ impl Video {
             clip.start = clip.start + by;
             moving.push((to, clip));
         }
+        if crossfade {
+            for (to, clip) in &mut moving {
+                let track = self.track_mut(*to).context("no such track")?;
+                crate::fades::meet(track, clip, &ids);
+            }
+        }
         let mut next = self.next_id;
         let mut fresh = || {
             next += 1;
@@ -250,6 +272,19 @@ impl Video {
     /// `ripple`, later clips on the same tracks move to follow, so no gap
     /// opens or closes; otherwise the edge stops at its neighbors.
     pub fn trim(&mut self, clip: u64, edge: Edge, by: Time, ripple: bool) -> Result<Time> {
+        self.trim_with(clip, edge, by, ripple, false)
+    }
+
+    /// As [`Self::trim`]; with `crossfade` (and no ripple), the edge may
+    /// cross its neighbor, the overlap becoming a crossfade.
+    pub fn trim_with(
+        &mut self,
+        clip: u64,
+        edge: Edge,
+        by: Time,
+        ripple: bool,
+        crossfade: bool,
+    ) -> Result<Time> {
         let ids = self.with_links(&[clip]);
         let frame = self.frame();
         let mut by = self.snap(by);
@@ -266,7 +301,12 @@ impl Video {
                         by = by.min(left);
                     }
                     if !ripple && let Some(gap) = track.gap_after(c) {
-                        by = by.min(gap);
+                        // Across the neighbor, short of its end.
+                        let across = match (crossfade, track.neighbors(c).1) {
+                            (true, Some(next)) if gap == Time::ZERO => next.duration - frame,
+                            _ => Time::ZERO,
+                        };
+                        by = by.min(gap + across);
                     }
                 }
                 Edge::Start => {
@@ -275,7 +315,12 @@ impl Video {
                         by = by.max(-c.source_in);
                     }
                     if !ripple {
-                        by = by.max(-track.gap_before(c));
+                        let gap = track.gap_before(c);
+                        let across = match (crossfade, track.neighbors(c).0) {
+                            (true, Some(before)) if gap == Time::ZERO => before.duration - frame,
+                            _ => Time::ZERO,
+                        };
+                        by = by.max(-(gap + across));
                     }
                 }
             }
@@ -301,6 +346,9 @@ impl Video {
                         other.start = other.start + shift;
                     }
                 }
+            } else if crossfade {
+                let track = self.track_mut(track).context("no such track")?;
+                crossfade_overlap(track, *id);
             }
         }
         Ok(by)
@@ -484,5 +532,31 @@ impl Video {
             self.clip_mut(id).context("no such clip")?.link = link;
         }
         Ok(())
+    }
+}
+
+/// After a trim that crossed a neighbor: the earlier clip's tail goes and
+/// the overlap becomes the later clip's crossfade.
+fn crossfade_overlap(track: &mut Track, id: u64) {
+    let Some(at) = track.clips.iter().position(|c| c.id == id) else {
+        return;
+    };
+    let (start, end) = (track.clips[at].start, track.clips[at].end());
+    for index in 0..track.clips.len() {
+        if index == at {
+            continue;
+        }
+        let other = &track.clips[index];
+        if other.start < start && other.end() > start {
+            let overlap = other.end() - start;
+            track.clips[index].duration = start - track.clips[index].start;
+            track.clips[at].fade_in = overlap;
+            track.clips[at].crossfade = true;
+        } else if other.start > start && other.start < end {
+            let overlap = end - other.start;
+            track.clips[at].duration = track.clips[index].start - start;
+            track.clips[index].fade_in = overlap;
+            track.clips[index].crossfade = true;
+        }
     }
 }

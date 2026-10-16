@@ -35,6 +35,7 @@ fn clip(speed: Speed) -> (Video, u64) {
             edge: Edge::Start,
             by: RATE.time_of(9),
             ripple: false,
+            crossfade: false,
         },
     )
     .unwrap();
